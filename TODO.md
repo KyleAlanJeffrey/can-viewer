@@ -53,7 +53,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Rows of reassembled J1939 transfers carry only their first 64 bytes; read the full length (row bytes 20 to 22) in `web/src/core/rows.ts` so Trace and Reverse Engineer can show longer payloads
 - [ ] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
 - [ ] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)
-- [ ] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
+- [x] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
 
 - [x] Database view: show and edit whether a message is J1939
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full

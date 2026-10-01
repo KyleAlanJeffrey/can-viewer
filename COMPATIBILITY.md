@@ -37,17 +37,19 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 | candump log files (`candump -l` / `-L`) | `.log`, `.txt`, `.candump` | Supported |
 | Vector ASC | `.asc` | Supported |
 | PEAK TRC (file versions 1.0 to 2.1) | `.trc` | Supported |
-| Vector BLF, ASAM MF4, CSV | | Planned. Not supported |
+| CSV (python-can, SavvyCAN, generic) | `.csv` | Supported |
+| Vector BLF, ASAM MF4 | | Planned. Not supported |
 
 How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format is read as what its extension says, or as candump if the extension is unknown too. The content rules are:
 
 - candump: the first non-blank line starts with `(`.
 - Vector ASC: the first non-blank line starts with `date `, `base hex`, `base dec` or `Begin Triggerblock` (case-insensitive).
 - PEAK TRC: the first non-blank line starts with `;` (`;$FILEVERSION=` or a comment).
+- CSV: the first non-blank line is a header with a time column, an ID column and data columns that the CSV reader knows (see below).
 
 The result is reported as `LogInfo.format` (see [API.md](API.md)). Whatever the format, `LogInfo.lines` counts the lines of a text file or the records of a binary one, and the first line or record that does not parse is reported with its number and a reason.
 
-Bus names: candump keeps the interface names from the file (`can0`, `vcan1`). Formats that number their buses instead (ASC, TRC) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1`. A DBC scoped to a bus is matched by that name.
+Bus names: candump keeps the interface names from the file (`can0`, `vcan1`), and so does a CSV with a bus column of names. Formats that number their buses instead (ASC, TRC, a CSV bus column of numbers) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1` and SavvyCAN's bus 0 is `can0`. Formats and files without bus information put every frame on `can1`. A DBC scoped to a bus is matched by that name.
 
 Error frames from formats other than candump get the ID `0x20000000`: the CAN error flag with no error class, because those formats carry no SocketCAN error class. They are flagged as error frames, counted in `LogInfo.errorFrames`, and never decoded.
 
@@ -80,6 +82,17 @@ PEAK TRC support (`crates/can-formats/src/trc.rs`), as written by PCAN-View, PCA
 - An ID of more than four hex digits, or above 0x7FF, is 29-bit. A bus column names the bus `can<number>`; without one the bus is `can1`.
 - A frame line that does not parse (bad offset, ID, DLC or data byte, too few bytes or columns) is rejected with a reason.
 - Not read: `EV` user events, `ST` status lines, and the error details of `ER` lines beyond their data bytes.
+
+CSV support (`crates/can-formats/src/csv.rs`). There is no one CSV layout, so the header line (the first non-blank line) names the columns, and the reader needs a time column, an ID column and data columns it knows:
+
+- python-can's `CSVWriter` layout: `timestamp,arbitration_id,extended,remote,error,dlc,data`, with seconds, a `0x` hex ID and base64 data (hex data is read too).
+- SavvyCAN's export: `Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,...,D8`, with microseconds, hex IDs, `true`/`false` flags and one column per byte.
+- Any other header whose names the reader knows. Names are matched case-insensitively, ignoring spaces, underscores and dashes, with a unit in parentheses allowed. Time: `t`, `ts` or a name starting with `time`. ID: `id`, `arbitration_id`, `can_id`, `identifier`, `frame_id`, `msg_id`, `message_id`, `arb_id`. Data: one column named `data`, `data_bytes`, `payload`, `bytes`, `hex_data` or `data_hex` holding every byte in hex (bytes optionally separated by spaces, colons, dashes or dots, with or without `0x`) or base64, or consecutive one-byte columns `D1..D8`, `byte0..`, `b0..` or `data[0]..`. Optional: `dlc`, `len`, `length`, `data_length`; `extended`, `ext`, `ide`, `is_extended`; `remote`, `rtr`; `error`, `err`; `fd`, `is_fd`, `canfd`, `edl`; `brs`; `esi`; `dir`, `direction`, `rx/tx`; `bus`, `channel`, `interface`, `chn`, `ch`. The first column of each kind wins. Flags read `1`/`0`, `true`/`false`, `yes`/`no`, `y`/`n`, `t`/`f`, `x`/`-` and empty (false). Direction `Tx` or `T` marks a transmitted frame.
+- The time unit comes from the time column's name when it ends in one: `ns`, `us`, `ms`, `s`, `sec`, `seconds` and the longer words, as in `Time (ms)` or `timestamp_us`. Otherwise a value with a decimal point or an exponent (`1e-05`) is seconds and a whole number is microseconds. Times may be negative. Times are taken as absolute Unix time when they are large enough to be, since a CSV carries no start date; nothing is added or subtracted.
+- The delimiter is whichever of comma, semicolon and tab appears most in the header. Cells may be wrapped in double quotes, but a delimiter inside quotes is not supported. A UTF-8 byte order mark before the header is skipped.
+- An ID above 0x7FF, or an extended flag that is true, gives a 29-bit ID. A true error flag gives an error frame (see the note on error frame IDs above) keeping the low 29 bits of the written ID, so python-can's `0x20000080` reads back as it was. A data length above 8, or a true FD, BRS or ESI flag, marks a CAN FD frame. A length column truncates the data to that many bytes. Byte columns end at the first empty one.
+- A header the reader cannot use rejects every line of the file with the reason "the CSV header has no time, ID and data columns we know". A row with a bad time, ID, flag, length or data cell, or too few cells to reach the time, ID or data column, is rejected with a reason.
+- Not read: quoted delimiters, columns of decoded signal values (a CSV of signals is not a frame log), and any time base other than the one in the header, so a file of wall-clock strings (`12:34:56.789`) is rejected row by row.
 
 ## DBC files
 

@@ -8,6 +8,7 @@ pub enum Format {
     Candump,
     Asc,
     Trc,
+    Csv,
 }
 
 impl Format {
@@ -18,6 +19,7 @@ impl Format {
             Format::Candump => "candump",
             Format::Asc => "asc",
             Format::Trc => "trc",
+            Format::Csv => "csv",
         }
     }
 
@@ -29,6 +31,7 @@ impl Format {
             "log" | "txt" | "candump" => Some(Format::Candump),
             "asc" => Some(Format::Asc),
             "trc" => Some(Format::Trc),
+            "csv" => Some(Format::Csv),
             _ => None,
         }
     }
@@ -54,6 +57,9 @@ impl Format {
             .any(|prefix| starts_with_ignore_case(first, prefix))
         {
             return Some(Format::Asc);
+        }
+        if crate::csv::is_header(first) {
+            return Some(Format::Csv);
         }
         None
     }
@@ -113,6 +119,12 @@ mod tests {
         assert_eq!(Format::sniff(b";$FILEVERSION=2.1\n"), Some(Format::Trc));
         assert_eq!(Format::sniff(b"\n;####\n"), Some(Format::Trc));
         assert_eq!(Format::from_file_name("x.TRC"), Some(Format::Trc));
+        assert_eq!(Format::from_file_name("x.csv"), Some(Format::Csv));
+        assert_eq!(
+            Format::sniff(b"Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n"),
+            Some(Format::Csv)
+        );
+        assert_eq!(Format::sniff(b"a,b,c\n1,2,3\n"), None);
         assert_eq!(Format::detect("drive.bin", candump), Format::Candump);
         assert_eq!(Format::detect("drive.log", b"date Tue"), Format::Asc);
         assert_eq!(

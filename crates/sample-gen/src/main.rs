@@ -4,7 +4,7 @@
 //! sample-gen generate <out.log> <out.dbc> [frames]   synthetic drive + matching DBC
 //! sample-gen bench <file>                            native parse throughput
 //! sample-gen decode <file> <file.dbc> <frames>       CSV of decoded values, for cross-checks
-//! sample-gen convert <in> <out.asc|out.trc>          rewrite a log in another format
+//! sample-gen convert <in> <out.asc|out.trc|out.csv>          rewrite a log in another format
 //! ```
 //!
 //! Logs are read in any format the app opens, chosen as the app chooses it.
@@ -48,7 +48,7 @@ fn main() -> ExitCode {
         }
         _ => Err(
             "usage: sample-gen generate <out.log> <out.dbc> [frames] | bench <file> | \
-                  decode <file> <file.dbc> <frames> | convert <in> <out.asc|out.trc>"
+                  decode <file> <file.dbc> <frames> | convert <in> <out.asc|out.trc|out.csv>"
                 .into(),
         ),
     };
@@ -435,7 +435,7 @@ mod tests {
     use super::*;
 
     /// Converts a small demo to `extension` and checks that it reads back frame for frame.
-    fn round_trip(extension: &str) {
+    fn round_trip(extension: &str, channels: [&str; 2]) {
         let dir =
             std::env::temp_dir().join(format!("sample-gen-{}-{extension}", std::process::id()));
         let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
@@ -453,17 +453,22 @@ mod tests {
             let (a, b) = (original.frame(index), copy.frame(index));
             assert_eq!(a, b, "frame {index}");
         }
-        assert_eq!(copy.channels(), ["can1", "can2"]);
+        assert_eq!(copy.channels(), channels);
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn asc_round_trips_the_demo() {
-        round_trip("asc");
+        round_trip("asc", ["can1", "can2"]);
     }
 
     #[test]
     fn trc_round_trips_the_demo() {
-        round_trip("trc");
+        round_trip("trc", ["can1", "can2"]);
+    }
+
+    #[test]
+    fn csv_round_trips_the_demo() {
+        round_trip("csv", ["can0", "can1"]);
     }
 }

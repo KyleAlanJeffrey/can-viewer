@@ -14,7 +14,8 @@ pub fn convert(store: &FrameStore, path: &str) -> Result<(), String> {
     let result = match extension.as_deref() {
         Some("asc") => write_asc(store, &mut out),
         Some("trc") => write_trc(store, &mut out),
-        _ => return Err(format!("{path}: the extension must be .asc or .trc")),
+        Some("csv") => write_csv(store, &mut out),
+        _ => return Err(format!("{path}: the extension must be .asc, .trc or .csv")),
     };
     result
         .and_then(|()| out.flush())
@@ -125,6 +126,39 @@ pub fn write_trc(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
             len_to_dlc(frame.data.len())
         )?;
         write_hex_bytes(out, frame.data)?;
+        writeln!(out)?;
+    }
+    Ok(())
+}
+
+/// CSV in python-can's column order plus channel and CAN FD flag columns, with seconds and
+/// hex data, so that every frame of a log survives the trip.
+pub fn write_csv(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        out,
+        "timestamp,channel,arbitration_id,extended,remote,error,fd,brs,esi,dlc,data"
+    )?;
+    for index in 0..store.len() {
+        let frame = store.frame(index);
+        let bit = |flag: u8| u8::from(frame.flags & flag != 0);
+        write!(
+            out,
+            "{}.{:06},{},0x{:x},{},{},{},{},{},{},{},",
+            frame.ts_ns.div_euclid(1_000_000_000),
+            frame.ts_ns.rem_euclid(1_000_000_000) / 1000,
+            store.channels()[usize::from(frame.channel)],
+            frame.id & !EXT_FLAG,
+            u8::from(frame.id & EXT_FLAG != 0),
+            bit(flags::RTR),
+            bit(flags::ERROR),
+            bit(flags::FD),
+            bit(flags::BRS),
+            bit(flags::ESI),
+            frame.data.len()
+        )?;
+        for byte in frame.data {
+            write!(out, "{byte:02x}")?;
+        }
         writeln!(out)?;
     }
     Ok(())

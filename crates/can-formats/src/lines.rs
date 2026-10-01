@@ -99,6 +99,11 @@ fn line(line: &[u8], stats: &mut ParseStats, on_line: &mut impl FnMut(&[u8], &mu
         stats.reject(LINE_TOO_LONG);
         return;
     }
+    let line = if stats.lines == 1 {
+        line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line)
+    } else {
+        line
+    };
     let line = line.trim_ascii();
     if !line.is_empty() {
         on_line(line, stats);

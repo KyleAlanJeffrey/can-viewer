@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MF4 Viewer Online, Coming Soon | FreeCAN Studio</title>
+  <meta name="description" content="MF4 (ASAM MDF 4) support is coming to FreeCAN Studio, the free CAN log viewer that runs in your browser. Today it opens candump logs, decodes them with a DBC and plots signals. No account, nothing uploaded.">
+  <link rel="canonical" href="https://freecanstudio.com/mf4-viewer-online/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="FreeCAN Studio">
+  <meta property="og:title" content="MF4 Viewer Online, Coming Soon | FreeCAN Studio">
+  <meta property="og:description" content="MF4 (ASAM MDF 4) support is coming to FreeCAN Studio, the free CAN log viewer that runs in your browser. Today it opens candump logs, decodes them with a DBC and plots signals. No account, nothing uploaded.">
+  <meta property="og:url" content="https://freecanstudio.com/mf4-viewer-online/">
+  <meta property="og:image" content="https://freecanstudio.com/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="FreeCAN Studio: the CAN log viewer that lives in your browser.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/logo.svg" alt="" width="30" height="32"><span><strong>FreeCAN</strong> Studio</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="/#features">Features</a>
+      <a href="/#privacy">Privacy</a>
+      <a href="/#formats">Formats</a>
+      <a href="/pro/">Pro</a>
+    </nav>
+    <a class="button" href="https://app.freecanstudio.com/">Open App</a>
+  </div>
+</header>
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap">
+      <h1 class="display">MF4 viewer online</h1>
+      <p class="lead">MF4 (ASAM MDF 4) support is coming soon. Today FreeCAN Studio opens candump logs, decodes them with a DBC and plots signals, without uploading anything. MF4 bus logging files will open the same way.</p>
+      <p class="trust">Free. No account.</p>
+      <a class="button primary large" href="https://app.freecanstudio.com/?demo=1">Try the Demo</a>
+      <p class="button-note">Opens FreeCAN Studio with a 1,000,000-frame demo log and its DBC.</p>
+      <p class="privacy-line"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Files are processed on your computer and never uploaded.</p>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="how-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="how-title">How to open a log online</h2>
+      </div>
+      <ol class="steps">
+        <li class="card">
+          <h3>Open the app</h3>
+          <p>Go to <a href="https://app.freecanstudio.com/">app.freecanstudio.com</a> in a desktop browser. There is nothing to install and no account to create.</p>
+        </li>
+        <li class="card">
+          <h3>Open the log</h3>
+          <p>Click Open Log&hellip; and choose a candump log, or drop it anywhere on the window. It is read on your computer. MF4 files will open the same way once support lands.</p>
+        </li>
+        <li class="card">
+          <h3>Decode and explore</h3>
+          <p>Click Open DBC&hellip; to add the database for your bus. See every ID in Overview, read frames in Trace and plot signals in Plot.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="faq-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="faq-title">Questions</h2>
+      </div>
+      <div class="card faq">
+        <div class="faq-item">
+          <h3>Can it open MF4 files today?</h3>
+          <p>Not yet. MF4 support is being built; today FreeCAN Studio opens candump logs. It is aimed at MF4 bus logging files: recordings that store the raw CAN frames, as many CAN data loggers write them. FreeCAN Studio works from raw frames, so a file that holds only already-decoded measurement channels will have nothing for it to show.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Is my MF4 file uploaded?</h3>
+          <p>No. FreeCAN Studio runs in your browser: a Rust core compiled to WebAssembly reads the file on your computer. The app loads nothing from third parties, and its Content-Security-Policy makes your browser enforce that. <a href="/#privacy">How to check it</a>.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Do I need a DBC file?</h3>
+          <p>No. Without one you still see every ID with its count, period and bit activity. Add a DBC to decode the frames into signals you can plot.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Will I be able to plot signals from an MF4 log?</h3>
+          <p>Yes, once MF4 support lands and a DBC decodes them. Plot shows signals in stacked lanes on one time axis, with A and B cursors and a full-log minimap.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Which browsers does it run in?</h3>
+          <p>Current desktop versions of Chrome, Edge, Firefox and Safari. Phones and tablets are not supported.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Is it free?</h3>
+          <p>Yes. FreeCAN Studio is free and needs no account. <a href="/pro/">FreeCAN Studio Pro</a>, a paid desktop app, is planned separately.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="more-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="more-title">More guides</h2>
+      </div>
+      <ul class="guide-links">
+        <li class="card"><a href="/"><strong>FreeCAN Studio</strong><span>The CAN log viewer that lives in your browser.</span></a></li>
+        <li class="card"><a href="/blf-viewer-online/"><strong>BLF viewer online</strong><span>BLF support is coming soon.</span></a></li>
+        <li class="card"><a href="/dbc-viewer-online/"><strong>DBC viewer and editor</strong><span>View, edit and export DBC files.</span></a></li>
+        <li class="card"><a href="/canalyzer-alternative/"><strong>CANalyzer alternative</strong><span>A free tool for reading and decoding CAN logs.</span></a></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" aria-label="Demo">
+    <div class="wrap">
+      <div class="card closing">
+        <p>Have a candump log? Open it in FreeCAN Studio today.</p>
+        <a class="button" href="https://app.freecanstudio.com/">Open FreeCAN Studio</a>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="/"><img src="/logo.svg" alt="" width="30" height="32"><span><strong>FreeCAN</strong> Studio</span></a>
+        <p>Files are processed on your computer and never uploaded.</p>
+      </div>
+      <nav aria-labelledby="footer-app">
+        <h2 id="footer-app">FreeCAN Studio</h2>
+        <ul>
+          <li><a href="https://app.freecanstudio.com/">Open FreeCAN Studio</a></li>
+          <li><a href="https://app.freecanstudio.com/?demo=1">Try the Demo</a></li>
+          <li><a href="/#privacy">Privacy</a></li>
+          <li><a href="/pro/">FreeCAN Studio Pro</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="footer-guides">
+        <h2 id="footer-guides">Guides</h2>
+        <ul>
+          <li><a href="/blf-viewer-online/">BLF viewer online</a></li>
+          <li><a href="/mf4-viewer-online/">MF4 viewer online</a></li>
+          <li><a href="/dbc-viewer-online/">DBC viewer and editor</a></li>
+          <li><a href="/canalyzer-alternative/">CANalyzer alternative</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="footer-legal">
+      <p>&copy; 2026 FreeCAN Studio.</p>
+      <p>Other product names are trademarks of their owners.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

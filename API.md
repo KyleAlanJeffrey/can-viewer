@@ -39,6 +39,7 @@ Exported from `web/src/core/api.ts`:
 | `FLAG_BRS` | `1 << 1` | CAN FD bit rate switch |
 | `FLAG_RTR` | `1 << 3` | Remote frame |
 | `FLAG_ERROR` | `1 << 4` | Error frame |
+| `FLAG_REASSEMBLED` | `1 << 6` | Not from the log: a J1939 parameter group reassembled from its transport protocol packets (see "J1939 transport protocol" in COMPATIBILITY.md) |
 | `EXT_FLAG` | `0x8000_0000` | Bit 31: extended ID |
 | `dbcId(s)` | function | The ID of an `IdSummary` with `EXT_FLAG` set when extended, as used in DBC files |
 | `isErrorFrame(s)` | function | Whether an `IdSummary` is for CAN error frames (`FLAG_ERROR` in its flags) |
@@ -67,6 +68,7 @@ Describes the current log. Returned by [`openLog`](#openlog).
 - **`parseMs`** `number` - Wall-clock parse time in the worker, in milliseconds.
 - **`wasmBytes`** `number` - Size of the wasm memory after parsing, in bytes.
 - **`errorFrames`** `number` - Frames flagged as CAN error frames.
+- **`reassembledFrames`** `number` - J1939 transport protocol transfers that were reassembled into frames of their own (flag `FLAG_REASSEMBLED`). They are counted in `frames` too.
 
 ### The Progress object
 
@@ -91,7 +93,7 @@ One arbitration ID on one bus. Returned by [`idSummary`](#idsummary).
 - **`periodMs`** `number | null` - Mean interval between frames in milliseconds, or null with fewer than two frames.
 - **`jitterMs`** `number | null` - Population standard deviation of the interval between frames in milliseconds, or null with fewer than three frames.
 - **`minLen`** `number` - Shortest payload in bytes.
-- **`maxLen`** `number` - Longest payload in bytes.
+- **`maxLen`** `number` - Longest payload in bytes. Above 64 only for reassembled J1939 transfers, which go up to 1785.
 - **`flags`** `number` - The frame flags of every frame, ORed together.
 - **`name`** `string | null` - Message name from the loaded databases, by the lookup order of [`setDatabases`](#setdatabases), or null if none defines it.
 - **`dbc`** `number | null` - Index, in the last array passed to [`setDatabases`](#setdatabases), of the database that decodes this ID, or null.
@@ -105,6 +107,47 @@ A CAN database, as parsed from or exported to DBC.
 
 - **`name`** `string` - Display name, usually the file name. Set by the caller of `parseDbc`; the engine ignores it.
 - **`messages`** [`MessageDef[]`](#the-messagedef-object) - The messages, in file order.
+- **`nodes`** [`NodeDef[]`](#the-nodedef-object), optional - The nodes declared in `BU_`, in file order. Absent means none; `exportDbc` also lists any transmitter or receiver missing from here. `parseDbc` always fills it.
+- **`valueTables`** [`ValueTable[]`](#the-valuetable-object), optional - Named value tables (`VAL_TABLE_`), kept for export. Absent means none.
+- **`attributeDefinitions`** [`AttributeDefinition[]`](#the-attributedefinition-object), optional - Attribute definitions (`BA_DEF_`) with their defaults, in file order, except `VFrameFormat`, which `exportDbc` derives from each message's `j1939` and `fd`. Absent means none.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Network attribute values (`BA_ "name" value;`). Absent means none.
+
+The engine keeps nodes, value tables and attributes as data for export; nothing decodes them.
+
+### The NodeDef object
+
+**Attributes**
+
+- **`name`** `string` - Node name.
+- **`comment`** `string | null`, optional - Node comment (`CM_ BU_`), or null if none.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the node (`BA_ ... BU_`). Absent means none.
+
+### The ValueTable object
+
+**Attributes**
+
+- **`name`** `string` - Table name.
+- **`entries`** `[number, string][]` - (raw value, text) pairs. Signals hold their own copies in `valueTable`; the table is only kept for export.
+
+### The AttributeDefinition object
+
+A DBC `BA_DEF_` line and its `BA_DEF_DEF_` default.
+
+**Attributes**
+
+- **`name`** `string` - Attribute name.
+- **`object`** `'network' | 'node' | 'message' | 'signal' | 'envVar'` - What the attribute applies to. `network` is a definition with no object type. Environment variables are not kept, so an `envVar` definition survives without values.
+- **`kind`** `AttributeType` - The type and range, as one of `{ type: 'int', min, max }`, `{ type: 'hex', min, max }`, `{ type: 'float', min, max }`, `{ type: 'string' }` or `{ type: 'enum', choices: string[] }`.
+- **`default`** `number | string | null` - The default value, or null if the file gives none. An enum default is usually the label.
+
+### The Attribute object
+
+An attribute value on one object (a DBC `BA_` line).
+
+**Attributes**
+
+- **`name`** `string` - Attribute name, as in an `AttributeDefinition`.
+- **`value`** `number | string` - The value. Enum values are the index of the choice.
 
 ### The MessageDef object
 
@@ -117,6 +160,8 @@ A CAN database, as parsed from or exported to DBC.
 - **`comment`** `string | null` - Message comment, or null if none.
 - **`signals`** [`SignalDef[]`](#the-signaldef-object) - The message's signals.
 - **`j1939`** `boolean`, optional - A J1939 parameter group (`VFrameFormat` J1939PG). It decodes every frame with its PGN, and values that SAE J1939-71 reserves for error and not available (a byte-sized unsigned signal whose top byte is above 0xFA) decode as no value; see "J1939 decoding" in COMPATIBILITY.md. Absent means false. `parseDbc` always fills it.
+- **`fd`** `boolean`, optional - Sent as CAN FD (`VFrameFormat` StandardCAN_FD or ExtendedCAN_FD). Only kept for export, where `j1939` wins if both are set. Absent means false. `parseDbc` always fills it.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the message (`BA_ ... BO_`) other than `VFrameFormat`, which `j1939` and `fd` stand for. Absent means none.
 
 ### The SignalDef object
 
@@ -133,10 +178,19 @@ A CAN database, as parsed from or exported to DBC.
 - **`max`** `number` - Declared maximum physical value.
 - **`unit`** `string` - Unit text, possibly empty.
 - **`isMultiplexor`** `boolean` - True if this signal selects which multiplexed signals are present.
-- **`muxValue`** `number | null` - The signal is present only when the multiplexor has this raw value; null if it is not multiplexed.
+- **`muxValue`** `number | null` - The signal is present only when the message's multiplexor has this raw value; null if it is not multiplexed. Ignored when `muxSwitch` is set.
 - **`valueTable`** `[number, string][]` - Value descriptions as (raw value, text) pairs.
 - **`comment`** `string | null` - Signal comment, or null if none.
 - **`receivers`** `string[]`, optional - Receiving nodes. Absent means none. `parseDbc` always fills it.
+- **`muxSwitch`** [`MuxSwitch`](#the-muxswitch-object)` | null`, optional - Extended multiplexing (DBC `SG_MUL_VAL_`): the multiplexor that switches this signal and the raw values of it under which the signal is present. The multiplexor may itself be multiplexed, and then the signal is present only when the whole chain is. Absent or null means simple multiplexing by `muxValue`. `parseDbc` always fills it.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the signal (`BA_ ... SG_`), such as `GenSigStartValue`. Absent means none.
+
+### The MuxSwitch object
+
+**Attributes**
+
+- **`signal`** `string` - Name of the multiplexor signal, in the same message.
+- **`ranges`** `[number, number][]` - Inclusive (low, high) raw value ranges of that signal under which this one is present.
 
 ### The ScopedDatabase object
 
@@ -207,9 +261,11 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 - **`index(i)`** `number` - The frame's index in the whole log.
 - **`channel(i)`** `number` - Bus index.
 - **`flags(i)`** `number` - Frame flags.
-- **`len(i)`** `number` - Payload length in bytes.
+- **`len(i)`** `number` - Payload length in bytes, at most 64.
 - **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID. Always false for an ID's first frame.
 - **`data(i)`** `Uint8Array` - The payload, as a view into the batch.
+
+A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)` and `data(i)`; its full length is packed as a little-endian `u16` at byte offset 20 of the row, which `rows.ts` does not expose yet. `decodeRaw` and `decodeSignal` work on the whole payload.
 
 ## Logs
 

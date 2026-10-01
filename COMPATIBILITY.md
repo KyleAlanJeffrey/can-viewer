@@ -53,26 +53,31 @@ candump support (`crates/can-formats/src/candump.rs`):
 - CAN XL lines are rejected, and so is candump's default console output (without `-l` or `-L`).
 - A line that does not parse does not stop the load. It is counted in `LogInfo.rejected`, and the first one is reported with its line number.
 - Time lookups assume frames are in time order, as loggers write them. Slightly out-of-order timestamps only shift lookups by those frames.
+- J1939 multi-packet transfers are reassembled into extra frames as the log loads; see "J1939 transport protocol" below.
 
 ## DBC files
 
 Import (`crates/can-dbc-model`) reads:
 
-- Messages with standard and extended IDs, with transmitters.
+- Messages with standard and extended IDs, with transmitters. Message IDs are unique after import: when a file defines the same ID twice (two `BO_` lines), the first definition is kept and the later ones are dropped, because the app selects, edits and deletes messages by ID.
 - Signals: Intel and Motorola byte order; unsigned, signed, and IEEE float32 or float64 (`SIG_VALTYPE_`); factor, offset, range, unit and receivers.
-- Simple multiplexing: one multiplexor per message.
-- Comments on messages and signals (`CM_ BO_`, `CM_ SG_`), and value descriptions (`VAL_`).
+- Multiplexing, simple (one multiplexor per message) and extended (`SG_MUL_VAL_`): a signal names the multiplexor that switches it and the raw value ranges under which it is present, and a multiplexor can itself be multiplexed. A signal with an `SG_MUL_VAL_` entry is present only when its whole chain of multiplexors is; one without is switched by the message's multiplexor and its `m<value>`.
+- Comments on nodes, messages and signals (`CM_ BU_`, `CM_ BO_`, `CM_ SG_`), and value descriptions (`VAL_`).
+- The nodes declared in `BU_`, and named value tables (`VAL_TABLE_`).
+- Attributes: definitions (`BA_DEF_`) for the network, nodes, messages, signals and environment variables, of type INT, HEX, FLOAT, STRING or ENUM; defaults (`BA_DEF_DEF_`); and values (`BA_`) on the network, nodes, messages and signals. They are kept as plain data (numbers and strings) for export; the app does not show or decode them. Numbers are held as doubles, so integers beyond 2^53 lose precision.
 - J1939 messages: extended messages with `VFrameFormat` J1939PG, given per message or as the default. A file without `VFrameFormat` whose `ProtocolType` is "J1939" counts its extended messages as J1939. An 11-bit message is never J1939.
+- CAN FD messages: `VFrameFormat` StandardCAN_FD or ExtendedCAN_FD sets the message's `fd` flag, which export writes back. The label is looked up in the file's own `VFrameFormat` enum, so a file that lists the labels in another order still works.
 - Text in UTF-8 (a byte-order mark is skipped), falling back to Windows-1252.
 
 Not supported:
 
-- Extended multiplexing (`SG_MUL_VAL_`) is not decoded. Every multiplexed signal is assumed to be switched by the message's single multiplexor.
-- Anything outside the model above is dropped on import, so it is also missing from an export. That includes attributes (`BA_DEF_`, `BA_`) other than `VFrameFormat`, `VAL_TABLE_`, signal groups, environment variables, node and network comments, `BO_TX_BU_` and the `VECTOR__INDEPENDENT_SIG_MSG` pseudo-message.
+- Anything outside the model above is dropped on import, so it is also missing from an export. That includes signal groups, environment variables and their attribute values, relation attributes (`BA_DEF_REL_`, `BA_REL_`), network comments (`CM_ "..."`), `BO_TX_BU_` and the `VECTOR__INDEPENDENT_SIG_MSG` pseudo-message. A `BA_DEF_DEF_` without a matching `BA_DEF_`, and a `BA_` on a node, message or signal the file does not define, are dropped too.
 
 Known export limits (`crates/can-dbc-model/src/writer.rs`):
 
-- The only attribute written is `VFrameFormat`, and only when some message is J1939: J1939PG for those, ExtendedCAN for other extended messages, and the default StandardCAN for the rest. CAN FD formats are not kept.
+- `VFrameFormat` is not kept as an attribute but derived from each message: J1939PG for `j1939` messages, StandardCAN_FD or ExtendedCAN_FD for `fd` messages, ExtendedCAN for other extended messages, and the default StandardCAN for the rest. It is written only when some message is J1939 or CAN FD, always with Vector's 16-entry enum, so a file's own enum order and its default are not preserved, only what they meant for each message.
+- `BU_` lists the declared nodes in their order, then any transmitter or receiver missing from them. After export and re-import those count as declared nodes.
+- `SG_MUL_VAL_` lines are written for every signal with a `muxSwitch`. DBC wants an `m<value>` indicator on every multiplexed signal, so a signal that has a `muxSwitch` but no `muxValue` (only possible in a database built in the app) is written with the low end of its first range as its `muxValue`, and reads back with it.
 - `VERSION` is written as `""`.
 - A double quote in a comment round-trips with a backslash. The writer escapes a bare `"` as `\"`, and the reader keeps the backslash, so after export and re-import the text holds `\"`. Units and value descriptions behave the same way.
 - Float signals are written as signed (`-`), with `SIG_VALTYPE_` marking them as floats, as Vector tools do.
@@ -87,6 +92,16 @@ A J1939 message decodes every extended frame with its PGN, whatever the frame's 
 When several J1939 messages share the frame's PGN, the one written for the same source address (and, for PDU1, the same destination) wins, then one for the same source address, then the first.
 
 SAE J1939-71 reserves the top of a parameter's raw range for "error" and "not available". So for J1939 messages, an unsigned signal of 8, 16, 24, 32 or more bits (a multiple of 8) whose most significant byte is above 0xFA decodes as no value, which leaves a gap in a plot. The DBC's min and max are not used for this, so a narrow engineering range never hides real data. Smaller fields, such as 2-bit states, and signed or float signals decode as they are.
+
+## J1939 transport protocol
+
+Parameter groups longer than 8 bytes (DM1 with several trouble codes is the common one) travel as a TP.CM announcement (PGN 0xEC00: a BAM to every node, or an RTS to one) followed by TP.DT data packets (PGN 0xEB00) of 7 bytes each, up to 1785 bytes in 255 packets. The core reassembles them while the log is loaded (`crates/can-core/src/tp.rs`):
+
+- Each completed transfer becomes one frame of its own, stored right after its last packet with that packet's timestamp, flagged `FLAG_REASSEMBLED` (`1 << 6`). Its ID is the announced PGN in a 29-bit ID with the TP.CM frame's priority and source address and, for a PDU1 group, the destination address. So it appears in `idSummary` like any other ID, with the frame flag set, and decodes through the J1939 lookup above with the DBC's message for that PGN.
+- The TP.CM and TP.DT frames stay in the log unchanged. `LogInfo.reassembledFrames` counts the frames added, which `LogInfo.frames` includes.
+- Transfers are tracked per bus, source address and destination address, so interleaved senders do not mix. A missing or repeated packet, an abort, or a new announcement from the same sender to the same destination before the last packet drops the unfinished transfer quietly. Packets without an announcement (a log that starts mid-transfer) are ignored. There is no timeout.
+- Reassembled frames count towards nothing on the bus: `busLoad` skips them, since their packets are already counted.
+- The payload of a reassembled frame can be longer than 64 bytes. `decodeSignal` and `decodeRaw` work on the whole payload; a trace row carries the first 64 bytes (see `RowBatch` in API.md); Find Signal searches the first 64 bytes.
 
 ## CoreApi
 

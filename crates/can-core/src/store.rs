@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use rustc_hash::FxHashMap;
 
-use crate::{flags, FrameRef, FrameSink, EXT_FLAG, MAX_PAYLOAD};
+use crate::{flags, tp, FrameRef, FrameSink, EXT_FLAG};
 
 /// Identifies one arbitration ID on one channel: `(channel << 32) | id`.
 pub type IdKey = u64;
@@ -23,13 +23,13 @@ pub struct IdStats {
     pub frames: Vec<u32>,
     pub first_ts_ns: i64,
     pub last_ts_ns: i64,
-    pub min_len: u8,
-    pub max_len: u8,
+    /// Payload lengths in bytes. Above [`crate::MAX_PAYLOAD`] only for reassembled frames.
+    pub min_len: u16,
+    pub max_len: u16,
     /// How often each payload bit changed between consecutive frames of this ID, indexed by
     /// `byte * 8 + bit` where bit 0 is the least significant bit of the byte.
     pub bit_flips: Vec<u32>,
-    last_data: [u8; MAX_PAYLOAD],
-    last_len: u8,
+    last_data: Vec<u8>,
     gap_mean_ns: f64,
     /// Sum of squared deviations of the gaps from their mean (Welford's algorithm).
     gap_m2: f64,
@@ -44,11 +44,10 @@ impl IdStats {
             frames: Vec::new(),
             first_ts_ns: ts_ns,
             last_ts_ns: ts_ns,
-            min_len: u8::MAX,
+            min_len: u16::MAX,
             max_len: 0,
             bit_flips: Vec::new(),
-            last_data: [0; MAX_PAYLOAD],
-            last_len: 0,
+            last_data: Vec::new(),
             gap_mean_ns: 0.0,
             gap_m2: 0.0,
         }
@@ -80,11 +79,7 @@ impl IdStats {
             self.bit_flips.resize(len * 8, 0);
         }
         if !self.frames.is_empty() {
-            count_flips(
-                &mut self.bit_flips,
-                &self.last_data[..usize::from(self.last_len)],
-                frame.data,
-            );
+            count_flips(&mut self.bit_flips, &self.last_data, frame.data);
             let gap = (frame.ts_ns - self.last_ts_ns) as f64;
             let delta = gap - self.gap_mean_ns;
             self.gap_mean_ns += delta / self.frames.len() as f64;
@@ -93,11 +88,11 @@ impl IdStats {
         self.frames.push(index);
         self.flags |= frame.flags;
         self.last_ts_ns = frame.ts_ns;
-        let len8 = len as u8;
-        self.min_len = self.min_len.min(len8);
-        self.max_len = self.max_len.max(len8);
-        self.last_data[..len].copy_from_slice(frame.data);
-        self.last_len = len8;
+        let len16 = len as u16;
+        self.min_len = self.min_len.min(len16);
+        self.max_len = self.max_len.max(len16);
+        self.last_data.clear();
+        self.last_data.extend_from_slice(frame.data);
     }
 }
 
@@ -146,9 +141,10 @@ fn bucket_of(ts_ns: i64, t0_ns: i64, t1_ns: i64, buckets: usize) -> usize {
     ((fraction * buckets as f64) as usize).min(buckets - 1)
 }
 
-/// Columnar store of every frame in a log.
+/// Columnar store of every frame in a log, plus one synthesised frame per J1939 transport
+/// protocol transfer completed in it ([`tp`]).
 ///
-/// Classic frames cost 27 bytes each on wasm32 (plus 4 in the per-ID index), so ten
+/// Classic frames cost 26 bytes each on wasm32 (plus 4 in the per-ID index), so ten
 /// million frames fit comfortably under the 4 GB wasm32 address space.
 #[derive(Debug, Default)]
 pub struct FrameStore {
@@ -156,7 +152,7 @@ pub struct FrameStore {
     id: Vec<u32>,
     channel: Vec<u8>,
     flags: Vec<u8>,
-    len: Vec<u8>,
+    /// Where each frame's payload starts in `data`; it ends where the next one starts.
     data_start: Vec<usize>,
     data: Vec<u8>,
     channels: Vec<String>,
@@ -164,6 +160,8 @@ pub struct FrameStore {
     ids: Vec<IdStats>,
     last_lookup: Option<(IdKey, usize)>,
     error_frames: usize,
+    reassembler: tp::Reassembler,
+    reassembled_frames: usize,
 }
 
 impl FrameStore {
@@ -178,7 +176,6 @@ impl FrameStore {
         self.id.reserve(frames);
         self.channel.reserve(frames);
         self.flags.reserve(frames);
-        self.len.reserve(frames);
         self.data_start.reserve(frames);
         self.data.reserve(payload_bytes);
     }
@@ -197,14 +194,23 @@ impl FrameStore {
     /// If `index` is out of bounds.
     #[must_use]
     pub fn frame(&self, index: usize) -> FrameRef<'_> {
-        let start = self.data_start[index];
         FrameRef {
             ts_ns: self.ts_ns[index],
             channel: self.channel[index],
             id: self.id[index],
             flags: self.flags[index],
-            data: &self.data[start..start + usize::from(self.len[index])],
+            data: &self.data[self.data_range(index)],
         }
+    }
+
+    fn data_range(&self, index: usize) -> Range<usize> {
+        let start = self.data_start[index];
+        let end = self
+            .data_start
+            .get(index + 1)
+            .copied()
+            .unwrap_or(self.data.len());
+        start..end
     }
 
     #[must_use]
@@ -226,6 +232,13 @@ impl FrameStore {
     #[must_use]
     pub fn error_frames(&self) -> usize {
         self.error_frames
+    }
+
+    /// Frames carrying the [`flags::REASSEMBLED`] flag: J1939 transport protocol transfers
+    /// completed in the log, each stored as one frame after its last packet.
+    #[must_use]
+    pub fn reassembled_frames(&self) -> usize {
+        self.reassembled_frames
     }
 
     /// Every distinct ID, in order of first appearance.
@@ -326,7 +339,8 @@ impl FrameStore {
     /// Each frame counts entirely towards the bucket of its timestamp, so short buckets can
     /// briefly read high; hence the cap. Error frames are skipped: SocketCAN reports controller
     /// events (state changes, lost arbitration, ...) as error frames, and many of those never
-    /// put an error frame on the wire.
+    /// put an error frame on the wire. Reassembled frames are skipped too, since their packets
+    /// are already counted.
     #[must_use]
     pub fn bus_load(
         &self,
@@ -345,12 +359,12 @@ impl FrameStore {
         for i in start..end {
             let ts = self.ts_ns[i];
             if self.channel[i] != channel
-                || self.flags[i] & flags::ERROR != 0
+                || self.flags[i] & (flags::ERROR | flags::REASSEMBLED) != 0
                 || !(t0_ns..=t1_ns).contains(&ts)
             {
                 continue;
             }
-            let len = usize::from(self.len[i]);
+            let len = self.data_range(i).len();
             bits[bucket_of(ts, t0_ns, t1_ns, buckets)] +=
                 u64::from(frame_bits(self.id[i], self.flags[i], len));
         }
@@ -368,7 +382,6 @@ impl FrameStore {
             + self.id.capacity() * size_of::<u32>()
             + self.channel.capacity()
             + self.flags.capacity()
-            + self.len.capacity()
             + self.data_start.capacity() * size_of::<usize>()
             + self.data.capacity()
             + self
@@ -412,9 +425,25 @@ impl FrameSink for FrameStore {
     }
 
     fn push(&mut self, frame: FrameRef<'_>) {
+        self.store(&frame);
+        if let Some(transfer) = self.reassembler.push(&frame) {
+            self.reassembled_frames += 1;
+            self.store(&FrameRef {
+                ts_ns: transfer.ts_ns,
+                channel: frame.channel,
+                id: transfer.id,
+                flags: flags::REASSEMBLED,
+                data: &transfer.data,
+            });
+        }
+    }
+}
+
+impl FrameStore {
+    fn store(&mut self, frame: &FrameRef<'_>) {
         let index = self.ts_ns.len() as u32;
-        let stats = self.stats_index(id_key(frame.channel, frame.id), &frame);
-        self.ids[stats].observe(index, &frame);
+        let stats = self.stats_index(id_key(frame.channel, frame.id), frame);
+        self.ids[stats].observe(index, frame);
         if frame.flags & flags::ERROR != 0 {
             self.error_frames += 1;
         }
@@ -423,7 +452,6 @@ impl FrameSink for FrameStore {
         self.id.push(frame.id);
         self.channel.push(frame.channel);
         self.flags.push(frame.flags);
-        self.len.push(frame.data.len() as u8);
         self.data_start.push(self.data.len());
         self.data.extend_from_slice(frame.data);
     }
@@ -602,6 +630,131 @@ mod tests {
             stats.bit_flips
         );
         assert_eq!(s.bit_flips_between(stats, 11, 19), vec![0; 16]);
+    }
+
+    /// A BAM from `source` announcing `data` as PGN 0xFECA (DM1), then its packets, all at
+    /// priority 6 on channel `channel`, one frame per `ts_ns` tick from `ts_ns`.
+    fn push_bam(store: &mut FrameStore, channel: u8, ts_ns: i64, source: u8, data: &[u8]) {
+        let size = data.len() as u16;
+        let [lo, hi] = size.to_le_bytes();
+        let packets = size.div_ceil(7) as u8;
+        push_on(
+            store,
+            ts_ns,
+            channel,
+            0x18EC_FF00 | u32::from(source) | EXT_FLAG,
+            0,
+            &[0x20, lo, hi, packets, 0xFF, 0xCA, 0xFE, 0x00],
+        );
+        for (i, chunk) in data.chunks(7).enumerate() {
+            let mut packet = [0xFF; 8];
+            packet[0] = i as u8 + 1;
+            packet[1..1 + chunk.len()].copy_from_slice(chunk);
+            push_on(
+                store,
+                ts_ns + 1 + i as i64,
+                channel,
+                0x18EB_FF00 | u32::from(source) | EXT_FLAG,
+                0,
+                &packet,
+            );
+        }
+    }
+
+    #[test]
+    fn reassembles_transport_protocol_transfers_into_frames() {
+        let mut s = FrameStore::new();
+        let payload: Vec<u8> = (0..100).collect();
+        push_bam(&mut s, 0, 10, 0x00, &payload);
+        // 1 + 15 packets from the log, plus the reassembled frame.
+        assert_eq!(s.len(), 17);
+        assert_eq!(s.reassembled_frames(), 1);
+        let frame = s.frame(16);
+        assert_eq!(frame.id, 0x18FE_CA00 | EXT_FLAG);
+        assert_eq!(frame.flags, flags::REASSEMBLED);
+        assert_eq!(frame.ts_ns, 25, "the last packet's time");
+        assert_eq!(frame.data, &payload[..]);
+        assert_eq!(s.frame(15).data.len(), 8, "the packets stay as they were");
+
+        let stats = s.id_stats(id_key(0, 0x18FE_CA00 | EXT_FLAG)).unwrap();
+        assert_eq!(stats.frames, [16]);
+        assert_eq!((stats.min_len, stats.max_len), (100, 100));
+        assert_eq!(stats.flags, flags::REASSEMBLED);
+        assert_eq!(stats.bit_flips.len(), 800);
+
+        // A second transfer of the same group counts its bit flips against the first: byte 99
+        // goes from 0x63 to 0xFF, four bits.
+        let mut changed = payload.clone();
+        changed[99] = 0xFF;
+        push_bam(&mut s, 0, 100, 0x00, &changed);
+        let stats = s.id_stats(id_key(0, 0x18FE_CA00 | EXT_FLAG)).unwrap();
+        assert_eq!(stats.frames, [16, 33]);
+        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 4);
+        assert_eq!(stats.bit_flips[99 * 8 + 7], 1);
+    }
+
+    #[test]
+    fn abandoned_transfers_leave_no_frame_and_senders_do_not_mix() {
+        let mut s = FrameStore::new();
+        let bam = |s: &mut FrameStore, ts, source: u8, size: u8| {
+            push_on(
+                s,
+                ts,
+                0,
+                0x18EC_FF00 | u32::from(source) | EXT_FLAG,
+                0,
+                &[0x20, size, 0, size.div_ceil(7), 0xFF, 0xCA, 0xFE, 0x00],
+            );
+        };
+        let dt = |s: &mut FrameStore, ts, source: u8, packet: &[u8; 8]| {
+            push_on(
+                s,
+                ts,
+                0,
+                0x18EB_FF00 | u32::from(source) | EXT_FLAG,
+                0,
+                packet,
+            );
+        };
+        // Source 0 announces 14 bytes but sends one packet; source 1 completes in between.
+        bam(&mut s, 0, 0x00, 14);
+        bam(&mut s, 1, 0x01, 14);
+        dt(&mut s, 2, 0x00, &[1; 8]);
+        dt(&mut s, 3, 0x01, &[1, 9, 9, 9, 9, 9, 9, 9]);
+        dt(&mut s, 4, 0x01, &[2, 8, 8, 8, 8, 8, 8, 8]);
+        // Source 0 starts over before its second packet, then finishes the new transfer.
+        bam(&mut s, 5, 0x00, 7);
+        dt(&mut s, 6, 0x00, &[1, 5, 5, 5, 5, 5, 5, 5]);
+        assert_eq!(s.reassembled_frames(), 2);
+        let reassembled: Vec<(u32, i64, Vec<u8>)> = (0..s.len())
+            .map(|i| s.frame(i))
+            .filter(|f| f.flags & flags::REASSEMBLED != 0)
+            .map(|f| (f.id & !EXT_FLAG, f.ts_ns, f.data.to_vec()))
+            .collect();
+        assert_eq!(
+            reassembled,
+            [
+                (
+                    0x18FE_CA01,
+                    4,
+                    vec![9, 9, 9, 9, 9, 9, 9, 8, 8, 8, 8, 8, 8, 8]
+                ),
+                (0x18FE_CA00, 6, vec![5; 7]),
+            ]
+        );
+    }
+
+    #[test]
+    fn bus_load_skips_reassembled_frames() {
+        const MS: i64 = 1_000_000;
+        let mut s = FrameStore::new();
+        push_bam(&mut s, 0, 0, 0x00, &[0; 14]);
+        assert_eq!(s.reassembled_frames(), 1);
+        // Three extended frames of 8 bytes: 131 bits each.
+        assert_eq!(
+            s.bus_load(0, 0, 10 * MS, 1, 1_000_000.0),
+            vec![393.0 / 10_000.0]
+        );
     }
 
     #[test]

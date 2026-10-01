@@ -7,6 +7,8 @@ export const FLAG_FD = 1 << 0;
 export const FLAG_BRS = 1 << 1;
 export const FLAG_RTR = 1 << 3;
 export const FLAG_ERROR = 1 << 4;
+/** Not from the log: a J1939 parameter group reassembled from its transport protocol packets. */
+export const FLAG_REASSEMBLED = 1 << 6;
 export const EXT_FLAG = 0x8000_0000;
 
 export interface LogInfo {
@@ -23,6 +25,11 @@ export interface LogInfo {
   wasmBytes: number;
   /** Frames flagged as CAN error frames. */
   errorFrames: number;
+  /**
+   * J1939 transport protocol transfers reassembled into frames of their own (`FLAG_REASSEMBLED`),
+   * counted in `frames` as well.
+   */
+  reassembledFrames: number;
 }
 
 export interface Progress {
@@ -68,6 +75,59 @@ export interface SignalDef {
   comment: string | null;
   /** Receiving nodes. Absent means none. */
   receivers?: string[];
+  /**
+   * Extended multiplexing (DBC `SG_MUL_VAL_`): the multiplexor that switches this signal and the
+   * raw values of it under which the signal is present. Takes precedence over `muxValue`. Absent
+   * or null means simple multiplexing by the message's multiplexor.
+   */
+  muxSwitch?: MuxSwitch | null;
+  /** Attribute values (DBC `BA_ ... SG_`), kept for export. Absent means none. */
+  attributes?: Attribute[];
+}
+
+/** An attribute value on one object (a DBC `BA_` line). Enum values are the choice's index. */
+export interface Attribute {
+  name: string;
+  value: number | string;
+}
+
+/** What an attribute applies to; `network` is a `BA_DEF_` with no object type. */
+export type AttributeObject = 'network' | 'node' | 'message' | 'signal' | 'envVar';
+
+export type AttributeType =
+  | { type: 'int'; min: number; max: number }
+  | { type: 'hex'; min: number; max: number }
+  | { type: 'float'; min: number; max: number }
+  | { type: 'string' }
+  | { type: 'enum'; choices: string[] };
+
+/** A DBC `BA_DEF_` line with its `BA_DEF_DEF_` default. */
+export interface AttributeDefinition {
+  name: string;
+  object: AttributeObject;
+  kind: AttributeType;
+  default: number | string | null;
+}
+
+/** A node declared in `BU_`. */
+export interface NodeDef {
+  name: string;
+  comment?: string | null;
+  attributes?: Attribute[];
+}
+
+/** A named value table (DBC `VAL_TABLE_`), kept for export; signals hold their own copies. */
+export interface ValueTable {
+  name: string;
+  entries: [number, string][];
+}
+
+/** Which multiplexor switches a signal in, and when. The multiplexor may itself be multiplexed. */
+export interface MuxSwitch {
+  /** Name of the multiplexor signal, in the same message. */
+  signal: string;
+  /** Inclusive [low, high] raw value ranges of that signal under which this one is present. */
+  ranges: [number, number][];
 }
 
 export interface MessageDef {
@@ -84,11 +144,25 @@ export interface MessageDef {
    * raw values J1939 reserves for error and not available decode as no value. Absent means false.
    */
   j1939?: boolean;
+  /**
+   * Sent as CAN FD (DBC `VFrameFormat` StandardCAN_FD or ExtendedCAN_FD). Only kept for export;
+   * `j1939` wins when both are set. Absent means false.
+   */
+  fd?: boolean;
+  /** Attribute values (DBC `BA_ ... BO_`) other than `VFrameFormat`. Absent means none. */
+  attributes?: Attribute[];
 }
 
 export interface Database {
   name: string;
   messages: MessageDef[];
+  /** Nodes declared in `BU_`. Export also lists any transmitter or receiver missing from here. */
+  nodes?: NodeDef[];
+  valueTables?: ValueTable[];
+  /** `BA_DEF_` lines other than `VFrameFormat`, which export derives from `j1939` and `fd`. */
+  attributeDefinitions?: AttributeDefinition[];
+  /** Network attribute values (`BA_ "name" value;`). */
+  attributes?: Attribute[];
 }
 
 /** One loaded DBC and the bus it applies to. */

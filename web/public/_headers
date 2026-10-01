@@ -1,0 +1,11 @@
+# Cloudflare static asset headers (copied to dist by Vite). Everything is self-hosted, so the
+# policy allows only this origin; wasm needs 'wasm-unsafe-eval', React style props need inline styles.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+# Vite fingerprints everything under /assets, so it never changes under the same name.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

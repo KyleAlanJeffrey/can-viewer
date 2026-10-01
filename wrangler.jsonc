@@ -1,0 +1,13 @@
+// Cloudflare Workers deployment: a static-assets-only Worker serving the built web app.
+// Workers Builds runs `npx wrangler deploy`, which runs `build.command` first.
+{
+  "name": "freecan-studio",
+  "compatibility_date": "2026-09-30",
+  "build": {
+    "command": "sh scripts/build-cloudflare.sh"
+  },
+  "assets": {
+    "directory": "./web/dist",
+    "not_found_handling": "single-page-application"
+  }
+}

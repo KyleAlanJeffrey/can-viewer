@@ -8,8 +8,10 @@
 //!   one column per byte (`D1`, `byte0`, `data[3]`), plus optional length, extended, remote,
 //!   error, FD, BRS, ESI, direction and bus columns.
 //!
-//! The time unit is the one named in the time column's header (`Time (ms)`, `time_us`);
-//! otherwise a value with a decimal point is seconds and a whole number is microseconds.
+//! The time unit is the one named in the time column's header (`Time (ms)`, `time_us`).
+//! Otherwise the first row decides it for the whole file: a decimal point or exponent means
+//! seconds, a whole number of 17 or more digits nanoseconds (Unix time in seconds has 10),
+//! and any other whole number microseconds.
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
@@ -35,7 +37,7 @@ pub struct CsvParser {
 struct Layout {
     delimiter: u8,
     time: usize,
-    /// Power of ten of nanoseconds per time unit, or `None` to go by the value.
+    /// Power of ten of nanoseconds per time unit, or `None` until the first row decides it.
     time_unit: Option<u32>,
     id: usize,
     length: Option<usize>,
@@ -59,7 +61,7 @@ enum Data {
 }
 
 enum Role {
-    Time(Option<u32>),
+    Time,
     Id,
     Length,
     Data,
@@ -118,6 +120,7 @@ fn line_into<S: FrameSink>(
     let result = match layout {
         Some(layout) => row(layout, line, sink),
         None if *bad_header => Err(BAD_HEADER),
+        None if line.starts_with(b"#") => return,
         None => {
             *layout = Layout::from_header(line);
             *bad_header = layout.is_none();
@@ -164,9 +167,9 @@ impl Layout {
             // The first column of each role wins, as python-can's `error` must not be
             // overridden by a later `error_code`-style column.
             match role(&key) {
-                Role::Time(unit) if layout.time == NO_COLUMN => {
+                Role::Time if layout.time == NO_COLUMN => {
                     layout.time = index;
-                    layout.time_unit = unit;
+                    layout.time_unit = time_unit(cell(raw));
                 }
                 Role::Id if layout.id == NO_COLUMN => layout.id = index,
                 Role::Length if layout.length.is_none() => layout.length = Some(index),
@@ -235,8 +238,9 @@ fn role(key: &str) -> Role {
     if let Some(n) = byte_column(key) {
         return Role::Byte(n);
     }
-    if key == "t" || key == "ts" || key.starts_with("time") {
-        return Role::Time(time_unit(key));
+    let name = key.split(['(', '[']).next().unwrap_or(key);
+    if name == "t" || name == "ts" || name.starts_with("time") {
+        return Role::Time;
     }
     let base = key.split('(').next().unwrap_or(key);
     match base {
@@ -271,23 +275,25 @@ fn byte_column(key: &str) -> Option<u32> {
         .flatten()
 }
 
-/// The unit a time column's name ends with, as a power of ten of nanoseconds.
-fn time_unit(key: &str) -> Option<u32> {
-    let base = key.trim_end_matches(')');
-    if base.ends_with("ns") || base.ends_with("nano") || base.ends_with("nanoseconds") {
-        Some(0)
-    } else if base.ends_with("us") || base.ends_with("micro") || base.ends_with("microseconds") {
-        Some(3)
-    } else if base.ends_with("ms") || base.ends_with("milli") || base.ends_with("milliseconds") {
-        Some(6)
-    } else if base.ends_with("(s") || base.ends_with("sec") || base.ends_with("seconds") {
-        Some(9)
-    } else {
-        None
+/// The unit a time column's name ends with (`Time (ms)`, `time_us`, `t[s]`), as a power of
+/// ten of nanoseconds.
+fn time_unit(name: &[u8]) -> Option<u32> {
+    let last = name
+        .split(|&b| b.is_ascii() && !b.is_ascii_alphanumeric())
+        .rfind(|word| !word.is_empty())?
+        .to_ascii_lowercase();
+    match last.as_slice() {
+        b"ns" | b"nano" | b"nanos" | b"nanosecond" | b"nanoseconds" => Some(0),
+        // The micro sign and the Greek mu, in UTF-8.
+        b"us" | b"\xC2\xB5s" | b"\xCE\xBCs" | b"micro" | b"micros" | b"microsecond"
+        | b"microseconds" => Some(3),
+        b"ms" | b"milli" | b"millis" | b"millisecond" | b"milliseconds" => Some(6),
+        b"s" | b"sec" | b"secs" | b"second" | b"seconds" => Some(9),
+        _ => None,
     }
 }
 
-fn row<S: FrameSink>(layout: &Layout, line: &[u8], sink: &mut S) -> Result<(), &'static str> {
+fn row<S: FrameSink>(layout: &mut Layout, line: &[u8], sink: &mut S) -> Result<(), &'static str> {
     let mut cells: [&[u8]; MAX_COLUMNS] = [&[]; MAX_COLUMNS];
     let mut cells_read = 0;
     for raw in line.split(|&b| b == layout.delimiter) {
@@ -303,8 +309,16 @@ fn row<S: FrameSink>(layout: &Layout, line: &[u8], sink: &mut S) -> Result<(), &
         None => Ok(false),
     };
 
-    let ts_ns = parse_time(get(layout.time).ok_or("too few columns")?, layout.time_unit)
-        .ok_or("bad timestamp")?;
+    let time = get(layout.time).ok_or("too few columns")?;
+    let unit = match layout.time_unit {
+        Some(unit) => unit,
+        None => {
+            let unit = unit_by_shape(time).ok_or("bad timestamp")?;
+            layout.time_unit = Some(unit);
+            unit
+        }
+    };
+    let ts_ns = parse_time(time, unit).ok_or("bad timestamp")?;
     let extended = flag(layout.extended, "bad extended flag")?;
     let error = flag(layout.error, "bad error flag")?;
     let raw_id = parse_id(get(layout.id).ok_or("too few columns")?, error).ok_or("bad CAN ID")?;
@@ -387,20 +401,34 @@ fn row<S: FrameSink>(layout: &Layout, line: &[u8], sink: &mut S) -> Result<(), &
     Ok(())
 }
 
-/// A timestamp in the header's unit, or by its shape: a decimal point or exponent
-/// (python-can's `1e-05`) means seconds and a whole number microseconds.
-fn parse_time(value: &[u8], unit: Option<u32>) -> Option<i64> {
+/// The time unit a first row's value implies, if the value is a number: seconds for a
+/// decimal point or exponent (python-can's `1e-05`), nanoseconds for a whole number too large
+/// to be microseconds of Unix time, microseconds for any other.
+fn unit_by_shape(value: &[u8]) -> Option<u32> {
+    let digits = value.strip_prefix(b"-").unwrap_or(value);
+    if !digits.first()?.is_ascii_digit()
+        || !digits
+            .iter()
+            .all(|&b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
+    {
+        return None;
+    }
+    Some(if digits.iter().any(|&b| !b.is_ascii_digit()) {
+        9
+    } else if digits.len() >= 17 {
+        0
+    } else {
+        3
+    })
+}
+
+/// A timestamp in `unit` (a power of ten of nanoseconds).
+fn parse_time(value: &[u8], unit: u32) -> Option<i64> {
     let (negative, digits) = match value.strip_prefix(b"-") {
         Some(rest) => (true, rest),
         None => (false, value),
     };
-    let exponent = digits.iter().any(|&b| b == b'e' || b == b'E');
-    let unit = unit.unwrap_or(if exponent || digits.contains(&b'.') {
-        9
-    } else {
-        3
-    });
-    let magnitude = if exponent {
+    let magnitude = if digits.iter().any(|&b| b == b'e' || b == b'E') {
         let number: f64 = std::str::from_utf8(digits).ok()?.parse().ok()?;
         let ns = number * 10f64.powi(unit as i32);
         (ns.is_finite() && ns.abs() < 9e18).then(|| ns.round() as i64)?
@@ -645,6 +673,41 @@ mod tests {
         assert_eq!(sink.frames[0], (1500, 0, 1, 0, vec![]));
         let (sink, _) = parse("Time(s),id,data\n2,1,00\n");
         assert_eq!(sink.frames[0].0, 2_000_000_000);
+    }
+
+    #[test]
+    fn time_units_from_the_name_or_else_the_first_row() {
+        let first_time = |input: &str| {
+            let (sink, stats) = parse(input);
+            assert_eq!(stats.rejected, 0, "{input:?}: {:?}", stats.first_rejection);
+            sink.frames.iter().map(|frame| frame.0).collect::<Vec<_>>()
+        };
+        assert_eq!(first_time("time_s,id,data\n2,1,00\n"), [2_000_000_000]);
+        assert_eq!(first_time("timestamp_ms,id,data\n2,1,00\n"), [2_000_000]);
+        assert_eq!(first_time("t[us],id,data\n2,1,00\n"), [2_000]);
+        assert_eq!(first_time("Time (\u{b5}s),id,data\n2,1,00\n"), [2_000]);
+        assert_eq!(first_time("time_ns,id,data\n2,1,00\n"), [2]);
+        assert_eq!(first_time("Time Stamp,id,data\n2,1,00\n"), [2_000]);
+        assert_eq!(
+            first_time("time,id,data\n1.5,1,00\n2,1,00\n"),
+            [1_500_000_000, 2_000_000_000],
+            "the first row's decimal point makes every row seconds"
+        );
+        assert_eq!(
+            first_time("timestamp,id,data\n1759190400123456789,1,00\n1759190400123456790,1,00\n"),
+            [1_759_190_400_123_456_789, 1_759_190_400_123_456_790]
+        );
+        assert_eq!(
+            first_time("time,id,data\n1759190400123456,1,00\n"),
+            [1_759_190_400_123_456_000]
+        );
+    }
+
+    #[test]
+    fn comment_lines_before_the_header_are_skipped() {
+        let (sink, stats) = parse("# exported by a logger\n# bus: can0\ntime,id,data\n1,2,00\n");
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(sink.frames, [(1_000, 0, 2, 0, vec![0])]);
     }
 
     #[test]

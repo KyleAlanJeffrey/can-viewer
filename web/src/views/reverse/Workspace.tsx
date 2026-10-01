@@ -15,6 +15,7 @@ import {
   coveringRange,
   describeId,
   errorText,
+  formatSeconds,
   layoutString,
   rangeBits,
   rectBits,
@@ -48,6 +49,8 @@ interface Props {
   onPark: (t: number) => void;
   onUnpin: (pin: Pin) => void;
   onPinSignal: () => void;
+  /** A quiet stretch whose changing bits are dimmed, or null. */
+  baseline: TimeWindow | null;
 }
 
 interface Activity {
@@ -70,7 +73,7 @@ interface CandidateView {
  * Advanced: one message's bit activity and history with the New Signal inspector. Mounted per
  * ID and log; its bit selection and form are kept per ID.
  */
-export function Workspace({ ctx, summary, message, window: win, onWindowChange, references, cursor, onHover, onPark, onUnpin, onPinSignal }: Props) {
+export function Workspace({ ctx, summary, message, window: win, onWindowChange, references, cursor, onHover, onPark, onUnpin, onPinSignal, baseline }: Props) {
   const { core, logVersion, log } = ctx;
   const duration = log?.durationS ?? 0;
   const bytes = summary.maxLen;
@@ -104,6 +107,24 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
       stale = true;
     };
   }, [core, summary, settled, duration, logVersion]);
+
+  const [baselineCounts, setBaselineCounts] = useState<{ flips: Uint32Array; frames: number } | null>(null);
+  const [b0, b1] = baseline ?? [0, 0];
+  useEffect(() => {
+    setBaselineCounts(null);
+    if (b1 <= b0) return;
+    let stale = false;
+    Promise.all([core.bitFlipsBetween(summary.key, b0, b1), rowIndexAt(core, summary, b0, duration), rowIndexAt(core, summary, b1, duration)]).then(
+      ([flips, i0, i1]) => !stale && setBaselineCounts({ flips, frames: i1 - i0 }),
+      // Without window counts there is nothing to dim.
+      () => {},
+    );
+    return () => {
+      stale = true;
+    };
+  }, [core, summary, b0, b1, duration, logVersion]);
+  // With fewer than two frames nothing can change, so nothing would dim.
+  const baselineFlips = baselineCounts && baselineCounts.frames >= 2 ? baselineCounts.flips : null;
 
   const { range, error: rangeError } = useMemo(
     () => parseRange(form.startBit, form.size, form.byteOrder, bytes),
@@ -284,10 +305,15 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
                 seconds={activity.seconds}
                 selected={selected}
                 owners={owners}
+                dimmed={baselineFlips}
                 onSelect={(a, b) => setRange(coveringRange(rectBits(a, b), form.byteOrder))}
                 onClear={() => patch({ startBit: '', size: '', fromGrid: true, limits: null })}
               />
-              <HeatLegend selection={range ? `${range.size} ${range.size === 1 ? 'bit' : 'bits'} selected \u00b7 ${layout}` : null} />
+              <HeatLegend
+                baseline={baselineFlips ? `${formatSeconds(b0)} to ${formatSeconds(b1)}` : null}
+                baselineNote={baselineCounts && !baselineFlips ? 'Too few frames in the baseline to compare' : null}
+                selection={range ? `${range.size} ${range.size === 1 ? 'bit' : 'bits'} selected \u00b7 ${layout}` : null}
+              />
             </>
           ) : (
             <p className={activityError ? 're-quiet' : 'hint'}>{activityError ?? 'Counting bit changes\u2026'}</p>

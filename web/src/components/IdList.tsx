@@ -65,7 +65,9 @@ export function IdList({ ids, channels, totalFrames, hasDbc, filtered, selected,
         const open = !collapsed.has(g.name);
         // Size the ID column to the bus's 11-bit IDs when it has any; a wider ID (or one with
         // a tag) takes the room it needs on its own row rather than pushing every name aside.
-        const sized = g.ids.some((s) => !s.extended) ? g.ids.filter((s) => !s.extended) : g.ids;
+        // Error frames are labelled by kind, not ID, so they never set the width.
+        const dataIds = g.ids.filter((s) => !isErrorFrame(s));
+        const sized = dataIds.some((s) => !s.extended) ? dataIds.filter((s) => !s.extended) : dataIds;
         const idChars = Math.max(3, ...sized.map((s) => idLabel(s).length));
         return (
           <section key={g.name} style={{ '--id-col': `${idChars + 0.2}ch` } as React.CSSProperties}>

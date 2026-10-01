@@ -27,14 +27,15 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 
 A separate static site on `freecanstudio.com`, with the app moving to `app.freecanstudio.com`. Two Cloudflare deployments; the owner sets them up.
 
-- [ ] New `site/` folder for the landing page (a static site tool such as Astro), built and deployed on its own so copy edits don't rebuild Rust and wasm
-- [ ] Main button goes straight into the app; add a demo link (`app.freecanstudio.com/?demo=1`) and make the app open the demo log from it
-- [ ] Content pages for the searches people make: BLF viewer online, MF4 viewer online, DBC viewer, CANalyzer alternative; each with a big "Open a BLF file" style button into the app
-- [ ] No drop zone on the landing page (a dropped file can't be handed to another site); send people to the app to open files
-- [ ] Analytics, newsletter signup or video embeds stay on the landing page only; the app keeps its strict CSP in `web/public/_headers` and loads nothing from third parties
-- [ ] State the privacy claim on the landing page: the app domain loads nothing from anyone else
-- [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `freecan.studio` and `freecan.app` redirecting to it (owner)
-- [ ] Later: downloads, pricing and Pro license pages on the main site
+- [x] New `site/` folder for the landing page (plain static HTML, no build step), deployed on its own so copy edits don't rebuild Rust and wasm
+- [x] Main button goes straight into the app; add a demo link (`app.freecanstudio.com/?demo=1`) and make the app open the demo log from it
+- [x] Content pages for the searches people make: BLF viewer online, MF4 viewer online, DBC viewer, CANalyzer alternative; each with a big "Open a BLF file" style button into the app
+- [x] No drop zone on the landing page (a dropped file can't be handed to another site); send people to the app to open files
+- [x] Analytics, newsletter signup or video embeds stay on the landing page only; the app keeps its strict CSP in `web/public/_headers` and loads nothing from third parties
+- [x] State the privacy claim on the landing page: the app domain loads nothing from anyone else
+- [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `freecan.studio` and `freecan.app` redirecting to it, and build watch paths so a push to `site/` only rebuilds the site (owner)
+- [ ] Later: downloads, pricing and Pro license pages on the main site (a `pro/` page describing the planned app is in)
+- [ ] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land, and the CSP quoted on the home page if `web/public/_headers` changes
 
 ## Bugs
 
@@ -54,10 +55,11 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 
 ## Follow-ups
 
+- [ ] Interaction: make the mouse cursor show what a press or drag will do, in every view and kept in step with state changes: `pointer` on buttons, rows and toggles; `crosshair` where a click parks the time cursor (plots, byte cells, reference rows); `grab` / `grabbing` on draggable windows; `ew-resize` on window handles; `text` on fields; `default` (not `pointer`) on disabled controls and read-only cells. Audit the CSS and canvas hit areas (BitGrid cells, WindowStrip, uPlot overlays)
 - [x] Rows of reassembled J1939 transfers carry only their first 64 bytes; read the full length (row bytes 20 to 22) in `web/src/core/rows.ts` so Trace and Reverse Engineer can show longer payloads
 - [x] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
 - [x] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)
-- [ ] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
+- [x] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
 - [ ] Reverse Engineer Bit History: show bytes past 64 of a long reassembled J1939 transfer (fetch them with `frameData`, or a core call for a byte range of many rows)
 
 - [x] Database view: show and edit whether a message is J1939

@@ -41,13 +41,16 @@ pub(crate) fn parse_hex_u32(s: &[u8]) -> Option<u32> {
     })
 }
 
-/// One to eighteen decimal digits.
+/// Decimal digits, as long as their value fits an `i64`.
 pub(crate) fn parse_decimal(s: &[u8]) -> Option<i64> {
-    if s.is_empty() || s.len() > 18 {
+    if s.is_empty() {
         return None;
     }
     s.iter().try_fold(0i64, |acc, &c| {
-        c.is_ascii_digit().then(|| acc * 10 + i64::from(c - b'0'))
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        acc.checked_mul(10)?.checked_add(i64::from(c - b'0'))
     })
 }
 
@@ -80,6 +83,18 @@ pub(crate) fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let day_of_year = (153 * month_from_march + 2) / 5 + i64::from(day) - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
+}
+
+/// A UTC date and time of day as nanoseconds since the Unix epoch. Years outside 1970 to
+/// 2262 (where the nanoseconds run out) give `None`: no log is that old, and a year past it
+/// is a broken field.
+pub(crate) fn unix_ns(year: i64, month: u32, day: u32, ns_of_day: i64) -> Option<i64> {
+    if !(1970..=2262).contains(&year) {
+        return None;
+    }
+    days_from_civil(year, month, day)
+        .checked_mul(86_400_000_000_000)?
+        .checked_add(ns_of_day)
 }
 
 /// Payload length for a CAN FD DLC code.
@@ -141,6 +156,28 @@ mod tests {
         assert_eq!(days_from_civil(2000, 3, 1), 11_017);
         assert_eq!(days_from_civil(2025, 9, 30), 20_361);
         assert_eq!(days_from_civil(1899, 12, 30), -25_569);
+    }
+
+    #[test]
+    fn unix_ns_is_checked() {
+        assert_eq!(unix_ns(1970, 1, 1, 5), Some(5));
+        assert_eq!(unix_ns(2025, 9, 30, 0), Some(1_759_190_400_000_000_000));
+        assert_eq!(unix_ns(2262, 4, 11, 0), Some(9_223_286_400_000_000_000));
+        assert_eq!(unix_ns(2262, 12, 31, 0), None);
+        assert_eq!(unix_ns(1969, 12, 31, 0), None);
+        assert_eq!(unix_ns(i64::MAX, 1, 1, 0), None);
+    }
+
+    #[test]
+    fn decimals_up_to_the_largest_i64() {
+        assert_eq!(parse_decimal(b"0000000000000000000000042"), Some(42));
+        assert_eq!(
+            parse_decimal(b"1759190400123456789"),
+            Some(1_759_190_400_123_456_789)
+        );
+        assert_eq!(parse_decimal(b"9223372036854775807"), Some(i64::MAX));
+        assert_eq!(parse_decimal(b"9223372036854775808"), None);
+        assert_eq!(parse_decimal(b"12a"), None);
     }
 
     #[test]

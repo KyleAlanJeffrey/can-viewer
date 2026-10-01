@@ -9,7 +9,7 @@
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
-use crate::text::{days_from_civil, dlc_to_len, ChannelName};
+use crate::text::{dlc_to_len, unix_ns, ChannelName};
 use crate::{LogParser, ParseStats};
 
 const FILE_SIGNATURE: &[u8; 4] = b"LOGG";
@@ -185,12 +185,11 @@ fn system_time_ns(bytes: &[u8]) -> Option<i64> {
     let field = |i: usize| i64::from(u16_at(bytes, i * 2));
     let (year, month, day) = (field(0), field(1), field(3));
     let (hour, minute, second, milli) = (field(4), field(5), field(6), field(7));
-    if year == 0 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
-    let days = days_from_civil(year, month as u32, day as u32);
-    let seconds = days * 86_400 + hour * 3600 + minute * 60 + second;
-    Some(seconds * 1_000_000_000 + milli * 1_000_000)
+    let ns_of_day = ((hour * 60 + minute) * 60 + second) * 1_000_000_000 + milli * 1_000_000;
+    unix_ns(year, month as u32, day as u32, ns_of_day)
 }
 
 impl ObjectStream {
@@ -659,6 +658,18 @@ mod tests {
             sink.frames[2],
             (start_ns + 3_000_000, 0, 0x7FF, flags::RTR, vec![])
         );
+    }
+
+    #[test]
+    fn start_times_out_of_range_count_from_zero() {
+        for year in [0, 1601, 2263, 9999, u16::MAX] {
+            let file = concat(&[
+                file_header(Some([year, 1, 0, 1, 23, 59, 59, 999])),
+                object(CAN_MESSAGE, NS, 5, &can_message_body(1, 0, 1, 1, &[1])),
+            ]);
+            let (sink, _) = parse(&file);
+            assert_eq!(sink.frames[0].0, 5, "year {year}");
+        }
     }
 
     #[test]

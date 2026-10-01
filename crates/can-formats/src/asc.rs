@@ -19,8 +19,7 @@ use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::lines::LineSplitter;
 use crate::text::{
-    days_from_civil, dlc_to_len, fields, parse_decimal, parse_decimal_ns, parse_hex_u32,
-    ChannelName,
+    dlc_to_len, fields, parse_decimal, parse_decimal_ns, parse_hex_u32, unix_ns, ChannelName,
 };
 use crate::{LogParser, ParseStats};
 
@@ -157,9 +156,12 @@ fn parse_date<'a>(words: impl Iterator<Item = &'a [u8]>) -> Option<i64> {
     if !(1..=31).contains(&day) || hour > 23 || minute > 59 || second_ns >= 61_000_000_000 {
         return None;
     }
-    let days = days_from_civil(year, month, day as u32);
-    let seconds = days * 86_400 + hour * 3600 + minute * 60;
-    seconds.checked_mul(1_000_000_000)?.checked_add(second_ns)
+    unix_ns(
+        year,
+        month,
+        day as u32,
+        (hour * 3600 + minute * 60) * 1_000_000_000 + second_ns,
+    )
 }
 
 fn month_number(word: &[u8]) -> Option<u32> {
@@ -571,6 +573,8 @@ mod tests {
         assert_eq!(date("Mon Jan 32 12:00:00 2024"), None);
         assert_eq!(date("Mon Foo 1 12:00:00 2024"), None);
         assert_eq!(date("Mon Jan 1 12:00 2024"), None);
+        assert_eq!(date("Mon Jan 1 12:00:00 999999999999999999"), None);
+        assert_eq!(date("Mon Jan 1 12:00:00 1601"), None);
         assert_eq!(date(""), None);
     }
 

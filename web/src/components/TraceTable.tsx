@@ -82,7 +82,7 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
   const [batch, setBatch] = useState<RowBatch | null>(null);
   const [dragging, setDragging] = useState(false);
   const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
-  // The keyboard's row; it moves with the view when a scroll leaves it behind.
+  // The keyboard's row. The active row is this, clamped into view.
   const [cursor, setCursor] = useState(0);
   const [cursorShown, setCursorShown] = useState(false);
   // The pin and filter the selection already matches, so a pin made by clicking a row isn't searched for.
@@ -183,9 +183,10 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (activeRow === null) return;
+    if (activeRow === null || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
+      if (e.repeat) return;
       setCursorShown(true);
       if (rows && activeRow >= rows.start && activeRow < rows.start + rows.length) toggleRow(activeRow - rows.start);
       return;
@@ -227,9 +228,10 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
   }, [size, rows, visible, columns, channels, nameOf, selectedFrame, cursorShown, activeRow, fontsReady]);
 
   // What a screen reader reads: the fetched rows as DOM, laid over the canvas and transparent.
+  const shownRows = rows ? Math.min(rows.length, visible + 1) : 0;
   const accessibleRows = useMemo(() => {
     if (!rows) return null;
-    return Array.from({ length: Math.min(rows.length, visible + 1) }, (_, i) => {
+    return Array.from({ length: shownRows }, (_, i) => {
       const row = rows.start + i;
       return (
         <div
@@ -248,13 +250,18 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
         </div>
       );
     });
-  }, [rows, visible, columns, channels, nameOf, selectedFrame, rowIdPrefix]);
-  const activeInDom = rows !== null && activeRow !== null && activeRow >= rows.start && activeRow < rows.start + rows.length;
+  }, [rows, shownRows, columns, channels, nameOf, selectedFrame, rowIdPrefix]);
+  const inDom = (row: number | null): row is number => rows !== null && row !== null && row >= rows.start && row < rows.start + shownRows;
+  // While the rows the cursor moved to load, the old row stays active: dropping the attribute makes
+  // screen readers announce the grid again.
+  const [shownActive, setShownActive] = useState<number | null>(null);
+  const activeDescendant = inDom(activeRow) ? activeRow : inDom(shownActive) ? shownActive : null;
+  if (activeDescendant !== shownActive) setShownActive(activeDescendant);
 
   const rowAt = (e: React.MouseEvent<HTMLCanvasElement>): number | null => {
     const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
     const row = Math.floor((y - HEADER_H) / ROW_H);
-    return rows && y >= HEADER_H && row < rows.length ? row : null;
+    return rows && y >= HEADER_H && row < shownRows ? row : null;
   };
 
   const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -265,7 +272,9 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
     setCursorShown(false);
     const row = rowAt(e);
     if (!rows || row === null) return;
-    setCursor(rows.start + row);
+    const clicked = rows.start + row;
+    if (clicked >= top + visible) setTop(clampTop(clicked - visible + 1));
+    setCursor(clicked);
     toggleRow(row);
   };
 
@@ -307,13 +316,14 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
       ref={wrapRef}
       tabIndex={0}
       onKeyDown={onKeyDown}
-      onFocus={() => setCursorShown(true)}
+      // Focus from a click doesn't show the cursor.
+      onFocus={(e) => setCursorShown(e.currentTarget.matches(':focus-visible'))}
       onBlur={() => setCursorShown(false)}
       role="grid"
       aria-readonly
       // The header is row 1, so frame row n is row n + 2.
       aria-rowcount={rowCount + 1}
-      aria-activedescendant={activeInDom ? rowDomId(rowIdPrefix, activeRow) : undefined}
+      aria-activedescendant={activeDescendant === null ? undefined : rowDomId(rowIdPrefix, activeDescendant)}
       aria-label="Frame trace"
     >
       <canvas ref={canvasRef} onClick={onCanvasClick} onPointerMove={onCanvasPointerMove} aria-hidden />

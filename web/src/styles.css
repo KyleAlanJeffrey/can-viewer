@@ -702,6 +702,7 @@ button:disabled {
   inset: 0 10px 0 0;
   overflow: hidden;
   color: transparent;
+  forced-color-adjust: none;
   pointer-events: none;
   user-select: none;
   font: 13px/24px var(--font-mono);
@@ -715,6 +716,7 @@ button:disabled {
 
 .trace-header {
   height: 28px;
+  font: 500 12px/28px var(--font-ui);
 }
 
 .trace-row {
@@ -725,6 +727,13 @@ button:disabled {
 .trace-row > * {
   flex: none;
   overflow: hidden;
+  /* The canvas's cell padding (PAD in TraceTable.tsx). */
+  padding: 0 12px;
+}
+
+/* Data, always the last column: the canvas puts 12px between two-digit bytes. */
+.trace-row > :last-child {
+  word-spacing: calc(12px - 1ch);
 }
 
 .scrollbar {

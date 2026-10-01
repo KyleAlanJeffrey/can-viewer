@@ -165,6 +165,31 @@ describe('Trace', () => {
     await waitFor(() => expect(activeRowIndex()).toBe(rowIndex(0)));
   });
 
+  it('pages down a screen at a time', async () => {
+    const { user, rows } = renderTrace();
+    await rowsShown(rows);
+    trace().focus();
+    await user.keyboard('{PageDown}');
+    await waitFor(() => expect(rows).toHaveBeenLastCalledWith(ALL_IDS, VISIBLE, VISIBLE + 1));
+    await waitFor(() => expect(activeRowIndex()).toBe(rowIndex(VISIBLE)));
+  });
+
+  it('keeps the active row while the rows it moves to load', async () => {
+    const { user, rows } = renderTrace();
+    await rowsShown(rows);
+    trace().focus();
+    const activeIds: (string | null)[] = [];
+    const observer = new MutationObserver(() => activeIds.push(trace().getAttribute('aria-activedescendant')));
+    observer.observe(trace(), { attributeFilter: ['aria-activedescendant'] });
+    await user.keyboard('{End}');
+    await waitFor(() => expect(activeRowIndex()).toBe(rowIndex(FRAMES - 1)));
+    await user.keyboard('{Home}');
+    await waitFor(() => expect(activeRowIndex()).toBe(rowIndex(0)));
+    observer.disconnect();
+    expect(activeIds.length).toBeGreaterThan(0);
+    expect(activeIds).not.toContain(null);
+  });
+
   it('keeps row indexes absolute and the active row in view when the wheel scrolls', async () => {
     const { rows } = renderTrace();
     await rowsShown(rows);
@@ -184,6 +209,39 @@ describe('Trace', () => {
     expect(state.pinnedTime).toBeCloseTo(2 * STEP);
     await user.keyboard(' ');
     expect(selectedRowIndexes()).toEqual([]);
+  });
+
+  it('selects the active row with Space, and clears it with Enter', async () => {
+    const { user, rows, state } = renderTrace({ plots: [plot] });
+    await rowsShown(rows);
+    trace().focus();
+    await user.keyboard('{ArrowDown} ');
+    expect(selectedRowIndexes()).toEqual([rowIndex(1)]);
+    expect(state.pinnedTime).toBeCloseTo(STEP);
+    await user.keyboard('{Enter}');
+    expect(selectedRowIndexes()).toEqual([]);
+  });
+
+  it('toggles the row once while Enter is held', async () => {
+    const { user, rows } = renderTrace({ plots: [plot] });
+    await rowsShown(rows);
+    trace().focus();
+    await user.keyboard('{Enter>2/}');
+    expect(selectedRowIndexes()).toEqual([rowIndex(0)]);
+  });
+
+  it('scrolls the part-shown row into view when it is clicked', async () => {
+    const { user, rows, state } = renderTrace({ plots: [plot] });
+    await rowsShown(rows);
+    trace().focus();
+    clickRow(VISIBLE);
+    expect(selectedRowIndexes()).toEqual([rowIndex(VISIBLE)]);
+    await waitFor(() => expect(rows).toHaveBeenLastCalledWith(ALL_IDS, 1, VISIBLE + 1));
+    expect(activeRowIndex()).toBe(rowIndex(VISIBLE));
+    // Enter acts on the clicked row, not the one above it.
+    await user.keyboard('{Enter}');
+    expect(selectedRowIndexes()).toEqual([]);
+    expect(state.pinnedTime).toBeCloseTo(VISIBLE * STEP);
   });
 
   it('pins the time of a clicked row while something is plotted', async () => {

@@ -66,7 +66,9 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
 - [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
 - [x] Automated UI tests: Vitest setup, with Byte Values and Pin signal covered
-- [ ] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`
+- [x] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`
+- [ ] Trace: the canvas rows are not in the accessibility tree. The `grid` has `aria-rowcount` but no rows, so a screen reader hears none of the frames, and the UI tests can only check which rows are fetched and what a click pins
+- [ ] Plot: the cursor rail, drag to zoom and the minimap need layout jsdom lacks, so no UI test covers them; check them by hand
 - [x] Database view: show when a DBC was last exported
 - [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
 - [x] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)

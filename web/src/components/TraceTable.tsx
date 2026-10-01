@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { EXT_FLAG, FLAG_ERROR, FLAG_FD, FLAG_RTR, formatId, idLabel, type CoreApi } from '../core/api';
 import type { RowBatch } from '../core/rows';
 import { cssVar, useFontsReady } from '../format';
@@ -40,6 +40,20 @@ function fitColumns(width: number): Column[] {
   return cols;
 }
 
+interface PlacedColumn extends Column {
+  x: number;
+  w: number;
+}
+
+function layoutColumns(width: number): PlacedColumn[] {
+  let x = 0;
+  return fitColumns(width).map((col) => {
+    const placed = { ...col, x, w: col.width || width - x };
+    x += col.width;
+    return placed;
+  });
+}
+
 interface Props {
   core: CoreApi;
   /** ID key to show, or ALL_IDS. */
@@ -68,14 +82,21 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
   const [batch, setBatch] = useState<RowBatch | null>(null);
   const [dragging, setDragging] = useState(false);
   const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
+  // The keyboard's row; it moves with the view when a scroll leaves it behind.
+  const [cursor, setCursor] = useState(0);
+  const [cursorShown, setCursorShown] = useState(false);
   // The pin and filter the selection already matches, so a pin made by clicking a row isn't searched for.
   const matchedPin = useRef<{ time: number; key: number } | null>(null);
   const wheelRemainder = useRef(0);
   const fontsReady = useFontsReady();
+  const rowIdPrefix = useId();
 
   const visible = Math.max(0, Math.floor((size.height - HEADER_H) / ROW_H));
   const maxTop = Math.max(0, rowCount - visible);
   const clampTop = useCallback((t: number) => Math.max(0, Math.min(maxTop, Math.round(t))), [maxTop]);
+  const activeRow = visible > 0 && rowCount > 0 ? Math.max(top, Math.min(cursor, top + visible - 1, rowCount - 1)) : null;
+  const rows = batch?.key === filterKey ? batch : null;
+  const columns = useMemo(() => layoutColumns(size.width), [size.width]);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -87,7 +108,10 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
     return () => ro.disconnect();
   }, []);
 
-  useEffect(() => setTop(0), [filterKey, logVersion]);
+  useEffect(() => {
+    setTop(0);
+    setCursor(0);
+  }, [filterKey, logVersion]);
   useEffect(() => {
     setSelectedFrame(null);
     matchedPin.current = null;
@@ -103,6 +127,7 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
       if (stale) return;
       matchedPin.current = { time: pinnedTime, key: filterKey };
       setSelectedFrame(frame);
+      setCursor(row);
       setTop((t) => (row >= t && row < t + visible ? t : clampTop(row - Math.floor(visible / 2))));
     });
     return () => {
@@ -141,7 +166,30 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
     return () => el.removeEventListener('wheel', onWheel);
   }, [clampTop, visible]);
 
+  /** Selects (and pins) row `i` of the batch, or clears the selection if it is already selected. */
+  const toggleRow = (i: number) => {
+    if (!rows) return;
+    const frame = rows.index(i);
+    if (frame === selectedFrame) {
+      setSelectedFrame(null);
+      return;
+    }
+    setSelectedFrame(frame);
+    if (onPin) {
+      const time = rows.time(i);
+      matchedPin.current = { time, key: rows.key };
+      onPin(time);
+    }
+  };
+
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (activeRow === null) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setCursorShown(true);
+      if (rows && activeRow >= rows.start && activeRow < rows.start + rows.length) toggleRow(activeRow - rows.start);
+      return;
+    }
     const step: Record<string, number> = {
       ArrowDown: 1,
       ArrowUp: -1,
@@ -152,8 +200,15 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
     };
     if (!(e.key in step)) return;
     e.preventDefault();
+    setCursorShown(true);
     const d = step[e.key];
-    setTop((t) => clampTop(Number.isFinite(d) ? t + d : d > 0 ? maxTop : 0));
+    const row = Math.max(0, Math.min(rowCount - 1, activeRow + d));
+    const paged = e.key === 'PageDown' || e.key === 'PageUp';
+    setCursor(row);
+    setTop((t) => {
+      const start = paged ? clampTop(t + d) : t;
+      return clampTop(row < start ? row : row >= start + visible ? row - visible + 1 : start);
+    });
   };
 
   useLayoutEffect(() => {
@@ -167,14 +222,39 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const rows = batch?.key === filterKey ? batch : null;
-    draw(ctx, size.width, size.height, visible, rows, channels, nameOf, selectedFrame);
-  }, [size, batch, visible, filterKey, channels, nameOf, selectedFrame, fontsReady]);
+    const cursorAt = cursorShown && rows && activeRow !== null ? activeRow - rows.start : null;
+    draw(ctx, size.width, size.height, visible, columns, rows, channels, nameOf, selectedFrame, cursorAt);
+  }, [size, rows, visible, columns, channels, nameOf, selectedFrame, cursorShown, activeRow, fontsReady]);
+
+  // What a screen reader reads: the fetched rows as DOM, laid over the canvas and transparent.
+  const accessibleRows = useMemo(() => {
+    if (!rows) return null;
+    return Array.from({ length: Math.min(rows.length, visible + 1) }, (_, i) => {
+      const row = rows.start + i;
+      return (
+        <div
+          key={row}
+          id={rowDomId(rowIdPrefix, row)}
+          className="trace-row"
+          role="row"
+          aria-rowindex={row + 2}
+          aria-selected={rows.index(i) === selectedFrame}
+        >
+          {columns.map((col) => (
+            <div key={col.key} role="gridcell" style={{ width: col.w }}>
+              {cellText(rows, i, col.key, channels, nameOf)}
+            </div>
+          ))}
+        </div>
+      );
+    });
+  }, [rows, visible, columns, channels, nameOf, selectedFrame, rowIdPrefix]);
+  const activeInDom = rows !== null && activeRow !== null && activeRow >= rows.start && activeRow < rows.start + rows.length;
 
   const rowAt = (e: React.MouseEvent<HTMLCanvasElement>): number | null => {
     const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
     const row = Math.floor((y - HEADER_H) / ROW_H);
-    return batch && y >= HEADER_H && row < batch.length ? row : null;
+    return rows && y >= HEADER_H && row < rows.length ? row : null;
   };
 
   const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -182,19 +262,11 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
   };
 
   const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    setCursorShown(false);
     const row = rowAt(e);
-    if (!batch || row === null) return;
-    const frame = batch.index(row);
-    if (frame === selectedFrame) {
-      setSelectedFrame(null);
-      return;
-    }
-    setSelectedFrame(frame);
-    if (onPin) {
-      const time = batch.time(row);
-      matchedPin.current = { time, key: batch.key };
-      onPin(time);
-    }
+    if (!rows || row === null) return;
+    setCursor(rows.start + row);
+    toggleRow(row);
   };
 
   // Scrollbar geometry.
@@ -235,12 +307,27 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
       ref={wrapRef}
       tabIndex={0}
       onKeyDown={onKeyDown}
+      onFocus={() => setCursorShown(true)}
+      onBlur={() => setCursorShown(false)}
       role="grid"
-      aria-rowcount={rowCount}
+      aria-readonly
+      // The header is row 1, so frame row n is row n + 2.
+      aria-rowcount={rowCount + 1}
+      aria-activedescendant={activeInDom ? rowDomId(rowIdPrefix, activeRow) : undefined}
       aria-label="Frame trace"
     >
-      <canvas ref={canvasRef} onClick={onCanvasClick} onPointerMove={onCanvasPointerMove} />
-      <div className="scrollbar" onPointerDown={onTrackDown}>
+      <canvas ref={canvasRef} onClick={onCanvasClick} onPointerMove={onCanvasPointerMove} aria-hidden />
+      <div className="trace-rows">
+        <div className="trace-header" role="row" aria-rowindex={1}>
+          {columns.map((col) => (
+            <div key={col.key} role="columnheader" style={{ width: col.w }}>
+              {col.title}
+            </div>
+          ))}
+        </div>
+        {accessibleRows}
+      </div>
+      <div className="scrollbar" onPointerDown={onTrackDown} aria-hidden>
         {maxTop > 0 && (
           <div
             className={`thumb${dragging ? ' dragging' : ''}`}
@@ -258,10 +345,13 @@ function draw(
   width: number,
   height: number,
   visible: number,
+  cols: PlacedColumn[],
   batch: RowBatch | null,
   channels: string[],
   nameOf: (channel: number, id: number) => string | undefined,
   selectedFrame: number | null,
+  /** Row of the batch with the keyboard cursor, if it's shown. */
+  cursorAt: number | null,
 ) {
   const c = {
     bg: cssVar('--paper'),
@@ -273,6 +363,7 @@ function draw(
     changed: cssVar('--changed-byte'),
     changedSelected: cssVar('--changed-byte-selected'),
     warning: cssVar('--rust'),
+    cursor: cssVar('--ochre-control'),
   };
   const mono = cssVar('--font-mono');
   const ui = cssVar('--font-ui');
@@ -286,15 +377,9 @@ function draw(
   ctx.fillRect(0, HEADER_H - 1, width, 1);
   ctx.font = `500 12px ${ui}`;
   ctx.fillStyle = c.secondary;
-  const cols = fitColumns(width);
-  const at = new Map<ColumnKey, { x: number; w: number }>();
-  let x = 0;
-  for (const col of cols) {
-    const w = col.width || width - x;
-    at.set(col.key, { x, w });
-    ctx.textAlign = col.align === 'right' ? 'right' : 'left';
-    ctx.fillText(col.title, col.align === 'right' ? x + w - PAD : x + PAD, HEADER_H / 2);
-    x += col.width;
+  for (const { title, align, x, w } of cols) {
+    ctx.textAlign = align === 'right' ? 'right' : 'left';
+    ctx.fillText(title, align === 'right' ? x + w - PAD : x + PAD, HEADER_H / 2);
   }
   if (!batch) return;
 
@@ -310,30 +395,23 @@ function draw(
       ctx.fillStyle = isSelected ? c.selected : c.alt;
       ctx.fillRect(0, y, width, ROW_H);
     }
-    const id = batch.id(i);
     const flags = batch.flags(i);
-    const extended = (id & EXT_FLAG) !== 0;
-    const len = batch.fullLength(i);
-    for (const [key, { x: cx, w }] of at) {
+    const text = (key: ColumnKey) => cellText(batch, i, key, channels, nameOf);
+    for (const { key, x: cx, w } of cols) {
       const left = cx + PAD;
       switch (key) {
         case 'time':
-          cell(ctx, batch.time(i).toFixed(6), left, mid, c.text, 'left');
+        case 'len':
+          cell(ctx, text(key), left, mid, c.text, 'left');
           break;
         case 'bus':
-          cell(ctx, channels[batch.channel(i)] ?? '?', left, mid, c.secondary, 'left');
+          cell(ctx, text(key), left, mid, c.secondary, 'left');
           break;
         case 'id':
-          if (flags & FLAG_ERROR) cell(ctx, 'ERR', left, mid, c.warning, 'left');
-          else cell(ctx, formatId(id & 0x1fff_ffff, extended), left, mid, c.text, 'left');
+          cell(ctx, text(key), left, mid, flags & FLAG_ERROR ? c.warning : c.text, 'left');
           break;
-        case 'name': {
-          const name = flags & FLAG_ERROR ? idLabel({ id: (id & ~EXT_FLAG) >>> 0, extended, flags }) : (nameOf(batch.channel(i), id >>> 0) ?? '');
-          cell(ctx, clip(ctx, name, w - PAD * 2), left, mid, c.text, 'left');
-          break;
-        }
-        case 'len':
-          cell(ctx, flags & FLAG_RTR ? 'RTR' : String(len), left, mid, c.text, 'left');
+        case 'name':
+          cell(ctx, clip(ctx, text(key), w - PAD * 2), left, mid, c.text, 'left');
           break;
         case 'data': {
           // The length label is drawn whole even when no byte fits, so the column clips it.
@@ -348,8 +426,7 @@ function draw(
             dx += pitch;
           }
           const data = batch.data(i);
-          // A reassembled J1939 transfer longer than the row's 64 bytes says how long it is.
-          const cut = len > data.length ? `\u2026 (${len} bytes)` : null;
+          const cut = lengthNote(batch, i);
           const room = cx + w - dx - (cut ? ctx.measureText(cut).width : 0);
           const fits = Math.max(0, Math.floor(room / pitch));
           const shown = Math.min(data.length, fits);
@@ -369,6 +446,53 @@ function draw(
           break;
         }
       }
+    }
+  }
+  if (cursorAt !== null && cursorAt >= 0 && cursorAt < n) {
+    ctx.strokeStyle = c.cursor;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, HEADER_H + cursorAt * ROW_H + 1, width - 2, ROW_H - 2);
+  }
+}
+
+function rowDomId(prefix: string, row: number): string {
+  return `${prefix}-row-${row}`;
+}
+
+/** A reassembled J1939 transfer longer than the row's 64 bytes says how long it is. */
+function lengthNote(batch: RowBatch, i: number): string | null {
+  const len = batch.fullLength(i);
+  return len > batch.len(i) ? `\u2026 (${len} bytes)` : null;
+}
+
+/** A cell's text. The canvas clips long names and drops the data bytes that don't fit; this doesn't. */
+function cellText(
+  batch: RowBatch,
+  i: number,
+  key: ColumnKey,
+  channels: string[],
+  nameOf: (channel: number, id: number) => string | undefined,
+): string {
+  const id = batch.id(i);
+  const flags = batch.flags(i);
+  const extended = (id & EXT_FLAG) !== 0;
+  switch (key) {
+    case 'time':
+      return batch.time(i).toFixed(6);
+    case 'bus':
+      return channels[batch.channel(i)] ?? '?';
+    case 'id':
+      return flags & FLAG_ERROR ? 'ERR' : formatId(id & 0x1fff_ffff, extended);
+    case 'name':
+      return flags & FLAG_ERROR ? idLabel({ id: (id & ~EXT_FLAG) >>> 0, extended, flags }) : (nameOf(batch.channel(i), id >>> 0) ?? '');
+    case 'len':
+      return flags & FLAG_RTR ? 'RTR' : String(batch.fullLength(i));
+    case 'data': {
+      const parts = flags & FLAG_FD ? ['FD'] : [];
+      for (const b of batch.data(i)) parts.push(HEX[b]);
+      const note = lengthNote(batch, i);
+      if (note) parts.push(note);
+      return parts.join(' ');
     }
   }
 }

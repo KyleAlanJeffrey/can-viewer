@@ -696,6 +696,37 @@ button:disabled {
   inset: 0 10px 0 0;
 }
 
+/* The rows again as DOM for assistive technology, over the canvas and see-through. */
+.trace-rows {
+  position: absolute;
+  inset: 0 10px 0 0;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+  font: 13px/24px var(--font-mono);
+  white-space: nowrap;
+}
+
+.trace-header,
+.trace-row {
+  display: flex;
+}
+
+.trace-header {
+  height: 28px;
+}
+
+.trace-row {
+  height: 24px;
+}
+
+.trace-header > *,
+.trace-row > * {
+  flex: none;
+  overflow: hidden;
+}
+
 .scrollbar {
   position: absolute;
   top: 28px;

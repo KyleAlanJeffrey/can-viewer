@@ -85,6 +85,20 @@ impl Mf4Parser {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Reserve the file buffer for a file of `total_bytes`, so that it does not double as
+    /// chunks arrive. A file over [`MAX_FILE`] reserves nothing, and a failed reservation
+    /// leaves the buffer to grow as usual.
+    pub fn expect_bytes(&mut self, total_bytes: u64) {
+        let Ok(total_bytes) = usize::try_from(total_bytes) else {
+            return;
+        };
+        if total_bytes > MAX_FILE {
+            return;
+        }
+        let missing = total_bytes.saturating_sub(self.file.len());
+        let _ = self.file.try_reserve_exact(missing);
+    }
 }
 
 impl LogParser for Mf4Parser {
@@ -2159,6 +2173,37 @@ mod tests {
                 "unfinalized MF4 file; finalize it with the logger's tool"
             ))
         );
+    }
+
+    #[test]
+    fn the_file_buffer_is_sized_from_the_expected_bytes() {
+        let (b, _) = file_of_one_group(3);
+        let len = b.bytes.len();
+        for hint in [len, len / 2, 0] {
+            let mut parser = Mf4Parser::new();
+            parser.expect_bytes(hint as u64);
+            assert_eq!(parser.file.capacity(), hint);
+            let mut sink = VecSink::default();
+            for chunk in b.bytes.chunks(7) {
+                parser.push(chunk, &mut sink);
+            }
+            if hint == len {
+                assert_eq!(parser.file.capacity(), len, "an exact hint never regrows");
+            }
+            parser.finish(&mut sink);
+            assert_eq!(parser.stats().rejected, 0, "hint {hint}");
+            assert_eq!(times(&sink), [0, 1, 2], "hint {hint}");
+        }
+
+        let mut parser = Mf4Parser::new();
+        parser.expect_bytes(MAX_FILE as u64 + 1);
+        assert_eq!(
+            parser.file.capacity(),
+            0,
+            "a file too large to read reserves nothing"
+        );
+        parser.expect_bytes(u64::MAX);
+        assert_eq!(parser.file.capacity(), 0);
     }
 
     #[test]

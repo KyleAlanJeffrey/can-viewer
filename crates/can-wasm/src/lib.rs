@@ -89,6 +89,7 @@ impl LogInput {
             self.reserve(format, store);
         }
         let mut parser = AnyParser::new(format);
+        parser.expect_bytes(self.total_bytes as u64);
         parser.push(&self.head, store);
         self.head = Vec::new();
         self.parser = Some(parser);

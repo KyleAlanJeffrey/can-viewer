@@ -104,7 +104,7 @@ Parameter groups longer than 8 bytes (DM1 with several trouble codes is the comm
 - A BAM packet out of order (missing or repeated) drops the transfer, since nothing can repair it.
 - For an RTS, the receiver's CTS messages are followed: a CTS names the next packet and how many to send. A CTS for a packet already received rewinds the transfer, and the packets sent again replace the earlier ones. A CTS for no packets holds the connection, and the next frame may then come up to 1050 ms (T4) later. A CTS for a packet not sent yet, or for packet 0, drops the transfer. A packet out of order is ignored rather than dropping the transfer, since a CTS may ask for it again; the timeout still applies. The packet count of a CTS is not enforced, and a transfer whose CTS messages are not in the log reassembles from its packets alone.
 - Reassembled frames count towards nothing on the bus: `busLoad` skips them, since their packets are already counted.
-- The payload of a reassembled frame can be longer than 64 bytes. `decodeSignal` and `decodeRaw` work on the whole payload; a trace row carries the first 64 bytes (see `RowBatch` in API.md); Find Signal searches the first 64 bytes.
+- The payload of a reassembled frame can be longer than 64 bytes. `decodeSignal` and `decodeRaw` work on the whole payload; a trace row carries the first 64 bytes and the full length, and `frameData` returns the whole payload (see `RowBatch` and `frameData` in API.md). The Trace view shows the first bytes and the full length; the Reverse Engineer view's cursor readouts use the whole payload. Find Signal searches the first 64 bytes.
 
 ## CoreApi
 

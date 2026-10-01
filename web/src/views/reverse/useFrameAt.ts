@@ -65,5 +65,7 @@ async function frameAt(core: CoreApi, key: number, t: number): Promise<FrameAt |
   if (batch.length === 0) return null;
   let row = 0;
   for (let i = 0; i < batch.length; i++) if (batch.time(i) <= t) row = i;
-  return { key, t: batch.time(row), data: batch.data(row).slice() };
+  // A row carries 64 bytes; a longer reassembled J1939 transfer needs its own fetch.
+  const data = batch.fullLength(row) > batch.len(row) ? await core.frameData(key, batch.start + row) : batch.data(row).slice();
+  return { key, t: batch.time(row), data };
 }

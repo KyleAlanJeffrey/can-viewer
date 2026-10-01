@@ -11,7 +11,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashSet};
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
@@ -239,8 +239,7 @@ fn check_identification(file: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Delivers the frames of every CAN frame channel group in time order, as the times of a
-/// channel group's records never decrease.
+/// Delivers the frames of every data group, merged by time.
 fn merge<S: FrameSink>(
     mut sources: Vec<Source<'_>>,
     start_ns: i64,
@@ -248,39 +247,27 @@ fn merge<S: FrameSink>(
     stats: &mut ParseStats,
     sink: &mut S,
 ) {
-    // Ties go to the earlier data group and channel group, so the order is the same
-    // whatever the heap does.
+    // Ties go to the earlier data group, as a stable sort would order them.
     let mut next = BinaryHeap::new();
-    for (source_index, source) in sources.iter_mut().enumerate() {
-        for group_index in 0..source.groups.len() {
-            if source.is_frame_group(group_index) {
-                if let Some(ts_ns) = source.next_time(group_index, start_ns, walk, stats) {
-                    next.push(Reverse((ts_ns, source_index, group_index)));
-                }
-            }
+    for (index, source) in sources.iter_mut().enumerate() {
+        if let Some(ts_ns) = source.next_time(start_ns, walk, stats) {
+            next.push(Reverse((ts_ns, index)));
         }
     }
-    let mut data = [0u8; MAX_PAYLOAD];
-    while let Some(Reverse((_, source_index, group_index))) = next.pop() {
-        let source = &mut sources[source_index];
-        let queue = &mut source.queues[group_index];
-        let Some(frame) = queue.frames.pop_front() else {
-            continue;
-        };
-        let len = usize::from(frame.len);
-        for (byte, queued) in data.iter_mut().zip(queue.data.drain(..len)) {
-            *byte = queued;
+    while let Some(Reverse((_, index))) = next.pop() {
+        let source = &mut sources[index];
+        if let Some(frame) = source.take() {
+            let channel = sink.channel_index(ChannelName::new(u64::from(frame.bus)).as_bytes());
+            sink.push(FrameRef {
+                ts_ns: frame.ts_ns,
+                channel,
+                id: frame.id,
+                flags: frame.flags,
+                data: &frame.data[..usize::from(frame.len)],
+            });
         }
-        let channel = sink.channel_index(ChannelName::new(u64::from(frame.bus)).as_bytes());
-        sink.push(FrameRef {
-            ts_ns: frame.ts_ns,
-            channel,
-            id: frame.id,
-            flags: frame.flags,
-            data: &data[..len],
-        });
-        if let Some(ts_ns) = source.next_time(group_index, start_ns, walk, stats) {
-            next.push(Reverse((ts_ns, source_index, group_index)));
+        if let Some(ts_ns) = source.next_time(start_ns, walk, stats) {
+            next.push(Reverse((ts_ns, index)));
         }
     }
 }
@@ -370,25 +357,29 @@ struct Source<'a> {
     variable: Vec<(u64, Vec<u8>)>,
     /// Records read so far in each channel group, for virtual time channels.
     indexes: Vec<usize>,
-    /// Frames read ahead of their turn, by channel group. In a data group whose groups'
-    /// records interleave in time order these hold a frame or two.
-    queues: Vec<Queue>,
+    /// Frames read and not yet delivered, earliest first, ties in record order: their time,
+    /// record number and slot in `held`.
+    window: BinaryHeap<Reverse<(i64, u64, usize)>>,
+    /// How many frames to read ahead before delivering the earliest. MDF has the times of a
+    /// channel group never decrease, so with one CAN frame channel group that is one frame;
+    /// with several, their records interleave, as loggers write them when they arrive.
+    window_len: usize,
+    held: Vec<Frame>,
+    free: Vec<usize>,
+    records_read: u64,
     ended: bool,
 }
 
-#[derive(Default)]
-struct Queue {
-    frames: VecDeque<Queued>,
-    /// The payloads of `frames`, one after the other.
-    data: VecDeque<u8>,
-}
+/// Frames read ahead of their turn, in a data group with several CAN frame channel groups.
+const REORDER_WINDOW: usize = 1 << 16;
 
-struct Queued {
+struct Frame {
     ts_ns: i64,
     bus: u32,
     id: u32,
     flags: u8,
     len: u8,
+    data: [u8; MAX_PAYLOAD],
 }
 
 fn read_data_group<'a>(
@@ -424,6 +415,7 @@ fn read_data_group<'a>(
     {
         return Err("CAN frame records too long");
     }
+    let frame_groups = groups.iter().filter(|g| g.bus.is_some() && !g.vlsd).count();
     let blocks = data_blocks(file, group.link(2))?;
     let variable = if record_id_size == 0 {
         Vec::new()
@@ -432,7 +424,11 @@ fn read_data_group<'a>(
     };
     Ok(Some(Source {
         indexes: vec![0; groups.len()],
-        queues: groups.iter().map(|_| Queue::default()).collect(),
+        window: BinaryHeap::new(),
+        window_len: if frame_groups > 1 { REORDER_WINDOW } else { 1 },
+        held: Vec::new(),
+        free: Vec::new(),
+        records_read: 0,
         groups,
         record_id_size,
         records: BlockReader::new(file, blocks),
@@ -492,31 +488,23 @@ fn variable_data(
 }
 
 impl Source<'_> {
-    fn is_frame_group(&self, index: usize) -> bool {
-        self.groups[index].bus.is_some() && !self.groups[index].vlsd
-    }
-
-    /// The time of channel group `index`'s next frame, reading records (and queueing the
-    /// frames of other groups) until it has one, or `None` once the data group ends.
-    fn next_time(
-        &mut self,
-        index: usize,
-        start_ns: i64,
-        walk: &mut Walk,
-        stats: &mut ParseStats,
-    ) -> Option<i64> {
-        loop {
-            if let Some(frame) = self.queues[index].frames.front() {
-                return Some(frame.ts_ns);
-            }
-            if self.ended {
-                return None;
-            }
+    /// The time of the next frame to deliver, reading ahead as far as the window asks, or
+    /// `None` once the data group has no more.
+    fn next_time(&mut self, start_ns: i64, walk: &mut Walk, stats: &mut ParseStats) -> Option<i64> {
+        while !self.ended && self.window.len() < self.window_len {
             self.read_frame(start_ns, walk, stats);
         }
+        self.window.peek().map(|Reverse((ts_ns, _, _))| *ts_ns)
     }
 
-    /// Reads up to the next frame record and queues its frame, or marks the end.
+    /// The earliest frame read ahead. Its slot is reused by the next read.
+    fn take(&mut self) -> Option<&Frame> {
+        let Reverse((_, _, slot)) = self.window.pop()?;
+        self.free.push(slot);
+        Some(&self.held[slot])
+    }
+
+    /// Reads up to the next frame record and holds its frame, or marks the end.
     fn read_frame(&mut self, start_ns: i64, walk: &mut Walk, stats: &mut ParseStats) {
         let groups = &self.groups;
         let is_frame = |index: usize| groups[index].bus.is_some() && !groups[index].vlsd;
@@ -549,15 +537,27 @@ impl Source<'_> {
         match frame_of(bus, record, record_index, &self.variable, start_ns) {
             Ok((ts_ns, bus, id, frame_flags, data)) => {
                 stats.frames += 1;
-                let queue = &mut self.queues[group_index];
-                queue.frames.push_back(Queued {
+                let mut frame = Frame {
                     ts_ns,
                     bus,
                     id,
                     flags: frame_flags,
                     len: data.len() as u8,
-                });
-                queue.data.extend(data);
+                    data: [0; MAX_PAYLOAD],
+                };
+                frame.data[..data.len()].copy_from_slice(data);
+                let slot = match self.free.pop() {
+                    Some(slot) => {
+                        self.held[slot] = frame;
+                        slot
+                    }
+                    None => {
+                        self.held.push(frame);
+                        self.held.len() - 1
+                    }
+                };
+                self.window.push(Reverse((ts_ns, self.records_read, slot)));
+                self.records_read += 1;
             }
             Err(reason) => stats.reject(reason),
         }
@@ -1770,6 +1770,47 @@ mod tests {
             [0, 1, 0, 1, 0, 1, 1, 2],
             "ties go to the earlier data group"
         );
+    }
+
+    #[test]
+    fn a_channel_group_without_records_does_not_hold_back_the_others() {
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let sd = b.variable_data(&[&[1, 2]]);
+        let count = REORDER_WINDOW as u32 + 10;
+        let mut records = Vec::new();
+        for i in 0..count {
+            records.push(1);
+            let t = f64::from(i) / 1000.0;
+            records.extend(data_record(t, 1, 0x100, false, (2, 2), 0, [false; 4]));
+        }
+        let dt = b.data_block(&records);
+        let data_structure = b.structure("CAN_DataFrame", &data_frame_members(sd));
+        let data_time = b.channel(&master("t", FLOAT, 0, 64), data_structure, 0);
+        let remote_members = [member("CAN_RemoteFrame.ID", UNSIGNED, 0, 16)];
+        let remote_structure = b.structure("CAN_RemoteFrame", &remote_members);
+        let remote_cg = b.channel_group(2, 0, 2, remote_structure, 0);
+        let data_cg = b.channel_group(1, 0, DATA_RECORD_LEN, data_time, remote_cg);
+        let dg = b.data_group(1, data_cg, dt);
+        b.set_link(hd, 0, dg);
+
+        let mut walk = Walk::new(b.bytes.len());
+        let group = Block::typed(&b.bytes, dg, b"##DG").unwrap();
+        let mut source = read_data_group(&b.bytes, &group, &mut walk)
+            .unwrap()
+            .unwrap();
+        let mut stats = ParseStats::default();
+        assert_eq!(source.next_time(0, &mut walk, &mut stats), Some(0));
+        assert_eq!(
+            source.held.len(),
+            REORDER_WINDOW,
+            "read no further than the window"
+        );
+
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(sink.frames.len(), count as usize);
+        assert!(sink.frames.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     }
 
     #[test]

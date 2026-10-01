@@ -37,6 +37,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
   const [activity, setActivity] = useState<ArrayLike<number> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const drag = useRef<{ edge: Edge; x0: number; from: TimeWindow } | null>(null);
+  const [dragEdge, setDragEdge] = useState<Edge | null>(null);
   const titleId = useId();
   const [t0, t1] = win;
 
@@ -130,6 +131,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
       onChange(from);
     }
     drag.current = { edge: edge ?? 'move', x0: e.clientX, from };
+    setDragEdge(drag.current.edge);
     stripRef.current?.setPointerCapture(e.pointerId);
   };
 
@@ -141,6 +143,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
 
   const endDrag = () => {
     drag.current = null;
+    setDragEdge(null);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLElement>, edge: Edge) => {
@@ -182,7 +185,8 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
       </div>
       <div
         ref={stripRef}
-        className="re-strip"
+        className={duration > 0 ? 're-strip' : 're-strip empty'}
+        data-drag={dragEdge ?? undefined}
         role="group"
         aria-labelledby={titleId}
         onPointerDown={(e) => onPointerDown(e)}

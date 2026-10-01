@@ -99,7 +99,6 @@ System blue, green and orange are too light for text on white. Use them for fill
 - A bounce on every hover.
 - Hamburger menus.
 - 44px mobile rows or 17px body text.
-- The hand cursor on buttons.
 - Modal pop-ups for information.
 - Missing focus rings.
 

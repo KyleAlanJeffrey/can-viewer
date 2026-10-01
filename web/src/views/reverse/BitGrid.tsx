@@ -44,7 +44,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
   const [showFocus, setShowFocus] = useState(false);
   const [announcement, setAnnouncement] = useState('');
   const anchor = useRef<number | null>(null);
-  const dragging = useRef(false);
+  const [dragging, setDragging] = useState(false);
   const fontsReady = useFontsReady();
   const helpId = useId();
 
@@ -154,7 +154,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
     wrapRef.current?.focus({ preventScroll: true });
     const from = e.shiftKey && anchor.current !== null ? anchor.current : hit.bit;
     anchor.current = from;
-    dragging.current = true;
+    setDragging(true);
     e.currentTarget.setPointerCapture(e.pointerId);
     setShowFocus(false);
     setFocusBit(hit.bit);
@@ -163,7 +163,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
 
   const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
     setHover(cellAt(e, false));
-    if (!dragging.current || anchor.current === null) return;
+    if (!dragging || anchor.current === null) return;
     const hit = cellAt(e, true);
     if (hit && hit.bit !== focusBit) {
       setFocusBit(hit.bit);
@@ -269,10 +269,11 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
         <canvas
           ref={canvasRef}
           aria-hidden="true"
+          style={{ cursor: hover || dragging ? 'crosshair' : 'default' }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
-          onPointerUp={() => (dragging.current = false)}
-          onPointerCancel={() => (dragging.current = false)}
+          onPointerUp={() => setDragging(false)}
+          onPointerCancel={() => setDragging(false)}
           onPointerLeave={() => setHover(null)}
         />
       </div>

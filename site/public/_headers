@@ -1,0 +1,10 @@
+# Cloudflare static asset headers for freecanstudio.com. The site ships no scripts and loads
+# nothing from other origins. Third-party analytics or embeds could be allowed here, never in the app.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable

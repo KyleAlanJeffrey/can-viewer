@@ -157,9 +157,18 @@ impl Database {
 
     /// Attribute definitions, defaults and values, in that order as DBC wants them. The
     /// `VFrameFormat` attribute is derived from the `j1939` and `fd` flags, and only written
-    /// when some message has one, so other files keep no frame formats.
+    /// when some message has one, so other files keep no frame formats. Without it, a
+    /// `ProtocolType` of "J1939" makes every extended message J1939 on import, so it is also
+    /// written to keep an extended message that isn't.
     fn write_attributes(&self, out: &mut String) -> fmt::Result {
-        let frame_formats = self.messages.iter().any(|m| m.j1939 || m.fd);
+        let j1939_protocol = self
+            .attributes
+            .iter()
+            .any(|a| a.name == "ProtocolType" && a.value == AttributeValue::Text("J1939".into()));
+        let frame_formats = self
+            .messages
+            .iter()
+            .any(|m| m.j1939 || m.fd || (j1939_protocol && m.id & EXTENDED != 0));
         for definition in &self.attribute_definitions {
             write_attribute_definition(out, definition)?;
         }
@@ -407,6 +416,20 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("BA_ \"VFrameFormat\" BO_ 2566844672 1;\n"));
+    }
+
+    #[test]
+    fn extended_can_survives_a_j1939_protocol_type() {
+        let mut db = Database::from_dbc_str(crate::tests::J1939_DBC).unwrap();
+        for message in &mut db.messages {
+            message.j1939 = false;
+        }
+        let text = db.to_dbc();
+        assert!(
+            text.contains("BA_ \"VFrameFormat\" BO_ 2566844672 1;\n"),
+            "{text}"
+        );
+        assert_eq!(Database::from_dbc_str(&text).unwrap(), db);
     }
 
     #[test]

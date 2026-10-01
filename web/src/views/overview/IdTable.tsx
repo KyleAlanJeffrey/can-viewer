@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import { FLAG_FD, idLabel, isErrorFrame, type IdSummary, type MessageDef } from '../../core/api';
+import { FLAG_FD, formatId, idLabel, isErrorFrame, type IdSummary, type MessageDef } from '../../core/api';
 import { formatCount, formatPeriod } from '../../format';
 import { useViewState } from '../shared/viewState';
 import type { ViewContext } from '../types';
@@ -66,6 +66,7 @@ const naturalOrder = (a: Row, b: Row) => a.summary.channel - b.summary.channel |
 function matchesQuery(s: IdSummary, message: MessageDef | null, q: string): boolean {
   return (
     idLabel(s).toLowerCase().includes(q) ||
+    formatId(s.id, s.extended).toLowerCase().includes(q) ||
     (s.name ?? '').toLowerCase().includes(q) ||
     (message?.signals.some((sig) => sig.name.toLowerCase().includes(q)) ?? false)
   );

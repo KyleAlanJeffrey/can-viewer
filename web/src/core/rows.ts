@@ -13,6 +13,9 @@
  */
 export const ROW_STRIDE = 96;
 
+/** Payload bytes a row carries; `CoreApi.frameData` fetches the rest. */
+export const ROW_PAYLOAD = 64;
+
 export class RowBatch {
   private readonly view: DataView;
   private readonly bytes: Uint8Array;

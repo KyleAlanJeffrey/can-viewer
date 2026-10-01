@@ -49,6 +49,8 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] A J1939 Conn Abort also drops an unrelated transfer the other way between the same two nodes; match the PGN in bytes 5 to 7 (PR #7 review)
 - [x] Unfinished J1939 transfers are never swept, so a log of announcements alone can hold about 117 MB per bus (PR #7 review)
 - [x] A TP.DT shorter than 8 bytes shifts the reassembled data (PR #7 review)
+- [x] Reverse Engineer Bit History reads only the row's 64 bytes but offers bytes up to the message length, drawing nothing past 64 (PR #7 review; capped at 64 with a note)
+- [x] The Trace view's "(N bytes)" label is not clipped to the Data column (PR #7 review)
 
 ## Follow-ups
 
@@ -56,6 +58,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
 - [x] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)
 - [ ] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
+- [ ] Reverse Engineer Bit History: show bytes past 64 of a long reassembled J1939 transfer (fetch them with `frameData`, or a core call for a byte range of many rows)
 
 - [x] Database view: show and edit whether a message is J1939
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full

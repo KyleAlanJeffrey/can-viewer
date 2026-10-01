@@ -327,6 +327,11 @@ function draw(
           cell(ctx, flags & FLAG_RTR ? 'RTR' : String(len), left, mid, c.text, 'left');
           break;
         case 'data': {
+          // The length label is drawn whole even when no byte fits, so the column clips it.
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(cx, y, w, ROW_H);
+          ctx.clip();
           ctx.textAlign = 'left';
           let dx = left;
           if (flags & FLAG_FD) {
@@ -351,6 +356,7 @@ function draw(
           }
           if (cut) cell(ctx, cut, dx + shown * pitch, mid, c.secondary, 'left');
           else if (data.length > fits && fits > 0) cell(ctx, '\u2026', dx + fits * pitch - cw, mid, c.secondary, 'left');
+          ctx.restore();
           break;
         }
       }

@@ -9,8 +9,13 @@ export const FLAG_RTR = 1 << 3;
 export const FLAG_ERROR = 1 << 4;
 export const EXT_FLAG = 0x8000_0000;
 
+/** A log file format the engine reads. */
+export type LogFormat = 'candump';
+
 export interface LogInfo {
   name: string;
+  /** The format the log was read as, chosen from the file name and its first bytes. */
+  format: LogFormat;
   frames: number;
   bytes: number;
   lines: number;

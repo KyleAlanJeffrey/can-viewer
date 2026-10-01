@@ -32,10 +32,16 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 
 ## Log formats
 
-| Format | Status |
-|---|---|
-| candump log files (`candump -l` / `-L`) | Supported |
-| Vector ASC, Vector BLF, PEAK TRC, ASAM MF4, CSV | Planned. Not supported |
+| Format | Extensions | Status |
+|---|---|---|
+| candump log files (`candump -l` / `-L`) | `.log`, `.txt`, `.candump` | Supported |
+| Vector ASC, Vector BLF, PEAK TRC, ASAM MF4, CSV | | Planned. Not supported |
+
+How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format is read as what its extension says, or as candump if the extension is unknown too. The content rules are:
+
+- candump: the first non-blank line starts with `(`.
+
+The result is reported as `LogInfo.format` (see [API.md](API.md)). Whatever the format, `LogInfo.lines` counts the lines of a text file or the records of a binary one, and the first line or record that does not parse is reported with its number and a reason.
 
 candump support (`crates/can-formats/src/candump.rs`):
 

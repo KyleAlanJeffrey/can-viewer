@@ -4,8 +4,10 @@
 //! worker without ever holding the whole log in memory.
 
 pub mod candump;
+mod detect;
 
 pub use candump::CandumpParser;
+pub use detect::Format;
 
 use can_core::FrameSink;
 
@@ -20,10 +22,11 @@ pub trait LogParser {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParseStats {
     pub bytes: u64,
+    /// Lines read, or records read for a binary format.
     pub lines: u64,
     pub frames: u64,
     pub rejected: u64,
-    /// Line number and reason of the first rejected line.
+    /// Line (or record) number and reason of the first rejected line.
     pub first_rejection: Option<(u64, &'static str)>,
 }
 
@@ -32,6 +35,48 @@ impl ParseStats {
         self.rejected += 1;
         if self.first_rejection.is_none() {
             self.first_rejection = Some((self.lines, reason));
+        }
+    }
+}
+
+/// The parser for whichever [`Format`] a file turned out to be.
+#[derive(Debug)]
+pub enum AnyParser {
+    Candump(CandumpParser),
+}
+
+impl AnyParser {
+    #[must_use]
+    pub fn new(format: Format) -> Self {
+        match format {
+            Format::Candump => AnyParser::Candump(CandumpParser::new()),
+        }
+    }
+
+    #[must_use]
+    pub fn format(&self) -> Format {
+        match self {
+            AnyParser::Candump(_) => Format::Candump,
+        }
+    }
+}
+
+impl LogParser for AnyParser {
+    fn push<S: FrameSink>(&mut self, chunk: &[u8], sink: &mut S) {
+        match self {
+            AnyParser::Candump(parser) => parser.push(chunk, sink),
+        }
+    }
+
+    fn finish<S: FrameSink>(&mut self, sink: &mut S) {
+        match self {
+            AnyParser::Candump(parser) => parser.finish(sink),
+        }
+    }
+
+    fn stats(&self) -> &ParseStats {
+        match self {
+            AnyParser::Candump(parser) => parser.stats(),
         }
     }
 }

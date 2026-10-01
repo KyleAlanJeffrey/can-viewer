@@ -8,7 +8,7 @@ mod series;
 
 use can_core::{FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
-use can_formats::{CandumpParser, LogParser};
+use can_formats::{AnyParser, Format, LogParser, ParseStats};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -21,13 +21,67 @@ pub const ROW_STRIDE: usize = 96;
 /// Rough candump bytes per frame, used to pre-size the store from the file size.
 const CANDUMP_BYTES_PER_FRAME: f64 = 40.0;
 
+/// Bytes of a log held back until there are enough to tell its format from its content.
+const SNIFF_BYTES: usize = 4096;
+
 #[wasm_bindgen]
 #[derive(Default)]
 pub struct Session {
     store: FrameStore,
-    parser: CandumpParser,
+    input: LogInput,
     databases: Vec<ScopedDatabase>,
     series: Vec<Option<Series>>,
+}
+
+/// The log being read: its parser once the format is known, and the first bytes until then.
+#[derive(Default)]
+struct LogInput {
+    file_name: String,
+    head: Vec<u8>,
+    parser: Option<AnyParser>,
+}
+
+impl LogInput {
+    fn push(&mut self, chunk: &[u8], store: &mut FrameStore) {
+        match &mut self.parser {
+            Some(parser) => parser.push(chunk, store),
+            None => {
+                self.head.extend_from_slice(chunk);
+                if self.head.len() >= SNIFF_BYTES {
+                    self.choose_parser(store);
+                }
+            }
+        }
+    }
+
+    fn choose_parser(&mut self, store: &mut FrameStore) {
+        let mut parser = AnyParser::new(self.format());
+        parser.push(&self.head, store);
+        self.head = Vec::new();
+        self.parser = Some(parser);
+    }
+
+    fn finish(&mut self, store: &mut FrameStore) {
+        if self.parser.is_none() {
+            self.choose_parser(store);
+        }
+        if let Some(parser) = &mut self.parser {
+            parser.finish(store);
+        }
+    }
+
+    fn format(&self) -> Format {
+        match &self.parser {
+            Some(parser) => parser.format(),
+            None => Format::detect(&self.file_name, &self.head),
+        }
+    }
+
+    fn stats(&self) -> ParseStats {
+        self.parser
+            .as_ref()
+            .map_or_else(ParseStats::default, |parser| parser.stats().clone())
+    }
 }
 
 #[derive(Deserialize)]
@@ -41,6 +95,7 @@ struct ScopedDatabase {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LogInfo<'a> {
+    format: &'static str,
     frames: usize,
     bytes: u64,
     lines: u64,
@@ -153,6 +208,12 @@ impl Session {
         Self::default()
     }
 
+    /// Name the log file before pushing its bytes. Its extension suggests the format; the
+    /// first bytes confirm or correct that (see `Format::detect`).
+    pub fn set_file_name(&mut self, name: &str) {
+        self.input.file_name = name.to_owned();
+    }
+
     /// Size the frame store for a log of `total_bytes`, avoiding repeated regrowth.
     pub fn reserve_for_bytes(&mut self, total_bytes: f64) {
         let frames = (total_bytes / CANDUMP_BYTES_PER_FRAME) as usize;
@@ -160,22 +221,23 @@ impl Session {
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) {
-        self.parser.push(chunk, &mut self.store);
+        self.input.push(chunk, &mut self.store);
     }
 
     /// Flush the parser and return a JSON `LogInfo`.
     pub fn finish(&mut self) -> String {
-        self.parser.finish(&mut self.store);
+        self.input.finish(&mut self.store);
         self.log_info()
     }
 
     pub fn log_info(&self) -> String {
-        let stats = self.parser.stats();
+        let stats = self.input.stats();
         let duration_s = match (self.store.first_ts_ns(), self.store.last_ts_ns()) {
             (Some(a), Some(b)) => (b - a) as f64 / 1e9,
             _ => 0.0,
         };
         to_json(&LogInfo {
+            format: self.input.format().name(),
             frames: self.store.len(),
             bytes: stats.bytes,
             lines: stats.lines,
@@ -836,5 +898,37 @@ mod tests {
         );
         assert!((load[1] - 79.0 / capacity).abs() < 1e-12, "{load:?}");
         assert!(s.bus_load(0, 1.0, 0.0, 2, 10_000.0).is_empty());
+    }
+
+    #[test]
+    fn picks_the_parser_from_the_content_and_reports_the_format() {
+        let mut s = Session::new();
+        s.set_file_name("drive.bin");
+        s.push_chunk(LOG.as_bytes());
+        let info = json(&s.finish());
+        assert_eq!(info["format"], "candump");
+        assert_eq!(info["frames"], 6);
+
+        // Past the sniff window the log is parsed as it streams, not held until the end.
+        let line = "(100.000000) can0 123#0102\n";
+        let count = SNIFF_BYTES / line.len() + 10;
+        let long = line.repeat(count);
+        let mut s = Session::new();
+        s.set_file_name("drive.log");
+        s.push_chunk(&long.as_bytes()[..SNIFF_BYTES + 5]);
+        assert!(s.input.parser.is_some());
+        assert!(s.store.len() > 100);
+        s.push_chunk(&long.as_bytes()[SNIFF_BYTES + 5..]);
+        let info = json(&s.finish());
+        assert_eq!(
+            (&info["frames"], &info["rejected"]),
+            (&json!(count), &json!(0))
+        );
+
+        let empty = json(&Session::new().finish());
+        assert_eq!(
+            (&empty["format"], &empty["frames"]),
+            (&json!("candump"), &json!(0))
+        );
     }
 }

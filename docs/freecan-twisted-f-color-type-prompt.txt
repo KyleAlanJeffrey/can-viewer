@@ -1,0 +1,31 @@
+Generated with built-in ImageGen.
+
+Create a high-resolution OPAQUE raster brand comparison presentation for FreeCAN Studio, landscape 16:10. Full solid porcelain background #F5F6F8 across entire canvas, NO transparency. Use the attached image as a logo reference ONLY: take ONLY the first column's TWISTED F logo, ignore the C and FC. Preserve the selected F's precise shape consistently in all three alternatives: two intertwined conductor ribbons in the upright, two horizontal arms extending right, circular terminals with negative-space gaps. Same silhouette in each column; vary only color and typography.
+
+Design an impeccably aligned editorial comparison board with three equal-width vertical columns, very generous whitespace and thin separators, title at top "FreeCAN Studio / Color + type". This is a premium design board with restrained practical app branding, not a poster. Each column in this order: option title, large Twisted F mark, "FreeCAN Studio" wordmark, a short typography specimen with font names, four large labeled color swatches with exact HEX codes, then a small app-preview card at bottom. All three mini app cards use the SAME simple arrangement: tiny branded header, blue/teal/amber action button "Open Log…", table header "Time  ID  Name", two data rows "12.340  0C9  ENGINE_1" and "12.350  120  STEERING", then a single stepped digital line plot. Flat straight-on graphics, no perspective, no photography or extraneous objects.
+
+COLUMN 01:
+Title "01 / SIGNAL".
+Twisted F two tones blue #0078F0 and deep blue #005FCC.
+Wordmark in Inter: "FreeCAN" semibold and "Studio" regular. Underneath small typography labels "Inter" and "JetBrains Mono" with readable sample "0C9  AF 0C  2,140 rpm".
+Four swatches: "Blue #0078F0", "Deep Blue #005FCC", "Graphite #202630", "Porcelain #F5F6F8".
+Mini app has white surfaces, very light gray sidebar, dark graphite text and deep blue button.
+Small descriptor "Clear · Familiar · Precise".
+
+COLUMN 02:
+Title "02 / CURRENT".
+Same exact Twisted F recolored teal #007F78 and deep ink #163735.
+Wordmark in Space Grotesk, distinctive geometric forms, medium weight. Underneath typography labels "Space Grotesk" and "IBM Plex Mono", sample "0C9  AF 0C  2,140 rpm".
+Four swatches: "Teal #007F78", "Ink #163735", "Mint #DDF5EF", "Chalk #F6F8F4".
+Mini app has chalk and white surfaces, pale mint selection, dark ink text and teal primary button.
+Small descriptor "Calm · Distinctive · Open".
+
+COLUMN 03:
+Title "03 / WORKSHOP".
+Same exact Twisted F recolored amber #FFB547 with warm darker gold #D38A20.
+Wordmark in IBM Plex Sans, medium weight with technical engineering character. Underneath typography labels "IBM Plex Sans" and "IBM Plex Mono", sample "0C9  AF 0C  2,140 rpm".
+Four swatches: "Amber #FFB547", "Graphite #20242B", "Steel #A7B0BE", "Warm White #F4F0E7".
+Mini app uses dark graphite surfaces, warm white text, restrained amber plot and primary button with dark text. Do not turn amber into warning badges; it is the brand accent.
+Small descriptor "Technical · Warm · Confident".
+
+Render font choices as faithfully as possible, graphic type specimens large and legible. No giant slogan, no additional palette colors, no gradients, no shadowy 3D, no altered logo silhouettes, no illegible microcopy, no extra branding. The result should let the user compare three cohesive brand systems immediately.

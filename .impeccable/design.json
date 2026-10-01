@@ -1,0 +1,747 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-01T00:54:12+00:00",
+  "title": "Design System: FreeCAN Studio",
+  "extensions": {
+    "colorMeta": {
+      "workshop-amber": {
+        "role": "primary",
+        "displayName": "Workshop Amber",
+        "canonical": "#FFB547",
+        "tonalRamp": [
+          "#4C2E00",
+          "#854F00",
+          "#BD7100",
+          "#F59200",
+          "#FFAB2E",
+          "#FFC166",
+          "#FFDAA3",
+          "#FFF5E6"
+        ]
+      },
+      "amber-hover": {
+        "role": "primary",
+        "displayName": "Amber Hover",
+        "canonical": "#F7A93A",
+        "tonalRamp": [
+          "#4A2C03",
+          "#7F4D05",
+          "#B56E07",
+          "#EB8E0A",
+          "#F7A736",
+          "#F9BF6C",
+          "#FBD8A7",
+          "#FEF4E6"
+        ]
+      },
+      "amber-pressed": {
+        "role": "primary",
+        "displayName": "Amber Pressed",
+        "canonical": "#EC9C28",
+        "tonalRamp": [
+          "#462C06",
+          "#7A4C0B",
+          "#AD6D0F",
+          "#E18D14",
+          "#EEA73F",
+          "#F3BE72",
+          "#F8D8AB",
+          "#FDF4E8"
+        ]
+      },
+      "deep-ochre": {
+        "role": "primary",
+        "displayName": "Deep Ochre",
+        "canonical": "#8E5707",
+        "tonalRamp": [
+          "#492D04",
+          "#7E4D06",
+          "#B46E09",
+          "#E98F0C",
+          "#F5A838",
+          "#F8BF6D",
+          "#FBD9A8",
+          "#FEF4E7"
+        ]
+      },
+      "ochre-control": {
+        "role": "primary",
+        "displayName": "Ochre Control",
+        "canonical": "#A56612",
+        "tonalRamp": [
+          "#452B08",
+          "#784A0D",
+          "#AA6913",
+          "#DD8818",
+          "#EAA242",
+          "#F0BB75",
+          "#F6D6AC",
+          "#FCF4E8"
+        ]
+      },
+      "selected-sidebar": {
+        "role": "selection",
+        "displayName": "Selected Sidebar",
+        "canonical": "#FCE3B1",
+        "tonalRamp": [
+          "#4A3203",
+          "#805705",
+          "#B67B07",
+          "#ECA009",
+          "#F7B736",
+          "#F9CA6C",
+          "#FCDFA7",
+          "#FEF6E6"
+        ]
+      },
+      "selected-row": {
+        "role": "selection",
+        "displayName": "Selected Row",
+        "canonical": "#FFF3DA",
+        "tonalRamp": [
+          "#4D3400",
+          "#855A00",
+          "#BD8000",
+          "#F5A500",
+          "#FFBB2E",
+          "#FFCD66",
+          "#FFE1A3",
+          "#FFF7E5"
+        ]
+      },
+      "changed-byte": {
+        "role": "selection",
+        "displayName": "Changed Byte",
+        "canonical": "#FCE7C0",
+        "tonalRamp": [
+          "#493103",
+          "#7F5406",
+          "#B47809",
+          "#EA9C0B",
+          "#F5B337",
+          "#F8C76D",
+          "#FBDEA7",
+          "#FEF6E7"
+        ]
+      },
+      "changed-byte-selected": {
+        "role": "selection",
+        "displayName": "Changed Byte on Selection",
+        "canonical": "#F8DA9E",
+        "tonalRamp": [
+          "#473105",
+          "#7C5509",
+          "#B07A0D",
+          "#E49E10",
+          "#F1B53C",
+          "#F5C970",
+          "#F9DEA9",
+          "#FDF6E7"
+        ]
+      },
+      "warm-white": {
+        "role": "neutral",
+        "displayName": "Warm White",
+        "canonical": "#F4F0E7",
+        "tonalRamp": [
+          "#342C18",
+          "#5B4C2A",
+          "#816C3B",
+          "#A88C4D",
+          "#BDA570",
+          "#CFBD96",
+          "#E2D8C0",
+          "#F7F4EE"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper White",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "#262626",
+          "#424242",
+          "#5E5E5E",
+          "#7A7A7A",
+          "#969696",
+          "#B2B2B2",
+          "#D1D1D1",
+          "#F2F2F2"
+        ]
+      },
+      "plot-paper": {
+        "role": "neutral",
+        "displayName": "Plot Paper",
+        "canonical": "#FAF9F6",
+        "tonalRamp": [
+          "#312C1B",
+          "#554C2F",
+          "#796C43",
+          "#9D8C57",
+          "#B4A579",
+          "#C8BD9D",
+          "#DED8C4",
+          "#F6F4EF"
+        ]
+      },
+      "alt-row": {
+        "role": "neutral",
+        "displayName": "Alternate Row",
+        "canonical": "#FAF8F4",
+        "tonalRamp": [
+          "#352B18",
+          "#5B4B29",
+          "#826A3B",
+          "#A88A4D",
+          "#BEA46F",
+          "#CFBC96",
+          "#E2D7C0",
+          "#F7F4ED"
+        ]
+      },
+      "graphite": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "canonical": "#20242B",
+        "tonalRamp": [
+          "#21252C",
+          "#39404C",
+          "#515B6C",
+          "#68768C",
+          "#8792A6",
+          "#A7AFBE",
+          "#CACFD8",
+          "#F0F2F4"
+        ]
+      },
+      "slate": {
+        "role": "neutral",
+        "displayName": "Slate",
+        "canonical": "#62666D",
+        "tonalRamp": [
+          "#242628",
+          "#3F4146",
+          "#595D63",
+          "#747981",
+          "#91959C",
+          "#AEB1B7",
+          "#CFD0D4",
+          "#F2F2F3"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#E0DDD6",
+        "tonalRamp": [
+          "#2C2821",
+          "#4C4639",
+          "#6B6451",
+          "#8B8169",
+          "#A59C88",
+          "#BDB7A8",
+          "#D7D4CB",
+          "#F4F3F0"
+        ]
+      },
+      "gridline": {
+        "role": "neutral",
+        "displayName": "Gridline",
+        "canonical": "#ECE9E2",
+        "tonalRamp": [
+          "#2E291E",
+          "#504834",
+          "#72664B",
+          "#948561",
+          "#AC9F81",
+          "#C2B9A3",
+          "#DBD5C8",
+          "#F5F3F0"
+        ]
+      },
+      "scrubber": {
+        "role": "neutral",
+        "displayName": "Scrubber",
+        "canonical": "#8A8D93",
+        "tonalRamp": [
+          "#252628",
+          "#404145",
+          "#5B5D62",
+          "#76797F",
+          "#92959B",
+          "#AFB1B6",
+          "#CFD0D3",
+          "#F2F2F3"
+        ]
+      },
+      "unset-cell": {
+        "role": "neutral",
+        "displayName": "Unset Cell",
+        "canonical": "#F3F1EC",
+        "tonalRamp": [
+          "#2F2A1E",
+          "#514933",
+          "#746749",
+          "#96865F",
+          "#AEA17F",
+          "#C4BAA1",
+          "#DBD6C7",
+          "#F5F3EF"
+        ]
+      },
+      "rust": {
+        "role": "status",
+        "displayName": "Rust",
+        "canonical": "#C2410C",
+        "tonalRamp": [
+          "#481804",
+          "#7D2A08",
+          "#B23C0B",
+          "#E74D0E",
+          "#F3703A",
+          "#F6966F",
+          "#FAC0A9",
+          "#FEEEE7"
+        ]
+      },
+      "hover-wash": {
+        "role": "neutral",
+        "displayName": "Hover Wash",
+        "canonical": "rgba(32, 36, 43, 0.05)"
+      },
+      "press-wash": {
+        "role": "neutral",
+        "displayName": "Press Wash",
+        "canonical": "rgba(32, 36, 43, 0.09)"
+      },
+      "scrim": {
+        "role": "neutral",
+        "displayName": "Scrim",
+        "canonical": "rgba(32, 36, 43, 0.24)"
+      },
+      "series-1-deep-ochre": {
+        "role": "data-series",
+        "displayName": "Series 1 Deep Ochre",
+        "canonical": "#A56612",
+        "tonalRamp": [
+          "#452B08",
+          "#784A0D",
+          "#AA6913",
+          "#DD8818",
+          "#EAA242",
+          "#F0BB75",
+          "#F6D6AC",
+          "#FCF4E8"
+        ]
+      },
+      "series-2-workshop-blue": {
+        "role": "data-series",
+        "displayName": "Series 2 Workshop Blue",
+        "canonical": "#2C6CB8",
+        "tonalRamp": [
+          "#0F243E",
+          "#1A3F6B",
+          "#245998",
+          "#2F74C6",
+          "#5691D7",
+          "#84AEE1",
+          "#B5CFED",
+          "#EAF2FA"
+        ]
+      },
+      "series-3-bench-green": {
+        "role": "data-series",
+        "displayName": "Series 3 Bench Green",
+        "canonical": "#16875F",
+        "tonalRamp": [
+          "#0B422E",
+          "#137250",
+          "#1AA272",
+          "#22D294",
+          "#4BE2AC",
+          "#7BEAC3",
+          "#B0F2DB",
+          "#E9FBF5"
+        ]
+      },
+      "series-4-plum": {
+        "role": "data-series",
+        "displayName": "Series 4 Plum",
+        "canonical": "#8F4AA6",
+        "tonalRamp": [
+          "#2E1835",
+          "#4F295C",
+          "#703A83",
+          "#924BA9",
+          "#AA6EBF",
+          "#C195D0",
+          "#DAC0E3",
+          "#F5EDF7"
+        ]
+      },
+      "series-5-olive": {
+        "role": "data-series",
+        "displayName": "Series 5 Olive",
+        "canonical": "#6B7A12",
+        "tonalRamp": [
+          "#3A430A",
+          "#657411",
+          "#90A418",
+          "#BBD51F",
+          "#CEE449",
+          "#DBEB7A",
+          "#E9F3AF",
+          "#F9FCE9"
+        ]
+      },
+      "series-6-harbour-cyan": {
+        "role": "data-series",
+        "displayName": "Series 6 Harbour Cyan",
+        "canonical": "#0A7FA3",
+        "tonalRamp": [
+          "#043848",
+          "#08617D",
+          "#0B8BB2",
+          "#0EB4E7",
+          "#3AC7F3",
+          "#6FD6F6",
+          "#A9E7FA",
+          "#E7F8FE"
+        ]
+      },
+      "heat-1": {
+        "role": "data-sequential",
+        "displayName": "Heat 1 (rarely)",
+        "canonical": "#E8A844",
+        "tonalRamp": [
+          "#4A2C03",
+          "#6B4005",
+          "#8E5707",
+          "#B0700E",
+          "#D08B26",
+          "#E8A844",
+          "#F3F1EC",
+          "#FFFFFF"
+        ]
+      },
+      "heat-2": {
+        "role": "data-sequential",
+        "displayName": "Heat 2",
+        "canonical": "#D08B26",
+        "tonalRamp": [
+          "#4A2C03",
+          "#6B4005",
+          "#8E5707",
+          "#B0700E",
+          "#D08B26",
+          "#E8A844",
+          "#F3F1EC",
+          "#FFFFFF"
+        ]
+      },
+      "heat-3": {
+        "role": "data-sequential",
+        "displayName": "Heat 3",
+        "canonical": "#B0700E",
+        "tonalRamp": [
+          "#4A2C03",
+          "#6B4005",
+          "#8E5707",
+          "#B0700E",
+          "#D08B26",
+          "#E8A844",
+          "#F3F1EC",
+          "#FFFFFF"
+        ]
+      },
+      "heat-4": {
+        "role": "data-sequential",
+        "displayName": "Heat 4",
+        "canonical": "#8E5707",
+        "tonalRamp": [
+          "#4A2C03",
+          "#6B4005",
+          "#8E5707",
+          "#B0700E",
+          "#D08B26",
+          "#E8A844",
+          "#F3F1EC",
+          "#FFFFFF"
+        ]
+      },
+      "heat-5": {
+        "role": "data-sequential",
+        "displayName": "Heat 5",
+        "canonical": "#6B4005",
+        "tonalRamp": [
+          "#4A2C03",
+          "#6B4005",
+          "#8E5707",
+          "#B0700E",
+          "#D08B26",
+          "#E8A844",
+          "#F3F1EC",
+          "#FFFFFF"
+        ]
+      },
+      "heat-6": {
+        "role": "data-sequential",
+        "displayName": "Heat 6 (every frame)",
+        "canonical": "#4A2C03",
+        "tonalRamp": [
+          "#4A2C03",
+          "#6B4005",
+          "#8E5707",
+          "#B0700E",
+          "#D08B26",
+          "#E8A844",
+          "#F3F1EC",
+          "#FFFFFF"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "wordmark": {
+        "displayName": "Wordmark",
+        "purpose": "Sidebar wordmark: FreeCAN 600 plus Studio 400."
+      },
+      "empty-title": {
+        "displayName": "Empty Title",
+        "purpose": "The single headline, in the empty state."
+      },
+      "pane-title": {
+        "displayName": "Pane Title",
+        "purpose": "Inspector header; the ID sits in Plex Mono 600 at the same size."
+      },
+      "section-title": {
+        "displayName": "Section Title",
+        "purpose": "Bit Activity, Signals, and the toolbar document title."
+      },
+      "readout": {
+        "displayName": "Readout",
+        "purpose": "Live plot values, Graphite, tabular."
+      },
+      "lede": {
+        "displayName": "Lede",
+        "purpose": "Empty-state explanation in Slate."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "All interface text."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Trace-table headers (500); 400 for legends, tooltips, the callout."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Axis ticks, bit and byte indices, FD tag (500). The floor size."
+      },
+      "data-table": {
+        "displayName": "Data Table",
+        "purpose": "Trace-table timestamps, IDs and hex on 24px rows."
+      },
+      "data": {
+        "displayName": "Data",
+        "purpose": "Mono data outside the table, e.g. DBC layouts."
+      }
+    },
+    "shadows": [
+      {
+        "name": "float",
+        "value": "0 1px 2px rgba(32,36,43,.06), 0 8px 24px rgba(32,36,43,.10)",
+        "purpose": "Tooltips, the plot callout, and the sidebar and inspector when they float in narrow windows."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-fill",
+        "value": "background-color 120ms ease-out",
+        "purpose": "Button and control fill changes."
+      },
+      {
+        "name": "progress",
+        "value": "transform 120ms linear",
+        "purpose": "Load progress bar, scaleX from the left; never animate width."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-toolbar",
+        "value": "760px",
+        "purpose": "Toolbar buttons drop text labels at or below this width."
+      },
+      {
+        "name": "overlay-panes",
+        "value": "900px",
+        "purpose": "Sidebar and inspector float over a scrim at or below this width."
+      }
+    ],
+    "layout": {
+      "sidebarWidth": "clamp(240px, 19vw, 300px)",
+      "inspectorWidth": "clamp(288px, 22vw, 360px)",
+      "toolbarHeight": "60px",
+      "traceRow": "24px",
+      "traceHeader": "28px",
+      "sidebarRow": "34px",
+      "signalRow": "36px",
+      "plotHeight": "96px"
+    },
+    "proposedNotAdopted": {
+      "source": "docs/mockup-review.md",
+      "items": [
+        "status tokens (Error #A61B1B, colourless OK)",
+        "accent outline button spec",
+        "segmented control",
+        "toolbar slots",
+        "refined one-amber rule",
+        "Persuade display scale",
+        "series-tint rule"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one amber action per view: Open Log...",
+      "html": "<button class=\"ds-btn-primary\">Open Log...</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;height:32px;padding:0 16px;border:0;border-radius:8px;background:var(--amber,#FFB547);color:var(--graphite,#20242B);font:600 13px/18px 'IBM Plex Sans',system-ui,sans-serif;transition:background-color 120ms ease-out}.ds-btn-primary:hover{background:var(--amber-hover,#F7A93A)}.ds-btn-primary:active{background:var(--amber-pressed,#EC9C28)}.ds-btn-primary:focus-visible{outline:2px solid var(--ochre-control,#A56612);outline-offset:2px}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Hairline outline on Paper with Deep Ochre text, e.g. Try the demo log.",
+      "html": "<button class=\"ds-btn-secondary\">Try the demo log</button>",
+      "css": ".ds-btn-secondary{display:inline-flex;align-items:center;height:32px;padding:0 12px;border:1px solid var(--hairline,#E0DDD6);border-radius:8px;background:var(--paper,#FFFFFF);color:var(--deep-ochre,#8E5707);font:500 13px/18px 'IBM Plex Sans',system-ui,sans-serif;transition:background-color 120ms ease-out}.ds-btn-secondary:hover{background:var(--selected-row,#FFF3DA)}.ds-btn-secondary:focus-visible{outline:2px solid var(--ochre-control,#A56612);outline-offset:2px}"
+    },
+    {
+      "name": "Toolbar Button",
+      "kind": "button",
+      "refersTo": "button-toolbar",
+      "description": "Quiet toolbar action with an icon and label; washes on hover and press.",
+      "html": "<button class=\"ds-btn-toolbar\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z\"/><path d=\"M14 2v4a2 2 0 0 0 2 2h4\"/><path d=\"M10 9H8\"/><path d=\"M16 13H8\"/><path d=\"M16 17H8\"/></svg>Open DBC...</button>",
+      "css": ".ds-btn-toolbar{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border:0;border-radius:8px;background:none;color:var(--graphite,#20242B);font:500 13px/18px 'IBM Plex Sans',system-ui,sans-serif;transition:background-color 120ms ease-out}.ds-btn-toolbar:hover{background:rgba(32,36,43,.05)}.ds-btn-toolbar:active{background:rgba(32,36,43,.09)}.ds-btn-toolbar:focus-visible{outline:2px solid var(--ochre-control,#A56612);outline-offset:2px}"
+    },
+    {
+      "name": "Sidebar Search",
+      "kind": "input",
+      "refersTo": "search-field",
+      "description": "Filter IDs and signals, at the top of the sidebar.",
+      "html": "<label class=\"ds-search\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"11\" cy=\"11\" r=\"8\"/><path d=\"m21 21-4.3-4.3\"/></svg><input type=\"search\" placeholder=\"Filter IDs and signals\"></label>",
+      "css": ".ds-search{display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;border:1px solid var(--hairline,#E0DDD6);border-radius:8px;background:var(--paper,#FFFFFF);color:var(--slate,#62666D);font:400 13px/18px 'IBM Plex Sans',system-ui,sans-serif;max-width:248px}.ds-search:focus-within{border-color:var(--ochre-control,#A56612);box-shadow:0 0 0 1px var(--ochre-control,#A56612)}.ds-search input{flex:1;min-width:0;border:0;outline:0;background:none;font:inherit;color:var(--graphite,#20242B)}.ds-search input::placeholder{color:var(--slate,#62666D)}"
+    },
+    {
+      "name": "Sidebar ID Row",
+      "kind": "nav",
+      "refersTo": "sidebar-row",
+      "description": "34px ID rows on Warm White; selected uses the Selected Sidebar tint and an ochre icon.",
+      "html": "<div class=\"ds-idlist\"><button class=\"ds-idrow\" aria-current=\"true\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M22 12h-4l-3 9L9 3l-3 9H2\"/></svg><span class=\"ds-id\">0C9</span><span class=\"ds-name\">ENGINE_1</span><span class=\"ds-period\">10 ms</span></button><button class=\"ds-idrow\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M22 12h-4l-3 9L9 3l-3 9H2\"/></svg><span class=\"ds-id\">123</span><span class=\"ds-name ds-unknown\">Unknown <i class=\"ds-dot\"></i></span><span class=\"ds-period\">20 ms</span></button><button class=\"ds-idrow\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M22 12h-4l-3 9L9 3l-3 9H2\"/></svg><span class=\"ds-id\">300<span class=\"ds-tag\">FD</span></span><span class=\"ds-name\">RADAR_TRACKS</span><span class=\"ds-period\">10 ms</span></button></div>",
+      "css": ".ds-idlist{width:272px;padding:8px 0;background:var(--warm-white,#F4F0E7);font:400 13px/18px 'IBM Plex Sans',system-ui,sans-serif;color:var(--graphite,#20242B)}.ds-idrow{display:grid;grid-template-columns:16px auto minmax(0,1fr) auto;align-items:center;gap:10px;width:calc(100% - 16px);height:34px;margin:0 8px;padding:0 10px;border:0;border-radius:8px;background:none;color:inherit;font:inherit;text-align:left}.ds-idrow svg{color:var(--slate,#62666D)}.ds-idrow:hover{background:rgba(32,36,43,.05)}.ds-idrow[aria-current=true]{background:var(--selected-sidebar,#FCE3B1)}.ds-idrow[aria-current=true] svg{color:var(--ochre-control,#A56612)}.ds-idrow:focus-visible{outline:2px solid var(--ochre-control,#A56612);outline-offset:2px}.ds-id{font-family:'IBM Plex Mono',ui-monospace,monospace}.ds-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ds-unknown{display:flex;align-items:center;gap:6px;color:var(--slate,#62666D)}.ds-dot{width:7px;height:7px;border-radius:50%;background:var(--rust,#C2410C)}.ds-period{color:var(--slate,#62666D);font-variant-numeric:tabular-nums}.ds-tag{display:inline-block;margin-left:6px;padding:0 4px;border:1px solid var(--hairline,#E0DDD6);border-radius:4px;font:500 11px/14px 'IBM Plex Sans',system-ui,sans-serif;color:var(--slate,#62666D)}"
+    },
+    {
+      "name": "Plot Card",
+      "kind": "card",
+      "refersTo": "plot-card",
+      "description": "Plot Paper card holding stacked charts; head with series dot, name, unit and Graphite readout.",
+      "html": "<div class=\"ds-plotcard\"><div class=\"ds-plothead\"><i style=\"background:#A56612\"></i><span class=\"ds-pname\">EngineSpeed <span>(rpm)</span></span><span class=\"ds-readout\">4,471.5 rpm</span></div><svg viewBox=\"0 0 300 70\" width=\"100%\" height=\"70\"><path d=\"M0 60H300M0 35H300M0 10H300\" stroke=\"#ECE9E2\"/><path d=\"M0 62 L60 58 L120 40 L150 30 L150 62 L240 20 L240 62 L300 50\" fill=\"none\" stroke=\"#A56612\" stroke-width=\"1.5\"/><path d=\"M150 0V70\" stroke=\"#8A8D93\"/></svg></div>",
+      "css": ".ds-plotcard{max-width:360px;padding:8px 16px 12px;background:var(--plot-paper,#FAF9F6);border:1px solid var(--hairline,#E0DDD6);border-radius:12px;font:400 13px/18px 'IBM Plex Sans',system-ui,sans-serif;color:var(--graphite,#20242B)}.ds-plothead{display:flex;align-items:center;gap:8px;height:28px}.ds-plothead i{width:10px;height:10px;border-radius:50%}.ds-pname{font-weight:500}.ds-pname span{color:var(--slate,#62666D);font-weight:400}.ds-readout{margin-left:auto;font-size:15px;line-height:20px;font-weight:600;font-variant-numeric:tabular-nums}"
+    },
+    {
+      "name": "Plot Callout",
+      "kind": "custom",
+      "refersTo": "plot-callout",
+      "description": "Pinned-time callout on the top chart, Paper with the Float shadow.",
+      "html": "<span class=\"ds-callout\">564.950 s - 4,471.5 rpm</span>",
+      "css": ".ds-callout{display:inline-block;padding:3px 8px;border:1px solid var(--hairline,#E0DDD6);border-radius:6px;background:var(--paper,#FFFFFF);box-shadow:0 1px 2px rgba(32,36,43,.06), 0 8px 24px rgba(32,36,43,.10);font:400 12px/16px 'IBM Plex Sans',system-ui,sans-serif;font-variant-numeric:tabular-nums;color:var(--graphite,#20242B)}"
+    },
+    {
+      "name": "Bit Activity Legend",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Unset Cell plus the six-step heat ramp, Rarely -> Every frame.",
+      "html": "<div class=\"ds-heatlegend\"><span>Rarely -&gt; Every frame</span><span class=\"ds-sw\"><i class=\"u\"></i><i style=\"background:#E8A844\"></i><i style=\"background:#D08B26\"></i><i style=\"background:#B0700E\"></i><i style=\"background:#8E5707\"></i><i style=\"background:#6B4005\"></i><i style=\"background:#4A2C03\"></i></span></div>",
+      "css": ".ds-heatlegend{display:flex;align-items:center;justify-content:space-between;gap:8px;max-width:288px;color:var(--slate,#62666D);font:400 12px/16px 'IBM Plex Sans',system-ui,sans-serif}.ds-sw{display:flex;gap:4px}.ds-sw i{width:14px;height:14px;border-radius:4px}.ds-sw .u{background:var(--unset-cell,#F3F1EC);box-shadow:inset 0 0 0 1px var(--hairline,#E0DDD6);margin-right:4px}"
+    },
+    {
+      "name": "Signal Row",
+      "kind": "custom",
+      "refersTo": "signal-row",
+      "description": "Inspector signal with series dot, name, unit, mono layout and Plot checkbox.",
+      "html": "<label class=\"ds-sigrow\"><i style=\"background:#2C6CB8\"></i><span class=\"n\">ThrottlePos<span>%</span></span><span class=\"l\">16|8@1+</span><input type=\"checkbox\" checked></label>",
+      "css": ".ds-sigrow{display:grid;grid-template-columns:10px minmax(0,1fr) auto 16px;align-items:center;gap:10px;max-width:300px;min-height:36px;padding:6px 8px;border-radius:8px;font:400 13px/18px 'IBM Plex Sans',system-ui,sans-serif;color:var(--graphite,#20242B)}.ds-sigrow:hover{background:rgba(32,36,43,.05)}.ds-sigrow i{width:10px;height:10px;border-radius:50%}.ds-sigrow .n{font-weight:500}.ds-sigrow .n span{color:var(--slate,#62666D);font-weight:400;margin-left:6px}.ds-sigrow .l{color:var(--slate,#62666D);font:12px/16px 'IBM Plex Mono',ui-monospace,monospace}.ds-sigrow input{width:16px;height:16px;margin:0;accent-color:var(--ochre-control,#A56612)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Well-Lit Workbench",
+    "overview": "FreeCAN Studio feels like a clean engineering bench under warm light: tools laid out in order, nothing decorative, everything within reach. The warmth comes from the Warm White ground and a single amber accent, not from ornament. The precision comes from mono type for machine data, hairline structure and dense, even rows. It is technical and confident, but approachable enough for a hobbyist opening their first log.\n\nThe workspace is dense on purpose: engineers read thousands of rows and several plots at once. That density stays calm through restraint. There is one accent colour and one filled button (Open Log...). All data sits on opaque white, and the chrome is quiet Warm White. Amber marks where you act and what you have selected; everything else is Graphite, Slate and white.\n\nThis is a **light-only** system by the owner's decision. There is no dark mode and no dark panel inside the light UI. The earlier blue direction in [docs/design-brief.md](docs/design-brief.md) is superseded for colour and type; its interaction and state guidance still applies where this file is silent.",
+    "keyCharacteristics": [
+      "Warm White (#F4F0E7) chrome for the sidebar and frame; Paper White for every data surface.",
+      "Workshop Amber fills exactly one button; selection is a pale amber tint, never solid amber.",
+      "Graphite ink, Slate secondary text, and no text grey lighter than Slate.",
+      "IBM Plex Sans for what people wrote, IBM Plex Mono for what the bus produced, self-hosted.",
+      "Dense rows (24px trace, 34px sidebar), 1px hairlines, 12px cards, 8px controls.",
+      "A fixed, colour-blind-validated six-hue series palette and a six-step amber-to-umber heat ramp."
+    ],
+    "rules": [
+      {
+        "name": "The Lamp, Not Floodlight Rule",
+        "body": "Amber covers less than 5% of any screen: the one primary button, selection tints, the mark. If a second element wants filled amber, it does not get it. Selected states use tints, never solid amber.",
+        "section": "colors"
+      },
+      {
+        "name": "The Amber Is Never Ink Rule",
+        "body": "Text is Graphite, Slate or Deep Ochre, never Workshop Amber. Text on an amber fill is Graphite, never white.",
+        "section": "colors"
+      },
+      {
+        "name": "The Text Wears Ink Rule",
+        "body": "Readouts, axis labels, legend and signal names are Graphite or Slate. The series colour lives in the line, the dot and the outline beside the text, never in the text.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono Means Machine Rule",
+        "body": "If the bus or a DBC produced it (IDs, hex bytes, timestamps, bit layouts), set it in Plex Mono. If a person wrote it (labels, units, sentences), set it in Plex Sans. DBC message and signal names are mono in the trace table and sans in the sidebar and inspector.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Rule",
+        "body": "Every number that updates or lines up in a column uses tabular figures: periods, readouts, the callout, table data.",
+        "section": "typography"
+      },
+      {
+        "name": "The Opaque Data Rule",
+        "body": "Data (table, plots, bit grid, inspector values) always sits on an opaque, flat surface. No blur, translucency, gradient or shadow under a number. The one translucent layer is the transient file-drop overlay, which carries no data.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep exactly one filled Workshop Amber button per view, with Graphite 600 text.",
+      "Do put every table, plot, bit grid and inspector value on Paper White (#FFFFFF) or Plot Paper (#FAF9F6).",
+      "Do use Plex Mono with tabular figures for IDs, hex, timestamps and bit layouts, and Plex Sans for human text.",
+      "Do assign series colours in the fixed order (Deep Ochre, Workshop Blue, Bench Green, Plum, Olive, Harbour Cyan) and keep each colour on its signal across every view.",
+      "Do put a Paper halo 4px wider than the stroke under any series outline drawn over heat cells.",
+      "Do pair Rust with a word: a dot plus \"Unknown\", or \"ERR\".",
+      "Do show focus with a 2px Ochre Control ring offset 2px on every interactive element.",
+      "Do read canvas colours and fonts from the CSS custom properties so canvas and DOM stay in step.",
+      "Do keep search at the top of the sidebar and reserve the toolbar centre for the view switcher.",
+      "Do animate progress and other continuous motion with transforms, not layout properties.",
+      "Do re-run the dataviz validator whenever a series or ramp colour changes."
+    ],
+    "donts": [
+      "Don't use Workshop Amber (#FFB547) for text, thin lines, icons on white, or status.",
+      "Don't put white text on amber.",
+      "Don't add a dark mode or dark panels; this system is light-only.",
+      "Don't add graphite background panels, gradients, glass or heavy shadows to the workspace.",
+      "Don't colour readout or label text with the series colour.",
+      "Don't use a text grey lighter than Slate (#62666D), or type smaller than 11px.",
+      "Don't draw sample markers on plot lines.",
+      "Don't use capsule buttons or 44px touch-style rows in the desktop workspace.",
+      "Don't alter the Twisted F silhouette, add a tagline under the wordmark, or use wire motifs as decoration inside the workspace.",
+      "Don't load fonts, icons or scripts from third-party CDNs.",
+      "Don't ship Apple's SF fonts or SF Symbols."
+    ]
+  }
+}

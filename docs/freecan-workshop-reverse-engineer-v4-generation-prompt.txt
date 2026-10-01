@@ -1,0 +1,39 @@
+REVISION: reviewed Workshop Light, 2026-09-30.
+Create a polished high-resolution raster mockup, landscape 16:10, opaque. The attached image is a LAYOUT REFERENCE ONLY. THESE CORRECTED RULES OVERRIDE ALL COLORS, DATA, TEXT AND EFFECTS IN THE OLD IMAGE. Keep recognizable spatial hierarchy and Twisted F silhouette.
+Brand: Twisted F with graphite woven stem, an Amber strand, and BOTH circular terminals #FFB547. IBM Plex Sans 400/500/600 for human text, IBM Plex Mono for IDs, exact DBC signal identifiers, timestamps and hex. No tagline. App body 13px, dense 24px rows; sheet titles 20/26 at 600, never huge or 700. Warm White #F4F0E7 chrome, Paper #FFFFFF content, Plot Paper #FAF9F6, Graphite #20242B text, Slate #62666D secondary text, Hairline #E0DDD6. ALL chrome and content opaque, absolutely no glass or translucency. Shadows only on floating sheets.
+Workshop Amber #FFB547 is a PRIMARY ACTION FILL with GRAPHITE text. Maximum ONE filled amber action per view/active layer/marketing viewport. Open Log is outlined if another action is primary. Selected rows use pale #FCE3B1 sidebar or #FFF3DA table, never saturated fill. Controls 8px rounded rectangles, cards12px. Outline buttons white with neutral Hairline border and Deep Ochre #8E5707 text, NEVER orange borders. Links Deep Ochre #8E5707. Numeric readouts, match percentages and labels always Graphite or Slate, NEVER series-colored. Selected segmented controls white, Graphite600 text, subtle shadow and 2px Ochre Control #A56612 underline, NOT Amber. All checkboxes Ochre Control with white check, plus one separate ROUND series dot, no extra colored square.
+Data palette only: #A56612, #2C6CB8, #16875F, #8F4AA6, #6B7A12, #0A7FA3. In Plot use EngineSpeed ochre, SteeringAngle blue, VehicleSpeed green, ThrottlePos plum, WheelSpeedFL olive; same signals retain these colors elsewhere. Lines thin and continuous, NO repeated sample dots, only cursor intersections get a dot. Y tick labels on RIGHT, graphite. No filled plot areas. Layout signal tints 16% on white: #F1E7D9, #DDE7F4, #DAECE5, #EDE2F1, #E7EAD9, #D8EBF0, each with 2px series-color outline and GRAPHITE labels.
+Bit-activity sequential ramp ONLY #E8A844 #D08B26 #B0700E #8E5707 #6B4005 #4A2C03; unchanged cells #F3F1EC. Binary bit history: 1-bits Graphite, 0-bits #F3F1EC, selected band pale amber tint. Selected bit range outlined by 2px DASHED GRAPHITE in gutters. Legend horizontal. Unknown is Rust #C2410C dot plus word "Unknown". OK/Matched is GRAPHITE check plus word, Connected filled GRAPHITE dot plus word, disconnected Slate ring. Never green status checks. Error/Recording is #A61B1B with word.
+Web-app shell: minimal Safari chrome with neutral address "freecan.studio" (planned domain for mockup); browser traffic lights only in browser chrome. Top app toolbar leading sidebar toggle and "demo.log", subtitle "1,000,000 frames · 30 min 15 s". Center compact switcher "Overview · Trace · Plot · Reverse Engineer · Database". Trailing "Open DBC…", "Open Log…", inspector toggle, disabled if no inspector. Every app view retains those slots. View-specific actions in content header. Sidebar search under brand. Footer "Processed on your computer". No duplicate page title if active tab already names it. No decorative backgrounds, stock graphics, gradients, slogans or watermarks.
+Websites: no browser frame; same brand, graphite text. Plex Sans marketing headline 600 at 56/60 maximum; secondary40/48, section28/36, body16/26, no700. Navigation Open App is OUTLINED. Pro desktop: native titlebars "FreeCAN Studio Pro" but same web UI style, not another native design system.
+Approved copy: NO tagline; "Free. No account." No "forever". No Pro format/size exclusivity claims, numerical size caps, licensing promises, or invented pricing. candump supported TODAY; ASC BLF TRC MF4 CSV are PLANNED. DBC is a signal database, not a log format. Planned features may appear in design concept but must not be marketed as shipped.
+
+
+Use case: ui-mockup.
+Create a high-resolution 16:10 screenshot of the next iteration of FreeCAN Studio Reverse Engineer. Image 1 is the existing approved layout/style reference. Keep its recognizable Workshop Light brand, Twisted F, font character, warm neutral surfaces and app chrome, but fundamentally redesign the content as described. Render exceptionally crisp readable text.
+PRIMARY CHANGE: the DEFAULT mode shows byte-value sparklines for ALL 11 CAN message IDs, compared with pinned reference signals. Bit activity, binary history and signal-definition form are entirely hidden from this default mode and live in Advanced.
+At top retain Safari bar freecan.studio; app toolbar demo.log / 1,000,000 frames · 30 min 15 s; Overview, Trace, Plot, Reverse Engineer selected, Database; outlined Open DBC…, Open Log…. Left sidebar retains prominent Twisted F with TWO amber circular terminals and FreeCAN Studio wordmark, source list grouped can0 / can1, filter search, privacy footer.
+Content occupies entire width to right of source sidebar, NO right inspector.
+Content header: subview tabs “Byte Values” (selected with dark ochre underline) and “Advanced”. Right outlined “Find Signal…”. Small scope text “All messages · 11 IDs · 2 buses”.
+TOP CONTENT CARD about 27 percent height: title “Pinned references”, outlined “Pin signal…” and small text “Shared time · separate scales”. Three vertically stacked compact full-width plots with left labels and right scales:
+VehicleSpeed / 3E9 · can0 / 115.4 km/h, green curve #16875F.
+EngineSpeed / 0C9 · can0 / 2,034.75 rpm, ochre #A56612 curve.
+123 · Byte 2 / Raw byte · 0–255 / 45, graphite curve, tiny pinned icon.
+All three curves use EXACTLY the same full-width x plot area, common 40 s,45 s,50 s,55 s,60 s,65 s,70 s axis only under third plot, shared thin gray cursor at 52.343 s across ALL three. Separate right y scales. Row pin/remove icons. Readouts graphite. No overlay of unlike units.
+Below: single compact analysis-window slider “40–70 s” with full log context “30 min 15 s”.
+MAIN CONTENT about lower 53 percent: heading “Byte values”, subtitle “Each cell shows 40–70 s · raw values 0–255”. Outlined filter “All buses” and unobtrusive “Changing bytes only” unchecked.
+Dense table: first column “Message”, then eight equally sized columns B0 B1 B2 B3 B4 B5 B6 B7. Each cell has a small thin graphite sparkline with white background and subtle separators, not colored tiles. All mini plots share 40–70 s locally and a tiny gray vertical cursor at the same fraction of width. Each row height about 42 px. Show ALL ELEVEN rows exactly once:
+0C9 ENGINE_1 · can0
+123 Unknown · can0 [rust dot, row pale amber; B2 selected with dark ochre outline and small pin icon]
+1F5 WHEEL_SPEEDS · can0
+2A0 STEERING · can0
+3E9 VEHICLE_STATE · can0
+450 BODY · can0
+456 Unknown · can0 [rust dot]
+5A0 IMU · can0
+6B0 BATTERY · can0
+18FEF100 CCVS · can0
+300 RADAR_TRACKS · can1 [small secondary “CAN FD · B0–7 of 32 · View all”].
+For 123 Unknown, beneath tiny waveforms show the exact hex bytes “39”, “00”, “2D”, “11”, “AA”, “0B”, “F4”, “00” respectively. B0 sawtooth, B1 flat zero,B2 slow rising step,B3 repeated wrapped changes,B4 flat,B5 stepping,B6 noisy,B7 flat. Other rows mix constant, smooth, sawtooth and stepped illustrative sparklines with variety, no invented decoded units.
+Footer directly under table: selection “123 · Byte 2”, outlined “Pin byte” and outlined “Open in Advanced →”. No big inspector. No bit grid anywhere.
+Clean desktop engineering app, useful compact density with consistent alignment, no enormous headlines. This is an IMAGE mockup not code.

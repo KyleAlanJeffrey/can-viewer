@@ -1,0 +1,653 @@
+/* Reverse Engineer view. Every class is prefixed re- so nothing here reaches other views. */
+
+.re-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 24px;
+}
+
+.re-card {
+  flex: none;
+  min-width: 0;
+  padding: 14px 16px 16px;
+}
+
+.re-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-bottom: 10px;
+}
+
+.re-card-note {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.re-quiet {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* Content header */
+.re-heading {
+  min-width: 0;
+}
+
+.re-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.re-title > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* No ID selected */
+.re-pick .hint {
+  max-width: 64ch;
+  margin-top: 4px;
+}
+
+.re-pick-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.re-pick-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.re-pick-list .text-button {
+  font-size: 13px;
+}
+
+.re-pick-meta {
+  color: var(--slate);
+  font-size: 12px;
+}
+
+/* Time window */
+.re-window-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-left: auto;
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.re-time .input {
+  width: 88px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.re-window-span {
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+/* Inset by a handle's width so the handles stay inside the card at either end of the log. */
+.re-strip {
+  position: relative;
+  height: 40px;
+  margin: 0 10px;
+  touch-action: none;
+}
+
+.re-strip canvas {
+  display: block;
+}
+
+.re-strip-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  border: 1px solid var(--graphite);
+  border-radius: 2px;
+  cursor: grab;
+}
+
+.re-strip-window:active {
+  cursor: grabbing;
+}
+
+.re-handle {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  width: 10px;
+  border: 1px solid var(--graphite);
+  border-radius: 4px;
+  background: var(--paper);
+  cursor: ew-resize;
+}
+
+.re-handle.start {
+  transform: translateX(-100%);
+}
+
+.re-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  right: 2px;
+  height: 8px;
+  margin-top: -4px;
+  border-left: 1px solid var(--slate);
+  border-right: 1px solid var(--slate);
+}
+
+.re-strip-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 10px 0;
+  color: var(--slate);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+/* Bit activity grid */
+.re-grid {
+  position: relative;
+  min-width: 0;
+  border-radius: 8px;
+}
+
+.re-grid:focus-visible {
+  outline-offset: 4px;
+}
+
+.re-grid-head {
+  display: flex;
+  align-items: center;
+  height: 20px;
+  color: var(--slate);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.re-grid-head span {
+  flex: none;
+  text-align: center;
+}
+
+.re-grid-head .re-grid-corner {
+  padding-right: 10px;
+  text-align: right;
+}
+
+.re-grid-scroll {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.re-grid canvas {
+  display: block;
+  touch-action: none;
+}
+
+/* Legends */
+.re-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  margin-top: 12px;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.re-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.re-legend-selection {
+  margin-left: auto;
+  color: var(--graphite);
+}
+
+.re-ramp {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.re-swatch {
+  display: inline-block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+}
+
+.re-swatch.unset {
+  background: var(--unset-cell);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+.re-swatch.dashed {
+  border: 2px dashed var(--graphite);
+  border-radius: 3px;
+  background: var(--paper);
+}
+
+.re-swatch.one {
+  background: var(--graphite);
+}
+
+.re-swatch.band {
+  background: var(--changed-byte);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+/* Bit history */
+.re-history {
+  position: relative;
+  min-width: 0;
+}
+
+.re-history canvas {
+  display: block;
+}
+
+.re-history-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* Candidate plot */
+.re-plot-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 20px;
+  margin-bottom: 2px;
+}
+
+.re-plot-readout .readout {
+  margin-left: 0;
+}
+
+.re-plot-at {
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-plot-host {
+  position: relative;
+  min-height: 146px;
+}
+
+.re-plot-empty {
+  padding: 12px 0 20px;
+}
+
+.re-subhead {
+  margin-top: 16px;
+}
+
+.re-subtitle {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+/* Byte lanes */
+.re-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+}
+
+.re-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--plot-paper);
+  text-align: left;
+  transition: background-color 120ms ease-out;
+}
+
+.re-lane:hover {
+  background: var(--selected-row);
+}
+
+.re-lane[aria-pressed='true'] {
+  padding: 5px 7px 7px;
+  border: 2px dashed var(--graphite);
+  background: var(--selected-row);
+}
+
+.re-lane-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.re-lane-note {
+  color: var(--slate);
+  font-size: 11px;
+}
+
+.re-spark {
+  display: block;
+  width: 100%;
+  height: 30px;
+}
+
+/* Inspector form */
+.re-inspector {
+  min-height: 100%;
+}
+
+.re-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 0;
+}
+
+.re-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.re-form-hint {
+  margin-top: -8px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.segmented.re-order {
+  display: flex;
+}
+
+.segmented.re-order button {
+  flex: 1;
+}
+
+.re-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+}
+
+.re-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--plot-paper);
+}
+
+.re-stats div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.re-stats dt {
+  flex: none;
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-stats dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--graphite);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.re-stats dd.re-quiet {
+  color: var(--slate);
+}
+
+/* Kept in view at the foot of the inspector however far the form scrolls. */
+.re-add {
+  position: sticky;
+  bottom: 0;
+  margin: 0 -16px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--hairline);
+  background: var(--paper);
+}
+
+.re-add .primary {
+  width: 100%;
+}
+
+.re-add-to {
+  margin-bottom: 12px;
+}
+
+.re-added {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.re-added:empty {
+  margin: 0;
+}
+
+/* Find Signal sheet */
+.re-find {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.re-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.re-rule-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.re-rule-lead {
+  width: 124px;
+}
+
+.re-rule .select {
+  width: 156px;
+}
+
+.re-seconds {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--slate);
+}
+
+.re-seconds .input {
+  width: 84px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.re-rule-remove {
+  margin-left: auto;
+}
+
+.re-rule .field-error {
+  margin-top: 4px;
+  padding-left: 134px;
+}
+
+.re-rules-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.re-rules-note {
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.re-find-count {
+  align-self: center;
+  margin-right: auto;
+  color: var(--slate);
+}
+
+.re-results-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.re-results {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.re-results th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--paper);
+  color: var(--slate);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.re-results td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--gridline);
+  vertical-align: middle;
+}
+
+.re-results tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.re-results tbody tr:hover td {
+  background: var(--hover-wash);
+}
+
+.re-results tbody tr[aria-selected='true'] td {
+  background: var(--selected-row);
+}
+
+/* Weight as well as tint marks the pick, so it doesn't rest on colour alone. */
+.re-results tbody tr[aria-selected='true'] .mono {
+  font-weight: 600;
+}
+
+.re-results tbody tr:focus-visible {
+  outline: 2px solid var(--ochre-control);
+  outline-offset: -2px;
+}
+
+.re-results .re-num {
+  text-align: right;
+}
+
+.re-cell-sub {
+  display: block;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.re-preview {
+  width: 140px;
+}
+
+.re-preview .re-spark {
+  width: 120px;
+  height: 24px;
+}
+
+.re-score {
+  color: var(--graphite);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.re-results-note {
+  margin-top: 8px;
+  color: var(--slate);
+  font-size: 12px;
+}

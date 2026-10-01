@@ -1,0 +1,91 @@
+VERSION "can-viewer demo"
+
+NS_ :
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	BA_DEF_DEF_
+	SIG_VALTYPE_
+
+BS_:
+
+BU_: ECM ABS EPS BCM IMU BMS RADAR
+
+BO_ 201 ENGINE_1: 8 ECM
+ SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|16383.75] "rpm" Vector__XXX
+ SG_ ThrottlePos : 16|8@1+ (0.4,0) [0|100] "%" Vector__XXX
+ SG_ CoolantTemp : 24|8@1+ (1,-40) [-40|215] "degC" Vector__XXX
+ SG_ Counter : 51|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ Checksum : 56|8@1+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 501 WHEEL_SPEEDS: 8 ABS
+ SG_ WheelSpeedFL : 7|16@0+ (0.01,0) [0|655.35] "km/h" Vector__XXX
+ SG_ WheelSpeedFR : 23|16@0+ (0.01,0) [0|655.35] "km/h" Vector__XXX
+ SG_ WheelSpeedRL : 39|16@0+ (0.01,0) [0|655.35] "km/h" Vector__XXX
+ SG_ WheelSpeedRR : 55|16@0+ (0.01,0) [0|655.35] "km/h" Vector__XXX
+
+BO_ 672 STEERING: 8 EPS
+ SG_ SteeringAngle : 7|16@0- (0.1,0) [-3276.8|3276.7] "deg" Vector__XXX
+ SG_ SteeringRate : 23|16@0- (1,0) [-32768|32767] "deg/s" Vector__XXX
+ SG_ Counter : 35|4@0+ (1,0) [0|15] "" Vector__XXX
+
+BO_ 1001 VEHICLE_STATE: 8 ECM
+ SG_ Gear : 0|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ VehicleSpeed : 4|12@1+ (0.1,0) [0|409.5] "km/h" Vector__XXX
+ SG_ Odometer : 16|32@1+ (0.1,0) [0|429496729.5] "km" Vector__XXX
+
+BO_ 1104 BODY: 8 BCM
+ SG_ DoorFL : 0|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ DoorFR : 1|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ TurnLeft : 8|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ TurnRight : 9|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Headlights : 10|2@1+ (1,0) [0|3] "" Vector__XXX
+
+BO_ 1440 IMU: 8 IMU
+ SG_ LateralAccel : 0|32@1- (1,0) [-50|50] "m/s2" Vector__XXX
+ SG_ YawRate : 32|32@1- (1,0) [-300|300] "deg/s" Vector__XXX
+
+BO_ 1712 BATTERY: 8 BMS
+ SG_ Page M : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Cell1 m0 : 8|16@1+ (0.001,0) [0|65.535] "V" Vector__XXX
+ SG_ Cell2 m0 : 24|16@1+ (0.001,0) [0|65.535] "V" Vector__XXX
+ SG_ Cell3 m0 : 40|16@1+ (0.001,0) [0|65.535] "V" Vector__XXX
+ SG_ Cell4 m1 : 8|16@1+ (0.001,0) [0|65.535] "V" Vector__XXX
+ SG_ Cell5 m1 : 24|16@1+ (0.001,0) [0|65.535] "V" Vector__XXX
+ SG_ Cell6 m1 : 40|16@1+ (0.001,0) [0|65.535] "V" Vector__XXX
+ SG_ PackCurrent : 56|8@1- (2,0) [-256|254] "A" Vector__XXX
+
+BO_ 2566844672 CCVS: 8 ECM
+ SG_ WheelBasedVehicleSpeed : 8|16@1+ (0.00390625,0) [0|250.996] "km/h" Vector__XXX
+ SG_ CruiseControlActive : 24|2@1+ (1,0) [0|3] "" Vector__XXX
+
+BO_ 768 RADAR_TRACKS: 32 RADAR
+ SG_ Track1Range : 0|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+ SG_ Track2Range : 16|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+ SG_ Track3Range : 32|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+ SG_ Track4Range : 48|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+ SG_ Track5Range : 64|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+ SG_ Track6Range : 80|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+ SG_ Track7Range : 96|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+ SG_ Track8Range : 112|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+ SG_ Track1RelSpeed : 128|16@1- (0.01,0) [-327.68|327.67] "m/s" Vector__XXX
+ SG_ Track2RelSpeed : 144|16@1- (0.01,0) [-327.68|327.67] "m/s" Vector__XXX
+ SG_ Track3RelSpeed : 160|16@1- (0.01,0) [-327.68|327.67] "m/s" Vector__XXX
+ SG_ Track4RelSpeed : 176|16@1- (0.01,0) [-327.68|327.67] "m/s" Vector__XXX
+ SG_ Track5RelSpeed : 192|16@1- (0.01,0) [-327.68|327.67] "m/s" Vector__XXX
+ SG_ Track6RelSpeed : 208|16@1- (0.01,0) [-327.68|327.67] "m/s" Vector__XXX
+ SG_ Track7RelSpeed : 224|16@1- (0.01,0) [-327.68|327.67] "m/s" Vector__XXX
+ SG_ Track8RelSpeed : 240|16@1- (0.01,0) [-327.68|327.67] "m/s" Vector__XXX
+
+CM_ BO_ 201 "Engine status, 100 Hz";
+CM_ SG_ 201 Checksum "Sum of bytes 0-6, modulo 256";
+CM_ BO_ 768 "Front radar object list (CAN FD on can1)";
+BA_DEF_ BO_  "VFrameFormat" ENUM  "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";
+BA_DEF_DEF_  "VFrameFormat" "StandardCAN";
+BA_ "VFrameFormat" BO_ 768 14;
+BA_ "VFrameFormat" BO_ 2566844672 3;
+VAL_ 1001 Gear 0 "P" 1 "R" 2 "N" 3 "D" ;
+VAL_ 1104 Headlights 0 "Off" 1 "Parking" 2 "Low" 3 "High" ;
+SIG_VALTYPE_ 1440 LateralAccel : 1;
+SIG_VALTYPE_ 1440 YawRate : 1;

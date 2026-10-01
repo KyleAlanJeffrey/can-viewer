@@ -1,0 +1,11 @@
+[package]
+name = "sample-gen"
+description = "Dev tool: synthetic demo logs, native parse benchmark, decode dumps for cross-checking"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+can-core.workspace = true
+can-formats.workspace = true
+can-dbc-model.workspace = true

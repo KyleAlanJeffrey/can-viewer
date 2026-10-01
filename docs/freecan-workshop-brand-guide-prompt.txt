@@ -1,0 +1,7 @@
+Generated with built-in ImageGen. This prompt supersedes the earlier slogan-bearing brand-board prompt.
+Use docs/mockup-style.txt and DESIGN.md for exact tokens. Latest output: freecan-workshop-brand-guide-v2.png.
+Create an opaque Workshop Light brand reference board. Twisted F with both terminals Amber #FFB547, Graphite #20242B structure and one Amber woven strand. No tagline, no invented slogan. IBM Plex Sans and IBM Plex Mono specimens. Sans specimen: Overview · Trace · Plot. Mono specimen: 0C9 AF 0C 00 3C 2,140 rpm.
+Brand swatches: Amber #FFB547, Graphite #20242B, Warm White #F4F0E7, Paper #FFFFFF, Slate #62666D, Deep Ochre #8E5707, Hairline #E0DDD6.
+Data swatches: #A56612, #2C6CB8, #16875F, #8F4AA6, #6B7A12, #0A7FA3.
+Heat ramp: #E8A844, #D08B26, #B0700E, #8E5707, #6B4005, #4A2C03.
+Interface examples: one Amber Open Log action with Graphite text; white Open DBC with Hairline border and Deep Ochre text; pale selected row; hex chips; thin unmarked ochre plot line with one cursor dot and a Graphite readout. No glass, dark panels, decorative motifs, repeated sample markers, or secondary filled buttons.

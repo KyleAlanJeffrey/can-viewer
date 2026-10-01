@@ -1,0 +1,582 @@
+/* Plot view. Every class is pv- prefixed: .plot, .plots-card and .plot-head belong to Trace's plot card. */
+
+.pv-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* Sidebar signal tree */
+.pv-tree {
+  padding: 0 8px;
+}
+
+.pv-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pv-tree-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px;
+  color: var(--slate);
+}
+
+.pv-bus + .pv-bus {
+  margin-top: 8px;
+}
+
+.pv-bus-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 4px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+.pv-count {
+  color: var(--slate);
+  font-weight: 400;
+}
+
+.pv-msg {
+  display: grid;
+  grid-template-columns: 14px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.pv-msg:hover {
+  background: var(--hover-wash);
+}
+
+.pv-msg svg {
+  color: var(--slate);
+}
+
+.pv-msg-id {
+  font: 12px/16px var(--font-mono);
+  white-space: nowrap;
+}
+
+.pv-msg-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-msg-period {
+  color: var(--slate);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pv-sig {
+  display: grid;
+  grid-template-columns: 16px 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px 0 30px;
+  border-radius: 8px;
+}
+
+.pv-sig:hover {
+  background: var(--hover-wash);
+}
+
+.pv-sig input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.pv-sig-name {
+  min-width: 0;
+  font: 12px/16px var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-sig-unit {
+  color: var(--slate);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Empty state */
+.pv-empty {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  padding: 32px 24px;
+  text-align: center;
+}
+
+.pv-empty-title {
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.pv-empty-hint {
+  color: var(--slate);
+}
+
+/* Content header */
+.pv-header {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.pv-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.pv-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Lanes */
+.pv-stack {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px 8px;
+}
+
+.pv-rail {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 28px;
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.pv-lanes {
+  background: var(--plot-paper);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.pv-lane + .pv-lane {
+  border-top: 1px solid var(--hairline);
+}
+
+.pv-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 12px;
+}
+
+.pv-lane-name {
+  min-width: 0;
+  font: 400 13px/18px var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-lane-unit {
+  color: var(--slate);
+  white-space: nowrap;
+}
+
+.pv-lane-remove {
+  opacity: 0;
+}
+
+.pv-lane:hover .pv-lane-remove,
+.pv-lane-remove:focus-visible {
+  opacity: 1;
+}
+
+.pv-lane-readout {
+  display: flex;
+  gap: 16px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pv-key {
+  margin-right: 6px;
+  color: var(--slate);
+}
+
+.pv-lane-host {
+  position: relative;
+}
+
+/* Quieter than the A and B lines, so hovering never reads as a third cursor. */
+.pv-lane .uplot .u-cursor-x {
+  border-right: 1px solid var(--hairline);
+}
+
+/* Cursor handles */
+.pv-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+}
+
+.pv-stem {
+  position: absolute;
+  left: -0.5px;
+  top: 22px;
+  bottom: 0;
+  width: 1px;
+  background: var(--graphite);
+}
+
+.pv-cursor-b .pv-stem {
+  background: var(--slate);
+}
+
+.pv-handle {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.pv-handle[data-anchor='start'] {
+  transform: translateX(-8px);
+}
+
+.pv-handle[data-anchor='end'] {
+  transform: translateX(calc(-100% + 8px));
+}
+
+.pv-handle:hover {
+  border-color: var(--scrubber);
+}
+
+.pv-handle:focus-visible {
+  outline-offset: 0;
+}
+
+.pv-handle.off {
+  border-style: dashed;
+  color: var(--slate);
+}
+
+.pv-handle-key {
+  font-weight: 600;
+}
+
+.pv-handle-time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Minimap */
+.pv-minimap {
+  flex: none;
+  padding: 6px 0 4px;
+  border-top: 1px solid var(--hairline);
+}
+
+.pv-mm-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.pv-mm-range {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.pv-mm-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pv-mm-source .pv-dot {
+  width: 8px;
+  height: 8px;
+}
+
+.pv-mm-source-name {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-mm-track {
+  position: relative;
+  height: 32px;
+  border-radius: 6px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+.pv-mm-track canvas {
+  display: block;
+}
+
+.pv-mm-track::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.pv-mm-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: 1px solid var(--graphite);
+  border-radius: 4px;
+  background: var(--press-wash);
+  cursor: grab;
+  z-index: 1;
+}
+
+.pv-mm-window:active {
+  cursor: grabbing;
+}
+
+.pv-mm-window:focus-visible {
+  outline-offset: 0;
+}
+
+.pv-mm-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.pv-mm-edge.start {
+  left: -5px;
+}
+
+.pv-mm-edge.end {
+  right: -5px;
+}
+
+.pv-mm-edge::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 9px;
+  bottom: 9px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--graphite);
+}
+
+.pv-mm-ticks {
+  position: relative;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--slate);
+  font-size: 11px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pv-mm-ticks span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.pv-mm-ticks span.first {
+  transform: none;
+}
+
+.pv-mm-ticks span.last {
+  transform: translateX(-100%);
+}
+
+/* Readouts and markers */
+.pv-footer {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  padding: 8px 16px 12px;
+  border-top: 1px solid var(--hairline);
+}
+
+.pv-readout-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.pv-readout {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.pv-readout th,
+.pv-readout td {
+  height: 24px;
+  padding: 0 8px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pv-readout th:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+.pv-readout thead th {
+  border-bottom: 1px solid var(--hairline);
+  color: var(--slate);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.pv-readout tbody th {
+  font-weight: 600;
+}
+
+.pv-readout .pv-delta th,
+.pv-readout .pv-delta td {
+  border-top: 1px solid var(--gridline);
+}
+
+.pv-col {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pv-col-name {
+  color: var(--graphite);
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+
+.pv-col-unit {
+  color: var(--slate);
+  font-weight: 400;
+}
+
+.pv-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.pv-markers {
+  flex: 0 0 200px;
+}
+
+.pv-markers-title {
+  border-bottom: 1px solid var(--hairline);
+  color: var(--slate);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 23px;
+}
+
+.pv-markers ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 72px;
+  overflow-y: auto;
+}
+
+.pv-markers-empty {
+  padding-top: 4px;
+  color: var(--slate);
+}
+
+.pv-marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+}
+
+.pv-marker-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+/* A short dashed rule, echoing the marker line on the plot. */
+.pv-marker-label::before {
+  content: '';
+  height: 12px;
+  border-left: 1px dashed var(--slate);
+}
+
+.pv-marker-time {
+  color: var(--slate);
+  font: 12px/16px var(--font-mono);
+}
+
+.pv-marker .icon-button {
+  margin-left: auto;
+}

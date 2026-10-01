@@ -1,0 +1,10 @@
+[package]
+name = "can-formats"
+description = "Streaming parsers for CAN log file formats"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+can-core.workspace = true
+memchr.workspace = true

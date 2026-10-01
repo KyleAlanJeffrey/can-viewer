@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--dir",
+        "web",
+        "dev",
+        "--port",
+        "5317",
+        "--strictPort"
+      ],
+      "port": 5317
+    }
+  ]
+}

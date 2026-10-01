@@ -18,7 +18,8 @@ use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use crate::text::{dlc_to_len, ChannelName};
 use crate::{LogParser, ParseStats};
 
-const MAX_FILE: usize = 1 << 30;
+/// The largest file read; a larger one rejects a record and gives no frames.
+pub const MAX_FILE: usize = 1 << 30;
 /// One inflated block, or the variable length data of one channel, may not exceed this.
 const MAX_STREAM: usize = 1 << 30;
 const MAX_COMPOSITION_DEPTH: usize = 4;
@@ -31,8 +32,17 @@ const MAX_DATA_PER_FILE_BYTE: u64 = 100;
 const FILE_BYTES_PER_CHANNEL: usize = 32;
 /// Channel names are compared up to this length; CAN frame member names are far shorter.
 const MAX_NAME: usize = 256;
+/// A CAN frame record takes at least a byte of the file even compressed (`sample-gen
+/// convert` writes 11), so a file whose data gives more frames than bytes repeats them.
+const FILE_BYTES_PER_FRAME: usize = 1;
 /// CAN frame records are well under a hundred bytes.
 const MAX_BUS_RECORD: usize = 1 << 16;
+/// Channels of one channel group kept for finding the CAN frame members; CAN frame groups
+/// have a few dozen.
+const MAX_KEPT_CHANNELS: usize = 1 << 16;
+/// Frames read ahead of their turn, shared by the data groups with several CAN frame
+/// channel groups.
+const REORDER_WINDOW: usize = 1 << 16;
 
 const VLSD_GROUP: u16 = 0x1;
 
@@ -45,6 +55,20 @@ const UNFINALIZED_UNUSED: u16 = 0x01 | 0x02 | 0x20;
 const DATA_FRAME: &str = "can_dataframe";
 const REMOTE_FRAME: &str = "can_remoteframe";
 const ERROR_FRAME: &str = "can_errorframe";
+/// The CAN frame members [`bus_group`] looks for.
+const MEMBERS: [&str; 11] = [
+    "buschannel",
+    "id",
+    "ide",
+    "dlc",
+    "datalength",
+    "databytes",
+    "dir",
+    "edl",
+    "fdf",
+    "brs",
+    "esi",
+];
 
 const LINK_REPEATS: &str = "MF4 links lead back to a block already read";
 const CUT_SHORT: &str = "record cut short";
@@ -143,6 +167,7 @@ struct Walk {
     seen: HashSet<u64>,
     channels_left: usize,
     data_left: u64,
+    frames_left: usize,
 }
 
 impl Walk {
@@ -151,6 +176,7 @@ impl Walk {
             seen: HashSet::new(),
             channels_left: file_len / FILE_BYTES_PER_CHANNEL,
             data_left: (file_len as u64).saturating_mul(MAX_DATA_PER_FILE_BYTE),
+            frames_left: file_len / FILE_BYTES_PER_FRAME,
         }
     }
 
@@ -177,6 +203,14 @@ impl Walk {
             .ok_or("more data than the file's size allows")?;
         Ok(())
     }
+
+    fn take_frame(&mut self) -> Result<(), &'static str> {
+        self.frames_left = self
+            .frames_left
+            .checked_sub(1)
+            .ok_or("more frames than the file's size allows")?;
+        Ok(())
+    }
 }
 
 fn read_file<S: FrameSink>(
@@ -192,6 +226,8 @@ fn read_file<S: FrameSink>(
         .and_then(|bytes| i64::try_from(u64_at(bytes, 0)).ok())
         .ok_or("start time out of range")?;
     let mut walk = Walk::new(file.len());
+    // The variable length data pass reads the same blocks again, so it has a budget of its own.
+    let mut variable_walk = Walk::new(file.len());
     let mut sources = Vec::new();
     let mut dg_at = header.link(0);
     while dg_at != 0 {
@@ -206,7 +242,7 @@ fn read_file<S: FrameSink>(
                 break;
             }
         };
-        match read_data_group(file, &group, &mut walk) {
+        match read_data_group(file, &group, &mut walk, &mut variable_walk) {
             Ok(Some(source)) => sources.push(source),
             Ok(None) => {}
             Err(reason) => {
@@ -219,6 +255,7 @@ fn read_file<S: FrameSink>(
     if sources.is_empty() {
         return Err("no CAN frame channel groups in the file");
     }
+    share_reorder_window(&mut sources);
     merge(sources, start_ns, &mut walk, stats, sink);
     Ok(())
 }
@@ -237,6 +274,16 @@ fn check_identification(file: &[u8]) -> Result<(), &'static str> {
         return Err("unfinalized MF4 file; finalize it with the logger's tool");
     }
     Ok(())
+}
+
+/// Splits the reorder window between the data groups that need one, since data groups may
+/// all link the same data and would otherwise each hold a full window.
+fn share_reorder_window(sources: &mut [Source<'_>]) {
+    let reordering = sources.iter().filter(|s| s.window_len > 1).count();
+    let share = (REORDER_WINDOW / reordering.max(1)).max(1);
+    for source in sources.iter_mut().filter(|s| s.window_len > 1) {
+        source.window_len = share;
+    }
 }
 
 /// Delivers the frames of every data group, merged by time.
@@ -370,9 +417,6 @@ struct Source<'a> {
     ended: bool,
 }
 
-/// Frames read ahead of their turn, in a data group with several CAN frame channel groups.
-const REORDER_WINDOW: usize = 1 << 16;
-
 struct Frame {
     ts_ns: i64,
     bus: u32,
@@ -386,6 +430,7 @@ fn read_data_group<'a>(
     file: &'a [u8],
     group: &Block<'a>,
     walk: &mut Walk,
+    variable_walk: &mut Walk,
 ) -> Result<Option<Source<'a>>, &'static str> {
     let record_id_size = usize::from(*group.data.first().ok_or("bad data group block")?);
     if !matches!(record_id_size, 0 | 1 | 2 | 4 | 8) {
@@ -420,7 +465,7 @@ fn read_data_group<'a>(
     let variable = if record_id_size == 0 {
         Vec::new()
     } else {
-        variable_data(file, &blocks, record_id_size, &groups, walk)
+        variable_data(file, &blocks, record_id_size, &groups, variable_walk)
     };
     Ok(Some(Source {
         indexes: vec![0; groups.len()],
@@ -468,18 +513,29 @@ fn variable_data(
     }
     let pointed_at: Vec<u64> = values.iter().map(|(at, _)| *at).collect();
     let wanted = |index: usize| groups[index].vlsd && pointed_at.contains(&groups[index].block_at);
+    // A group stops gathering at its first value that does not fit, so that the offsets
+    // of the values it holds stay right.
+    let mut full = vec![false; values.len()];
     let mut records = BlockReader::new(file, blocks.to_vec());
     while let Ok(Some((index, value))) =
         next_record(&mut records, groups, record_id_size, walk, wanted)
     {
-        let Some((_, data)) = values
-            .iter_mut()
-            .find(|(at, _)| *at == groups[index].block_at)
+        let Some(slot) = values
+            .iter()
+            .position(|(at, _)| *at == groups[index].block_at)
         else {
             continue;
         };
+        if full[slot] {
+            continue;
+        }
+        let data = &mut values[slot].1;
         if data.len() + 4 + value.len() > MAX_STREAM {
-            break;
+            full[slot] = true;
+            if full.iter().all(|&f| f) {
+                break;
+            }
+            continue;
         }
         data.extend_from_slice(&(value.len() as u32).to_le_bytes());
         data.extend_from_slice(value);
@@ -531,9 +587,14 @@ impl Source<'_> {
         let Some(bus) = &groups[group_index].bus else {
             return;
         };
+        stats.lines += 1;
+        if let Err(reason) = walk.take_frame() {
+            stats.reject(reason);
+            self.ended = true;
+            return;
+        }
         let record_index = self.indexes[group_index];
         self.indexes[group_index] += 1;
-        stats.lines += 1;
         match frame_of(bus, record, record_index, &self.variable, start_ns) {
             Ok((ts_ns, bus, id, frame_flags, data)) => {
                 stats.frames += 1;
@@ -713,6 +774,8 @@ fn read_channel_group<'a>(
 }
 
 /// Reads a channel chain and, through compositions, the member channels of structures.
+/// Only the channels [`bus_group`] may use are kept: master channels, CAN frame structures
+/// and channels named like their members.
 fn read_channels(
     file: &[u8],
     first_at: u64,
@@ -734,19 +797,28 @@ fn read_channels(
         let name = Block::typed(file, block.link(2), b"##TX")
             .map(|text| block_text(&text))
             .unwrap_or_default();
-        out.push(Channel {
-            name,
-            cn_type: block.data[0],
-            sync_type: block.data[1],
-            field: Field {
-                data_type: block.data[2],
-                bit_offset: u32::from(block.data[3]),
-                byte_offset: u32_at(block.data, 4) as usize,
-                bit_count: u32_at(block.data, 8),
-            },
-            conversion_at: block.link(4),
-            data_at: block.link(5),
-        });
+        let cn_type = block.data[0];
+        let kept = matches!(cn_type, 2 | 3)
+            || name.starts_with("can_")
+            || MEMBERS.contains(&member_name(&name));
+        if kept {
+            if out.len() == MAX_KEPT_CHANNELS {
+                return Err("channel group with too many CAN frame channels");
+            }
+            out.push(Channel {
+                name,
+                cn_type,
+                sync_type: block.data[1],
+                field: Field {
+                    data_type: block.data[2],
+                    bit_offset: u32::from(block.data[3]),
+                    byte_offset: u32_at(block.data, 4) as usize,
+                    bit_count: u32_at(block.data, 8),
+                },
+                conversion_at: block.link(4),
+                data_at: block.link(5),
+            });
+        }
         let composition_at = block.link(1);
         if composition_at != 0 && depth < MAX_COMPOSITION_DEPTH {
             // A composition is either a channel chain (a structure) or an array block.
@@ -1152,7 +1224,9 @@ fn inflate(block: &Block<'_>, walk: &mut Walk) -> Result<Vec<u8>, &'static str> 
                 .ok_or("bad compressed data block")?,
         )
         .ok_or("bad compressed data block")?;
-    walk.take_data(original_len)?;
+    // Charged for the compressed bytes too: a stream of empty stored blocks inflates to
+    // nothing but still takes time.
+    walk.take_data(original_len.max(compressed_len))?;
     let data = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(compressed, original_len)
         .map_err(|_| "compressed data does not inflate")?;
     if data.len() != original_len {
@@ -1796,7 +1870,7 @@ mod tests {
 
         let mut walk = Walk::new(b.bytes.len());
         let group = Block::typed(&b.bytes, dg, b"##DG").unwrap();
-        let mut source = read_data_group(&b.bytes, &group, &mut walk)
+        let mut source = read_data_group(&b.bytes, &group, &mut walk, &mut walk_of(&b))
             .unwrap()
             .unwrap();
         let mut stats = ParseStats::default();
@@ -1811,6 +1885,167 @@ mod tests {
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(sink.frames.len(), count as usize);
         assert!(sink.frames.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    }
+
+    fn walk_of(b: &Builder) -> Walk {
+        Walk::new(b.bytes.len())
+    }
+
+    #[test]
+    fn data_groups_share_the_reorder_window() {
+        // Four data groups, each with a data and a remote frame channel group, all linking
+        // the same data block.
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let sd = b.variable_data(&[&[1, 2]]);
+        let count = REORDER_WINDOW as u32 / 4 + 10;
+        let mut records = Vec::new();
+        for i in 0..count {
+            records.push(1);
+            let t = f64::from(i) / 1000.0;
+            records.extend(data_record(t, 1, 0x100, false, (2, 2), 0, [false; 4]));
+        }
+        let dt = b.data_block(&records);
+        let mut groups = Vec::new();
+        let mut next_dg = 0;
+        for _ in 0..4 {
+            let data_structure = b.structure("CAN_DataFrame", &data_frame_members(sd));
+            let data_time = b.channel(&master("t", FLOAT, 0, 64), data_structure, 0);
+            let remote_members = [member("CAN_RemoteFrame.ID", UNSIGNED, 0, 16)];
+            let remote_structure = b.structure("CAN_RemoteFrame", &remote_members);
+            let remote_cg = b.channel_group(2, 0, 2, remote_structure, 0);
+            let data_cg = b.channel_group(1, 0, DATA_RECORD_LEN, data_time, remote_cg);
+            next_dg = b.data_group(1, data_cg, dt);
+            groups.push(next_dg);
+        }
+        for pair in groups.windows(2) {
+            b.set_link(pair[1], 0, pair[0]);
+        }
+        b.set_link(hd, 0, next_dg);
+
+        let mut walk = walk_of(&b);
+        let mut variable_walk = walk_of(&b);
+        let mut sources: Vec<Source<'_>> = groups
+            .iter()
+            .map(|&dg| {
+                let group = Block::typed(&b.bytes, dg, b"##DG").unwrap();
+                read_data_group(&b.bytes, &group, &mut walk, &mut variable_walk)
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect();
+        share_reorder_window(&mut sources);
+        let mut stats = ParseStats::default();
+        for source in &mut sources {
+            assert_eq!(source.next_time(0, &mut walk, &mut stats), Some(0));
+            assert_eq!(source.held.len(), REORDER_WINDOW / 4);
+        }
+
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(sink.frames.len(), 4 * count as usize);
+        assert!(sink.frames.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    }
+
+    #[test]
+    fn data_giving_more_frames_than_the_file_has_bytes_ends_with_an_error() {
+        // Records of nothing but a 1-byte record ID, from a block the data list repeats.
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let dt = b.data_block(&[1; 1000]);
+        let dl = b.data_list(&[dt; 100]);
+        let structure = b.structure("CAN_DataFrame", &[]);
+        let cg = b.channel_group(1, 0, 0, structure, 0);
+        let dg = b.data_group(1, cg, dl);
+        b.set_link(hd, 0, dg);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(
+            stats.first_rejection.map(|(_, reason)| reason),
+            Some("more frames than the file's size allows")
+        );
+        assert_eq!(sink.frames.len(), b.bytes.len() / FILE_BYTES_PER_FRAME);
+    }
+
+    /// A zlib stream of `data` in a stored block, after `empty` empty stored blocks.
+    fn stored_zlib(data: &[u8], empty: usize) -> Vec<u8> {
+        let mut out = vec![0x78, 0x01];
+        for _ in 0..empty {
+            out.extend_from_slice(&[0x00, 0x00, 0x00, 0xFF, 0xFF]);
+        }
+        let len = data.len() as u16;
+        out.push(0x01);
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(data);
+        let (mut a, mut b) = (1u32, 0u32);
+        for &byte in data {
+            a = (a + u32::from(byte)) % 65521;
+            b = (b + a) % 65521;
+        }
+        out.extend_from_slice(&((b << 16) | a).to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn compressed_blocks_are_charged_for_their_compressed_size() {
+        let (mut b, group) = file_of_one_group(1);
+        let compressed = stored_zlib(&group.records, 2000);
+        let mut data = b"DT".to_vec();
+        data.extend_from_slice(&[0, 0]);
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(group.records.len() as u64).to_le_bytes());
+        data.extend_from_slice(&(compressed.len() as u64).to_le_bytes());
+        data.extend_from_slice(&compressed);
+        let dz = b.block(b"##DZ", &[], &data);
+        b.set_link(group.dg, 2, dz);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(sink.frames.len(), 1);
+
+        let dl = b.data_list(&[dz; 1000]);
+        b.set_link(group.dg, 2, dl);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(
+            stats.first_rejection.map(|(_, reason)| reason),
+            Some("more data than the file's size allows")
+        );
+        let read = sink.frames.len() as u64 * compressed.len() as u64;
+        assert!(read <= b.bytes.len() as u64 * MAX_DATA_PER_FILE_BYTE);
+    }
+
+    /// A chain of `count` channels that all share one name block.
+    fn chain_of_one_name(b: &mut Builder, name: &str, count: usize) -> u64 {
+        let text = b.text(name);
+        let mut data = vec![0, 1, UNSIGNED, 0];
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&8u32.to_le_bytes());
+        data.resize(72, 0);
+        let mut next = 0;
+        for _ in 0..count {
+            next = b.block(b"##CN", &[next, 0, text, 0, 0, 0, 0, 0], &data);
+        }
+        next
+    }
+
+    #[test]
+    fn channel_groups_keep_only_the_channels_a_frame_needs() {
+        let (mut b, group) = file_of_one_group(3);
+        let time = b.link(group.cg, 1);
+        let structure = b.link(time, 0);
+        let others = chain_of_one_name(&mut b, "EngineSpeed", MAX_KEPT_CHANNELS + 1);
+        b.set_link(structure, 0, others);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2]);
+
+        let ids = chain_of_one_name(&mut b, "Extra.ID", MAX_KEPT_CHANNELS);
+        b.set_link(structure, 0, ids);
+        let (sink, stats) = parse(&b.bytes);
+        assert!(sink.frames.is_empty());
+        assert_eq!(
+            stats.first_rejection,
+            Some((1, "channel group with too many CAN frame channels"))
+        );
     }
 
     #[test]
@@ -1876,15 +2111,31 @@ mod tests {
 
     #[test]
     fn data_lists_that_repeat_a_block_stop_at_the_data_budget() {
+        // Records padded past the data budget's share of a frame, so that the data budget
+        // rather than the frame budget ends the file.
+        const RECORD_LEN: usize = 4 * MAX_DATA_PER_FILE_BYTE as usize;
         let (mut b, group) = file_of_one_group(200);
-        let dl = b.data_list(&[group.dt; 1000]);
+        let padded: Vec<u8> = group
+            .records
+            .chunks(DATA_RECORD_LEN as usize)
+            .flat_map(|record| {
+                let mut record = record.to_vec();
+                record.resize(RECORD_LEN, 0);
+                record
+            })
+            .collect();
+        let record_len_at = group.cg as usize + 24 + 6 * 8 + 24;
+        b.bytes[record_len_at..record_len_at + 4]
+            .copy_from_slice(&(RECORD_LEN as u32).to_le_bytes());
+        let dt = b.data_block(&padded);
+        let dl = b.data_list(&[dt; 1000]);
         b.set_link(group.dg, 2, dl);
         let (sink, stats) = parse(&b.bytes);
         assert_eq!(
             stats.first_rejection.map(|(_, reason)| reason),
             Some("more data than the file's size allows")
         );
-        let read = sink.frames.len() as u64 * u64::from(DATA_RECORD_LEN);
+        let read = sink.frames.len() as u64 * RECORD_LEN as u64;
         assert!(read <= b.bytes.len() as u64 * MAX_DATA_PER_FILE_BYTE);
         assert!(sink.frames.len() < 200 * 1000);
     }

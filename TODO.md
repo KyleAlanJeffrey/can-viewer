@@ -73,7 +73,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Check BLF and MF4 import against files from real loggers and tools (the tests use synthetic files)
 - [ ] MF4: repair unfinalized files (UnFinMF) whose last DT block or DL list was never updated; today the tail may be lost, and flags other than 0x01, 0x02 and 0x20 are rejected
 - [ ] MF4: an unsorted data group with records more than 65,536 frames out of order (a window shared by all such data groups) keeps the file's order
-- [ ] BLF: read the data bytes of CAN_FD_ERROR_64 objects (today an error frame without data)
+- [x] BLF: read the data bytes of CAN_FD_ERROR_64 objects (today an error frame without data)
 - [ ] MF4: size the file buffer from the file's size instead of letting it double, so a file near 1 GiB peaks around 1.6 GB of wasm memory instead of 2.2 GB (needs a size hint on `AnyParser`)
 - [x] Automated UI tests: Vitest setup, with Byte Values and Pin signal covered
 - [x] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`

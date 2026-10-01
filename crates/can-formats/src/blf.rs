@@ -444,12 +444,29 @@ fn can_error_ext(body: &[u8]) -> Result<Frame, &'static str> {
     Ok(Frame::error(u16_at(body, 0)).with_data(&body[24..32], usize::from(body[10]).min(8)))
 }
 
-/// CAN_FD_ERROR_64: a one-byte channel, then the details of the error.
+/// CAN_FD_ERROR_64: channel, DLC, valid bytes, ECC, flags, extended error code, FD flags,
+/// extended data offset, ID, frame length, bit timing, offsets, CRC, error position, then
+/// the data bytes of the frame the error hit.
 fn can_fd_error_64(body: &[u8]) -> Result<Frame, &'static str> {
-    if body.len() < 4 {
+    if body.len() < 44 {
         return Err("CAN error object too short");
     }
-    Ok(Frame::error(u16::from(body[0])))
+    let mut frame = Frame::error(u16::from(body[0]));
+    let fd_flags = u16_at(body, 8);
+    if fd_flags & 0x80 != 0 {
+        frame.flags |= flags::FD;
+        if fd_flags & 0x40 != 0 {
+            frame.flags |= flags::BRS;
+        }
+        if fd_flags & 0x20 != 0 {
+            frame.flags |= flags::ESI;
+        }
+    }
+    let len = usize::from(body[2]).min(MAX_PAYLOAD);
+    if body.len() < 44 + len {
+        return Err("CAN error object too short");
+    }
+    Ok(frame.with_data(&body[44..], len))
 }
 
 /// CAN_FD_MESSAGE: channel, flags, DLC, ID, frame length, bit count, FD flags, valid bytes
@@ -640,6 +657,21 @@ mod tests {
         body
     }
 
+    fn can_fd_error_64_body(channel: u8, fd_flags: u16, data: &[u8]) -> Vec<u8> {
+        let mut body = vec![channel, 15, data.len() as u8, 0];
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(&fd_flags.to_le_bytes());
+        body.extend_from_slice(&[0, 0]);
+        body.extend_from_slice(&0x18FE_F100u32.to_le_bytes());
+        body.extend_from_slice(&[0; 24]);
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(data);
+        body.resize(body.len() + 8, 0);
+        body
+    }
+
     fn parse(input: &[u8]) -> (VecSink, ParseStats) {
         parse_chunked(BlfParser::new(), input, usize::MAX)
     }
@@ -738,7 +770,7 @@ mod tests {
                 &can_fd_message_64_body(0x10, 0, 0, &[]),
             ),
             object(CAN_ERROR, NS, 50, &[3, 0, 0, 0]),
-            object(CAN_FD_ERROR_64, NS, 55, &[2, 0, 0, 0, 0, 0, 0, 0]),
+            object(CAN_FD_ERROR_64, NS, 55, &can_fd_error_64_body(2, 0, &[])),
             object(CAN_ERROR_EXT, NS, 60, &{
                 let mut body = vec![0u8; 32];
                 body[0] = 1;
@@ -784,6 +816,51 @@ mod tests {
         assert_eq!(
             sink.channels,
             [b"can1".to_vec(), b"can2".to_vec(), b"can3".to_vec()]
+        );
+    }
+
+    #[test]
+    fn fd_error_objects_keep_the_data_of_the_frame_the_error_hit() {
+        let data: Vec<u8> = (0..20).collect();
+        let mut truncated = can_fd_error_64_body(1, 0x80, &[5; 12]);
+        truncated.truncate(50);
+        let file = concat(&[
+            file_header(None),
+            object(
+                CAN_FD_ERROR_64,
+                NS,
+                10,
+                &can_fd_error_64_body(1, 0x80 | 0x40 | 0x20, &data),
+            ),
+            object(
+                CAN_FD_ERROR_64,
+                NS,
+                20,
+                &can_fd_error_64_body(2, 0x40, &[0xDE, 0xAD]),
+            ),
+            object(CAN_FD_ERROR_64, NS, 30, &[1; 43]),
+            object(CAN_FD_ERROR_64, NS, 40, &truncated),
+        ]);
+        let (sink, stats) = parse(&file);
+        assert_eq!(stats.frames, 2);
+        assert_eq!(stats.rejected, 2);
+        assert_eq!(
+            stats.first_rejection,
+            Some((3, "CAN error object too short"))
+        );
+        assert_eq!(
+            sink.frames[0],
+            (
+                10,
+                0,
+                ERR_FLAG,
+                flags::ERROR | flags::FD | flags::BRS | flags::ESI,
+                data
+            )
+        );
+        assert_eq!(
+            sink.frames[1],
+            (20, 1, ERR_FLAG, flags::ERROR, vec![0xDE, 0xAD])
         );
     }
 

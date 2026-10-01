@@ -45,6 +45,10 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] A DBC with two `BO_` lines for the same ID loads, but the Database view selects, edits and deletes messages by ID, so both change together (PR #1 review)
 - [x] Export DBC... marks the DBC clean before the file is saved, so a cancelled save dialog loses the "unexported edits" guard on Remove and on reopening the file (PR #1 review; use `showSaveFilePicker` where available)
 - [x] Two tabs both save their DBC list to IndexedDB, so an older tab can overwrite the other's edits (PR #1 review)
+- [x] J1939 RTS/CTS transfers time out after T1 (750 ms) where J1939-21 allows T2 or T3 (1250 ms) after a CTS, an RTS or the end of a block (PR #7 review)
+- [x] A J1939 Conn Abort also drops an unrelated transfer the other way between the same two nodes; match the PGN in bytes 5 to 7 (PR #7 review)
+- [x] Unfinished J1939 transfers are never swept, so a log of announcements alone can hold about 117 MB per bus (PR #7 review)
+- [x] A TP.DT shorter than 8 bytes shifts the reassembled data (PR #7 review)
 
 ## Follow-ups
 

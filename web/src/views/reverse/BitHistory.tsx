@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { NO_BYTE, type CoreApi, type IdSummary } from '../../core/api';
 import { ROW_PAYLOAD, type RowBatch } from '../../core/rows';
 import { cssVar, formatCount, useFontsReady } from '../../format';
@@ -28,11 +28,12 @@ interface Frames {
   /** Rows of `batch` to draw, oldest first. */
   first: number;
   end: number;
+  /** Bytes past the 64 in a row, fetched with the rows when the drawn range reaches them. */
+  long: LongBytes | null;
 }
 
-/** Bytes `firstByte..firstByte + byteCount` of the drawn rows of `frames`, from `CoreApi.rowBytes`. */
+/** Bytes `firstByte..firstByte + byteCount` of rows `first..end`, from `CoreApi.rowBytes`. */
 interface LongBytes {
-  frames: Frames;
   firstByte: number;
   byteCount: number;
   values: Uint16Array;
@@ -47,7 +48,6 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
   const [frames, setFrames] = useState<Frames | null>(null);
-  const [longBytes, setLongBytes] = useState<LongBytes | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState<{ row: number; x: number; y: number } | null>(null);
   const fontsReady = useFontsReady();
@@ -77,6 +77,11 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
   const bytePitch = 8 * lanePitch + BYTE_GAP;
   const height = PAD * 2 + shownBytes * bytePitch - BYTE_GAP;
   const columns = width === 0 ? 0 : Math.min(MAX_FRAMES, Math.max(8, Math.floor((width - LABEL_W - PAD) / COL_W)));
+  // Rows stop at 64 bytes, so a range reaching past them is fetched with them. Kept constant
+  // below that, so a selection there doesn't fetch the frames again.
+  const pastRows = lastByte >= ROW_PAYLOAD;
+  const longFirst = pastRows ? firstByte : 0;
+  const longCount = pastRows ? shownBytes : 0;
 
   useEffect(() => {
     if (columns === 0 || summary.count === 0) return;
@@ -91,7 +96,13 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       // The row found for t1 is the first at or after it, so it may lie just past the window.
       let end = batch.length;
       while (end > 0 && batch.time(end - 1) > t1) end--;
-      return { batch, first: Math.max(0, end - columns), end };
+      const first = Math.max(0, end - columns);
+      let long: LongBytes | null = null;
+      if (longCount > 0 && end > first) {
+        const values = await core.rowBytes(summary.key, batch.start + first, end - first, longFirst, longCount);
+        long = { firstByte: longFirst, byteCount: longCount, values };
+      }
+      return { batch, first, end, long };
     })().then(
       (f) => {
         if (stale) return;
@@ -107,43 +118,7 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
     return () => {
       stale = true;
     };
-  }, [core, summary, duration, t0, t1, columns, logVersion]);
-
-  // Rows stop at 64 bytes, so a range reaching past them is fetched for the drawn rows.
-  const pastRows = lastByte >= ROW_PAYLOAD;
-  useEffect(() => {
-    if (!frames || !pastRows || frames.end <= frames.first) return;
-    let stale = false;
-    const { batch, first, end } = frames;
-    core.rowBytes(batch.key, batch.start + first, end - first, firstByte, shownBytes).then(
-      (values) => {
-        if (!stale) setLongBytes({ frames, firstByte, byteCount: shownBytes, values });
-      },
-      (e) => {
-        if (!stale) setError(errorText(e));
-      },
-    );
-    return () => {
-      stale = true;
-    };
-  }, [core, frames, pastRows, firstByte, shownBytes]);
-
-  const long =
-    pastRows && longBytes && longBytes.frames === frames && longBytes.firstByte === firstByte && longBytes.byteCount === shownBytes
-      ? longBytes.values
-      : null;
-  /** Byte `b` of row `f` of the frames' batch, or null if the frame is too short or the byte hasn't arrived. */
-  const byteAt = useCallback(
-    (f: number, b: number): number | null => {
-      if (!frames) return null;
-      if (long) {
-        const value = long[(f - frames.first) * shownBytes + b - firstByte];
-        return value === NO_BYTE ? null : value;
-      }
-      return b < frames.batch.len(f) ? frames.batch.data(f)[b] : null;
-    },
-    [frames, long, firstByte, shownBytes],
-  );
+  }, [core, summary, duration, t0, t1, columns, logVersion, longFirst, longCount]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -175,7 +150,7 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       for (let f = first; f < end; f++) {
         const x = LABEL_W + (f - first) * COL_W;
         for (let b = firstByte; b <= lastByte; b++) {
-          const value = byteAt(f, b);
+          const value = byteAt(frames, f, b);
           if (value === null) continue;
           const top = PAD + (b - firstByte) * bytePitch;
           for (let k = 0; k < 8; k++) {
@@ -211,7 +186,7 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       }
     }
     g.setLineDash([]);
-  }, [frames, byteAt, width, height, firstByte, lastByte, lanes, laneH, lanePitch, bytePitch, selectedSet, fontsReady]);
+  }, [frames, width, height, firstByte, lastByte, lanes, laneH, lanePitch, bytePitch, selectedSet, fontsReady]);
 
   const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
     if (!frames) return;
@@ -220,16 +195,16 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
     setHover(row >= frames.first && row < frames.end ? { row, x: e.clientX - r.left, y: e.clientY - r.top } : null);
   };
 
-  /** The hovered frame's payload, or for a long one the drawn bytes once they have arrived. */
+  /** The hovered frame's payload, or for one longer than its row the drawn bytes, `--` where it has none. */
   const hoverBytes = (f: Frames, row: number): string => {
     const { batch } = f;
     const full = batch.fullLength(row);
-    const last = Math.min(lastByte, full - 1);
-    if (long && full > batch.len(row) && last >= firstByte) {
-      const drawn = Array.from({ length: last - firstByte + 1 }, (_, i) => byteAt(row, firstByte + i) ?? 0);
-      return `B${firstByte}-B${last}: ${hex(drawn)} (${full} bytes)`;
-    }
-    return hex(batch.data(row)) + (full > batch.len(row) ? ` \u2026 (${full} bytes)` : '');
+    if (full <= batch.len(row)) return hex(batch.data(row));
+    const drawn = Array.from({ length: shownBytes }, (_, i) => {
+      const value = byteAt(f, row, firstByte + i);
+      return value === null ? '--' : hex([value]);
+    });
+    return `B${firstByte}-B${lastByte}: ${drawn.join(' ')} (${full} bytes)`;
   };
 
   if (bytes === 0) return <p className="hint">These frames carry no payload.</p>;
@@ -280,6 +255,15 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       </div>
     </div>
   );
+}
+
+/** Byte `b` of row `f` of the frames' batch, or null if the frame is too short or the byte wasn't fetched. */
+function byteAt({ batch, first, long }: Frames, f: number, b: number): number | null {
+  if (long && b >= long.firstByte && b < long.firstByte + long.byteCount) {
+    const value = long.values[(f - first) * long.byteCount + b - long.firstByte];
+    return value === NO_BYTE ? null : value;
+  }
+  return b < batch.len(f) ? batch.data(f)[b] : null;
 }
 
 function hex(data: ArrayLike<number>): string {

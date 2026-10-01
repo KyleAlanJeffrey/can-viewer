@@ -10,6 +10,7 @@ pub enum Format {
     Trc,
     Csv,
     Blf,
+    Mf4,
 }
 
 impl Format {
@@ -22,6 +23,7 @@ impl Format {
             Format::Trc => "trc",
             Format::Csv => "csv",
             Format::Blf => "blf",
+            Format::Mf4 => "mf4",
         }
     }
 
@@ -35,6 +37,7 @@ impl Format {
             "trc" => Some(Format::Trc),
             "csv" => Some(Format::Csv),
             "blf" => Some(Format::Blf),
+            "mf4" | "mdf" => Some(Format::Mf4),
             _ => None,
         }
     }
@@ -44,6 +47,9 @@ impl Format {
     pub fn sniff(head: &[u8]) -> Option<Self> {
         if head.starts_with(b"LOGG") {
             return Some(Format::Blf);
+        }
+        if head.starts_with(b"MDF     ") {
+            return Some(Format::Mf4);
         }
         let first = first_line(head)?;
         if first.starts_with(b"(") {
@@ -133,6 +139,8 @@ mod tests {
         assert_eq!(Format::sniff(b"a,b,c\n1,2,3\n"), None);
         assert_eq!(Format::sniff(b"LOGG\x90\0\0\0"), Some(Format::Blf));
         assert_eq!(Format::from_file_name("x.BLF"), Some(Format::Blf));
+        assert_eq!(Format::from_file_name("x.mf4"), Some(Format::Mf4));
+        assert_eq!(Format::sniff(b"MDF     4.10    "), Some(Format::Mf4));
         assert_eq!(Format::detect("drive.bin", candump), Format::Candump);
         assert_eq!(Format::detect("drive.log", b"date Tue"), Format::Asc);
         assert_eq!(

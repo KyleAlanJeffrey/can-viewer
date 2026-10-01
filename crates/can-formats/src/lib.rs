@@ -9,6 +9,7 @@ pub mod candump;
 pub mod csv;
 mod detect;
 mod lines;
+pub mod mf4;
 #[cfg(test)]
 mod testing;
 mod text;
@@ -19,6 +20,7 @@ pub use blf::BlfParser;
 pub use candump::CandumpParser;
 pub use csv::CsvParser;
 pub use detect::Format;
+pub use mf4::Mf4Parser;
 pub use trc::TrcParser;
 
 use can_core::FrameSink;
@@ -59,6 +61,7 @@ pub enum AnyParser {
     Trc(TrcParser),
     Csv(CsvParser),
     Blf(BlfParser),
+    Mf4(Mf4Parser),
 }
 
 impl AnyParser {
@@ -70,6 +73,7 @@ impl AnyParser {
             Format::Trc => AnyParser::Trc(TrcParser::new()),
             Format::Csv => AnyParser::Csv(CsvParser::new()),
             Format::Blf => AnyParser::Blf(BlfParser::new()),
+            Format::Mf4 => AnyParser::Mf4(Mf4Parser::new()),
         }
     }
 
@@ -81,6 +85,7 @@ impl AnyParser {
             AnyParser::Trc(_) => Format::Trc,
             AnyParser::Csv(_) => Format::Csv,
             AnyParser::Blf(_) => Format::Blf,
+            AnyParser::Mf4(_) => Format::Mf4,
         }
     }
 }
@@ -93,6 +98,7 @@ impl LogParser for AnyParser {
             AnyParser::Trc(parser) => parser.push(chunk, sink),
             AnyParser::Csv(parser) => parser.push(chunk, sink),
             AnyParser::Blf(parser) => parser.push(chunk, sink),
+            AnyParser::Mf4(parser) => parser.push(chunk, sink),
         }
     }
 
@@ -103,6 +109,7 @@ impl LogParser for AnyParser {
             AnyParser::Trc(parser) => parser.finish(sink),
             AnyParser::Csv(parser) => parser.finish(sink),
             AnyParser::Blf(parser) => parser.finish(sink),
+            AnyParser::Mf4(parser) => parser.finish(sink),
         }
     }
 
@@ -113,6 +120,7 @@ impl LogParser for AnyParser {
             AnyParser::Trc(parser) => parser.stats(),
             AnyParser::Csv(parser) => parser.stats(),
             AnyParser::Blf(parser) => parser.stats(),
+            AnyParser::Mf4(parser) => parser.stats(),
         }
     }
 }

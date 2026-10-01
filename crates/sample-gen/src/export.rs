@@ -16,9 +16,10 @@ pub fn convert(store: &FrameStore, path: &str) -> Result<(), String> {
         Some("trc") => write_trc(store, &mut out),
         Some("csv") => write_csv(store, &mut out),
         Some("blf") => write_blf(store, &mut out),
+        Some("mf4") => write_mf4(store, &mut out),
         _ => {
             return Err(format!(
-                "{path}: the extension must be .asc, .trc, .csv or .blf"
+                "{path}: the extension must be .asc, .trc, .csv, .blf or .mf4"
             ))
         }
     };
@@ -339,6 +340,210 @@ fn write_blf_container(out: &mut impl Write, objects: &[u8]) -> io::Result<()> {
     out.write_all(&compressed)?;
     let padding = (4 - object_size as usize % 4) % 4;
     out.write_all(&[0; 3][..padding])
+}
+
+/// ASAM MF4 bus logging: one sorted data group each for data, remote and error frames,
+/// whose records hold a float64 time in seconds from the first frame's second and the
+/// `CAN_DataFrame` members with a fixed 64-byte `DataBytes`. The records are written as
+/// transposed, deflated DZ blocks in a DL list.
+pub fn write_mf4(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
+    let start_s = store.first_ts_ns().unwrap_or(0).div_euclid(1_000_000_000);
+    let mut file = Mf4Writer::default();
+    file.bytes.extend_from_slice(b"MDF     4.10    sample-g");
+    file.bytes.resize(28, 0);
+    file.bytes.extend_from_slice(&410u16.to_le_bytes());
+    file.bytes.resize(64, 0);
+    let mut header = Vec::new();
+    header.extend_from_slice(&((start_s * 1_000_000_000) as u64).to_le_bytes());
+    header.resize(32, 0);
+    let header_at = file.block(b"##HD", &[0; 6], &header);
+
+    let kinds = [
+        ("CAN_DataFrame", flags::RTR | flags::ERROR, 0),
+        ("CAN_RemoteFrame", flags::RTR, flags::RTR),
+        ("CAN_ErrorFrame", flags::ERROR, flags::ERROR),
+    ];
+    let mut next_group = 0;
+    for (name, mask, wanted) in kinds.into_iter().rev() {
+        let mut records = Vec::new();
+        for index in 0..store.len() {
+            let frame = store.frame(index);
+            if frame.flags & mask == wanted {
+                mf4_record(&mut records, &frame, start_s);
+            }
+        }
+        if records.is_empty() {
+            continue;
+        }
+        let data = file.records(&records);
+        let channels = file.can_frame_channels(name);
+        let mut group = Vec::new();
+        group.extend_from_slice(&0u64.to_le_bytes());
+        group.extend_from_slice(&((records.len() / MF4_RECORD) as u64).to_le_bytes());
+        group.extend_from_slice(&[0; 8]);
+        group.extend_from_slice(&(MF4_RECORD as u32).to_le_bytes());
+        group.extend_from_slice(&0u32.to_le_bytes());
+        let channel_group = file.block(b"##CG", &[0, channels, 0, 0, 0, 0], &group);
+        next_group = file.block(b"##DG", &[next_group, channel_group, data, 0], &[0; 8]);
+    }
+    file.set_link(header_at, 0, next_group);
+    out.write_all(&file.bytes)
+}
+
+const MF4_RECORD: usize = 83;
+
+/// t f64, BusChannel u8, ID u32 (bit 31 for 29-bit IDs), DLC u8, DataLength u8, DataBytes
+/// [u8; 64], Dir u8, EDL u8, BRS u8, ESI u8.
+fn mf4_record(out: &mut Vec<u8>, frame: &FrameRef<'_>, start_s: i64) {
+    let seconds = (frame.ts_ns - start_s * 1_000_000_000) as f64 / 1e9;
+    let id = if frame.flags & flags::ERROR != 0 {
+        0
+    } else if frame.id & EXT_FLAG != 0 {
+        (frame.id & !EXT_FLAG) | 0x8000_0000
+    } else {
+        frame.id
+    };
+    let bit = |flag: u8| u8::from(frame.flags & flag != 0);
+    out.extend_from_slice(&seconds.to_le_bytes());
+    out.push(frame.channel + 1);
+    out.extend_from_slice(&id.to_le_bytes());
+    out.push(len_to_dlc(frame.data.len()));
+    out.push(frame.data.len() as u8);
+    let mut data = [0u8; 64];
+    data[..frame.data.len()].copy_from_slice(frame.data);
+    out.extend_from_slice(&data);
+    out.extend_from_slice(&[
+        bit(flags::TX),
+        bit(flags::FD),
+        bit(flags::BRS),
+        bit(flags::ESI),
+    ]);
+}
+
+#[derive(Default)]
+struct Mf4Writer {
+    bytes: Vec<u8>,
+}
+
+impl Mf4Writer {
+    fn block(&mut self, id: &[u8; 4], links: &[u64], data: &[u8]) -> u64 {
+        while !self.bytes.len().is_multiple_of(8) {
+            self.bytes.push(0);
+        }
+        let at = self.bytes.len() as u64;
+        let length = 24 + links.len() * 8 + data.len();
+        self.bytes.extend_from_slice(id);
+        self.bytes.extend_from_slice(&[0; 4]);
+        self.bytes.extend_from_slice(&(length as u64).to_le_bytes());
+        self.bytes
+            .extend_from_slice(&(links.len() as u64).to_le_bytes());
+        for link in links {
+            self.bytes.extend_from_slice(&link.to_le_bytes());
+        }
+        self.bytes.extend_from_slice(data);
+        at
+    }
+
+    fn set_link(&mut self, block_at: u64, index: usize, target: u64) {
+        let at = block_at as usize + 24 + index * 8;
+        self.bytes[at..at + 8].copy_from_slice(&target.to_le_bytes());
+    }
+
+    fn text(&mut self, text: &str) -> u64 {
+        let mut data = text.as_bytes().to_vec();
+        data.push(0);
+        self.block(b"##TX", &[], &data)
+    }
+
+    /// A CN block. `kind` is (channel type, sync type, data type), `place` is (byte
+    /// offset, bit count) and `links` is (next channel, composition).
+    fn channel(
+        &mut self,
+        name: &str,
+        kind: (u8, u8, u8),
+        place: (u32, u32),
+        links: (u64, u64),
+    ) -> u64 {
+        let (cn_type, sync_type, data_type) = kind;
+        let (byte_offset, bit_count) = place;
+        let (next, composition) = links;
+        let name = self.text(name);
+        let mut data = vec![cn_type, sync_type, data_type, 0];
+        data.extend_from_slice(&byte_offset.to_le_bytes());
+        data.extend_from_slice(&bit_count.to_le_bytes());
+        data.resize(72, 0);
+        self.block(b"##CN", &[next, composition, name, 0, 0, 0, 0, 0], &data)
+    }
+
+    /// The time master channel, then a structure channel named `structure` whose members
+    /// describe the rest of the record.
+    fn can_frame_channels(&mut self, structure: &str) -> u64 {
+        const UNSIGNED: u8 = 0;
+        const FLOAT: u8 = 4;
+        const BYTES: u8 = 10;
+        let members: [(&str, u8, u32, u32); 9] = [
+            ("BusChannel", UNSIGNED, 8, 8),
+            ("ID", UNSIGNED, 9, 32),
+            ("DLC", UNSIGNED, 13, 8),
+            ("DataLength", UNSIGNED, 14, 8),
+            ("DataBytes", BYTES, 15, 512),
+            ("Dir", UNSIGNED, 79, 8),
+            ("EDL", UNSIGNED, 80, 8),
+            ("BRS", UNSIGNED, 81, 8),
+            ("ESI", UNSIGNED, 82, 8),
+        ];
+        let mut next = 0;
+        for (member, data_type, byte_offset, bit_count) in members.into_iter().rev() {
+            let name = format!("{structure}.{member}");
+            next = self.channel(
+                &name,
+                (0, 0, data_type),
+                (byte_offset, bit_count),
+                (next, 0),
+            );
+        }
+        let structure = self.channel(structure, (0, 0, BYTES), (8, 600), (0, next));
+        self.channel("t", (2, 1, FLOAT), (0, 64), (structure, 0))
+    }
+
+    fn records(&mut self, records: &[u8]) -> u64 {
+        const BLOCK_RECORDS: usize = 12_000;
+        let mut blocks = Vec::new();
+        for part in records.chunks(BLOCK_RECORDS * MF4_RECORD) {
+            let transposed = transpose(part, MF4_RECORD);
+            let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&transposed, 6);
+            let mut data = b"DT".to_vec();
+            data.push(1);
+            data.push(0);
+            data.extend_from_slice(&(MF4_RECORD as u32).to_le_bytes());
+            data.extend_from_slice(&(part.len() as u64).to_le_bytes());
+            data.extend_from_slice(&(compressed.len() as u64).to_le_bytes());
+            data.extend_from_slice(&compressed);
+            blocks.push(self.block(b"##DZ", &[], &data));
+        }
+        let mut links = vec![0u64];
+        links.extend_from_slice(&blocks);
+        let mut data = vec![0u8; 4];
+        data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+        for index in 0..blocks.len() {
+            let offset = (index * BLOCK_RECORDS * MF4_RECORD) as u64;
+            data.extend_from_slice(&offset.to_le_bytes());
+        }
+        self.block(b"##DL", &links, &data)
+    }
+}
+
+/// The bytes of `columns`-byte rows regrouped column by column, as a transposing DZ block
+/// stores them.
+fn transpose(data: &[u8], columns: usize) -> Vec<u8> {
+    let rows = data.len() / columns;
+    let mut out = data.to_vec();
+    for row in 0..rows {
+        for column in 0..columns {
+            out[column * rows + row] = data[row * columns + column];
+        }
+    }
+    out
 }
 
 fn asc_id(frame: &FrameRef<'_>) -> String {

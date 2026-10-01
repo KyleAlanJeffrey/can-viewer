@@ -53,7 +53,7 @@ Describes the current log. Returned by [`openLog`](#openlog).
 **Attributes**
 
 - **`name`** `string` - The name passed to `openLog`.
-- **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md).
+- **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md).
 - **`frames`** `number` - Frames stored.
 - **`bytes`** `number` - Bytes read from the file.
 - **`lines`** `number` - Lines read, including blank lines.

@@ -39,11 +39,12 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 | PEAK TRC (file versions 1.0 to 2.1) | `.trc` | Supported |
 | CSV (python-can, SavvyCAN, generic) | `.csv` | Supported |
 | Vector BLF (CAN and CAN FD objects) | `.blf` | Supported |
-| ASAM MF4 | | Planned. Not supported |
+| ASAM MF4 (CAN bus logging, MDF 4.x) | `.mf4`, `.mdf` | Supported |
 
 How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format is read as what its extension says, or as candump if the extension is unknown too. The content rules are:
 
 - Vector BLF: the file starts with `LOGG`.
+- ASAM MF4: the file starts with `MDF` and five spaces.
 - candump: the first non-blank line starts with `(`.
 - Vector ASC: the first non-blank line starts with `date `, `base hex`, `base dec` or `Begin Triggerblock` (case-insensitive).
 - PEAK TRC: the first non-blank line starts with `;` (`;$FILEVERSION=` or a comment).
@@ -51,7 +52,7 @@ How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`
 
 The result is reported as `LogInfo.format` (see [API.md](API.md)). Whatever the format, `LogInfo.lines` counts the lines of a text file or the records of a binary one, and the first line or record that does not parse is reported with its number and a reason.
 
-Bus names: candump keeps the interface names from the file (`can0`, `vcan1`), and so does a CSV with a bus column of names. Formats that number their buses instead (ASC, BLF, TRC, a CSV bus column of numbers) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1` and SavvyCAN's bus 0 is `can0`. Formats and files without bus information put every frame on `can1`. A DBC scoped to a bus is matched by that name.
+Bus names: candump keeps the interface names from the file (`can0`, `vcan1`), and so does a CSV with a bus column of names. Formats that number their buses instead (ASC, BLF, TRC, MF4, a CSV bus column of numbers) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1` and SavvyCAN's bus 0 is `can0`. Formats and files without bus information put every frame on `can1`. A DBC scoped to a bus is matched by that name.
 
 Error frames from formats other than candump get the ID `0x20000000`: the CAN error flag with no error class, because those formats carry no SocketCAN error class. They are flagged as error frames, counted in `LogInfo.errorFrames`, and never decoded.
 
@@ -96,14 +97,24 @@ CSV support (`crates/can-formats/src/csv.rs`). There is no one CSV layout, so th
 - A header the reader cannot use rejects every line of the file with the reason "the CSV header has no time, ID and data columns we know". A row with a bad time, ID, flag, length or data cell, or too few cells to reach the time, ID or data column, is rejected with a reason.
 - Not read: quoted delimiters, columns of decoded signal values (a CSV of signals is not a frame log), and any time base other than the one in the header, so a file of wall-clock strings (`12:34:56.789`) is rejected row by row.
 
-Vector BLF support (`crates/can-formats/src/blf.rs`), as written by CANoe, CANalyzer and python-can:
+Vector BLF support (`crates/can-formats/src/blf.rs`), for files as CANoe, CANalyzer and python-can write them. It is tested with synthetic files from the unit tests and `sample-gen convert`, not yet with files from those tools:
 
 - The file header's start time (a Windows SYSTEMTIME, millisecond precision) gives the absolute start, taken as UTC because the file names no time zone; when it is unset, times count from zero. Object timestamps are nanoseconds, or 10 microsecond units when the object's flags say so, from that start.
 - Objects with version 1 or version 2 headers are read. Log containers (object type 10) holding zlib-compressed (method 2) or uncompressed (method 0) objects are unpacked as they arrive; an object that continues from one container into the next is joined. A container claiming more than 64 MiB uncompressed, or that does not inflate, is rejected as a record. Objects are read in order; nothing is sorted.
 - Frame objects: CAN_MESSAGE (1) and CAN_MESSAGE2 (86) give classic frames, with the direction bit setting the transmitted flag and the remote bit a remote frame with no data. CAN_FD_MESSAGE (100) and CAN_FD_MESSAGE_64 (101) give CAN FD frames with the BRS and ESI flags, or classic frames when their EDL bit is clear; the data length comes from the DLC, limited by the valid-bytes count of a CAN_FD_MESSAGE_64. CAN_ERROR (2) gives an error frame with no data and CAN_ERROR_EXT (73) one with the DLC and data bytes the record holds (see the note on error frame IDs above). Bit 31 of an object's ID, or an ID above 0x7FF, marks a 29-bit ID. The bus is `can<channel>` with the channel number as written.
 - Every other object type (app triggers, statistics, environment variables, LIN, FlexRay, Ethernet, the CAN overload, driver status and statistic objects) is skipped without counting as rejected. `LogInfo.lines` counts the frame objects read plus the rejected records.
 - A frame object shorter than its type needs, an object with a bad header, more than 3 bytes of padding between objects, a timestamp outside the nanosecond range, and a file that ends inside an object are rejected with a reason. A file without the `LOGG` signature rejects a single record and reads no frames. Memory for one object is bounded at 32 MiB compressed and 64 MiB uncompressed.
-- Not read: the file header's end time and object counts, and the application and driver information. Bus numbers above 255 are read but the UI's bus name stays `can<number>`.
+- Not read: the file header's end time and object counts, and the application and driver information.
+
+ASAM MF4 support (`crates/can-formats/src/mf4.rs`), for CAN bus logging as ASAM MDF 4.x describes it. It is tested with synthetic files built block by block in the unit tests and by `sample-gen convert`, not yet with files from real loggers:
+
+- Because an MF4 file's blocks link to each other anywhere in the file, the file is held in memory and read when it ends, up to 1 GiB. A larger file rejects a single record and reads no frames. The progress bar fills while the file is read and the frames appear at the end.
+- Blocks read: ID, HD (the start time, taken as UTC nanoseconds), DG, CG, CN (with compositions, for the structure channel and its members), TX for names, CC (linear conversions of the time channel; other conversions count as none), DT, DV, SD, DZ (deflate, with or without transposition), DL lists and HL headers. Data groups may be sorted (one channel group, no record IDs) or unsorted (record IDs of 1, 2, 4 or 8 bytes).
+- Frame channel groups are the ones with a channel named `CAN_DataFrame`, `CAN_RemoteFrame` or `CAN_ErrorFrame`, or with members named `CAN_DataFrame.<member>` and so on. Members read: `BusChannel`, `ID`, `IDE`, `DLC`, `DataLength`, `DataBytes`, `Dir`, `EDL` (or `FDF`), `BRS` and `ESI`, of any integer or float type and either byte order. `DataBytes` may be a fixed byte array or variable length data, held in an SD block (or a list of them) or in a VLSD channel group of the same data group. Every other channel group (decoded signals, LIN, FlexRay, Ethernet) is skipped.
+- Time is the master channel (channel type 2 or 3, preferring sync type time) through its linear conversion, in seconds from the header's start time. A virtual master counts records. A group without one puts every frame at the start time.
+- Frames from every group are sorted by time before they are delivered, since each group is stored separately. The data length is `DataLength`, else the DLC (a CAN FD length when EDL is set), and never more than the bytes the record holds. `IDE`, bit 31 of the ID, or an ID above 0x7FF marks a 29-bit ID. `Dir` 1 is transmitted. Error frames take the usual error ID (see the note above) with their data bytes, if any. The bus is `can<BusChannel>`, or `can1` without that member.
+- A file without the MDF signature, a version other than 4.x, a missing header, or a file with no CAN frame groups rejects a single record. A data group with a broken block, record ID or data list rejects one record and the other groups are still read. A frame record with a bad time, value or data offset is rejected with a reason.
+- Not read: MDF 3 files, CAN XL frames, CAN_OverloadFrame and other bus events, signal-based (decoded) MF4 files, sample reduction blocks, invalidation bits, attachments, events and the header's time zone and local-time flags.
 
 ## DBC files
 

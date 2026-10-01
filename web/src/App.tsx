@@ -240,7 +240,7 @@ export function App({ core }: { core: CoreApi }) {
               setBusy({ label: `Parsing ${name}\u2026 ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total }),
             );
             if (info.frames === 0 && info.rejected > 0) {
-              throw new Error(`${name} has no CAN frames that FreeCAN Studio can read. It reads candump logs (candump -l), Vector ASC, Vector BLF, PEAK TRC and CSV files.`);
+              throw new Error(`${name} has no CAN frames that FreeCAN Studio can read. It reads candump logs (candump -l), Vector ASC and BLF, PEAK TRC, ASAM MF4 bus logging and CSV files.`);
             }
           } catch (e) {
             showNoLog();
@@ -723,7 +723,7 @@ export function App({ core }: { core: CoreApi }) {
                   <Logo size={64} background="var(--paper)" />
                   <h2 className="empty-title">Open a CAN log to get started</h2>
                   <p className="lede">
-                    Drop a CAN log (candump, Vector ASC or BLF, PEAK TRC or CSV) anywhere in this window, or choose Open Log&hellip; above. Add DBC files to decode its signals.
+                    Drop a CAN log (candump, Vector ASC or BLF, PEAK TRC, MF4 or CSV) anywhere in this window, or choose Open Log&hellip; above. Add DBC files to decode its signals.
                   </p>
                   <button className="button" onClick={loadDemo} disabled={!!busy}>
                     Try the Demo

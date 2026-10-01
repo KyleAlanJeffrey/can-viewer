@@ -51,7 +51,7 @@ candump support (`crates/can-formats/src/candump.rs`):
 
 Import (`crates/can-dbc-model`) reads:
 
-- Messages with standard and extended IDs, with transmitters.
+- Messages with standard and extended IDs, with transmitters. Message IDs are unique after import: when a file defines the same ID twice (two `BO_` lines), the first definition is kept and the later ones are dropped, because the app selects, edits and deletes messages by ID.
 - Signals: Intel and Motorola byte order; unsigned, signed, and IEEE float32 or float64 (`SIG_VALTYPE_`); factor, offset, range, unit and receivers.
 - Multiplexing, simple (one multiplexor per message) and extended (`SG_MUL_VAL_`): a signal names the multiplexor that switches it and the raw value ranges under which it is present, and a multiplexor can itself be multiplexed. A signal with an `SG_MUL_VAL_` entry is present only when its whole chain of multiplexors is; one without is switched by the message's multiplexor and its `m<value>`.
 - Comments on nodes, messages and signals (`CM_ BU_`, `CM_ BO_`, `CM_ SG_`), and value descriptions (`VAL_`).

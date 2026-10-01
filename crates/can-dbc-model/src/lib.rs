@@ -8,6 +8,7 @@ pub mod j1939;
 mod writer;
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -308,10 +309,13 @@ impl Database {
 
     pub fn from_dbc_str(text: &str) -> Result<Self, LoadError> {
         let dbc = can_dbc::Dbc::try_from(text).map_err(|e| LoadError(e.to_string()))?;
+        // The UI selects, edits and deletes by ID, so a file defining an ID twice keeps only
+        // the first definition.
+        let mut seen_ids = HashSet::new();
         let messages = dbc
             .messages
             .iter()
-            .filter(|m| m.name != "VECTOR__INDEPENDENT_SIG_MSG")
+            .filter(|m| m.name != "VECTOR__INDEPENDENT_SIG_MSG" && seen_ids.insert(m.id))
             .map(|m| MessageDef {
                 id: m.id.raw(),
                 name: m.name.clone(),
@@ -1229,5 +1233,20 @@ VAL_ 100 RPM 0 "Off" 1 "On" ;
     fn falls_back_to_cp1252() {
         assert_eq!(decode_text(b"\xEF\xBB\xBFabc"), "abc");
         assert_eq!(decode_text(b"\x80 \xB0C"), "\u{20AC} \u{B0}C");
+    }
+
+    #[test]
+    fn a_duplicated_message_id_keeps_its_first_definition() {
+        let text = DBC.replace(
+            "BO_ 300 IMU: 8 ECU",
+            "BO_ 100 ENGINE_AGAIN: 8 ECU\n SG_ Other : 0|8@1+ (1,0) [0|255] \"\" Vector__XXX\n\n\
+             BO_ 2566844672 J1939_CCVS_AGAIN: 8 ECU\n\nBO_ 300 IMU: 8 ECU",
+        );
+        let db = Database::from_dbc_str(&text).unwrap();
+        let ids: Vec<u32> = db.messages.iter().map(|m| m.id).collect();
+        assert_eq!(ids, [100, 0x98FE_F100, 200, 300]);
+        assert_eq!(db.message(100).unwrap().name, "ENGINE");
+        assert!(db.message(100).unwrap().signal("RPM").is_some());
+        assert_eq!(db.message(0x98FE_F100).unwrap().name, "J1939_CCVS");
     }
 }

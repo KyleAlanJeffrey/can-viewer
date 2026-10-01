@@ -3,6 +3,7 @@
 //! Parsers take the file in arbitrary chunks, so the browser can stream a `File` through a
 //! worker without ever holding the whole log in memory.
 
+pub mod asc;
 pub mod candump;
 mod detect;
 mod lines;
@@ -10,6 +11,7 @@ mod lines;
 mod testing;
 mod text;
 
+pub use asc::AscParser;
 pub use candump::CandumpParser;
 pub use detect::Format;
 
@@ -47,6 +49,7 @@ impl ParseStats {
 #[derive(Debug)]
 pub enum AnyParser {
     Candump(CandumpParser),
+    Asc(AscParser),
 }
 
 impl AnyParser {
@@ -54,6 +57,7 @@ impl AnyParser {
     pub fn new(format: Format) -> Self {
         match format {
             Format::Candump => AnyParser::Candump(CandumpParser::new()),
+            Format::Asc => AnyParser::Asc(AscParser::new()),
         }
     }
 
@@ -61,6 +65,7 @@ impl AnyParser {
     pub fn format(&self) -> Format {
         match self {
             AnyParser::Candump(_) => Format::Candump,
+            AnyParser::Asc(_) => Format::Asc,
         }
     }
 }
@@ -69,18 +74,21 @@ impl LogParser for AnyParser {
     fn push<S: FrameSink>(&mut self, chunk: &[u8], sink: &mut S) {
         match self {
             AnyParser::Candump(parser) => parser.push(chunk, sink),
+            AnyParser::Asc(parser) => parser.push(chunk, sink),
         }
     }
 
     fn finish<S: FrameSink>(&mut self, sink: &mut S) {
         match self {
             AnyParser::Candump(parser) => parser.finish(sink),
+            AnyParser::Asc(parser) => parser.finish(sink),
         }
     }
 
     fn stats(&self) -> &ParseStats {
         match self {
             AnyParser::Candump(parser) => parser.stats(),
+            AnyParser::Asc(parser) => parser.stats(),
         }
     }
 }

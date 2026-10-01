@@ -1,9 +1,12 @@
 //! Which parser a file needs: its extension suggests one, and its first bytes confirm or
 //! correct that, so a log with the wrong extension still opens.
 
+use crate::text::starts_with_ignore_case;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Candump,
+    Asc,
 }
 
 impl Format {
@@ -12,6 +15,7 @@ impl Format {
     pub fn name(self) -> &'static str {
         match self {
             Format::Candump => "candump",
+            Format::Asc => "asc",
         }
     }
 
@@ -21,6 +25,7 @@ impl Format {
         let (_, extension) = name.rsplit_once('.')?;
         match extension.to_ascii_lowercase().as_str() {
             "log" | "txt" | "candump" => Some(Format::Candump),
+            "asc" => Some(Format::Asc),
             _ => None,
         }
     }
@@ -31,6 +36,18 @@ impl Format {
         let first = first_line(head)?;
         if first.starts_with(b"(") {
             return Some(Format::Candump);
+        }
+        let asc_header = [
+            &b"date "[..],
+            b"base hex",
+            b"base dec",
+            b"begin triggerblock",
+        ];
+        if asc_header
+            .iter()
+            .any(|prefix| starts_with_ignore_case(first, prefix))
+        {
+            return Some(Format::Asc);
         }
         None
     }
@@ -65,6 +82,7 @@ mod tests {
             Format::from_file_name("drive.candump"),
             Some(Format::Candump)
         );
+        assert_eq!(Format::from_file_name("drive.Asc"), Some(Format::Asc));
         assert_eq!(Format::from_file_name("drive.bin"), None);
         assert_eq!(Format::from_file_name("drive"), None);
         assert_eq!(Format::from_file_name(""), None);
@@ -77,7 +95,21 @@ mod tests {
         assert_eq!(Format::sniff(b""), None);
         assert_eq!(Format::sniff(b"\n\n"), None);
         assert_eq!(Format::sniff(b"hello"), None);
+        assert_eq!(
+            Format::sniff(b"date Tue Sep 30 00:00:00.000 2025\n"),
+            Some(Format::Asc)
+        );
+        assert_eq!(
+            Format::sniff(b"Base Hex  timestamps absolute\n"),
+            Some(Format::Asc)
+        );
+        assert_eq!(Format::sniff(b"0.000 1 123 Rx d 0\n"), None);
         assert_eq!(Format::detect("drive.bin", candump), Format::Candump);
+        assert_eq!(Format::detect("drive.log", b"date Tue"), Format::Asc);
+        assert_eq!(
+            Format::detect("drive.asc", b"0.000 1 123 Rx d 0\n"),
+            Format::Asc
+        );
         assert_eq!(Format::detect("drive.bin", b"hello"), Format::Candump);
         assert_eq!(Format::detect("", b""), Format::Candump);
     }

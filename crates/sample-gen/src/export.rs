@@ -1,0 +1,158 @@
+//! Writers for the other log formats, so the demo can be converted to try the parsers on
+//! files laid out as real tools write them, and for round-trip tests.
+
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
+
+use can_core::{flags, FrameRef, FrameStore, EXT_FLAG};
+
+/// Writes `store` to `path` in the format its extension names.
+pub fn convert(store: &FrameStore, path: &str) -> Result<(), String> {
+    let extension = path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    let file = File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut out = BufWriter::with_capacity(1 << 20, file);
+    let result = match extension.as_deref() {
+        Some("asc") => write_asc(store, &mut out),
+        _ => return Err(format!("{path}: the extension must be .asc")),
+    };
+    result
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("{path}: {e}"))
+}
+
+/// Vector ASC, base hex with absolute timestamps from the second of the first frame.
+pub fn write_asc(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
+    let start_s = store.first_ts_ns().unwrap_or(0).div_euclid(1_000_000_000);
+    let date = asc_date(start_s);
+    writeln!(out, "date {date}")?;
+    writeln!(out, "base hex  timestamps absolute")?;
+    writeln!(out, "internal events logged")?;
+    writeln!(out, "Begin Triggerblock {date}")?;
+    writeln!(out, "   0.000000 Start of measurement")?;
+    for index in 0..store.len() {
+        let frame = store.frame(index);
+        let offset_ns = frame.ts_ns - start_s * 1_000_000_000;
+        let channel = u32::from(frame.channel) + 1;
+        write!(
+            out,
+            "{:4}.{:06} ",
+            offset_ns / 1_000_000_000,
+            offset_ns % 1_000_000_000 / 1000
+        )?;
+        let direction = if frame.flags & flags::TX != 0 {
+            "Tx"
+        } else {
+            "Rx"
+        };
+        if frame.flags & flags::ERROR != 0 {
+            writeln!(out, "{channel}  ErrorFrame")?;
+        } else if frame.flags & flags::FD != 0 {
+            let brs = u32::from(frame.flags & flags::BRS != 0);
+            let esi = u32::from(frame.flags & flags::ESI != 0);
+            let fd_flags = 0x1000 | brs << 13 | esi << 14;
+            write!(
+                out,
+                "CANFD {channel:3} {direction:<4} {:>8}  {brs} {esi} {:x} {:>2}",
+                asc_id(&frame),
+                len_to_dlc(frame.data.len()),
+                frame.data.len()
+            )?;
+            write_hex_bytes(out, frame.data)?;
+            writeln!(out, " 0 0 {fd_flags:X} 0 0 0 0 0")?;
+        } else if frame.flags & flags::RTR != 0 {
+            writeln!(out, "{channel}  {:<15} {direction:<4} r", asc_id(&frame))?;
+        } else {
+            write!(
+                out,
+                "{channel}  {:<15} {direction:<4} d {}",
+                asc_id(&frame),
+                frame.data.len()
+            )?;
+            write_hex_bytes(out, frame.data)?;
+            writeln!(out)?;
+        }
+    }
+    writeln!(out, "End TriggerBlock")
+}
+
+fn asc_id(frame: &FrameRef<'_>) -> String {
+    if frame.id & EXT_FLAG != 0 {
+        format!("{:X}x", frame.id & !EXT_FLAG)
+    } else {
+        format!("{:X}", frame.id)
+    }
+}
+
+fn write_hex_bytes(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
+    for byte in data {
+        write!(out, " {byte:02X}")?;
+    }
+    Ok(())
+}
+
+/// The CAN FD DLC code for a payload length, rounding up to the next code.
+fn len_to_dlc(len: usize) -> u8 {
+    const LENGTHS: [usize; 7] = [12, 16, 20, 24, 32, 48, 64];
+    if len <= 8 {
+        return len as u8;
+    }
+    LENGTHS
+        .iter()
+        .position(|&l| len <= l)
+        .map_or(15, |i| 9 + i as u8)
+}
+
+/// `Tue Sep 30 00:00:00.000 2025` for a Unix time in seconds, in UTC.
+fn asc_date(epoch_s: i64) -> String {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let days = epoch_s.div_euclid(86_400);
+    let seconds = epoch_s.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{} {} {day} {:02}:{:02}:{:02}.000 {year}",
+        DAYS[(days + 4).rem_euclid(7) as usize],
+        MONTHS[month as usize - 1],
+        seconds / 3600,
+        seconds % 3600 / 60,
+        seconds % 60
+    )
+}
+
+/// The proleptic Gregorian date `days` after 1970-01-01.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_from_march = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_from_march + 2) / 5 + 1) as u32;
+    let month = if month_from_march < 10 {
+        month_from_march + 3
+    } else {
+        month_from_march - 9
+    } as u32;
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dates_and_dlcs() {
+        assert_eq!(asc_date(0), "Thu Jan 1 00:00:00.000 1970");
+        assert_eq!(asc_date(1_759_190_400), "Tue Sep 30 00:00:00.000 2025");
+        assert_eq!(asc_date(951_782_400 + 3661), "Tue Feb 29 01:01:01.000 2000");
+        assert_eq!(len_to_dlc(8), 8);
+        assert_eq!(len_to_dlc(9), 9);
+        assert_eq!(len_to_dlc(12), 9);
+        assert_eq!(len_to_dlc(33), 14);
+        assert_eq!(len_to_dlc(64), 15);
+    }
+}

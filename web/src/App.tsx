@@ -240,7 +240,7 @@ export function App({ core }: { core: CoreApi }) {
               setBusy({ label: `Parsing ${name}\u2026 ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total }),
             );
             if (info.frames === 0 && info.rejected > 0) {
-              throw new Error(`${name} has no CAN frames that FreeCAN Studio can read. It reads candump logs (candump -l) for now.`);
+              throw new Error(`${name} has no CAN frames that FreeCAN Studio can read. It reads candump logs (candump -l) and Vector ASC files.`);
             }
           } catch (e) {
             showNoLog();
@@ -587,7 +587,7 @@ export function App({ core }: { core: CoreApi }) {
                       ? `${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
                       : dbcs.length > 0
                         ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
-                        : 'Open a candump log to begin'}
+                        : 'Open a CAN log to begin'}
               </p>
             </div>
             {log && (
@@ -723,7 +723,7 @@ export function App({ core }: { core: CoreApi }) {
                   <Logo size={64} background="var(--paper)" />
                   <h2 className="empty-title">Open a CAN log to get started</h2>
                   <p className="lede">
-                    Drop a candump log anywhere in this window, or choose Open Log&hellip; above. Add DBC files to decode its signals.
+                    Drop a CAN log (candump or Vector ASC) anywhere in this window, or choose Open Log&hellip; above. Add DBC files to decode its signals.
                   </p>
                   <button className="button" onClick={loadDemo} disabled={!!busy}>
                     Try the Demo

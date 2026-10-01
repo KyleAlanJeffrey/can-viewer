@@ -1,4 +1,14 @@
-//! Number parsing shared by the text formats.
+//! Number and field parsing shared by the text formats.
+
+/// The whitespace-separated fields of a line.
+pub(crate) fn fields(line: &[u8]) -> impl Iterator<Item = &[u8]> {
+    line.split(|&b| b == b' ' || b == b'\t')
+        .filter(|f| !f.is_empty())
+}
+
+pub(crate) fn starts_with_ignore_case(s: &[u8], prefix: &[u8]) -> bool {
+    s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
 
 const HEX: [u8; 256] = {
     let mut table = [0xFF; 256];
@@ -61,9 +71,87 @@ pub(crate) fn parse_decimal_ns(s: &[u8], unit_exp: u32) -> Option<i64> {
     units.checked_mul(10i64.pow(unit_exp))?.checked_add(nanos)
 }
 
+/// Days from 1970-01-01 to a proleptic Gregorian date; negative before it.
+pub(crate) fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year.rem_euclid(400);
+    let month_from_march = (i64::from(month) + 9) % 12;
+    let day_of_year = (153 * month_from_march + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// Payload length for a CAN FD DLC code.
+pub(crate) fn dlc_to_len(dlc: u8) -> usize {
+    match dlc {
+        0..=8 => usize::from(dlc),
+        9 => 12,
+        10 => 16,
+        11 => 20,
+        12 => 24,
+        13 => 32,
+        14 => 48,
+        _ => 64,
+    }
+}
+
+/// A bus name `can<number>` built without allocating, for formats that number their buses.
+pub(crate) struct ChannelName {
+    buf: [u8; 24],
+    len: usize,
+}
+
+impl ChannelName {
+    pub(crate) fn new(number: u64) -> Self {
+        let mut buf = [0u8; 24];
+        buf[..3].copy_from_slice(b"can");
+        let mut digits = [0u8; 20];
+        let mut count = 0;
+        let mut n = number;
+        loop {
+            digits[count] = b'0' + (n % 10) as u8;
+            count += 1;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        for i in 0..count {
+            buf[3 + i] = digits[count - 1 - i];
+        }
+        Self {
+            buf,
+            len: 3 + count,
+        }
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn civil_days_match_known_dates() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
+        assert_eq!(days_from_civil(2025, 9, 30), 20_361);
+        assert_eq!(days_from_civil(1899, 12, 30), -25_569);
+    }
+
+    #[test]
+    fn channel_names_are_decimal() {
+        assert_eq!(ChannelName::new(0).as_bytes(), b"can0");
+        assert_eq!(ChannelName::new(17).as_bytes(), b"can17");
+        assert_eq!(
+            ChannelName::new(u64::MAX).as_bytes(),
+            b"can18446744073709551615"
+        );
+    }
 
     #[test]
     fn decimal_ns_scales_by_unit() {

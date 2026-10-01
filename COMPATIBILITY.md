@@ -35,13 +35,19 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 | Format | Extensions | Status |
 |---|---|---|
 | candump log files (`candump -l` / `-L`) | `.log`, `.txt`, `.candump` | Supported |
-| Vector ASC, Vector BLF, PEAK TRC, ASAM MF4, CSV | | Planned. Not supported |
+| Vector ASC | `.asc` | Supported |
+| Vector BLF, PEAK TRC, ASAM MF4, CSV | | Planned. Not supported |
 
 How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format is read as what its extension says, or as candump if the extension is unknown too. The content rules are:
 
 - candump: the first non-blank line starts with `(`.
+- Vector ASC: the first non-blank line starts with `date `, `base hex`, `base dec` or `Begin Triggerblock` (case-insensitive).
 
 The result is reported as `LogInfo.format` (see [API.md](API.md)). Whatever the format, `LogInfo.lines` counts the lines of a text file or the records of a binary one, and the first line or record that does not parse is reported with its number and a reason.
+
+Bus names: candump keeps the interface names from the file (`can0`, `vcan1`). Formats that number their buses instead (ASC) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1`. A DBC scoped to a bus is matched by that name.
+
+Error frames from formats other than candump get the ID `0x20000000`: the CAN error flag with no error class, because those formats carry no SocketCAN error class. They are flagged as error frames, counted in `LogInfo.errorFrames`, and never decoded.
 
 candump support (`crates/can-formats/src/candump.rs`):
 
@@ -52,6 +58,16 @@ candump support (`crates/can-formats/src/candump.rs`):
 - CAN XL lines are rejected, and so is candump's default console output (without `-l` or `-L`).
 - A line that does not parse does not stop the load. It is counted in `LogInfo.rejected`, and the first one is reported with its line number.
 - Time lookups assume frames are in time order, as loggers write them. Slightly out-of-order timestamps only shift lookups by those frames.
+
+Vector ASC support (`crates/can-formats/src/asc.rs`), as written by CANoe, CANalyzer and python-can:
+
+- Header: `base hex` (the default) or `base dec` sets the number base of IDs, DLCs and data bytes. `timestamps absolute` (the default) means seconds from the start of measurement; `timestamps relative` means seconds since the previous event line, summed over every event line including skipped ones, and `Begin Triggerblock` restarts the sum. A `date` line in CANoe's layout (`Tue Sep 30 00:00:00.000 2025`, with or without the weekday, milliseconds and am/pm, with English or German month names) gives the absolute start time, taken as UTC because the file names no time zone. Without one, times count from zero.
+- Classic lines: `<time> <channel> <id>[x] <Rx|Tx|TxRq> d <dlc> <bytes...>`, and remote frames with `r` in place of `d <dlc> <bytes...>`, with or without a DLC after the `r`. The `x` suffix marks a 29-bit ID; an ID above 0x7FF is read as 29-bit even without it. DLC codes 9 to 15 mean CAN FD lengths (12 to 64 bytes). Text after the data bytes (`Length = ...`) is ignored.
+- CAN FD lines: `<time> CANFD <channel> <Rx|Tx> <id>[x] [<name>] <brs> <esi> <dlc> <length> <bytes...> [<duration> <message length> <flags> ...]`. The symbolic name is optional. When the flags field is present and its EDL bit (0x1000) is clear, the line is a classic frame logged on an FD channel and loses its FD flags; its RTR bit (0x10) marks a remote frame.
+- `ErrorFrame` lines, classic or CANFD, give an error frame with no data (see the note on error frame IDs above).
+- `Tx` and `TxRq` set the transmitted flag.
+- Lines that are not frames (`Statistic:`, `Start of measurement`, J1939 transport, chip status, comments, trigger block markers) are skipped without counting as rejected. A frame line that does not parse (bad ID, DLC or data byte, too few bytes, unknown frame type) is rejected with a reason.
+- Not read: symbolic names, CAN XL, LIN, FlexRay and Ethernet lines, and the fields after a CAN FD line's data other than the flags.
 
 ## DBC files
 

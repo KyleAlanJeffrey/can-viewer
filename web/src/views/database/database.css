@@ -379,6 +379,10 @@
   border-bottom: 0;
 }
 
+.db-table tbody tr {
+  cursor: pointer;
+}
+
 .db-table tbody tr:hover {
   background: var(--hover-wash);
 }
@@ -709,4 +713,8 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 16px;
+}
+
+.db-region {
+  cursor: pointer;
 }

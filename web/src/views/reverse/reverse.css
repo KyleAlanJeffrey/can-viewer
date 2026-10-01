@@ -115,6 +115,7 @@
 /* Inset by a handle's width so the handles stay inside the card at either end of the log. */
 .re-strip {
   position: relative;
+  cursor: pointer;
   height: 40px;
   margin: 0 10px;
   touch-action: none;
@@ -134,7 +135,8 @@
   cursor: grab;
 }
 
-.re-strip-window:active {
+.re-strip-window:active,
+.re-strip:active {
   cursor: grabbing;
 }
 
@@ -1245,4 +1247,9 @@
 .re-pin-action {
   color: var(--ochre-control);
   font-weight: 500;
+}
+
+/* A click parks the time cursor. */
+.re-ref-plot .u-over {
+  cursor: crosshair;
 }

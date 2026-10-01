@@ -261,6 +261,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
         <canvas
           ref={canvasRef}
           aria-hidden="true"
+          style={{ cursor: hover || dragging.current ? 'crosshair' : 'default' }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={() => (dragging.current = false)}

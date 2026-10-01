@@ -126,7 +126,32 @@ button {
   background: none;
   border: 0;
   padding: 0;
+}
+
+/* The cursor says what a press will do: a pointer on anything that acts, the arrow on what can't. */
+button,
+select,
+summary,
+[role='tab'],
+[role='switch'],
+input[type='checkbox'],
+input[type='radio'],
+label:has(> input[type='checkbox']),
+label:has(> input[type='radio']) {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+input:disabled,
+label:has(> input:disabled) {
   cursor: default;
+}
+
+/* Waiting on the core: controls are disabled, so show that work is under way. */
+.app[aria-busy='true'],
+.app[aria-busy='true'] button:disabled {
+  cursor: progress;
 }
 
 button:disabled {
@@ -671,6 +696,7 @@ button:disabled {
 .trace canvas {
   position: absolute;
   inset: 0 10px 0 0;
+  cursor: pointer;
 }
 
 .scrollbar {
@@ -780,6 +806,11 @@ button:disabled {
 
 .plot-host {
   position: relative;
+}
+
+/* A click pins a time; a drag zooms. */
+.plot-host .u-over {
+  cursor: crosshair;
 }
 
 .callout {

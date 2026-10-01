@@ -308,6 +308,7 @@
 }
 
 .ov-table tbody tr {
+  cursor: pointer;
   scroll-margin-top: 28px;
 }
 

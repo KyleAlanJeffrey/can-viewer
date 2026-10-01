@@ -4,7 +4,7 @@
 //! sample-gen generate <out.log> <out.dbc> [frames]   synthetic drive + matching DBC
 //! sample-gen bench <file>                            native parse throughput
 //! sample-gen decode <file> <file.dbc> <frames>       CSV of decoded values, for cross-checks
-//! sample-gen convert <in> <out.asc|out.trc|out.csv>          rewrite a log in another format
+//! sample-gen convert <in> <out.asc|out.trc|out.csv|out.blf>  rewrite a log in another format
 //! ```
 //!
 //! Logs are read in any format the app opens, chosen as the app chooses it.
@@ -48,7 +48,7 @@ fn main() -> ExitCode {
         }
         _ => Err(
             "usage: sample-gen generate <out.log> <out.dbc> [frames] | bench <file> | \
-                  decode <file> <file.dbc> <frames> | convert <in> <out.asc|out.trc|out.csv>"
+                  decode <file> <file.dbc> <frames> | convert <in> <out.asc|out.trc|out.csv|out.blf>"
                 .into(),
         ),
     };
@@ -470,5 +470,10 @@ mod tests {
     #[test]
     fn csv_round_trips_the_demo() {
         round_trip("csv", ["can0", "can1"]);
+    }
+
+    #[test]
+    fn blf_round_trips_the_demo() {
+        round_trip("blf", ["can1", "can2"]);
     }
 }

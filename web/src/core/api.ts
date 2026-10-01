@@ -10,7 +10,7 @@ export const FLAG_ERROR = 1 << 4;
 export const EXT_FLAG = 0x8000_0000;
 
 /** A log file format the engine reads. */
-export type LogFormat = 'candump' | 'asc' | 'trc' | 'csv';
+export type LogFormat = 'candump' | 'asc' | 'trc' | 'csv' | 'blf';
 
 export interface LogInfo {
   name: string;

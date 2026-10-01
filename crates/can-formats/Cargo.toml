@@ -8,3 +8,4 @@ publish.workspace = true
 [dependencies]
 can-core.workspace = true
 memchr.workspace = true
+miniz_oxide.workspace = true

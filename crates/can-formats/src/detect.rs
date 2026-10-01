@@ -9,6 +9,7 @@ pub enum Format {
     Asc,
     Trc,
     Csv,
+    Blf,
 }
 
 impl Format {
@@ -20,6 +21,7 @@ impl Format {
             Format::Asc => "asc",
             Format::Trc => "trc",
             Format::Csv => "csv",
+            Format::Blf => "blf",
         }
     }
 
@@ -32,6 +34,7 @@ impl Format {
             "asc" => Some(Format::Asc),
             "trc" => Some(Format::Trc),
             "csv" => Some(Format::Csv),
+            "blf" => Some(Format::Blf),
             _ => None,
         }
     }
@@ -39,6 +42,9 @@ impl Format {
     /// The format the first bytes of a file identify, if they identify one.
     #[must_use]
     pub fn sniff(head: &[u8]) -> Option<Self> {
+        if head.starts_with(b"LOGG") {
+            return Some(Format::Blf);
+        }
         let first = first_line(head)?;
         if first.starts_with(b"(") {
             return Some(Format::Candump);
@@ -125,6 +131,8 @@ mod tests {
             Some(Format::Csv)
         );
         assert_eq!(Format::sniff(b"a,b,c\n1,2,3\n"), None);
+        assert_eq!(Format::sniff(b"LOGG\x90\0\0\0"), Some(Format::Blf));
+        assert_eq!(Format::from_file_name("x.BLF"), Some(Format::Blf));
         assert_eq!(Format::detect("drive.bin", candump), Format::Candump);
         assert_eq!(Format::detect("drive.log", b"date Tue"), Format::Asc);
         assert_eq!(

@@ -4,6 +4,7 @@
 //! worker without ever holding the whole log in memory.
 
 pub mod asc;
+pub mod blf;
 pub mod candump;
 pub mod csv;
 mod detect;
@@ -14,6 +15,7 @@ mod text;
 pub mod trc;
 
 pub use asc::AscParser;
+pub use blf::BlfParser;
 pub use candump::CandumpParser;
 pub use csv::CsvParser;
 pub use detect::Format;
@@ -56,6 +58,7 @@ pub enum AnyParser {
     Asc(AscParser),
     Trc(TrcParser),
     Csv(CsvParser),
+    Blf(BlfParser),
 }
 
 impl AnyParser {
@@ -66,6 +69,7 @@ impl AnyParser {
             Format::Asc => AnyParser::Asc(AscParser::new()),
             Format::Trc => AnyParser::Trc(TrcParser::new()),
             Format::Csv => AnyParser::Csv(CsvParser::new()),
+            Format::Blf => AnyParser::Blf(BlfParser::new()),
         }
     }
 
@@ -76,6 +80,7 @@ impl AnyParser {
             AnyParser::Asc(_) => Format::Asc,
             AnyParser::Trc(_) => Format::Trc,
             AnyParser::Csv(_) => Format::Csv,
+            AnyParser::Blf(_) => Format::Blf,
         }
     }
 }
@@ -87,6 +92,7 @@ impl LogParser for AnyParser {
             AnyParser::Asc(parser) => parser.push(chunk, sink),
             AnyParser::Trc(parser) => parser.push(chunk, sink),
             AnyParser::Csv(parser) => parser.push(chunk, sink),
+            AnyParser::Blf(parser) => parser.push(chunk, sink),
         }
     }
 
@@ -96,6 +102,7 @@ impl LogParser for AnyParser {
             AnyParser::Asc(parser) => parser.finish(sink),
             AnyParser::Trc(parser) => parser.finish(sink),
             AnyParser::Csv(parser) => parser.finish(sink),
+            AnyParser::Blf(parser) => parser.finish(sink),
         }
     }
 
@@ -105,6 +112,7 @@ impl LogParser for AnyParser {
             AnyParser::Asc(parser) => parser.stats(),
             AnyParser::Trc(parser) => parser.stats(),
             AnyParser::Csv(parser) => parser.stats(),
+            AnyParser::Blf(parser) => parser.stats(),
         }
     }
 }

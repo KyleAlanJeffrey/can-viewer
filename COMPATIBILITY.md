@@ -38,10 +38,12 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 | Vector ASC | `.asc` | Supported |
 | PEAK TRC (file versions 1.0 to 2.1) | `.trc` | Supported |
 | CSV (python-can, SavvyCAN, generic) | `.csv` | Supported |
-| Vector BLF, ASAM MF4 | | Planned. Not supported |
+| Vector BLF (CAN and CAN FD objects) | `.blf` | Supported |
+| ASAM MF4 | | Planned. Not supported |
 
 How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format is read as what its extension says, or as candump if the extension is unknown too. The content rules are:
 
+- Vector BLF: the file starts with `LOGG`.
 - candump: the first non-blank line starts with `(`.
 - Vector ASC: the first non-blank line starts with `date `, `base hex`, `base dec` or `Begin Triggerblock` (case-insensitive).
 - PEAK TRC: the first non-blank line starts with `;` (`;$FILEVERSION=` or a comment).
@@ -49,7 +51,7 @@ How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`
 
 The result is reported as `LogInfo.format` (see [API.md](API.md)). Whatever the format, `LogInfo.lines` counts the lines of a text file or the records of a binary one, and the first line or record that does not parse is reported with its number and a reason.
 
-Bus names: candump keeps the interface names from the file (`can0`, `vcan1`), and so does a CSV with a bus column of names. Formats that number their buses instead (ASC, TRC, a CSV bus column of numbers) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1` and SavvyCAN's bus 0 is `can0`. Formats and files without bus information put every frame on `can1`. A DBC scoped to a bus is matched by that name.
+Bus names: candump keeps the interface names from the file (`can0`, `vcan1`), and so does a CSV with a bus column of names. Formats that number their buses instead (ASC, BLF, TRC, a CSV bus column of numbers) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1` and SavvyCAN's bus 0 is `can0`. Formats and files without bus information put every frame on `can1`. A DBC scoped to a bus is matched by that name.
 
 Error frames from formats other than candump get the ID `0x20000000`: the CAN error flag with no error class, because those formats carry no SocketCAN error class. They are flagged as error frames, counted in `LogInfo.errorFrames`, and never decoded.
 
@@ -93,6 +95,15 @@ CSV support (`crates/can-formats/src/csv.rs`). There is no one CSV layout, so th
 - An ID above 0x7FF, or an extended flag that is true, gives a 29-bit ID. A true error flag gives an error frame (see the note on error frame IDs above) keeping the low 29 bits of the written ID, so python-can's `0x20000080` reads back as it was. A data length above 8, or a true FD, BRS or ESI flag, marks a CAN FD frame. A length column truncates the data to that many bytes. Byte columns end at the first empty one.
 - A header the reader cannot use rejects every line of the file with the reason "the CSV header has no time, ID and data columns we know". A row with a bad time, ID, flag, length or data cell, or too few cells to reach the time, ID or data column, is rejected with a reason.
 - Not read: quoted delimiters, columns of decoded signal values (a CSV of signals is not a frame log), and any time base other than the one in the header, so a file of wall-clock strings (`12:34:56.789`) is rejected row by row.
+
+Vector BLF support (`crates/can-formats/src/blf.rs`), as written by CANoe, CANalyzer and python-can:
+
+- The file header's start time (a Windows SYSTEMTIME, millisecond precision) gives the absolute start, taken as UTC because the file names no time zone; when it is unset, times count from zero. Object timestamps are nanoseconds, or 10 microsecond units when the object's flags say so, from that start.
+- Objects with version 1 or version 2 headers are read. Log containers (object type 10) holding zlib-compressed (method 2) or uncompressed (method 0) objects are unpacked as they arrive; an object that continues from one container into the next is joined. A container claiming more than 64 MiB uncompressed, or that does not inflate, is rejected as a record. Objects are read in order; nothing is sorted.
+- Frame objects: CAN_MESSAGE (1) and CAN_MESSAGE2 (86) give classic frames, with the direction bit setting the transmitted flag and the remote bit a remote frame with no data. CAN_FD_MESSAGE (100) and CAN_FD_MESSAGE_64 (101) give CAN FD frames with the BRS and ESI flags, or classic frames when their EDL bit is clear; the data length comes from the DLC, limited by the valid-bytes count of a CAN_FD_MESSAGE_64. CAN_ERROR (2) gives an error frame with no data and CAN_ERROR_EXT (73) one with the DLC and data bytes the record holds (see the note on error frame IDs above). Bit 31 of an object's ID, or an ID above 0x7FF, marks a 29-bit ID. The bus is `can<channel>` with the channel number as written.
+- Every other object type (app triggers, statistics, environment variables, LIN, FlexRay, Ethernet, the CAN overload, driver status and statistic objects) is skipped without counting as rejected. `LogInfo.lines` counts the frame objects read plus the rejected records.
+- A frame object shorter than its type needs, an object with a bad header, more than 3 bytes of padding between objects, a timestamp outside the nanosecond range, and a file that ends inside an object are rejected with a reason. A file without the `LOGG` signature rejects a single record and reads no frames. Memory for one object is bounded at 32 MiB compressed and 64 MiB uncompressed.
+- Not read: the file header's end time and object counts, and the application and driver information. Bus numbers above 255 are read but the UI's bus name stays `can<number>`.
 
 ## DBC files
 

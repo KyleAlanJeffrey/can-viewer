@@ -13,6 +13,7 @@ can-formats = { path = "crates/can-formats" }
 can-dbc-model = { path = "crates/can-dbc-model" }
 can-dbc = { version = "10", default-features = false }
 memchr = "2"
+miniz_oxide = "0.8"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

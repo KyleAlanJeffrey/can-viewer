@@ -6,6 +6,10 @@ Usage:
 
 Frames are read here with a minimal candump line splitter, so only the decoder is compared.
 Exits non-zero on any mismatch or on signals that one side decodes and the other doesn't.
+
+cantools refuses to decode a frame whose multiplexor has a value that switches in no signal
+(or a frame too short for the message), where ours decodes the signals that are there. Such
+frames are counted and left out of the comparison.
 """
 
 import csv
@@ -43,12 +47,17 @@ def not_available(message, signal, raw):
 def main(log, dbc, ours_csv, limit):
     db = cantools.database.load_file(dbc)
     expected = {}
+    skipped = set()
     for index, frame_id, data in frames(log, int(limit)):
         try:
             message = db.get_message_by_frame_id(frame_id)
         except KeyError:
             continue
-        raw = message.decode(data, decode_choices=False, scaling=False)
+        try:
+            raw = message.decode(data, decode_choices=False, scaling=False)
+        except cantools.database.DecodeError:
+            skipped.add(index)
+            continue
         for name, value in message.decode(data, decode_choices=False).items():
             if not not_available(message, message.get_signal_by_name(name), raw[name]):
                 expected[(index, message.name, name)] = float(value)
@@ -56,6 +65,8 @@ def main(log, dbc, ours_csv, limit):
     actual = {}
     with open(ours_csv) as f:
         for row in csv.DictReader(f):
+            if int(row["frame"]) in skipped:
+                continue
             actual[(int(row["frame"]), row["message"], row["signal"])] = float(row["value"])
 
     missing = expected.keys() - actual.keys()
@@ -66,6 +77,8 @@ def main(log, dbc, ours_csv, limit):
         if not math.isclose(expected[k], actual[k], rel_tol=1e-9, abs_tol=1e-9)
     ]
     print(f"{len(expected)} values from cantools, {len(actual)} from ours")
+    if skipped:
+        print(f"{len(skipped)} frames cantools would not decode were left out")
     for label, items in (("missing from ours", missing), ("extra in ours", extra), ("mismatched", wrong)):
         if items:
             print(f"{len(items)} {label}, e.g. {sorted(items)[:5]}")

@@ -43,7 +43,7 @@ Generate the demo: a 1M-frame log, gzipped to `web/public/demo/demo.log.gz` (the
 cd web && pnpm demo
 ```
 
-Start the dev server, then open the page and click **Load demo** or drop a candump log and a DBC.
+Start the dev server, then open the page and click **Try the Demo** or drop a candump log and a DBC.
 
 ```bash
 cd web && pnpm dev

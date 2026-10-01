@@ -2,7 +2,7 @@
 
 The marketing site for `freecanstudio.com`. The app itself is a separate deployment on `app.freecanstudio.com` (see the repository README).
 
-It is plain static HTML with one shared stylesheet. There is no build step and no npm dependency, so a copy edit never rebuilds Rust or wasm.
+It is plain static HTML with one shared stylesheet. There is no build step and no npm dependency, so a copy edit doesn't need Rust or wasm. The Cloudflare build watch paths in [CONTRIBUTING.md](../CONTRIBUTING.md) keep a site-only push from rebuilding the app.
 
 ## Layout
 

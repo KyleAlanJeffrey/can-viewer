@@ -21,25 +21,43 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [x] CodeRabbit review, with every comment addressed (fixed, or answered on the PR)
 - [ ] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)
 - [ ] After the first deploy, check the demo, reload restore and the CSP on the live site
-- [ ] Update the views to the new mockups when they land (docs/ holds the current ones)
+- [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
+
+## Landing page
+
+A separate static site on `freecanstudio.com`, with the app moving to `app.freecanstudio.com`. Two Cloudflare deployments; the owner sets them up.
+
+- [ ] New `site/` folder for the landing page (a static site tool such as Astro), built and deployed on its own so copy edits don't rebuild Rust and wasm
+- [x] Main button goes straight into the app; add a demo link (`app.freecanstudio.com/?demo=1`) and make the app open the demo log from it
+- [ ] Content pages for the searches people make: BLF viewer online, MF4 viewer online, DBC viewer, CANalyzer alternative; each with a big "Open a BLF file" style button into the app
+- [ ] No drop zone on the landing page (a dropped file can't be handed to another site); send people to the app to open files
+- [ ] Analytics, newsletter signup or video embeds stay on the landing page only; the app keeps its strict CSP in `web/public/_headers` and loads nothing from third parties
+- [ ] State the privacy claim on the landing page: the app domain loads nothing from anyone else
+- [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `freecan.studio` and `freecan.app` redirecting to it (owner)
+- [ ] Later: downloads, pricing and Pro license pages on the main site
 
 ## Bugs
 
-- [ ] DBCs saved in the browser before J1939 support have no `j1939` flag, so they only match by exact ID until they are opened again
-- [ ] Database view: "Overridden by" compares exact IDs only, so it misses a J1939 message whose PGN an earlier DBC decodes
-- [ ] Extended multiplexing (`SG_MUL_VAL_`) is not decoded; every multiplexed signal is switched by the message's one multiplexor
-- [ ] DBC export drops attributes other than `VFrameFormat`, including CAN FD frame formats
-- [ ] A DBC with two `BO_` lines for the same ID loads, but the Database view selects, edits and deletes messages by ID, so both change together (PR #1 review)
-- [ ] Export DBC... marks the DBC clean before the file is saved, so a cancelled save dialog loses the "unexported edits" guard on Remove and on reopening the file (PR #1 review; use `showSaveFilePicker` where available)
-- [ ] Two tabs both save their DBC list to IndexedDB, so an older tab can overwrite the other's edits (PR #1 review)
+- [x] DBCs saved in the browser before J1939 support have no `j1939` flag, so they only match by exact ID until they are opened again
+- [x] Database view: "Overridden by" compares exact IDs only, so it misses a J1939 message whose PGN an earlier DBC decodes
+- [x] Extended multiplexing (`SG_MUL_VAL_`) is not decoded; every multiplexed signal is switched by the message's one multiplexor
+- [x] DBC export drops attributes other than `VFrameFormat`, including CAN FD frame formats
+- [x] A DBC with two `BO_` lines for the same ID loads, but the Database view selects, edits and deletes messages by ID, so both change together (PR #1 review)
+- [x] Export DBC... marks the DBC clean before the file is saved, so a cancelled save dialog loses the "unexported edits" guard on Remove and on reopening the file (PR #1 review; use `showSaveFilePicker` where available)
+- [x] Two tabs both save their DBC list to IndexedDB, so an older tab can overwrite the other's edits (PR #1 review)
 
 ## Follow-ups
 
-- [ ] Database view: show and edit whether a message is J1939
-- [ ] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
+- [ ] Rows of reassembled J1939 transfers carry only their first 64 bytes; read the full length (row bytes 20 to 22) in `web/src/core/rows.ts` so Trace and Reverse Engineer can show longer payloads
+- [ ] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
+- [ ] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)
+- [ ] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
+
+- [x] Database view: show and edit whether a message is J1939
+- [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
 - [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
 - [ ] Automated UI tests
-- [ ] Database view: show when a DBC was last exported
-- [ ] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
-- [ ] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)
-- [ ] Start a new core worker after a wasm trap (an out-of-memory parse, say); today the failed open leaves a fresh session, but a trapped instance may stay unusable until a reload (PR #1 review)
+- [x] Database view: show when a DBC was last exported
+- [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
+- [x] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)
+- [x] Start a new core worker after a wasm trap (an out-of-memory parse, say); today the failed open leaves a fresh session, but a trapped instance may stay unusable until a reload (PR #1 review)

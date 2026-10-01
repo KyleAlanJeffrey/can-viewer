@@ -1,10 +1,12 @@
 //! Frame types and the columnar in-memory frame store shared by the web and desktop builds.
 
 mod store;
+pub mod tp;
 
 pub use store::{frame_bits, id_key, FrameStore, IdKey, IdStats};
 
-/// Largest payload of any supported frame type (CAN FD).
+/// Largest payload of any frame a log can hold (CAN FD). Frames reassembled from J1939
+/// transport protocol packets ([`tp`]) are longer, up to [`tp::MAX_TRANSFER`] bytes.
 pub const MAX_PAYLOAD: usize = 64;
 
 /// Bit 31 of an ID marks a 29-bit extended identifier, matching the DBC `BO_` convention.
@@ -22,6 +24,9 @@ pub mod flags {
     pub const RTR: u8 = 1 << 3;
     pub const ERROR: u8 = 1 << 4;
     pub const TX: u8 = 1 << 5;
+    /// Not from the log: one J1939 parameter group reassembled from its transport protocol
+    /// packets ([`crate::tp`]), which stay in the log too.
+    pub const REASSEMBLED: u8 = 1 << 6;
 }
 
 /// One frame as produced by a parser or read back from the store.

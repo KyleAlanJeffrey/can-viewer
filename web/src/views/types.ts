@@ -53,6 +53,8 @@ export interface ViewContext {
   run(label: string, task: () => Promise<void>): Promise<boolean>;
   setError(message: string | null): void;
   setView(view: ViewId): void;
+  /** Hide the inspector pane for a mode of the view that has none; the shell resets it on a view change. */
+  setInspectorHidden(hidden: boolean): void;
   openLogPicker(): void;
   openDbcPicker(): void;
 }
@@ -65,9 +67,11 @@ export interface LoadedDbc {
   channel: string | null;
   /** Changed since it was opened or last exported. */
   edited: boolean;
+  /** When it was last exported from this app, in epoch milliseconds. Absent if never. */
+  exportedAt?: number;
 }
 
-export type DbcChange = Partial<Pick<LoadedDbc, 'db' | 'channel' | 'edited'>>;
+export type DbcChange = Partial<Pick<LoadedDbc, 'db' | 'channel' | 'edited' | 'exportedAt'>>;
 
 export interface ViewProps {
   ctx: ViewContext;

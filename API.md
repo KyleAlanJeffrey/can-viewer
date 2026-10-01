@@ -8,6 +8,7 @@
 - Each call posts `{ id, method, args }` to the worker. The worker answers with `{ id, result }` or `{ id, error }`, and pushes parse progress as `{ event: 'progress', bytes, total }`.
 - Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it.
 - Bulk results (trace rows, bit counts, series points, bus load) arrive as typed arrays whose buffers are transferred, not copied. Small structured results cross the wasm boundary as JSON.
+- If the worker itself stops (an uncaught error or a reply that cannot be read), `WebCore` terminates it and starts another: every call in flight rejects with `The CAN core stopped and was restarted. Open the log again.`, the databases from the last `setDatabases` are set again, and the listeners given to [`onReset`](#onreset) are called. The log and every series are gone. A worker that stopped before it ever answered is not replaced, since another would fail the same way; every later call then rejects with the worker's error.
 - The planned desktop app will implement the same interface over Tauri commands, with the same crates running natively.
 
 ```ts
@@ -38,9 +39,12 @@ Exported from `web/src/core/api.ts`:
 | `FLAG_BRS` | `1 << 1` | CAN FD bit rate switch |
 | `FLAG_RTR` | `1 << 3` | Remote frame |
 | `FLAG_ERROR` | `1 << 4` | Error frame |
+| `FLAG_REASSEMBLED` | `1 << 6` | Not from the log: a J1939 parameter group reassembled from its transport protocol packets (see "J1939 transport protocol" in COMPATIBILITY.md) |
 | `EXT_FLAG` | `0x8000_0000` | Bit 31: extended ID |
 | `dbcId(s)` | function | The ID of an `IdSummary` with `EXT_FLAG` set when extended, as used in DBC files |
+| `isErrorFrame(s)` | function | Whether an `IdSummary` is for CAN error frames (`FLAG_ERROR` in its flags) |
 | `formatId(id, extended)` | function | Upper-case hex: 3 digits for standard IDs, 8 for extended |
+| `idLabel(s)` | function | What an ID list shows for an `IdSummary`: `formatId` text, or for error frames their class under the error flag, such as `Error 080` (`Error frames` when the class is 0) |
 
 Frame flags can also carry bits with no constant in `api.ts`: ESI (`1 << 2`) and transmitted (`1 << 5`, from `candump -x`). See `flags` in `crates/can-core/src/lib.rs`.
 
@@ -64,6 +68,7 @@ Describes the current log. Returned by [`openLog`](#openlog).
 - **`parseMs`** `number` - Wall-clock parse time in the worker, in milliseconds.
 - **`wasmBytes`** `number` - Size of the wasm memory after parsing, in bytes.
 - **`errorFrames`** `number` - Frames flagged as CAN error frames.
+- **`reassembledFrames`** `number` - J1939 transport protocol transfers that were reassembled into frames of their own (flag `FLAG_REASSEMBLED`). They are counted in `frames` too.
 
 ### The Progress object
 
@@ -88,7 +93,7 @@ One arbitration ID on one bus. Returned by [`idSummary`](#idsummary).
 - **`periodMs`** `number | null` - Mean interval between frames in milliseconds, or null with fewer than two frames.
 - **`jitterMs`** `number | null` - Population standard deviation of the interval between frames in milliseconds, or null with fewer than three frames.
 - **`minLen`** `number` - Shortest payload in bytes.
-- **`maxLen`** `number` - Longest payload in bytes.
+- **`maxLen`** `number` - Longest payload in bytes. Above 64 only for reassembled J1939 transfers, which go up to 1785.
 - **`flags`** `number` - The frame flags of every frame, ORed together.
 - **`name`** `string | null` - Message name from the loaded databases, by the lookup order of [`setDatabases`](#setdatabases), or null if none defines it.
 - **`dbc`** `number | null` - Index, in the last array passed to [`setDatabases`](#setdatabases), of the database that decodes this ID, or null.
@@ -102,6 +107,47 @@ A CAN database, as parsed from or exported to DBC.
 
 - **`name`** `string` - Display name, usually the file name. Set by the caller of `parseDbc`; the engine ignores it.
 - **`messages`** [`MessageDef[]`](#the-messagedef-object) - The messages, in file order.
+- **`nodes`** [`NodeDef[]`](#the-nodedef-object), optional - The nodes declared in `BU_`, in file order. Absent means none; `exportDbc` also lists any transmitter or receiver missing from here. `parseDbc` always fills it.
+- **`valueTables`** [`ValueTable[]`](#the-valuetable-object), optional - Named value tables (`VAL_TABLE_`), kept for export. Absent means none.
+- **`attributeDefinitions`** [`AttributeDefinition[]`](#the-attributedefinition-object), optional - Attribute definitions (`BA_DEF_`) with their defaults, in file order, except `VFrameFormat`, which `exportDbc` derives from each message's `j1939` and `fd`. Absent means none.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Network attribute values (`BA_ "name" value;`). Absent means none.
+
+The engine keeps nodes, value tables and attributes as data for export; nothing decodes them.
+
+### The NodeDef object
+
+**Attributes**
+
+- **`name`** `string` - Node name.
+- **`comment`** `string | null`, optional - Node comment (`CM_ BU_`), or null if none.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the node (`BA_ ... BU_`). Absent means none.
+
+### The ValueTable object
+
+**Attributes**
+
+- **`name`** `string` - Table name.
+- **`entries`** `[number, string][]` - (raw value, text) pairs. Signals hold their own copies in `valueTable`; the table is only kept for export.
+
+### The AttributeDefinition object
+
+A DBC `BA_DEF_` line and its `BA_DEF_DEF_` default.
+
+**Attributes**
+
+- **`name`** `string` - Attribute name.
+- **`object`** `'network' | 'node' | 'message' | 'signal' | 'envVar'` - What the attribute applies to. `network` is a definition with no object type. Environment variables are not kept, so an `envVar` definition survives without values.
+- **`kind`** `AttributeType` - The type and range, as one of `{ type: 'int', min, max }`, `{ type: 'hex', min, max }`, `{ type: 'float', min, max }`, `{ type: 'string' }` or `{ type: 'enum', choices: string[] }`.
+- **`default`** `number | string | null` - The default value, or null if the file gives none. An enum default is usually the label.
+
+### The Attribute object
+
+An attribute value on one object (a DBC `BA_` line).
+
+**Attributes**
+
+- **`name`** `string` - Attribute name, as in an `AttributeDefinition`.
+- **`value`** `number | string` - The value. Enum values are the index of the choice.
 
 ### The MessageDef object
 
@@ -114,6 +160,8 @@ A CAN database, as parsed from or exported to DBC.
 - **`comment`** `string | null` - Message comment, or null if none.
 - **`signals`** [`SignalDef[]`](#the-signaldef-object) - The message's signals.
 - **`j1939`** `boolean`, optional - A J1939 parameter group (`VFrameFormat` J1939PG). It decodes every frame with its PGN, and values that SAE J1939-71 reserves for error and not available (a byte-sized unsigned signal whose top byte is above 0xFA) decode as no value; see "J1939 decoding" in COMPATIBILITY.md. Absent means false. `parseDbc` always fills it.
+- **`fd`** `boolean`, optional - Sent as CAN FD (`VFrameFormat` StandardCAN_FD or ExtendedCAN_FD). Only kept for export, where `j1939` wins if both are set. Absent means false. `parseDbc` always fills it.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the message (`BA_ ... BO_`) other than `VFrameFormat`, which `j1939` and `fd` stand for. Absent means none.
 
 ### The SignalDef object
 
@@ -130,10 +178,19 @@ A CAN database, as parsed from or exported to DBC.
 - **`max`** `number` - Declared maximum physical value.
 - **`unit`** `string` - Unit text, possibly empty.
 - **`isMultiplexor`** `boolean` - True if this signal selects which multiplexed signals are present.
-- **`muxValue`** `number | null` - The signal is present only when the multiplexor has this raw value; null if it is not multiplexed.
+- **`muxValue`** `number | null` - The signal is present only when the message's multiplexor has this raw value; null if it is not multiplexed. Ignored when `muxSwitch` is set.
 - **`valueTable`** `[number, string][]` - Value descriptions as (raw value, text) pairs.
 - **`comment`** `string | null` - Signal comment, or null if none.
 - **`receivers`** `string[]`, optional - Receiving nodes. Absent means none. `parseDbc` always fills it.
+- **`muxSwitch`** [`MuxSwitch`](#the-muxswitch-object)` | null`, optional - Extended multiplexing (DBC `SG_MUL_VAL_`): the multiplexor that switches this signal and the raw values of it under which the signal is present. The multiplexor may itself be multiplexed, and then the signal is present only when the whole chain is. Absent or null means simple multiplexing by `muxValue`. `parseDbc` always fills it.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the signal (`BA_ ... SG_`), such as `GenSigStartValue`. Absent means none.
+
+### The MuxSwitch object
+
+**Attributes**
+
+- **`signal`** `string` - Name of the multiplexor signal, in the same message.
+- **`ranges`** `[number, number][]` - Inclusive (low, high) raw value ranges of that signal under which this one is present.
 
 ### The ScopedDatabase object
 
@@ -204,9 +261,11 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 - **`index(i)`** `number` - The frame's index in the whole log.
 - **`channel(i)`** `number` - Bus index.
 - **`flags(i)`** `number` - Frame flags.
-- **`len(i)`** `number` - Payload length in bytes.
+- **`len(i)`** `number` - Payload length in bytes, at most 64.
 - **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID. Always false for an ID's first frame.
 - **`data(i)`** `Uint8Array` - The payload, as a view into the batch.
+
+A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)` and `data(i)`; its full length is packed as a little-endian `u16` at byte offset 20 of the row, which `rows.ts` does not expose yet. `decodeRaw` and `decodeSignal` work on the whole payload.
 
 ## Logs
 
@@ -406,6 +465,30 @@ The number of payload bits that changed, per time bucket, for one ID across `[t0
 const strip = await core.changeActivity(summary.key, 0, log.durationS, 400);
 ```
 
+### byteLanes
+
+```ts
+byteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]>
+```
+
+The raw values of `count` payload bytes from byte `first`, for one ID between `t0` and `t1` seconds: one sparkline per byte, without keeping a series in the worker. Each lane is decimated as by [`seriesView`](#seriesview) and includes one neighbouring frame on each side of the window. Frames too short to carry a byte give that lane no point.
+
+**Parameters**
+
+- **`key`** `number` - An ID key. `ALL_IDS` is not accepted.
+- **`first`** `number` - The first byte index.
+- **`count`** `number` - How many bytes, usually 8.
+- **`t0`** `number` - Start, in seconds.
+- **`t1`** `number` - End, in seconds.
+- **`buckets`** `number` - Target resolution per lane.
+
+**Returns** `count` lanes, each `{ x: Float64Array, y: Float64Array }` with times in seconds and byte values 0 to 255. The array is empty for `ALL_IDS`, an unknown key, or a window that isn't finite.
+
+```ts
+const lanes = await core.byteLanes(summary.key, 0, 8, 40, 70, 80);
+const lastB2 = lanes[2].y.at(-1);
+```
+
 ## Signals and series
 
 ### decodeSignal
@@ -574,6 +657,29 @@ Writes `db` as DBC text. It neither reads nor changes the session. Parsing the t
 ```ts
 const text = await core.exportDbc(db);
 downloadText('vehicle.dbc', text); // web/src/download.ts
+```
+
+## Engine lifecycle
+
+### onReset
+
+```ts
+onReset?(listener: () => void): () => void
+```
+
+Registers `listener` to be called after the engine stopped and was started again. By then every call that was in flight has rejected, the databases from the last `setDatabases` are loaded again, and the log and every series are gone, so the app shows no log and asks for it to be opened again. The method is optional: an implementation whose engine never restarts leaves it out, and callers use `core.onReset?.(...)`.
+
+**Parameters**
+
+- **`listener`** `() => void` - Called once per restart.
+
+**Returns** a function that removes the listener.
+
+```ts
+const stop = core.onReset?.(() => {
+  showNoLog();
+  showError('The CAN core stopped and was restarted. Open the log again.');
+});
 ```
 
 ## Find Signal

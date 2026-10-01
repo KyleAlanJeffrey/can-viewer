@@ -19,7 +19,7 @@ TOP CONTENT CARD about 27 percent height: title “Pinned references”, outline
 VehicleSpeed / 3E9 · can0 / 115.4 km/h, green curve #16875F.
 EngineSpeed / 0C9 · can0 / 2,034.75 rpm, ochre #A56612 curve.
 123 · Byte 2 / Raw byte · 0–255 / 45, graphite curve, tiny pinned icon.
-All three curves use EXACTLY the same full-width x plot area, common 40 s,45 s,50 s,55 s,60 s,65 s,70 s axis only under third plot, shared thin gray cursor at 52.343 s across ALL three. Separate right y scales. Row pin/remove icons. Readouts graphite. No overlay of unlike units.
+All three curves use EXACTLY the same full-width x plot area, common 40 s,45 s,50 s,55 s,60 s,65 s,70 s axis only under third plot, shared thin gray cursor at 52.340 s across ALL three. Separate right y scales. Row pin/remove icons. Readouts graphite. No overlay of unlike units.
 Below: single compact analysis-window slider “40–70 s” with full log context “30 min 15 s”.
 MAIN CONTENT about lower 53 percent: heading “Byte values”, subtitle “Each cell shows 40–70 s · raw values 0–255”. Outlined filter “All buses” and unobtrusive “Changing bytes only” unchecked.
 Dense table: first column “Message”, then eight equally sized columns B0 B1 B2 B3 B4 B5 B6 B7. Each cell has a small thin graphite sparkline with white background and subtle separators, not colored tiles. All mini plots share 40–70 s locally and a tiny gray vertical cursor at the same fraction of width. Each row height about 42 px. Show ALL ELEVEN rows exactly once:
@@ -35,5 +35,7 @@ Dense table: first column “Message”, then eight equally sized columns B0 B1 
 18FEF100 CCVS · can0
 300 RADAR_TRACKS · can1 [small secondary “CAN FD · B0–7 of 32 · View all”].
 For 123 Unknown, beneath tiny waveforms show the exact hex bytes “39”, “00”, “2D”, “11”, “AA”, “0B”, “F4”, “00” respectively. B0 sawtooth, B1 flat zero,B2 slow rising step,B3 repeated wrapped changes,B4 flat,B5 stepping,B6 noisy,B7 flat. Other rows mix constant, smooth, sawtooth and stepped illustrative sparklines with variety, no invented decoded units.
-Footer directly under table: selection “123 · Byte 2”, outlined “Pin byte” and outlined “Open in Advanced →”. No big inspector. No bit grid anywhere.
+Footer directly under table: selection “123 · Byte 2”, outlined “Unpin byte” and outlined “Open in Advanced →”. No big inspector. No bit grid anywhere.
 Clean desktop engineering app, useful compact density with consistent alignment, no enormous headlines. This is an IMAGE mockup not code.
+
+OUTPUT QA REQUIREMENTS: All byte-matrix lines are Graphite, never series colors. Pinned raw Byte 2 reads 45 on a 0–255 scale, so its curve lies near 18% of the plot height above zero. Use explicit Analysis window fields 40.000 s and 70.000 s, with Full log: 30 min 15 s; no misleading full-log slider. The selected byte is already pinned: footer action Unpin byte.

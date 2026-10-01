@@ -81,6 +81,8 @@ const handlers = {
   seriesView: (handle: number, t0: number, t1: number, buckets: number) =>
     halves(session.series_view(handle, t0, t1, buckets)),
   dropSeries: (handle: number) => session.drop_series(handle),
+  byteLanes: (key: number, first: number, count: number, t0: number, t1: number, buckets: number) =>
+    transfer(session.byte_lanes(key, first, count, t0, t1, buckets)),
   rowAtTime: (key: number, t: number) => session.row_at_time(key, t),
   busLoad: (channel: number, t0: number, t1: number, buckets: number, bitrate: number) =>
     halves(session.bus_load(channel, t0, t1, buckets, bitrate)),
@@ -98,7 +100,7 @@ const handlers = {
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
 };
 
-const withTransfer = new Set(['rows', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity']);
+const withTransfer = new Set(['rows', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
 
 // Requests run one at a time so a request never observes a half-parsed log.
 let initError: unknown = null;
@@ -127,6 +129,13 @@ port.onmessage = (e) => {
       }
     } catch (err) {
       port.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
+      // A trapped instance can't be trusted afterwards. Thrown uncaught, it reaches the page's
+      // worker.onerror, which starts a new worker.
+      if (err instanceof WebAssembly.RuntimeError) {
+        setTimeout(() => {
+          throw err;
+        });
+      }
     }
   });
 };

@@ -291,34 +291,6 @@
   line-height: 16px;
 }
 
-/* Candidate plot */
-.re-plot-readout {
-  display: flex;
-  align-items: baseline;
-  justify-content: flex-end;
-  gap: 8px;
-  min-height: 20px;
-  margin-bottom: 2px;
-}
-
-.re-plot-readout .readout {
-  margin-left: 0;
-}
-
-.re-plot-at {
-  color: var(--slate);
-  font-size: 12px;
-}
-
-.re-plot-host {
-  position: relative;
-  min-height: 146px;
-}
-
-.re-plot-empty {
-  padding: 12px 0 20px;
-}
-
 .re-subhead {
   margin-top: 16px;
 }
@@ -330,54 +302,25 @@
   font-weight: 600;
 }
 
-/* Byte lanes */
-.re-lanes {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
-  gap: 8px;
-}
-
-.re-lane {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  padding: 6px 8px 8px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--plot-paper);
-  text-align: left;
-  transition: background-color 120ms ease-out;
-}
-
-.re-lane:hover {
-  background: var(--selected-row);
-}
-
-.re-lane[aria-pressed='true'] {
-  padding: 5px 7px 7px;
-  border: 2px dashed var(--graphite);
-  background: var(--selected-row);
-}
-
-.re-lane-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.re-lane-note {
-  color: var(--slate);
-  font-size: 11px;
-}
-
 .re-spark {
   display: block;
   width: 100%;
   height: 30px;
+}
+
+.re-spark-host {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.re-spark-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--scrubber);
+  pointer-events: none;
 }
 
 /* Inspector form */
@@ -650,4 +593,656 @@
   margin-top: 8px;
   color: var(--slate);
   font-size: 12px;
+}
+
+/* Mode tabs. The ochre underline marks the open mode, as the top-bar tabs do. */
+.re-header {
+  min-height: 48px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.re-modes {
+  display: flex;
+  align-self: stretch;
+  gap: 4px;
+}
+
+.re-mode {
+  position: relative;
+  padding: 0 12px;
+  border: 0;
+  background: none;
+  color: var(--slate);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.re-mode:hover {
+  color: var(--graphite);
+}
+
+.re-mode[aria-selected='true'] {
+  color: var(--graphite);
+  font-weight: 600;
+}
+
+.re-mode[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ochre-control);
+}
+
+.re-mode:focus-visible {
+  outline: 2px solid var(--ochre-control);
+  outline-offset: -4px;
+  border-radius: 8px;
+}
+
+.re-scope-note {
+  color: var(--slate);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.re-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--graphite);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.re-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+/* Pinned references */
+.re-refs .re-card-head {
+  align-items: center;
+}
+
+.re-refs-icon {
+  align-self: center;
+  color: var(--graphite);
+}
+
+.re-refs-pin {
+  margin-left: auto;
+}
+
+.re-refs-empty {
+  max-width: 64ch;
+}
+
+.re-ref-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.re-ref-row {
+  display: grid;
+  grid-template-columns: 184px minmax(0, 1fr) 32px;
+  align-items: start;
+  gap: 12px;
+}
+
+.re-ref-meta {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  column-gap: 8px;
+  padding-top: 4px;
+  min-width: 0;
+}
+
+.re-ref-swatch {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 50%;
+}
+
+.re-ref-swatch.dashed {
+  width: 16px;
+  height: 0;
+  margin-top: 9px;
+  border-top: 2px dashed var(--graphite);
+  border-radius: 0;
+}
+
+.re-ref-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.re-ref-sub,
+.re-ref-value {
+  grid-column: 2;
+}
+
+.re-ref-sub {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.re-ref-value.readout {
+  margin: 2px 0 0;
+}
+
+.re-ref-plot-cell {
+  min-width: 0;
+}
+
+.re-ref-plot {
+  position: relative;
+  min-width: 0;
+}
+
+.re-ref-actions {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+.re-overlay-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 4px 8px;
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-overlay-legend .re-ref-swatch.dashed {
+  margin-top: 0;
+}
+
+.re-overlay-value.readout {
+  margin-left: 4px;
+  font-size: 13px;
+  color: var(--graphite);
+}
+
+.re-cursor-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--scrubber);
+  pointer-events: none;
+}
+
+.re-cursor-dot {
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--paper);
+  border-radius: 50%;
+  box-sizing: content-box;
+  margin: -2px 0 0 -2px;
+  pointer-events: none;
+}
+
+.re-cursor-dot.overlay {
+  background: var(--graphite);
+}
+
+.re-cursor-flag {
+  position: absolute;
+  top: -18px;
+  left: 0;
+  color: var(--graphite);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Room for the cursor time above the first plot. */
+.re-ref-row:first-child .re-ref-plot {
+  margin-top: 18px;
+}
+
+/* Analysis window */
+.re-awin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 12px -16px -16px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--hairline);
+  color: var(--slate);
+}
+
+.re-awin .input {
+  width: 104px;
+  height: 32px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.re-awin-full {
+  margin-left: auto;
+}
+
+/* Byte Values matrix */
+.re-bytes {
+  padding-bottom: 0;
+}
+
+.re-matrix-tools {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+}
+
+.re-matrix-tools .select {
+  height: 32px;
+}
+
+.re-table-scroll {
+  overflow-x: auto;
+  margin: 0 -4px;
+}
+
+.re-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+
+.re-table thead th {
+  padding: 4px 6px 6px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--slate);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.re-table thead .re-th-msg {
+  width: 196px;
+  text-align: left;
+}
+
+.re-table tbody th {
+  padding: 0 6px;
+  border-bottom: 1px solid var(--gridline);
+  font-weight: 400;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.re-table td {
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--gridline);
+  border-left: 1px solid var(--gridline);
+}
+
+.re-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.re-table tr.re-row-selected > * {
+  background: var(--selected-row);
+}
+
+.re-row-head {
+  display: block;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.re-row-head:focus-visible {
+  outline: 2px solid var(--ochre-control);
+  outline-offset: 0;
+  border-radius: 4px;
+}
+
+.re-row-id {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.re-row-id .mono {
+  flex: none;
+}
+
+.re-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.re-row-bus {
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-row-id .status {
+  flex: none;
+}
+
+.re-row-note {
+  display: flex;
+  gap: 6px;
+  margin-top: -4px;
+  padding-bottom: 6px;
+  color: var(--slate);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.re-row-note .text-button {
+  font-size: 11px;
+}
+
+.re-row-group {
+  display: block;
+  padding: 6px 0 6px 12px;
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  min-height: 34px;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: crosshair;
+}
+
+.re-cell:hover {
+  background: var(--hover-wash);
+}
+
+.re-cell.selected {
+  border: 2px solid var(--ochre-control);
+  padding: 1px 3px;
+  background: var(--paper);
+}
+
+.re-cell:focus-visible {
+  outline: 2px solid var(--ochre-control);
+  outline-offset: 1px;
+}
+
+.re-cell.still {
+  opacity: 0.35;
+}
+
+.re-cell.none {
+  display: block;
+  background: repeating-linear-gradient(135deg, transparent 0 4px, var(--gridline) 4px 5px);
+  cursor: default;
+}
+
+.re-cell .re-spark {
+  height: 22px;
+}
+
+.re-cell-pin {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  color: var(--ochre-control);
+}
+
+.re-cell-value {
+  align-self: center;
+  margin-top: -2px;
+  color: var(--graphite);
+  font-size: 11px;
+  line-height: 13px;
+}
+
+.re-matrix-more {
+  padding: 8px 6px 0;
+  font-size: 12px;
+}
+
+/* Kept in view at the foot of the content however far the matrix scrolls. */
+.re-matrix-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 -20px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--hairline);
+  background: var(--warm-white);
+}
+
+.re-matrix-sel {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.re-matrix-hint {
+  color: var(--slate);
+  font-size: 13px;
+}
+
+/* Advanced */
+.re-message-head .content-sub {
+  margin-top: 2px;
+}
+
+.re-bstrip {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.re-bstrip-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--paper);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: crosshair;
+  transition: background-color 120ms ease-out;
+}
+
+.re-bstrip-cell:hover {
+  background: var(--hover-wash);
+}
+
+.re-bstrip-cell[aria-pressed='true'] {
+  padding: 5px 7px 7px;
+  border: 2px dashed var(--graphite);
+  background: var(--selected-row);
+}
+
+.re-bstrip-cell:focus-visible {
+  outline: 2px solid var(--ochre-control);
+  outline-offset: 2px;
+}
+
+.re-bstrip-head {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--slate);
+}
+
+.re-bstrip-value {
+  color: var(--graphite);
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+/* Inspector value preview */
+.re-value {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.re-value-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.re-value-label {
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-value-reading.readout {
+  font-size: 17px;
+}
+
+.re-value-spark {
+  min-height: 48px;
+}
+
+.re-value-spark .re-spark {
+  height: 48px;
+}
+
+/* Pin signal sheet */
+.re-pin-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.re-pin-list,
+.re-pin-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.re-pin-list {
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.re-pin-group + .re-pin-group {
+  border-top: 1px solid var(--hairline);
+}
+
+.re-pin-group-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px 4px;
+  background: var(--paper);
+  font-weight: 600;
+}
+
+.re-pin-bus {
+  color: var(--slate);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.re-pin-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 12px 4px 24px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.re-pin-row:hover {
+  background: var(--hover-wash);
+}
+
+.re-pin-row[aria-pressed='true'] {
+  background: var(--selected-row);
+}
+
+.re-pin-row:focus-visible {
+  outline: 2px solid var(--ochre-control);
+  outline-offset: -2px;
+}
+
+.re-pin-name {
+  font-family: var(--font-mono);
+}
+
+.re-pin-unit {
+  color: var(--slate);
+  font-size: 12px;
+}
+
+.re-pin-state {
+  margin-left: auto;
+}
+
+.re-pin-state .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.re-pin-action {
+  color: var(--ochre-control);
+  font-weight: 500;
 }

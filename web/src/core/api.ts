@@ -7,6 +7,8 @@ export const FLAG_FD = 1 << 0;
 export const FLAG_BRS = 1 << 1;
 export const FLAG_RTR = 1 << 3;
 export const FLAG_ERROR = 1 << 4;
+/** Not from the log: a J1939 parameter group reassembled from its transport protocol packets. */
+export const FLAG_REASSEMBLED = 1 << 6;
 export const EXT_FLAG = 0x8000_0000;
 
 export interface LogInfo {
@@ -23,6 +25,11 @@ export interface LogInfo {
   wasmBytes: number;
   /** Frames flagged as CAN error frames. */
   errorFrames: number;
+  /**
+   * J1939 transport protocol transfers reassembled into frames of their own (`FLAG_REASSEMBLED`),
+   * counted in `frames` as well.
+   */
+  reassembledFrames: number;
 }
 
 export interface Progress {
@@ -68,6 +75,59 @@ export interface SignalDef {
   comment: string | null;
   /** Receiving nodes. Absent means none. */
   receivers?: string[];
+  /**
+   * Extended multiplexing (DBC `SG_MUL_VAL_`): the multiplexor that switches this signal and the
+   * raw values of it under which the signal is present. Takes precedence over `muxValue`. Absent
+   * or null means simple multiplexing by the message's multiplexor.
+   */
+  muxSwitch?: MuxSwitch | null;
+  /** Attribute values (DBC `BA_ ... SG_`), kept for export. Absent means none. */
+  attributes?: Attribute[];
+}
+
+/** An attribute value on one object (a DBC `BA_` line). Enum values are the choice's index. */
+export interface Attribute {
+  name: string;
+  value: number | string;
+}
+
+/** What an attribute applies to; `network` is a `BA_DEF_` with no object type. */
+export type AttributeObject = 'network' | 'node' | 'message' | 'signal' | 'envVar';
+
+export type AttributeType =
+  | { type: 'int'; min: number; max: number }
+  | { type: 'hex'; min: number; max: number }
+  | { type: 'float'; min: number; max: number }
+  | { type: 'string' }
+  | { type: 'enum'; choices: string[] };
+
+/** A DBC `BA_DEF_` line with its `BA_DEF_DEF_` default. */
+export interface AttributeDefinition {
+  name: string;
+  object: AttributeObject;
+  kind: AttributeType;
+  default: number | string | null;
+}
+
+/** A node declared in `BU_`. */
+export interface NodeDef {
+  name: string;
+  comment?: string | null;
+  attributes?: Attribute[];
+}
+
+/** A named value table (DBC `VAL_TABLE_`), kept for export; signals hold their own copies. */
+export interface ValueTable {
+  name: string;
+  entries: [number, string][];
+}
+
+/** Which multiplexor switches a signal in, and when. The multiplexor may itself be multiplexed. */
+export interface MuxSwitch {
+  /** Name of the multiplexor signal, in the same message. */
+  signal: string;
+  /** Inclusive [low, high] raw value ranges of that signal under which this one is present. */
+  ranges: [number, number][];
 }
 
 export interface MessageDef {
@@ -84,11 +144,25 @@ export interface MessageDef {
    * raw values J1939 reserves for error and not available decode as no value. Absent means false.
    */
   j1939?: boolean;
+  /**
+   * Sent as CAN FD (DBC `VFrameFormat` StandardCAN_FD or ExtendedCAN_FD). Only kept for export;
+   * `j1939` wins when both are set. Absent means false.
+   */
+  fd?: boolean;
+  /** Attribute values (DBC `BA_ ... BO_`) other than `VFrameFormat`. Absent means none. */
+  attributes?: Attribute[];
 }
 
 export interface Database {
   name: string;
   messages: MessageDef[];
+  /** Nodes declared in `BU_`. Export also lists any transmitter or receiver missing from here. */
+  nodes?: NodeDef[];
+  valueTables?: ValueTable[];
+  /** `BA_DEF_` lines other than `VFrameFormat`, which export derives from `j1939` and `fd`. */
+  attributeDefinitions?: AttributeDefinition[];
+  /** Network attribute values (`BA_ "name" value;`). */
+  attributes?: Attribute[];
 }
 
 /** One loaded DBC and the bus it applies to. */
@@ -124,6 +198,12 @@ export interface Candidate {
   score: number;
 }
 
+/** One byte's decimated points across a window; see `CoreApi.byteLanes`. */
+export interface ByteLane {
+  x: Float64Array;
+  y: Float64Array;
+}
+
 export interface SeriesInfo {
   handle: number;
   name: string;
@@ -151,6 +231,12 @@ export interface CoreApi {
   /** Min/max-decimated points between t0 and t1 seconds, about `2 * buckets` of them. */
   seriesView(handle: number, t0: number, t1: number, buckets: number): Promise<[Float64Array, Float64Array]>;
   dropSeries(handle: number): Promise<void>;
+  /**
+   * Views of payload bytes `first..first + count` of ID `key` between t0 and t1 seconds, each
+   * decimated like `seriesView`, in one round trip and with nothing to drop afterwards. A frame
+   * too short to carry a byte adds no point to it.
+   */
+  byteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]>;
 
   /** Index of the first row of `key` (or ALL_IDS) at or after `t` seconds, clamped to the last row. */
   rowAtTime(key: number, t: number): Promise<number>;
@@ -186,6 +272,12 @@ export interface CoreApi {
   setDatabases(dbs: ScopedDatabase[]): Promise<void>;
   /** `db` as DBC text. */
   exportDbc(db: Database): Promise<string>;
+  /**
+   * Called after the engine stopped and was started again: the log and every series are gone,
+   * calls in flight were rejected, and the databases were set again. Returns an unsubscribe.
+   * Absent in an implementation whose engine never restarts.
+   */
+  onReset?(listener: () => void): () => void;
 }
 
 /** Key for the DBC message map: the ID with the extended flag, as in DBC files. */
@@ -200,4 +292,14 @@ export function isErrorFrame(s: Pick<IdSummary, 'flags'>): boolean {
 
 export function formatId(id: number, extended: boolean): string {
   return extended ? id.toString(16).toUpperCase().padStart(8, '0') : id.toString(16).toUpperCase().padStart(3, '0');
+}
+
+/**
+ * What an ID list shows for a summary: its hex ID, or for error frames their class in hex under
+ * the error flag, such as `Error 080` (bus error), so the flag never reads as a 29-bit ID.
+ */
+export function idLabel(s: Pick<IdSummary, 'id' | 'extended' | 'flags'>): string {
+  if (!isErrorFrame(s)) return formatId(s.id, s.extended);
+  const errorClass = s.id & 0x1fff_ffff;
+  return errorClass === 0 ? 'Error frames' : `Error ${errorClass.toString(16).toUpperCase().padStart(3, '0')}`;
 }

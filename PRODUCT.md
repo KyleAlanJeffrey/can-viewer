@@ -1,0 +1,89 @@
+# Product
+
+<!-- impeccable:product-schema 1 -->
+
+## Platform
+
+web
+
+Desktop browsers only. Phones and tablets are out of scope: no phone layout is designed, built or tested.
+
+FreeCAN Studio Pro, the paid desktop app, will wrap the same web UI in Tauri, so its design language stays web rather than native macOS or Windows.
+
+## Users
+
+- **Primary:** working engineers (automotive, embedded, test and validation) who analyse CAN logs at a desk as part of their job. They are the likely buyers of Pro.
+- **Welcome:** hobbyists and car hackers reverse-engineering their own vehicles, often with a CANable-class adapter and a laptop. Onboarding and copy must not assume professional tooling knowledge, but the tool is never simplified at the engineers' expense.
+
+The job: open a log (often hundreds of MB), find out what's on the bus, decode it with a DBC if one exists, and work out unknown messages bit by bit when one doesn't.
+
+## Product Purpose
+
+FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump logs today, with ASC, BLF, TRC, MF4 and CSV planned. It decodes with imported DBC files, plots signals, and makes bit-level activity visible so unknown messages can be defined by hand. FreeCAN Studio Pro is a paid desktop app on the same core that adds live capture, transmit and replay, UDS scanning, video sync, automated signal discovery, multi-GB files and scripting.
+
+Success: an engineer drops a large log into a browser tab and is reading decoded signals, or has defined an unknown one, within minutes, with nothing installed and nothing uploaded.
+
+## Positioning
+
+- Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker. Log files never leave the user's computer.
+- Bit-level reverse-engineering tools are free: flip heatmaps, drag-to-define signals, and notching.
+- Real-world scale in a tab: the spike parses 10M frames (552 MB) in about 2.7 s.
+
+## Operating Context
+
+- **Engineers:** long desk sessions with large logs from loggers and interfaces (SocketCAN candump, Vector BLF/ASC, PEAK TRC, ASAM MF4) and DBCs from OEMs, suppliers or opendbc. They switch between trace, plots and the DBC while tracking a behaviour down.
+- **Hobbyists:** a laptop in a car or garage, capturing with an adapter and then reverse-engineering at home.
+
+## Capabilities and Constraints
+
+- **Built so far (spike):**
+  - candump parsing;
+  - a columnar frame store with per-ID stats and bit-flip counts;
+  - DBC decode (Intel/Motorola, signed, float, simple multiplexing);
+  - a virtualized canvas trace table, a bit heatmap, and uPlot plots with decimation.
+- **Planned:** see [docs/screens.md](docs/screens.md) and [docs/research.md](docs/research.md). Key items are more formats, parallel parsing, drag-to-define signals, Find Signal, and DBC editing and export.
+- **Licensing:**
+  - The product is closed-source and commercial, so no GPL or LGPL code can be copied in.
+  - Pro-only features must not ship in the web bundle (the Cargo `pro` feature or desktop-only crates).
+  - Fonts and icons must be licensed for web and desktop use. Apple's SF fonts and SF Symbols are not.
+- **Pricing and the tagline** are undecided.
+- **Mockup decisions (2026-09-30):** omit taglines; use "Free. No account." rather than a forever promise; omit undecided Pro format and file-size claims. Use the shipped 1M-frame demo (55 MB, about 30 min 15 s) across all screens. Keep bus load, jitter, and error-frame counts visible only as explicitly Planned placeholders until the core computes them.
+- **Domain:** freecan.studio is planned. The URL shown in mockups, `studio.freecan.app`, is an image-generator artifact, not a real domain.
+
+## Brand Commitments
+
+- **Names:** "FreeCAN Studio" for the free web app and "FreeCAN Studio Pro" for the paid desktop app. Pro is never described as free. The web app stays free with no caps, trials, nags or account.
+- **Mark:** the Twisted F, a capital F whose upright is two intertwined conductor ribbons (the CAN-H/CAN-L twisted pair). Two arms extend right and end in round terminals separated by negative-space gaps. The wordmark is "FreeCAN" in semibold and "Studio" in regular. The concepts are in `docs/freecan-twisted-f-*.png`, and a vector master does not exist yet.
+- **Voice:** calm and plain.
+  - Plain verbs: "Open Log…", "Try the Demo".
+  - An ellipsis means a dialog follows.
+  - No "Oops", no hype.
+  - Errors explain what happened and what to do next.
+- **Privacy wording:** "Files are processed on your computer and never uploaded."
+- **Tagline:** none in current mockups or UI. Earlier candidates are not approved.
+
+## Evidence on Hand
+
+- **Performance and correctness:**
+  - spike benchmarks in [README.md](README.md);
+  - decoder cross-checked against cantools: 1,622,498 values, all equal;
+  - a synthetic 10M-frame demo log and demo DBC from `crates/sample-gen`.
+- **Brand and mockups:** raster concepts in `docs/`. The approved workspace direction is `docs/freecan-workshop-light-mockup.png`.
+- **Not available, so never fabricate:** customers, testimonials, press, prices and usage numbers.
+
+## Product Principles
+
+1. **Private by construction.** No feature may require uploading a user's log or DBC. The privacy claim has to be true in the architecture, not only in the copy.
+2. **Free means complete.** The web tier is a real tool, not a demo. Upsell appears only when someone reaches for a Pro-only action.
+3. **Fast at real scale.** Design and engineering assume multi-hundred-MB logs and millions of frames, not toy files.
+4. **Make the bits visible.** Reverse engineering starts from seeing what changes. Show the raw evidence before any automated interpretation.
+5. **Honest feedback.** Determinate progress, inline errors, and exact limits stated plainly.
+
+## Accessibility & Inclusion
+
+- WCAG 2.2 AA:
+  - 4.5:1 contrast for text, and 3:1 for UI components and meaningful graphics.
+  - Everything reachable and operable by keyboard, with visible focus.
+  - Colour is never the only carrier of meaning.
+  - Reduced-motion preferences are respected.
+- Canvas views (trace, heatmap, plots) need accessible text equivalents: table views, hover or focus readouts, and labelled values.

@@ -1,0 +1,303 @@
+{
+  "file": "web/public/demo/demo.log",
+  "bytes": 55165145,
+  "frames": 1000000,
+  "durationS": 1814.872973,
+  "ids": [
+    {
+      "bus": "can0",
+      "id": "0C9",
+      "count": 181488,
+      "first": 1759190400.0,
+      "last": 1759192214.870014,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 10.0
+    },
+    {
+      "bus": "can0",
+      "id": "1F5",
+      "count": 90744,
+      "first": 1759190400.000353,
+      "last": 1759192214.860348,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 20.0
+    },
+    {
+      "bus": "can0",
+      "id": "2A0",
+      "count": 181488,
+      "first": 1759190400.000765,
+      "last": 1759192214.870744,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 10.0
+    },
+    {
+      "bus": "can0",
+      "id": "3E9",
+      "count": 36298,
+      "first": 1759190400.001084,
+      "last": 1759192214.851097,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 50.0
+    },
+    {
+      "bus": "can0",
+      "id": "450",
+      "count": 18149,
+      "first": 1759190400.001481,
+      "last": 1759192214.801488,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 100.0
+    },
+    {
+      "bus": "can0",
+      "id": "5A0",
+      "count": 181488,
+      "first": 1759190400.001833,
+      "last": 1759192214.87187,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 10.0
+    },
+    {
+      "bus": "can0",
+      "id": "6B0",
+      "count": 18149,
+      "first": 1759190400.002227,
+      "last": 1759192214.802212,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 100.0
+    },
+    {
+      "bus": "can0",
+      "id": "18FEF100",
+      "count": 18149,
+      "first": 1759190400.002568,
+      "last": 1759192214.802599,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 100.0
+    },
+    {
+      "bus": "can1",
+      "id": "300",
+      "count": 181488,
+      "first": 1759190400.002966,
+      "last": 1759192214.872973,
+      "minLen": 32,
+      "maxLen": 32,
+      "periodMs": 10.0
+    },
+    {
+      "bus": "can0",
+      "id": "123",
+      "count": 90744,
+      "first": 1759190400.003317,
+      "last": 1759192214.863331,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 20.0
+    },
+    {
+      "bus": "can0",
+      "id": "456",
+      "count": 1815,
+      "first": 1759190400.003691,
+      "last": 1759192214.003696,
+      "minLen": 8,
+      "maxLen": 8,
+      "periodMs": 1000.0
+    }
+  ],
+  "cursorSamples": {
+    "52.34": {
+      "relativeTime": 52.340007,
+      "EngineSpeed": 2034.75,
+      "ThrottlePos": 41.2,
+      "CoolantTemp": 29,
+      "Counter": 2,
+      "Checksum": 166,
+      "hex": "CB 1F 67 45 00 00 10 A6"
+    },
+    "54.75": {
+      "relativeTime": 54.75,
+      "EngineSpeed": 2299.75,
+      "ThrottlePos": 21.6,
+      "CoolantTemp": 29,
+      "Counter": 3,
+      "Checksum": 165,
+      "hex": "EF 23 36 45 00 00 18 A5"
+    }
+  },
+  "display": {
+    "duration": "30 min 15 s",
+    "size": "55 MB",
+    "visibleRange": "40.000\u201370.000 s",
+    "cursors": [
+      "52.340 s",
+      "54.750 s"
+    ],
+    "deltaTime": "2.410 s"
+  },
+  "names": {
+    "0C9": "ENGINE_1",
+    "123": "Unknown",
+    "1F5": "WHEEL_SPEEDS",
+    "2A0": "STEERING",
+    "3E9": "VEHICLE_STATE",
+    "450": "BODY",
+    "456": "Unknown",
+    "5A0": "IMU",
+    "6B0": "BATTERY",
+    "18FEF100": "CCVS",
+    "300": "RADAR_TRACKS"
+  },
+  "sha256": "488f09166bf90be9c6dda857174e7dca4e272565e72be398872ab54133bf7aeb",
+  "samples": {
+    "52.340:0C9": {
+      "timeS": 52.340007,
+      "hex": "CB 1F 67 45 00 00 10 A6",
+      "values": {
+        "EngineSpeed": 2034.75,
+        "ThrottlePos": 41.2
+      }
+    },
+    "52.340:1F5": {
+      "timeS": 52.340383,
+      "hex": "28 2D 31 F4 28 2E 31 F4",
+      "values": {
+        "WheelSpeedFL": 102.85
+      }
+    },
+    "52.340:2A0": {
+      "timeS": 52.340748,
+      "hex": "04 3D 00 12 02 00 00 00",
+      "values": {
+        "SteeringAngle": 108.5
+      }
+    },
+    "52.340:123": {
+      "timeS": 52.343334,
+      "hex": "39 00 2D 11 AA 0B F4 00",
+      "values": {
+        "CandidateSpeed": 115.37
+      }
+    },
+    "52.340:3E9": {
+      "timeS": 52.351111,
+      "hex": "23 48 47 E2 01 00 00 00",
+      "values": {
+        "VehicleSpeed": 115.4
+      }
+    },
+    "54.750:0C9": {
+      "timeS": 54.75,
+      "hex": "EF 23 36 45 00 00 18 A5",
+      "values": {
+        "EngineSpeed": 2299.75,
+        "ThrottlePos": 21.6
+      }
+    },
+    "54.750:2A0": {
+      "timeS": 54.750751,
+      "hex": "02 B3 FF D8 03 00 00 00",
+      "values": {
+        "SteeringAngle": 69.1
+      }
+    },
+    "54.750:3E9": {
+      "timeS": 54.751081,
+      "hex": "C3 49 48 E2 01 00 00 00",
+      "values": {
+        "VehicleSpeed": 118.0
+      }
+    },
+    "54.750:1F5": {
+      "timeS": 54.760367,
+      "hex": "2A EA 31 40 2A EB 31 42",
+      "values": {
+        "WheelSpeedFL": 109.86
+      }
+    },
+    "54.750:123": {
+      "timeS": 54.76335,
+      "hex": "B2 00 2E 15 AA 00 29 00",
+      "values": {
+        "CandidateSpeed": 117.97
+      }
+    }
+  },
+  "unknownHistory": [
+    {
+      "timeS": 52.343334,
+      "hex": "39 00 2D 11 AA 0B F4 00"
+    },
+    {
+      "timeS": 52.363337,
+      "hex": "3A 00 2D 14 AA 0A F1 00"
+    },
+    {
+      "timeS": 52.383324,
+      "hex": "3B 00 2D 18 AA 0A E8 00"
+    },
+    {
+      "timeS": 52.403352,
+      "hex": "3C 00 2D 1C AA 0A 97 00"
+    },
+    {
+      "timeS": 52.423314,
+      "hex": "3D 00 2D 1F AA 0A E8 00"
+    },
+    {
+      "timeS": 52.443352,
+      "hex": "3E 00 2D 23 AA 0A 08 00"
+    },
+    {
+      "timeS": 52.463332,
+      "hex": "3F 00 2D 27 AA 0A 4A 00"
+    },
+    {
+      "timeS": 52.483325,
+      "hex": "40 00 2D 2A AA 0A 38 00"
+    },
+    {
+      "timeS": 52.503324,
+      "hex": "41 00 2D 2E AA 0A 9F 00"
+    },
+    {
+      "timeS": 52.523336,
+      "hex": "42 00 2D 31 AA 0A 42 00"
+    },
+    {
+      "timeS": 52.54333,
+      "hex": "43 00 2D 35 AA 0A 8C 00"
+    },
+    {
+      "timeS": 52.563331,
+      "hex": "44 00 2D 38 AA 0A 65 00"
+    },
+    {
+      "timeS": 52.583322,
+      "hex": "45 00 2D 3C AA 0A 18 00"
+    },
+    {
+      "timeS": 52.603337,
+      "hex": "46 00 2D 3F AA 0A 62 00"
+    },
+    {
+      "timeS": 52.623312,
+      "hex": "47 00 2D 43 AA 0A 2F 00"
+    },
+    {
+      "timeS": 52.643355,
+      "hex": "48 00 2D 46 AA 09 73 00"
+    }
+  ],
+  "note": "Counts and cursor samples extracted from shipped demo.log. Plotted curves and Find Signal ranking scores in generated images are illustrative; rankings are not computed by the current core."
+}

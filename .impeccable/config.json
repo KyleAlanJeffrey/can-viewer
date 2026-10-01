@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-radius",
+        "value": "9px",
+        "createdAt": "2026-10-01T03:23:19.450Z",
+        "reason": "Claude: the switch track is half its 18px height, so it's fully round, matching the approved Database mockup's Signed toggle (docs/freecan-workshop-database-v2-mockup.png)"
+      }
+    ]
+  }
+}

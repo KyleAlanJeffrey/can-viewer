@@ -1,0 +1,44 @@
+Generated with built-in ImageGen. Workshop Light is the authoritative visual reference.
+
+Use case: ui-mockup. Generate the next screen of the exact FreeCAN Studio product shown in the reference image: the OVERVIEW page after a log loads. The provided Workshop Light reference is the visual source of truth. Preserve its styling, identity, warm light theme, fonts, window proportions and density. Do NOT introduce blue as the brand accent or change the typography. This is a high-resolution flat straight-on screenshot, 16:10 landscape, clean Safari frame occupying full image, not a marketing board. Opaque image, no alpha.
+
+IDENTITY AND STYLE LOCK:
+Twisted F mark upper left, exact shape from reference: paired intertwining ribbons forming F stem with two rightward arms and separated circular terminals, graphite and ochre. Exact wordmark "FreeCAN Studio", IBM Plex Sans-like UI and IBM Plex Mono-like numeric/hex values. Warm white #F4F0E7 frame/sidebar, opaque pure white content, graphite #20242B labels, slate secondary labels, #E0DDD6 hairlines, amber #FFB547 primary actions with graphite text, pale amber selection #FCE3B1, deep ochre #A56612 for readable amber text. 13px body reference size, dense desktop controls and rows, 12px concentric corners. Subtle translucent frosted toolbar/sidebar only. Content cards opaque with fine borders and no shadows. No heavy gradients, no dark mode, no neon, no oversized mobile spacing, no decorative marketing elements, no blue primary controls.
+
+APP SHELL:
+Slim Safari chrome identical to reference at very top. Full-height left sidebar about 240px. At sidebar top exact Twisted F and "FreeCAN Studio". Below a small log section showing document icon "demo.log" and "Loaded". Bus filter section "Buses": selected pale-amber "All buses" with "11 IDs" at right, then "can0" / "10 IDs", "can1" / "1 ID". Below a subtle divider, section "Database" showing small file icon "vehicle.dbc", secondary "9 matching IDs". Bottom of sidebar small lock icon and "Processed on your computer". No extra sidebar navigation duplicating top tabs.
+App toolbar to the right of sidebar: sidebar toggle and title "demo.log" with small subtitle "10,000,000 frames · 5 h 2 min"; centered compact segmented navigation "Overview", "Trace", "Plot", "Reverse Engineer", "Database", with ONLY Overview selected using restrained white raised segment against warm gray track and small amber emphasis. Trailing borderless "Open DBC…" and amber primary capsule "Open Log…". Fit everything with refined compact spacing. No extra search field in toolbar because page selector occupies that area.
+
+MAIN CONTENT:
+No right inspector on this overview. Main pane uses full available width with 24px gutters. Small page title "Overview" at upper left and quiet secondary "demo.log" at upper right.
+
+SUMMARY STRIP at top:
+One horizontal opaque white rounded group divided into four equal cells by hairline dividers, no chunky separate dashboard cards. Four label/value pairs:
+"Frames" / "10,000,000"
+"Duration" / "5 h 2 min"
+"Buses" / "2"
+"Message IDs" / "11".
+Values about 24px semibold, labels 12px slate. Compact, functional, no icons or trend arrows.
+
+BUS LOAD CHART below summary:
+Wide white thin-bordered card about 220px tall in reference scale. Header "Bus load" with small secondary "Estimated · 500 kbit/s per bus"; right-aligned small two-item legend "can0" ochre line and "can1" muted blue #397BA6 line. One chart with two fine time-series lines: can0 fluctuates around 15–25% with short peaks to 32%, can1 remains around 2–6%. No filled area. Faint horizontal gridlines and y labels 0%, 10%, 20%, 30%, 40% on right; shared time axis along bottom "0 h", "1 h", "2 h", "3 h", "4 h", "5 h 2 min". Make this an authentic data chart, not a wavy decorative graph.
+
+DBC COVERAGE beneath chart:
+Single quiet full-width slim strip, pale warm neutral background. Left small outlined database/check icon and exact bold text "9 of 11 IDs match your DBC". Secondary text "vehicle.dbc · 2 unknown IDs". Right-aligned bordered compact button "Review unknown IDs". Small progress indicator with 9 ochre segments and 2 light gray segments, no large donut or pie.
+
+ID TABLE below:
+Section header "Message IDs" with tiny "11 total", and right aligned compact search "Filter IDs and names". Dense white table, pin-like header row, fine horizontal separators and subtle alternating rows. Columns "Bus", "ID", "Message", "Frames", "Period", "DBC". IDs and frame counts monospace. Eleven rows, all visible if possible, no duplicate or missing IDs. Data:
+can0 | 0C9 | ENGINE_1 | 1,800,000 | 10 ms | Matched
+can0 | 0CA | ENGINE_2 | 900,000 | 20 ms | Matched
+can0 | 120 | STEERING | 1,800,000 | 10 ms | Matched
+can0 | 121 | WHEEL_SPEED | 900,000 | 20 ms | Matched
+can0 | 123 | Unknown | 1,200,000 | 15 ms | Unknown
+can0 | 180 | BRAKE_STATUS | 1,800,000 | 10 ms | Matched
+can0 | 1A0 | TRANSMISSION | 360,000 | 50 ms | Matched
+can0 | 280 | BODY_STATUS | 180,000 | 100 ms | Matched
+can0 | 320 | CLIMATE | 180,000 | 100 ms | Matched
+can0 | 3E0 | Unknown | 200,000 | 90 ms | Unknown
+can1 | 420 | BATTERY | 680,000 | 25 ms | Matched.
+Matched uses a small muted teal check plus graphite text, Unknown uses a small rust dot plus readable "Unknown" label, no aggressive warning banners. First row subtle warm selection. Rows about 24px reference density, never huge. Table is dominant useful content, avoid giant whitespace or gratuitous card paddings.
+
+The result should look like the Overview tab of the SAME approved Workshop Light app, with exact consistent brand mark, amber controls, warm surfaces, calm precise IBM Plex-style type, not a redesigned generic analytics dashboard. No added prose, no implementation code, no watermark.

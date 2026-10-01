@@ -35,7 +35,8 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] State the privacy claim on the landing page: the app domain loads nothing from anyone else
 - [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `freecan.studio` and `freecan.app` redirecting to it, and build watch paths so a push to `site/` only rebuilds the site (owner)
 - [ ] Later: downloads, pricing and Pro license pages on the main site (a `pro/` page describing the planned app is in)
-- [ ] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land, and the CSP quoted on the home page if `web/public/_headers` changes
+- [x] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land
+- [ ] Recheck the CSP quoted on the home page if `web/public/_headers` changes
 
 ## Bugs
 
@@ -56,7 +57,8 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 
 - [x] Database view: show and edit whether a message is J1939
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
-- [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
+- [x] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
+- [ ] Check BLF and MF4 import against files from real loggers and tools (the tests use synthetic files)
 - [ ] Automated UI tests
 - [x] Database view: show when a DBC was last exported
 - [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed

@@ -743,16 +743,6 @@ h3 {
   font-weight: 600;
 }
 
-.format-soon {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  color: var(--slate);
-  font-size: 13px;
-  line-height: 20px;
-}
-
 .format-list span {
   color: var(--slate);
   font-size: 13px;

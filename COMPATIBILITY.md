@@ -48,6 +48,8 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 | Vector BLF (CAN and CAN FD objects) | `.blf` | Supported |
 | ASAM MF4 (CAN bus logging, MDF 4.x) | `.mf4`, `.mdf` | Supported |
 
+The landing site (`site/public/index.html` and the BLF, MF4 and CANalyzer pages) lists these formats too; change it with this table.
+
 How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format is read as what its extension says, or as candump if the extension is unknown too. The content rules are:
 
 - Vector BLF: the file starts with `LOGG`.

@@ -5,6 +5,10 @@
 
 pub mod candump;
 mod detect;
+mod lines;
+#[cfg(test)]
+mod testing;
+mod text;
 
 pub use candump::CandumpParser;
 pub use detect::Format;

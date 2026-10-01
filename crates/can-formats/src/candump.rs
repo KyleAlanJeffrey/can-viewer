@@ -7,23 +7,17 @@
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
+use crate::lines::LineSplitter;
+use crate::text::{hex_value, parse_decimal_ns, parse_hex_u32};
 use crate::{LogParser, ParseStats};
 
 const CAN_EFF_MASK: u32 = 0x1FFF_FFFF;
 const CANFD_BRS: u8 = 0x1;
 const CANFD_ESI: u8 = 0x2;
 
-/// Longest line accepted, well above the ~200 bytes of a CAN FD line. Longer lines (a binary
-/// file dropped by mistake, say) are rejected without being buffered.
-const MAX_LINE: usize = 4096;
-const LINE_TOO_LONG: &str = "line too long";
-
 #[derive(Debug, Default)]
 pub struct CandumpParser {
-    /// The start of a line continued in the next chunk.
-    carry: Vec<u8>,
-    /// The carried line grew past [`MAX_LINE`] and was rejected, so the rest of it is skipped.
-    skipping_line: bool,
+    lines: LineSplitter,
     stats: ParseStats,
 }
 
@@ -32,81 +26,29 @@ impl CandumpParser {
     pub fn new() -> Self {
         Self::default()
     }
-
-    fn line<S: FrameSink>(&mut self, line: &[u8], sink: &mut S) {
-        self.stats.lines += 1;
-        if line.len() > MAX_LINE {
-            self.stats.reject(LINE_TOO_LONG);
-            return;
-        }
-        let line = line.trim_ascii();
-        if line.is_empty() {
-            return;
-        }
-        match parse_line(line, sink) {
-            Ok(()) => self.stats.frames += 1,
-            Err(reason) => self.stats.reject(reason),
-        }
-    }
-
-    /// Appends `part` to the carried line, or rejects the line once it is too long.
-    fn carry_over(&mut self, part: &[u8]) {
-        if self.skipping_line {
-            return;
-        }
-        if self.carry.len() + part.len() > MAX_LINE {
-            self.carry = Vec::new();
-            self.skipping_line = true;
-            self.stats.lines += 1;
-            self.stats.reject(LINE_TOO_LONG);
-        } else {
-            self.carry.extend_from_slice(part);
-        }
-    }
-
-    /// Parses the carried line, which ends at a newline or the end of the file.
-    fn end_carried_line<S: FrameSink>(&mut self, sink: &mut S) {
-        if std::mem::take(&mut self.skipping_line) {
-            return;
-        }
-        let mut line = std::mem::take(&mut self.carry);
-        self.line(&line, sink);
-        line.clear();
-        self.carry = line;
-    }
 }
 
 impl LogParser for CandumpParser {
     fn push<S: FrameSink>(&mut self, chunk: &[u8], sink: &mut S) {
-        self.stats.bytes += chunk.len() as u64;
-        let mut rest = chunk;
-        if !self.carry.is_empty() || self.skipping_line {
-            let nl = memchr::memchr(b'\n', rest);
-            self.carry_over(&rest[..nl.unwrap_or(rest.len())]);
-            let Some(nl) = nl else {
-                return;
-            };
-            self.end_carried_line(sink);
-            rest = &rest[nl + 1..];
-        }
-        let complete = memchr::memrchr(b'\n', rest).map_or(0, |i| i + 1);
-        let (body, tail) = rest.split_at(complete);
-        let mut start = 0;
-        for nl in memchr::memchr_iter(b'\n', body) {
-            self.line(&body[start..nl], sink);
-            start = nl + 1;
-        }
-        self.carry_over(tail);
+        self.lines.push(chunk, &mut self.stats, |line, stats| {
+            line_into(line, stats, sink)
+        });
     }
 
     fn finish<S: FrameSink>(&mut self, sink: &mut S) {
-        if !self.carry.is_empty() || self.skipping_line {
-            self.end_carried_line(sink);
-        }
+        self.lines
+            .finish(&mut self.stats, |line, stats| line_into(line, stats, sink));
     }
 
     fn stats(&self) -> &ParseStats {
         &self.stats
+    }
+}
+
+fn line_into<S: FrameSink>(line: &[u8], stats: &mut ParseStats, sink: &mut S) {
+    match parse_line(line, sink) {
+        Ok(()) => stats.frames += 1,
+        Err(reason) => stats.reject(reason),
     }
 }
 
@@ -115,7 +57,7 @@ fn parse_line<S: FrameSink>(line: &[u8], sink: &mut S) -> Result<(), &'static st
         .strip_prefix(b"(")
         .ok_or("expected '(' before timestamp")?;
     let close = memchr::memchr(b')', rest).ok_or("unterminated timestamp")?;
-    let ts_ns = parse_timestamp(&rest[..close]).ok_or("bad timestamp")?;
+    let ts_ns = parse_decimal_ns(&rest[..close], 9).ok_or("bad timestamp")?;
     let mut fields = rest[close + 1..]
         .split(|&b| b == b' ')
         .filter(|f| !f.is_empty());
@@ -203,101 +145,14 @@ fn parse_payload(s: &[u8], out: &mut [u8; MAX_PAYLOAD]) -> Result<usize, &'stati
     Ok(n)
 }
 
-/// `1436509052.249713` -> nanoseconds. Fractions beyond nanoseconds are truncated.
-fn parse_timestamp(s: &[u8]) -> Option<i64> {
-    let (int, frac) = match memchr::memchr(b'.', s) {
-        Some(dot) => (&s[..dot], &s[dot + 1..]),
-        None => (s, &[][..]),
-    };
-    let frac = &frac[..frac.len().min(9)];
-    let secs = parse_decimal(int)?;
-    let mut nanos = if frac.is_empty() {
-        0
-    } else {
-        parse_decimal(frac)?
-    };
-    for _ in frac.len()..9 {
-        nanos *= 10;
-    }
-    secs.checked_mul(1_000_000_000)?.checked_add(nanos)
-}
-
-fn parse_decimal(s: &[u8]) -> Option<i64> {
-    if s.is_empty() || s.len() > 18 {
-        return None;
-    }
-    s.iter().try_fold(0i64, |acc, &c| {
-        c.is_ascii_digit().then(|| acc * 10 + i64::from(c - b'0'))
-    })
-}
-
-fn parse_hex_u32(s: &[u8]) -> Option<u32> {
-    if s.is_empty() || s.len() > 8 {
-        return None;
-    }
-    s.iter().try_fold(0u32, |acc, &c| {
-        hex_value(c).map(|v| (acc << 4) | u32::from(v))
-    })
-}
-
-const HEX: [u8; 256] = {
-    let mut table = [0xFF; 256];
-    let mut i = 0;
-    while i < 10 {
-        table[b'0' as usize + i] = i as u8;
-        i += 1;
-    }
-    let mut i = 0;
-    while i < 6 {
-        table[b'a' as usize + i] = 10 + i as u8;
-        table[b'A' as usize + i] = 10 + i as u8;
-        i += 1;
-    }
-    table
-};
-
-fn hex_value(c: u8) -> Option<u8> {
-    let v = HEX[usize::from(c)];
-    (v != 0xFF).then_some(v)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Default)]
-    struct VecSink {
-        channels: Vec<Vec<u8>>,
-        frames: Vec<(i64, u8, u32, u8, Vec<u8>)>,
-    }
-
-    impl FrameSink for VecSink {
-        fn channel_index(&mut self, name: &[u8]) -> u8 {
-            if let Some(i) = self.channels.iter().position(|c| c == name) {
-                return i as u8;
-            }
-            self.channels.push(name.to_vec());
-            (self.channels.len() - 1) as u8
-        }
-
-        fn push(&mut self, f: FrameRef<'_>) {
-            self.frames
-                .push((f.ts_ns, f.channel, f.id, f.flags, f.data.to_vec()));
-        }
-    }
-
-    fn parse_chunked(input: &[u8], chunk: usize) -> (VecSink, ParseStats) {
-        let mut parser = CandumpParser::new();
-        let mut sink = VecSink::default();
-        for part in input.chunks(chunk.max(1)) {
-            parser.push(part, &mut sink);
-        }
-        parser.finish(&mut sink);
-        (sink, parser.stats().clone())
-    }
+    use crate::lines::{LINE_TOO_LONG, MAX_LINE};
+    use crate::testing::{assert_chunking_does_not_matter, parse_chunked, VecSink};
 
     fn parse(input: &str) -> (VecSink, ParseStats) {
-        parse_chunked(input.as_bytes(), usize::MAX)
+        parse_chunked(CandumpParser::new(), input.as_bytes(), usize::MAX)
     }
 
     #[test]
@@ -374,6 +229,7 @@ mod tests {
     fn handles_crlf_blank_lines_and_missing_final_newline() {
         let (sink, stats) = parse("\r\n(1.5) can0 123#01\r\n\n(2.25) can0 123#02");
         assert_eq!(stats.rejected, 0);
+        assert_eq!(stats.lines, 4);
         assert_eq!(sink.frames.len(), 2);
         assert_eq!(sink.frames[0].0, 1_500_000_000);
         assert_eq!(sink.frames[1].0, 2_250_000_000);
@@ -388,7 +244,7 @@ mod tests {
             let mut sink = VecSink::default();
             for part in input.chunks(chunk) {
                 parser.push(part, &mut sink);
-                assert!(parser.carry.len() <= MAX_LINE, "chunk size {chunk}");
+                assert!(parser.lines.carried() <= MAX_LINE, "chunk size {chunk}");
             }
             parser.finish(&mut sink);
             let stats = parser.stats();
@@ -400,7 +256,7 @@ mod tests {
             );
         }
 
-        let (sink, stats) = parse_chunked(&input[..2 * MAX_LINE], 100);
+        let (sink, stats) = parse_chunked(CandumpParser::new(), &input[..2 * MAX_LINE], 100);
         assert!(sink.frames.is_empty());
         assert_eq!(
             (stats.lines, stats.rejected),
@@ -411,12 +267,8 @@ mod tests {
 
     #[test]
     fn chunk_boundaries_do_not_matter() {
-        let input = b"(1436509052.249713) can0 123#DEADBEEF\n(1436509052.250000) can0 18FEF100##1001122\n(1.0) vcan0 7FF#\n";
-        let (whole, _) = parse_chunked(input, usize::MAX);
-        for chunk in 1..input.len() {
-            let (split, stats) = parse_chunked(input, chunk);
-            assert_eq!(split.frames, whole.frames, "chunk size {chunk}");
-            assert_eq!(stats.frames, 3);
-        }
+        let input = b"(1436509052.249713) can0 123#DEADBEEF\n(1436509052.250000) can0 18FEF100##1001122\n(1.0) vcan0 7FF#\nbad\n";
+        let (_, stats) = assert_chunking_does_not_matter(CandumpParser::new, input);
+        assert_eq!((stats.frames, stats.rejected), (3, 1));
     }
 }

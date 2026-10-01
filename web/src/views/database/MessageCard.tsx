@@ -39,7 +39,8 @@ export function MessageCard({ db, message, period, onChange, onDelete }: Props) 
     const problem =
       !next && rawId(message) > MAX_STANDARD_ID ? 'This ID needs 29 bits. Change the ID first.' : messageIdError(rawId(message), next, db, message);
     setExtendedError(problem);
-    if (!problem) onChange({ id: dbcId({ id: rawId(message), extended: next }) });
+    // J1939 needs a 29-bit ID.
+    if (!problem) onChange({ id: dbcId({ id: rawId(message), extended: next }), ...(next ? {} : { j1939: false }) });
   };
 
   const changeSize = (bytes: number) => {

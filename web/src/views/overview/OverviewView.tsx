@@ -1,5 +1,5 @@
 import { Fragment } from 'react';
-import { FLAG_FD, type LogInfo } from '../../core/api';
+import { FLAG_FD, isErrorFrame, type LogInfo } from '../../core/api';
 import { formatCount } from '../../format';
 import { IdListSidebar } from '../shared/IdListSidebar';
 import type { ViewContext, ViewProps } from '../types';
@@ -71,7 +71,8 @@ function Facts({ ctx, log }: { ctx: ViewContext; log: LogInfo }) {
 }
 
 function DbcCoverage({ ctx }: { ctx: ViewContext }) {
-  const { dbcs, ids, messageOf } = ctx;
+  const { dbcs, messageOf } = ctx;
+  const ids = ctx.ids.filter((s) => !isErrorFrame(s));
   const unknown = ids
     .filter((s) => !messageOf(s.key))
     .sort((a, b) => a.channel - b.channel || a.id - b.id);
@@ -103,7 +104,7 @@ function DbcCoverage({ ctx }: { ctx: ViewContext }) {
             <span className="ov-value">
               {formatCount(matched)} of {formatCount(ids.length)}
             </span>{' '}
-            IDs match your {dbcs.length === 1 ? 'DBC' : 'DBCs'}
+            {ids.length === 1 ? 'ID matches' : 'IDs match'} your {dbcs.length === 1 ? 'DBC' : 'DBCs'}
           </p>
         ) : (
           <>

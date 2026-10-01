@@ -10,7 +10,7 @@ Researched 2026-09-30. The search data comes from Google Autocomplete (about 130
 | 2 | Brand / alternative searches | CANalyzer 784, BUSMASTER 314, candump 155, PCAN-View 117, asammdf 108, SavvyCAN 101. Completions include "free canalyzer alternative" and "savvycan mac". | Worth an "alternative to" page. |
 | 3 | CAN bus sniffer | 37 | Mostly hardware (ESP32, Arduino). |
 | 4 | DBC viewer / editor / decoder | "dbc editor" 20, "dbc viewer" 1.7. Many completions add "online", "free" or "mac". | "dbc file" alone is mostly Databricks noise. |
-| 5 | Reverse engineering | 3.3. Completions include "…software", "…tools", "ai can bus reverse engineering". | |
+| 5 | Reverse engineering | 3.3. Completions include "...software", "...tools", "ai can bus reverse engineering". | |
 | 6 | CAN log viewer / log analyzer | 0.8. Completions include "asc can log viewer", "can log file viewer". | High intent, little competition. |
 | 7 | File-format viewers | Below the Trends threshold, but strong in autocomplete: "blf viewer online", "mf4 viewer online", "asc/trc file viewer online", "blf to asc converter online". | Long tail; cover these in H2s. |
 
@@ -18,7 +18,7 @@ The Mac/Linux signal is real ("can bus software mac", "dbc viewer linux", "savvy
 
 ## Titles of ranking competitors
 
-- **OpenCAN** (closest competitor): "OpenCAN: Free CAN Bus Analyzer". Description: "CAN bus analyzer in your browser… Decode with DBC. No install, no license."
+- **OpenCAN** (closest competitor): "OpenCAN: Free CAN Bus Analyzer". Description: "CAN bus analyzer in your browser... Decode with DBC. No install, no license."
 - **CSS Electronics:** "DBC Editor for CAN Bus Database Files [Online | 100% Free]", "CAN Bus Sniffer - Reverse Engineer Your Vehicle Data"
 - **CanLover:** "CAN Bus Analyzer | Free CANalyzer Alternative for Linux & Windows"
 - **Kvaser:** "CanKing - Kvaser's free CANbus monitor software"
@@ -64,6 +64,6 @@ The Mac/Linux signal is real ("can bus software mac", "dbc viewer linux", "savvy
 
 - **Name:** **FreeCAN Studio** (free web app) and **FreeCAN Studio Pro** (paid desktop).
 - **Domains:** use freecan.studio, and point freecanstudio.com at it.
-- **Page title:** "FreeCAN Studio — Free Online CAN Bus Analyzer & Log Viewer (DBC, BLF, MF4)"
+- **Page title:** "FreeCAN Studio - Free Online CAN Bus Analyzer & Log Viewer (DBC, BLF, MF4)"
 - **Tagline:** "Open candump, ASC, BLF, TRC, MF4 and CSV logs in your browser. Decode with DBC, plot signals, and reverse-engineer unknown CAN messages. Files never leave your computer."
 - **Runner-up:** FreeCAN Lab / FreeCAN Lab Pro, which leans harder into reverse engineering.

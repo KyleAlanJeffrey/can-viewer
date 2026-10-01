@@ -1,8 +1,8 @@
 # Workshop mockup review
 
-## Revision response — 2026-09-30
+## Revision response - 2026-09-30
 
-The owner selected no tagline, “Free. No account.”, the shipped 1M-frame demo, omission of undecided Pro format and size claims, and retention of uncomputed Overview statistics as explicitly Planned placeholders. Both Amber logo terminals were preserved to match the current component.
+The owner selected no tagline, "Free. No account.", the shipped 1M-frame demo, omission of undecided Pro format and size claims, and retention of uncomputed Overview statistics as explicitly Planned placeholders. Both Amber logo terminals were preserved to match the current component.
 
 - Replaced the stale common block in all **eight** `*-generation-prompt.txt` files found in the repository. The separate brand-guide prompt is corrected too. The canonical style is [mockup-style.txt](mockup-style.txt); [screens.md](screens.md) now links these prompts rather than duplicating a stale block.
 - Measured the shipped demo: 1,000,000 frames, 55,165,145 bytes, 1,814.872973 seconds. [mockup-data.json](mockup-data.json) records its checksum, ID counts, periods, lengths, and actual nearest cursor samples. The data includes the extended CCVS ID and 32-byte CAN FD RADAR_TRACKS.

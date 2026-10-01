@@ -82,7 +82,7 @@ One arbitration ID on one bus. Returned by [`idSummary`](#idsummary).
 
 - **`key`** `number` - `(channel << 32) | id`, unique per channel/ID pair. Bit 31 of the `id` part is set for extended IDs.
 - **`channel`** `number` - Bus index into `LogInfo.channels`.
-- **`id`** `number` - The ID without the extended flag.
+- **`id`** `number` - The ID without the extended flag. An error frame keeps the CAN error flag (`0x20000000`), so its ID never equals a real frame's, and no database decodes it.
 - **`extended`** `boolean` - True for a 29-bit ID.
 - **`count`** `number` - Frames with this ID on this bus.
 - **`periodMs`** `number | null` - Mean interval between frames in milliseconds, or null with fewer than two frames.
@@ -113,7 +113,7 @@ A CAN database, as parsed from or exported to DBC.
 - **`transmitter`** `string | null` - Transmitting node, or null if none.
 - **`comment`** `string | null` - Message comment, or null if none.
 - **`signals`** [`SignalDef[]`](#the-signaldef-object) - The message's signals.
-- **`j1939`** `boolean`, optional - A J1939 parameter group (`VFrameFormat` J1939PG). It decodes every frame with its PGN, and values outside a signal's min..max decode as not available. Absent means false. `parseDbc` always fills it.
+- **`j1939`** `boolean`, optional - A J1939 parameter group (`VFrameFormat` J1939PG). It decodes every frame with its PGN, and values that SAE J1939-71 reserves for error and not available (a byte-sized unsigned signal whose top byte is above 0xFA) decode as no value; see "J1939 decoding" in COMPATIBILITY.md. Absent means false. `parseDbc` always fills it.
 
 ### The SignalDef object
 
@@ -187,8 +187,8 @@ A decoded signal held in the worker. Returned by [`decodeSignal`](#decodesignal)
 - **`name`** `string` - The signal name. For a raw decode it is the range in DBC notation, such as `bits 7|16@0+`.
 - **`unit`** `string` - The signal's unit; empty for a raw decode.
 - **`count`** `number` - Points decoded.
-- **`min`** `number` - Smallest value. Arrives as null when `count` is 0, because JSON has no infinity.
-- **`max`** `number` - Largest value. Arrives as null when `count` is 0.
+- **`min`** `number | null` - Smallest value, or null when `count` is 0 (for example, every J1939 value was not available).
+- **`max`** `number | null` - Largest value, or null when `count` is 0.
 
 ### The RowBatch object
 

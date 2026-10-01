@@ -432,6 +432,7 @@ impl FrameSink for FrameStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ERR_FLAG;
 
     fn push(store: &mut FrameStore, ts_ns: i64, id: u32, data: &[u8]) {
         push_on(store, ts_ns, 0, id, 0, data);
@@ -513,12 +514,21 @@ mod tests {
     }
 
     #[test]
-    fn counts_error_frames() {
+    fn counts_error_frames_apart_from_standard_ids() {
         let mut s = FrameStore::new();
-        push(&mut s, 0, 0x100, &[0]);
-        push_on(&mut s, 1, 0, 0x80, flags::ERROR, &[0; 8]);
-        push_on(&mut s, 2, 1, 0x04, flags::ERROR | flags::TX, &[0; 8]);
+        push(&mut s, 0, 0x080, &[0]);
+        push_on(&mut s, 1, 0, 0x80 | ERR_FLAG, flags::ERROR, &[0; 8]);
+        push_on(
+            &mut s,
+            2,
+            1,
+            0x04 | ERR_FLAG,
+            flags::ERROR | flags::TX,
+            &[0; 8],
+        );
         assert_eq!(s.error_frames(), 2);
+        assert_eq!(s.id_stats(id_key(0, 0x080)).unwrap().frames, [0]);
+        assert_eq!(s.id_stats(id_key(0, 0x80 | ERR_FLAG)).unwrap().frames, [1]);
     }
 
     #[test]
@@ -558,7 +568,7 @@ mod tests {
         let mut s = FrameStore::new();
         push_on(&mut s, 100 * MS, 0, 0x123, 0, &[0; 8]); // 111 bits
         push_on(&mut s, 200 * MS, 0, 0x123, flags::RTR, &[]); // 47
-        push_on(&mut s, 300 * MS, 0, 0x80, flags::ERROR, &[0; 8]); // skipped
+        push_on(&mut s, 300 * MS, 0, 0x80 | ERR_FLAG, flags::ERROR, &[0; 8]); // skipped
         push_on(&mut s, 400 * MS, 1, 0x123, 0, &[0; 8]); // other channel
         push_on(&mut s, 600 * MS, 0, 0x1 | EXT_FLAG, 0, &[0; 2]); // 83
         push_on(&mut s, 900 * MS, 0, 0x321, flags::FD, &[0; 32]); // 316

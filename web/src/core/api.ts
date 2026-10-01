@@ -34,7 +34,7 @@ export interface IdSummary {
   /** `(channel << 32) | id`, unique per channel/ID pair. */
   key: number;
   channel: number;
-  /** ID without the extended flag. */
+  /** ID without the extended flag. Error frames keep the CAN error flag (0x20000000). */
   id: number;
   extended: boolean;
   count: number;
@@ -81,7 +81,7 @@ export interface MessageDef {
   /**
    * A J1939 parameter group (DBC `VFrameFormat` J1939PG). It decodes every frame with its PGN,
    * whatever the priority and source address (the source must match for proprietary PGNs), and
-   * values outside min..max decode as not available. Absent means false.
+   * raw values J1939 reserves for error and not available decode as no value. Absent means false.
    */
   j1939?: boolean;
 }
@@ -129,8 +129,9 @@ export interface SeriesInfo {
   name: string;
   unit: string;
   count: number;
-  min: number;
-  max: number;
+  /** Null when the series has no points, e.g. every J1939 value was not available. */
+  min: number | null;
+  max: number | null;
 }
 
 /**
@@ -190,6 +191,11 @@ export interface CoreApi {
 /** Key for the DBC message map: the ID with the extended flag, as in DBC files. */
 export function dbcId(s: Pick<IdSummary, 'id' | 'extended'>): number {
   return s.extended ? (s.id | EXT_FLAG) >>> 0 : s.id;
+}
+
+/** Error frames come from no DBC message, so they are never unknown IDs to decode. */
+export function isErrorFrame(s: Pick<IdSummary, 'flags'>): boolean {
+  return (s.flags & FLAG_ERROR) !== 0;
 }
 
 export function formatId(id: number, extended: boolean): string {

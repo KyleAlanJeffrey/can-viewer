@@ -29,12 +29,12 @@ impl Series {
         self.t.len()
     }
 
-    pub fn min(&self) -> f64 {
-        self.v.iter().copied().fold(f64::INFINITY, f64::min)
+    pub fn min(&self) -> Option<f64> {
+        self.v.iter().copied().reduce(f64::min)
     }
 
-    pub fn max(&self) -> f64 {
-        self.v.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+    pub fn max(&self) -> Option<f64> {
+        self.v.iter().copied().reduce(f64::max)
     }
 
     /// Points in `[t0, t1]` plus one neighbour on each side so lines reach the plot edges.
@@ -43,6 +43,9 @@ impl Series {
     ///
     /// Returns x values followed by y values.
     pub fn view(&self, t0: f64, t1: f64, buckets: usize) -> Vec<f64> {
+        if !t0.is_finite() || !t1.is_finite() {
+            return Vec::new();
+        }
         let lo = self.t.partition_point(|&x| x < t0).saturating_sub(1);
         let hi = (self.t.partition_point(|&x| x <= t1) + 1).min(self.t.len());
         if lo >= hi {
@@ -60,7 +63,8 @@ impl Series {
         while i < t.len() {
             let bucket_end = t0 + (((t[i] - t0) / width).floor() + 1.0) * width;
             let (mut lo_i, mut hi_i) = (i, i);
-            let mut j = i;
+            // Starting past `i` keeps going when rounding puts `bucket_end` at or before `t[i]`.
+            let mut j = i + 1;
             while j < t.len() && t[j] < bucket_end {
                 if v[j] < v[lo_i] {
                     lo_i = j;
@@ -118,6 +122,33 @@ mod tests {
         assert!(x.len() <= 202, "{} points", x.len());
         assert!(y.contains(&1000.0), "spike lost");
         assert!(x.windows(2).all(|w| w[0] <= w[1]), "x not sorted");
+    }
+
+    #[test]
+    fn non_finite_bounds_return_nothing() {
+        let s = series(1000);
+        for (t0, t1) in [
+            (f64::NAN, 500.0),
+            (0.0, f64::NAN),
+            (f64::NEG_INFINITY, 500.0),
+            (0.0, f64::INFINITY),
+            (f64::NEG_INFINITY, f64::INFINITY),
+        ] {
+            assert!(s.view(t0, t1, 2).is_empty(), "{t0}..{t1}");
+        }
+    }
+
+    #[test]
+    fn buckets_narrower_than_float_precision_still_advance() {
+        // One ulp of 5.0 split into 100 buckets: every bucket end rounds back to 5.0.
+        let s = Series {
+            t: vec![5.0; 1000],
+            v: (0..1000).map(f64::from).collect(),
+        };
+        let out = s.view(5.0, 5.0 + 1e-15, 100);
+        let (x, y) = split(&out);
+        assert!(!x.is_empty() && x.iter().all(|&t| t == 5.0));
+        assert!(y.contains(&999.0));
     }
 
     #[test]

@@ -10,8 +10,17 @@ export class WebCore implements CoreApi {
   private readonly pending = new Map<number, Pending>();
   private nextId = 1;
   private onProgress: ((p: Progress) => void) | null = null;
+  /** Set when the worker itself failed, for example its script didn't load; it won't answer again. */
+  private failure: Error | null = null;
 
   constructor() {
+    const fail = (message: string) => {
+      this.failure = new Error(message);
+      for (const p of this.pending.values()) p.reject(this.failure);
+      this.pending.clear();
+    };
+    this.worker.onerror = (e) => fail(e.message || "The app's core stopped working. Reload the page to start it again.");
+    this.worker.onmessageerror = () => fail("A reply from the app's core couldn't be read. Reload the page to start it again.");
     this.worker.onmessage = (e: MessageEvent) => {
       const msg = e.data;
       if (msg.event === 'progress') {
@@ -28,6 +37,7 @@ export class WebCore implements CoreApi {
 
   private call<T>(method: Request['method'], ...args: unknown[]): Promise<T> {
     const id = this.nextId++;
+    if (this.failure) return Promise.reject(this.failure);
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
       this.worker.postMessage({ id, method, args } satisfies Request);

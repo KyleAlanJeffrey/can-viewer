@@ -61,7 +61,7 @@ export function EditField({ label, value, validate, onCommit, layout, mono, nume
     if (e.key === 'Escape') {
       setText(value);
       setError(null);
-    } else if (e.key === 'Enter' && (!multiline || e.metaKey || e.ctrlKey)) {
+    } else if (e.key === 'Enter' && !e.nativeEvent.isComposing && (!multiline || e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       attempt();
     }

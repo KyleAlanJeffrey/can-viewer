@@ -6,7 +6,7 @@
 mod find;
 mod series;
 
-use can_core::{FrameStore, IdKey, EXT_FLAG, MAX_PAYLOAD};
+use can_core::{FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{CandumpParser, LogParser};
 use serde::{Deserialize, Serialize};
@@ -79,8 +79,9 @@ struct SeriesInfo<'a> {
     name: &'a str,
     unit: &'a str,
     count: usize,
-    min: f64,
-    max: f64,
+    /// `None` when no frame had a value.
+    min: Option<f64>,
+    max: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -469,8 +470,12 @@ impl Session {
         self.resolve(channel, id).map(|(_, m)| m)
     }
 
-    /// Like [`Session::message`], with the index of the database it came from.
+    /// Like [`Session::message`], with the index of the database it came from. Error frames
+    /// have no message.
     fn resolve(&self, channel: u8, id: u32) -> Option<(usize, &MessageDef)> {
+        if id & ERR_FLAG != 0 {
+            return None;
+        }
         let bus = self.store.channels().get(usize::from(channel));
         let applicable = || {
             self.databases
@@ -729,6 +734,56 @@ mod tests {
             .decode_signal(id_key(0, 0x8CF0_0400) as f64, "Value")
             .unwrap();
         assert_eq!(series_values(&s, &info), [17.0]);
+    }
+
+    #[test]
+    fn error_frames_are_not_decoded_as_the_standard_id_they_spell() {
+        let mut s = Session::new();
+        s.push_chunk(
+            b"(1.0) can0 080#0102\n\
+              (1.1) can0 20000080#0000000000000000\n\
+              (1.2) can0 080#0304\n",
+        );
+        s.finish();
+        set_databases(&mut s, &[(None, database(&[(0x080, "STD_80", 0)]))]);
+
+        let ids = json(&s.id_summary());
+        let ids = ids.as_array().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(
+            (&ids[0]["id"], &ids[0]["count"], &ids[0]["name"]),
+            (&json!(0x080), &json!(2), &json!("STD_80"))
+        );
+        assert_eq!(
+            (&ids[1]["id"], &ids[1]["extended"], &ids[1]["name"]),
+            (&json!(0x2000_0080u32), &json!(false), &Value::Null)
+        );
+
+        let info = s.decode_signal(id_key(0, 0x080) as f64, "Value").unwrap();
+        assert_eq!(series_values(&s, &info), [1.0, 3.0]);
+        assert!(s.message(0, 0x80 | ERR_FLAG).is_none());
+    }
+
+    #[test]
+    fn series_with_no_values_has_null_min_and_max() {
+        let mut s = Session::new();
+        s.push_chunk(b"(1.0) can0 18FEF100#FF\n(1.1) can0 18FEF100#FE\n");
+        s.finish();
+        let mut ccvs = database(&[(0x98FE_F100, "CCVS", 0)]);
+        ccvs["messages"][0]["j1939"] = json!(true);
+        set_databases(&mut s, &[(None, ccvs)]);
+        let key = id_key(0, 0x98FE_F100) as f64;
+
+        let info = json(&s.decode_signal(key, "Value").unwrap());
+        assert_eq!(info["count"], 0);
+        assert_eq!(info.get("min"), Some(&Value::Null));
+        assert_eq!(info.get("max"), Some(&Value::Null));
+
+        let raw = json(
+            &s.decode_raw(key, &spec(0, 8, "intel", false).to_string())
+                .unwrap(),
+        );
+        assert_eq!((&raw["min"], &raw["max"]), (&json!(254.0), &json!(255.0)));
     }
 
     #[test]

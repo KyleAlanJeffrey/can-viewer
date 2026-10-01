@@ -212,6 +212,10 @@ impl fmt::Display for Quoted<'_> {
             f.write_char(c)?;
             prev = c;
         }
+        // can-dbc would read a final `\` and the closing quote as an escaped quote.
+        if prev == '\\' {
+            f.write_char(' ')?;
+        }
         f.write_char('"')
     }
 }
@@ -304,6 +308,22 @@ mod tests {
             .comment
             .clone_from(&again.messages[0].comment);
         assert_eq!(again, db);
+    }
+
+    #[test]
+    fn trailing_backslash_keeps_its_closing_quote() {
+        let mut db = Database::from_dbc_str(crate::tests::DBC).unwrap();
+        db.messages[0].comment = Some(r"Logs in C:\logs\".into());
+        let text = db.to_dbc();
+        let again = Database::from_dbc_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert_eq!(
+            again.messages[0].comment.as_deref(),
+            Some(r"Logs in C:\logs\ ")
+        );
+        assert_eq!(
+            again.messages[0].signals[0].comment.as_deref(),
+            Some("Engine speed")
+        );
     }
 
     #[test]

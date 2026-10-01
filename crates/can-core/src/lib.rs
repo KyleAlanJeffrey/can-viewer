@@ -10,6 +10,10 @@ pub const MAX_PAYLOAD: usize = 64;
 /// Bit 31 of an ID marks a 29-bit extended identifier, matching the DBC `BO_` convention.
 pub const EXT_FLAG: u32 = 1 << 31;
 
+/// Bit 29 of an ID marks an error frame, whose low bits are the error class, as in SocketCAN's
+/// `CAN_ERR_FLAG`. Real 11-bit and 29-bit IDs never set it, so error frames get IDs of their own.
+pub const ERR_FLAG: u32 = 1 << 29;
+
 /// Per-frame flag bits.
 pub mod flags {
     pub const FD: u8 = 1 << 0;
@@ -26,7 +30,7 @@ pub struct FrameRef<'a> {
     /// Absolute timestamp in nanoseconds (Unix epoch when the log provides one).
     pub ts_ns: i64,
     pub channel: u8,
-    /// Arbitration ID, with [`EXT_FLAG`] set for extended IDs.
+    /// Arbitration ID, with [`EXT_FLAG`] set for extended IDs or [`ERR_FLAG`] for error frames.
     pub id: u32,
     pub flags: u8,
     pub data: &'a [u8],

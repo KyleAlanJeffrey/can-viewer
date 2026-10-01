@@ -41,7 +41,7 @@ candump support (`crates/can-formats/src/candump.rs`):
 
 - Lines look like `(1436509052.249713) can0 123#DEADBEEF`.
 - Classic frames (`<id>#<data>`), remote frames (`<id>#R`, with or without a length), an optional `_<dlc>` suffix, and CAN FD frames (`<id>##<flags><data>`) are read. Data bytes may be separated by `.`.
-- Three hex digits mean an 11-bit ID; eight mean a 29-bit ID. Error frames (the CAN error flag in the ID) are kept and flagged.
+- Three hex digits mean an 11-bit ID; eight mean a 29-bit ID. Error frames (the CAN error flag in the ID) are kept and flagged. They keep the error flag in their ID, so error class 0x80 (reported as 20000080) never mixes with an 11-bit frame 080, and no DBC decodes them.
 - The ` T` / ` R` suffix written by `candump -x` is read.
 - CAN XL lines are rejected, and so is candump's default console output (without `-l` or `-L`).
 - A line that does not parse does not stop the load. It is counted in `LogInfo.rejected`, and the first one is reported with its line number.
@@ -55,7 +55,7 @@ Import (`crates/can-dbc-model`) reads:
 - Signals: Intel and Motorola byte order; unsigned, signed, and IEEE float32 or float64 (`SIG_VALTYPE_`); factor, offset, range, unit and receivers.
 - Simple multiplexing: one multiplexor per message.
 - Comments on messages and signals (`CM_ BO_`, `CM_ SG_`), and value descriptions (`VAL_`).
-- J1939 messages: `VFrameFormat` J1939PG, given per message or as the default. A file without `VFrameFormat` whose `ProtocolType` is "J1939" counts its extended messages as J1939.
+- J1939 messages: extended messages with `VFrameFormat` J1939PG, given per message or as the default. A file without `VFrameFormat` whose `ProtocolType` is "J1939" counts its extended messages as J1939. An 11-bit message is never J1939.
 - Text in UTF-8 (a byte-order mark is skipped), falling back to Windows-1252.
 
 Not supported:
@@ -77,7 +77,9 @@ Apart from these limits, exporting and re-importing gives an equal database. Tes
 
 A J1939 message decodes every extended frame with its PGN, whatever the frame's priority and source address. The exact CAN ID is tried first, across every DBC that applies to the bus, so a DBC written for one sender wins over a generic J1939 one. Proprietary PGNs (PDU format 239 and 255) mean whatever each sender defines, so they match only frames from the source address in the DBC. The PGN includes the data page and extended data page bits, and the PDU-specific byte only for PDU2 formats (240 and up).
 
-J1939 uses values outside a signal's range for "error" and "not available", so for J1939 messages those decode as no value, which leaves a gap in a plot. A range of [0|0] counts as no range.
+When several J1939 messages share the frame's PGN, the one written for the same source address (and, for PDU1, the same destination) wins, then one for the same source address, then the first.
+
+SAE J1939-71 reserves the top of a parameter's raw range for "error" and "not available". So for J1939 messages, an unsigned signal of 8, 16, 24, 32 or more bits (a multiple of 8) whose most significant byte is above 0xFA decodes as no value, which leaves a gap in a plot. The DBC's min and max are not used for this, so a narrow engineering range never hides real data. Smaller fields, such as 2-bit states, and signed or float signals decode as they are.
 
 ## CoreApi
 

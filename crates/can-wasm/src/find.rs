@@ -1,7 +1,7 @@
 //! Find Signal: rank bit ranges of the log's IDs by how well their value follows a description
 //! of the wanted signal's behaviour over time.
 
-use can_core::{FrameStore, IdKey, IdStats, MAX_PAYLOAD};
+use can_core::{FrameStore, IdKey, IdStats, ERR_FLAG, MAX_PAYLOAD};
 use can_dbc_model::ByteOrder;
 use serde::Deserialize;
 
@@ -258,8 +258,9 @@ fn score_id(store: &FrameStore, stats: &IdStats, rules: &[Rule], out: &mut Vec<F
     }));
 }
 
-/// Ranks the 8- and 16-bit unsigned ranges of `keys` (every ID when empty) by how well their
-/// value follows every rule, best first, and keeps the top `limit` that score above 0.
+/// Ranks the 8- and 16-bit unsigned ranges of `keys` (every ID but error frames when empty) by
+/// how well their value follows every rule, best first, and keeps the top `limit` that score
+/// above 0.
 ///
 /// A rule looks at the `n` steps between consecutive frames of the ID inside its window: `up`
 /// of them raise the value, `down` lower it, and `moves = up + down`. It scores
@@ -281,7 +282,7 @@ pub fn find_signal(store: &FrameStore, rules: &[Rule], keys: &[IdKey], limit: us
     }
     let mut found = Vec::new();
     if keys.is_empty() {
-        for stats in store.ids() {
+        for stats in store.ids().iter().filter(|s| s.id & ERR_FLAG == 0) {
             score_id(store, stats, rules, &mut found);
         }
     } else {
@@ -427,6 +428,24 @@ mod tests {
             .all(|f| f.score == 0.5 && f.key == id_key(0, 0x200)));
         // Exactly the ranges holding bit 8: Intel and Motorola, 8 and 16 bits.
         assert_eq!(found.len(), 8 + 7 + 9 + 16);
+    }
+
+    #[test]
+    fn error_frames_are_searched_only_when_asked_for() {
+        let mut store = FrameStore::new();
+        for i in 0..10u8 {
+            store.push(FrameRef {
+                ts_ns: i64::from(i) * 1000 * MS,
+                channel: 0,
+                id: 0x80 | ERR_FLAG,
+                flags: can_core::flags::ERROR,
+                data: &[i, 0, 0, 0, 0, 0, 0, 0],
+            });
+        }
+        let rules = [rule(Behaviour::Increases, 0, 10)];
+        assert!(find_signal(&store, &rules, &[], 10).is_empty());
+        let key = id_key(0, 0x80 | ERR_FLAG);
+        assert_eq!(find_signal(&store, &rules, &[key], 10)[0].key, key);
     }
 
     #[test]

@@ -83,6 +83,7 @@ export function App({ core }: { core: CoreApi }) {
   const [error, setError] = useState<string | null>(null);
   const [skippedDismissed, setSkippedDismissed] = useState(false);
   const [notKept, setNotKept] = useState<string | null>(null);
+  const [dbcsNotKept, setDbcsNotKept] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const [query, setQuery] = useState('');
@@ -96,7 +97,9 @@ export function App({ core }: { core: CoreApi }) {
 
   // Async tasks read these rather than a render's closure, so queued DBC edits never undo each other.
   const dbcsRef = useRef<LoadedDbc[]>([]);
-  const dbcQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const changeQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const logRef = useRef(log);
   logRef.current = log;
   const plotsRef = useRef(plots);
@@ -152,47 +155,62 @@ export function App({ core }: { core: CoreApi }) {
     [core],
   );
 
+  /** Runs `task` after every earlier log or DBC change, so the core and the UI see them in order. */
+  const serially = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    const next = changeQueue.current.then(task);
+    changeQueue.current = next.catch(() => undefined);
+    return next;
+  }, []);
+
   /** Send `next` to the core, then refresh names and decode again any plot whose signal changed. */
   const applyDbcs = useCallback(
     async (next: LoadedDbc[]) => {
       await core.setDatabases(next.map((d) => ({ channel: d.channel, db: d.db })));
       dbcsRef.current = next;
-      void save('dbcs', next);
-      if (!logRef.current) {
-        setDbcs(next);
-        return;
-      }
+      void save('dbcs', next).then((kept) => setDbcsNotKept(!kept));
       const nextIds = await core.idSummary();
       // Set together: summaries name their DBC by its index in this list.
       setDbcs(next);
       setIds(nextIds);
-      const kept: PlotSpec[] = [];
+      const replaced = new Map<string, PlotSpec | null>();
       for (const p of plotsRef.current) {
         const [key, signal] = splitPlotId(p.id);
         const summary = nextIds.find((s) => s.key === key);
         const hit = summary ? resolve(next, summary) : null;
         const def = hit?.message.signals.find((s) => s.name === signal);
         if (hit && def && plotSignals.current.get(p.id) === def) {
-          kept.push({ ...p, label: `${hit.message.name}.${signal}` });
+          replaced.set(p.id, { ...p, label: `${hit.message.name}.${signal}` });
           continue;
         }
         core.dropSeries(p.info.handle);
-        const again = hit ? await decodePlot(key, signal, p.color, hit) : null;
-        if (again) kept.push(again);
+        replaced.set(p.id, hit ? await decodePlot(key, signal, p.color, hit) : null);
       }
-      setPlots(kept);
+      // By id, so plots added or removed while this ran stay that way.
+      setPlots((current) => current.flatMap((p) => (replaced.has(p.id) ? (replaced.get(p.id) ?? []) : [p])));
+      const shown = new Set(plotsRef.current.map((p) => p.id));
+      for (const [id, plot] of replaced) if (plot && !shown.has(id)) core.dropSeries(plot.info.handle);
     },
     [core, decodePlot],
   );
 
   const mutateDbcs = useCallback(
-    (change: (prev: LoadedDbc[]) => LoadedDbc[]) => {
-      const task = dbcQueue.current.then(() => applyDbcs(change(dbcsRef.current)));
-      dbcQueue.current = task.catch(() => undefined);
-      return task;
-    },
-    [applyDbcs],
+    (change: (prev: LoadedDbc[]) => LoadedDbc[]) => serially(() => applyDbcs(change(dbcsRef.current))),
+    [serially, applyDbcs],
   );
+
+  /** Show no log. The core has already dropped it, with every decoded series. */
+  const showNoLog = useCallback(() => {
+    plotSignals.current.clear();
+    setLog(null);
+    setIds([]);
+    setDbcs(dbcsRef.current);
+    setPlots([]);
+    setSelected(ALL_IDS);
+    setPinnedTime(null);
+    setNotKept(null);
+    setLogVersion((v) => v + 1);
+    viewState.clearScope('log');
+  }, [viewState]);
 
   const restoreUi = useCallback(
     async (ui: SavedUi, nextIds: IdSummary[]) => {
@@ -213,38 +231,52 @@ export function App({ core }: { core: CoreApi }) {
 
   const openLog = useCallback(
     (file: Blob, name: string, restore?: SavedUi) =>
-      run(`Reading ${name}…`, async () => {
-        setPlots([]);
-        setSelected(ALL_IDS);
-        setSkippedDismissed(false);
-        setNotKept(null);
-        const info = await core.openLog(file, name, (p) =>
-          setBusy({ label: `Parsing ${name}… ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total }),
-        );
-        const nextIds = await core.idSummary();
-        setLog(info);
-        setLogVersion((v) => v + 1);
-        setIds(nextIds);
-        if (restore) {
-          await restoreUi(restore, nextIds);
-          return;
-        }
-        viewState.clearScope('log');
-        setView('overview');
-        // Kept so a reload reopens it. A copy this browser can't store just isn't restored.
-        void save('log', { name, blob: file } satisfies SavedLog).then((kept) => {
-          if (!kept) {
-            setNotKept(name);
-            void forget('log');
+      run(`Reading ${name}\u2026`, () =>
+        serially(async () => {
+          setSkippedDismissed(false);
+          let info: LogInfo;
+          try {
+            info = await core.openLog(file, name, (p) =>
+              setBusy({ label: `Parsing ${name}\u2026 ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total }),
+            );
+            if (info.frames === 0 && info.rejected > 0) {
+              throw new Error(`${name} has no CAN frames that FreeCAN Studio can read. It reads candump logs (candump -l) for now.`);
+            }
+          } catch (e) {
+            showNoLog();
+            throw e;
           }
-        });
-      }),
-    [core, run, setView, restoreUi, viewState],
+          const nextIds = await core.idSummary();
+          // The new log's series replaced the old ones in the core.
+          plotSignals.current.clear();
+          setPlots([]);
+          setSelected(ALL_IDS);
+          setNotKept(null);
+          setLog(info);
+          setLogVersion((v) => v + 1);
+          setDbcs(dbcsRef.current);
+          setIds(nextIds);
+          if (restore) {
+            await restoreUi(restore, nextIds);
+            return;
+          }
+          viewState.clearScope('log');
+          setView('overview');
+          // Kept so a reload reopens it. A copy this browser can't store just isn't restored.
+          void save('log', { name, blob: file } satisfies SavedLog).then((kept) => {
+            if (!kept) {
+              setNotKept(name);
+              void forget('log');
+            }
+          });
+        }),
+      ),
+    [core, run, serially, showNoLog, setView, restoreUi, viewState],
   );
 
   const openDbc = useCallback(
     (file: Blob, name: string) =>
-      run(`Loading ${name}…`, async () => {
+      run(`Loading ${name}\u2026`, async () => {
         const db = await core.parseDbc(file, name);
         // Opening a file that's already loaded reloads it in place, keeping its bus and order,
         // unless that copy has unexported edits: then both are kept.
@@ -272,24 +304,18 @@ export function App({ core }: { core: CoreApi }) {
   );
 
   const closeLog = () =>
-    run('Closing the log…', async () => {
-      // The core has no close; an empty log releases the old one's memory.
-      await core.openLog(new Blob([]), '', () => {});
-      plotSignals.current.clear();
-      setLog(null);
-      setIds([]);
-      setPlots([]);
-      setSelected(ALL_IDS);
-      setPinnedTime(null);
-      setNotKept(null);
-      setLogVersion((v) => v + 1);
-      viewState.clearScope('log');
-      await forget('log');
-      if (dbcsRef.current.length > 0) setView('database');
-    });
+    run('Closing the log\u2026', () =>
+      serially(async () => {
+        // The core has no close; an empty log releases the old one's memory.
+        await core.openLog(new Blob([]), '', () => {});
+        showNoLog();
+        await forget('log');
+        if (dbcsRef.current.length > 0) setView('database');
+      }),
+    );
 
   const loadDemo = () =>
-    run('Downloading the demo…', async () => {
+    run('Downloading the demo\u2026', async () => {
       const [logGz, dbcBlob] = await Promise.all(
         ['demo/demo.log.gz', 'demo/demo.dbc'].map(async (path) => {
           const res = await fetch(path);
@@ -314,7 +340,7 @@ export function App({ core }: { core: CoreApi }) {
         loadSaved<ReturnType<ViewStateStore['snapshot']>>('views'),
       ]);
       if (savedViews) viewState.restore(savedViews);
-      if (savedDbcs?.length) await run('Restoring your DBCs…', () => mutateDbcs(() => savedDbcs));
+      if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => savedDbcs));
       if (savedLog) {
         const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
         if (!(await openLog(savedLog.blob, savedLog.name, ui))) void forget('log');
@@ -383,7 +409,12 @@ export function App({ core }: { core: CoreApi }) {
     const drop = (e: DragEvent) => {
       e.preventDefault();
       setDragOver(false);
-      if (e.dataTransfer?.files.length) openFiles(e.dataTransfer.files);
+      if (!e.dataTransfer?.files.length) return;
+      if (busyRef.current) {
+        setError(`Wait for "${busyRef.current.label}" to finish, then drop the files again.`);
+        return;
+      }
+      openFiles(e.dataTransfer.files);
     };
     window.addEventListener('dragover', over);
     window.addEventListener('dragleave', leave);
@@ -430,7 +461,7 @@ export function App({ core }: { core: CoreApi }) {
       setError(`Up to ${SERIES_SLOTS} signals can be plotted at once. Remove one to add another.`);
       return;
     }
-    await run(`Decoding ${signal}…`, async () => {
+    await run(`Decoding ${signal}\u2026`, async () => {
       const plot = await decodePlot(key, signal, color, hit);
       if (plot) setPlots((ps) => [...ps, plot]);
     });
@@ -551,9 +582,9 @@ export function App({ core }: { core: CoreApi }) {
                 {busy
                   ? busy.label
                   : restoring
-                    ? 'Restoring your last session…'
+                    ? 'Restoring your last session\u2026'
                     : log
-                      ? `${formatCount(log.frames)} frames · ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` · ${dbcSummary}` : ''}`
+                      ? `${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
                       : dbcs.length > 0
                         ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
                         : 'Open a candump log to begin'}
@@ -664,6 +695,18 @@ export function App({ core }: { core: CoreApi }) {
                   <span className="detail"> Its storage may be full or turned off.</span>
                 </p>
                 <button className="icon-button small" onClick={() => setNotKept(null)} aria-label="Dismiss">
+                  <X size={14} strokeWidth={1.75} />
+                </button>
+              </div>
+            )}
+            {dbcsNotKept && (
+              <div className="banner">
+                <AlertTriangle size={16} strokeWidth={1.75} />
+                <p>
+                  This browser couldn&rsquo;t save your DBCs, so changes you haven&rsquo;t exported won&rsquo;t be there after a reload.
+                  <span className="detail"> Its storage may be full or turned off.</span>
+                </p>
+                <button className="icon-button small" onClick={() => setDbcsNotKept(false)} aria-label="Dismiss">
                   <X size={14} strokeWidth={1.75} />
                 </button>
               </div>

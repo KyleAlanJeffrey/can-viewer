@@ -5,18 +5,25 @@
 //! and eight mean 29-bit. Data bytes may be separated by `.`. `candump -x` appends ` T` or ` R`.
 //! CAN XL lines are rejected for now.
 
-use can_core::{flags, FrameRef, FrameSink, EXT_FLAG, MAX_PAYLOAD};
+use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::{LogParser, ParseStats};
 
-const CAN_ERR_FLAG: u32 = 0x2000_0000;
 const CAN_EFF_MASK: u32 = 0x1FFF_FFFF;
 const CANFD_BRS: u8 = 0x1;
 const CANFD_ESI: u8 = 0x2;
 
+/// Longest line accepted, well above the ~200 bytes of a CAN FD line. Longer lines (a binary
+/// file dropped by mistake, say) are rejected without being buffered.
+const MAX_LINE: usize = 4096;
+const LINE_TOO_LONG: &str = "line too long";
+
 #[derive(Debug, Default)]
 pub struct CandumpParser {
+    /// The start of a line continued in the next chunk.
     carry: Vec<u8>,
+    /// The carried line grew past [`MAX_LINE`] and was rejected, so the rest of it is skipped.
+    skipping_line: bool,
     stats: ParseStats,
 }
 
@@ -28,6 +35,10 @@ impl CandumpParser {
 
     fn line<S: FrameSink>(&mut self, line: &[u8], sink: &mut S) {
         self.stats.lines += 1;
+        if line.len() > MAX_LINE {
+            self.stats.reject(LINE_TOO_LONG);
+            return;
+        }
         let line = line.trim_ascii();
         if line.is_empty() {
             return;
@@ -37,22 +48,45 @@ impl CandumpParser {
             Err(reason) => self.stats.reject(reason),
         }
     }
+
+    /// Appends `part` to the carried line, or rejects the line once it is too long.
+    fn carry_over(&mut self, part: &[u8]) {
+        if self.skipping_line {
+            return;
+        }
+        if self.carry.len() + part.len() > MAX_LINE {
+            self.carry = Vec::new();
+            self.skipping_line = true;
+            self.stats.lines += 1;
+            self.stats.reject(LINE_TOO_LONG);
+        } else {
+            self.carry.extend_from_slice(part);
+        }
+    }
+
+    /// Parses the carried line, which ends at a newline or the end of the file.
+    fn end_carried_line<S: FrameSink>(&mut self, sink: &mut S) {
+        if std::mem::take(&mut self.skipping_line) {
+            return;
+        }
+        let mut line = std::mem::take(&mut self.carry);
+        self.line(&line, sink);
+        line.clear();
+        self.carry = line;
+    }
 }
 
 impl LogParser for CandumpParser {
     fn push<S: FrameSink>(&mut self, chunk: &[u8], sink: &mut S) {
         self.stats.bytes += chunk.len() as u64;
         let mut rest = chunk;
-        if !self.carry.is_empty() {
-            let Some(nl) = memchr::memchr(b'\n', rest) else {
-                self.carry.extend_from_slice(rest);
+        if !self.carry.is_empty() || self.skipping_line {
+            let nl = memchr::memchr(b'\n', rest);
+            self.carry_over(&rest[..nl.unwrap_or(rest.len())]);
+            let Some(nl) = nl else {
                 return;
             };
-            let mut line = std::mem::take(&mut self.carry);
-            line.extend_from_slice(&rest[..nl]);
-            self.line(&line, sink);
-            line.clear();
-            self.carry = line;
+            self.end_carried_line(sink);
             rest = &rest[nl + 1..];
         }
         let complete = memchr::memrchr(b'\n', rest).map_or(0, |i| i + 1);
@@ -62,13 +96,12 @@ impl LogParser for CandumpParser {
             self.line(&body[start..nl], sink);
             start = nl + 1;
         }
-        self.carry.extend_from_slice(tail);
+        self.carry_over(tail);
     }
 
     fn finish<S: FrameSink>(&mut self, sink: &mut S) {
-        if !self.carry.is_empty() {
-            let line = std::mem::take(&mut self.carry);
-            self.line(&line, sink);
+        if !self.carry.is_empty() || self.skipping_line {
+            self.end_carried_line(sink);
         }
     }
 
@@ -115,9 +148,9 @@ fn parse_frame(
     let raw = parse_hex_u32(id_hex).ok_or("bad CAN ID")?;
     let id = match id_hex.len() {
         3 if raw <= 0x7FF => raw,
-        8 if raw & CAN_ERR_FLAG != 0 => {
+        8 if raw & ERR_FLAG != 0 => {
             *frame_flags |= flags::ERROR;
-            raw & CAN_EFF_MASK
+            (raw & CAN_EFF_MASK) | ERR_FLAG
         }
         8 => (raw & CAN_EFF_MASK) | EXT_FLAG,
         _ => return Err("CAN ID must be 3 (11-bit) or 8 (29-bit) hex digits"),
@@ -318,7 +351,7 @@ mod tests {
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(sink.frames[0].3, flags::RTR);
         assert_eq!(sink.frames[1].3, flags::RTR);
-        assert_eq!(sink.frames[2].2, 0x80);
+        assert_eq!(sink.frames[2].2, 0x80 | ERR_FLAG);
         assert_eq!(sink.frames[2].3, flags::ERROR);
         assert_eq!(sink.frames[3].4, vec![0x11, 0x22, 0x33]);
         assert_eq!(sink.frames[4].4.len(), 8);
@@ -344,6 +377,36 @@ mod tests {
         assert_eq!(sink.frames.len(), 2);
         assert_eq!(sink.frames[0].0, 1_500_000_000);
         assert_eq!(sink.frames[1].0, 2_250_000_000);
+    }
+
+    #[test]
+    fn rejects_overlong_lines_without_buffering_them() {
+        let mut input = vec![0xA5; 3 * MAX_LINE];
+        input.extend_from_slice(b"\n(1.0) can0 123#01\n");
+        for chunk in [7, 1000, MAX_LINE + 1, usize::MAX] {
+            let mut parser = CandumpParser::new();
+            let mut sink = VecSink::default();
+            for part in input.chunks(chunk) {
+                parser.push(part, &mut sink);
+                assert!(parser.carry.len() <= MAX_LINE, "chunk size {chunk}");
+            }
+            parser.finish(&mut sink);
+            let stats = parser.stats();
+            assert_eq!(sink.frames.len(), 1, "chunk size {chunk}");
+            assert_eq!(
+                (stats.lines, stats.rejected, stats.first_rejection),
+                (2, 1, Some((1, LINE_TOO_LONG))),
+                "chunk size {chunk}"
+            );
+        }
+
+        let (sink, stats) = parse_chunked(&input[..2 * MAX_LINE], 100);
+        assert!(sink.frames.is_empty());
+        assert_eq!(
+            (stats.lines, stats.rejected),
+            (1, 1),
+            "unterminated at the end"
+        );
     }
 
     #[test]

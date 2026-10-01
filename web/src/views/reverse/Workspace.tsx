@@ -139,7 +139,7 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange }
     };
   }, [core, decoded, settled]);
 
-  const laneStart = selected.length > 0 ? Math.floor(Math.min(...selected) / 64) * LANES : 0;
+  const laneStart = selected.length > 0 ? Math.floor((Math.min(...selected) >> 3) / LANES) * LANES : 0;
   const laneCount = Math.max(0, Math.min(LANES, bytes - laneStart));
   const [lanes, setLanes] = useState<SeriesInfo[] | null>(null);
   const [lanesError, setLanesError] = useState<string | null>(null);

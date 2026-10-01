@@ -27,6 +27,19 @@ def frames(path, limit):
             yield index, int(can_id, 16), bytes.fromhex(body)
 
 
+def not_available(message, signal, raw):
+    """Mirrors MessageDef::decode: a byte-sized unsigned J1939 value whose top byte is above 0xFA
+    means error or not available (SAE J1939-71), so our decoder leaves it out."""
+    return (
+        message.protocol == "j1939"
+        and message.is_extended_frame
+        and not signal.is_signed
+        and not signal.is_float
+        and signal.length % 8 == 0
+        and raw >= 0xFB << (signal.length - 8)
+    )
+
+
 def main(log, dbc, ours_csv, limit):
     db = cantools.database.load_file(dbc)
     expected = {}
@@ -35,8 +48,10 @@ def main(log, dbc, ours_csv, limit):
             message = db.get_message_by_frame_id(frame_id)
         except KeyError:
             continue
+        raw = message.decode(data, decode_choices=False, scaling=False)
         for name, value in message.decode(data, decode_choices=False).items():
-            expected[(index, message.name, name)] = float(value)
+            if not not_available(message, message.get_signal_by_name(name), raw[name]):
+                expected[(index, message.name, name)] = float(value)
 
     actual = {}
     with open(ours_csv) as f:

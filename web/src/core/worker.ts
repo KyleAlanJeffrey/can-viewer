@@ -25,6 +25,12 @@ let session: Session;
 /** The current databases as JSON, kept so they (with any edits) survive opening another log. */
 let databasesJson: string | null = null;
 
+function freshSession(): Session {
+  const next = new Session();
+  if (databasesJson) next.set_databases(databasesJson);
+  return next;
+}
+
 /** A result plus the buffers to transfer rather than copy. */
 function transfer<T extends ArrayBufferView>(view: T): [T, Transferable[]] {
   return [view, [view.buffer]];
@@ -39,22 +45,32 @@ function halves(xy: Float64Array): [[Float64Array, Float64Array], Transferable[]
 const handlers = {
   async openLog(file: Blob) {
     session.free();
-    session = new Session();
-    if (databasesJson) session.set_databases(databasesJson);
-    session.reserve_for_bytes(file.size);
+    session = freshSession();
     const started = performance.now();
     let lastReport = 0;
-    for (let at = 0; at < file.size; at += CHUNK_BYTES) {
-      const chunk = new Uint8Array(await file.slice(at, at + CHUNK_BYTES).arrayBuffer());
-      session.push_chunk(chunk);
-      const now = performance.now();
-      if (now - lastReport > 100) {
-        lastReport = now;
-        port.postMessage({ event: 'progress', bytes: at + chunk.length, total: file.size });
+    try {
+      session.reserve_for_bytes(file.size);
+      for (let at = 0; at < file.size; at += CHUNK_BYTES) {
+        const chunk = new Uint8Array(await file.slice(at, at + CHUNK_BYTES).arrayBuffer());
+        session.push_chunk(chunk);
+        const now = performance.now();
+        if (now - lastReport > 100) {
+          lastReport = now;
+          port.postMessage({ event: 'progress', bytes: at + chunk.length, total: file.size });
+        }
       }
+      const info = JSON.parse(session.finish());
+      return { ...info, parseMs: performance.now() - started, wasmBytes: memory?.buffer.byteLength ?? 0 };
+    } catch (err) {
+      // Leave no log rather than part of one; the app shows no log after a failed open.
+      try {
+        session.free();
+      } catch {
+        // A session that trapped mid-call can't be freed.
+      }
+      session = freshSession();
+      throw err;
     }
-    const info = JSON.parse(session.finish());
-    return { ...info, parseMs: performance.now() - started, wasmBytes: memory?.buffer.byteLength ?? 0 };
   },
   idSummary: () => JSON.parse(session.id_summary()),
   rowCount: (key: number) => session.row_count(key),

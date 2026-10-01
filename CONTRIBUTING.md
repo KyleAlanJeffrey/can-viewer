@@ -80,7 +80,7 @@ If you could not run a check, say which one and why in the pull request.
 - Comment sparingly. Comment only what the code cannot say: a non-obvious why, a workaround, a subtle invariant, a deliberate deviation. Do not narrate what the code does. Keep comments terse.
 - Keep existing comments unless they become wrong or redundant.
 - Preserve the existing architecture and conventions. Avoid new dependencies unless they bring clear value.
-- ASCII only in code and Markdown: straight quotes, `-` or `--` instead of em dashes, `->` instead of arrows. When UI copy needs a non-ASCII character, such as the ellipsis that marks a dialog ("Open Log..."), write it as an escape (`…`). To find stray characters in the files you changed:
+- ASCII only in code and Markdown: straight quotes, `-` or `--` instead of em dashes, `->` instead of arrows. When UI copy needs a non-ASCII character, such as the ellipsis that marks a dialog ("Open Log..."), write it as an escape: `\u2026` in a JS string, `&hellip;` in JSX text. To find stray characters in the files you changed:
 
 ```bash
 LC_ALL=C grep -n '[^[:print:][:space:]]' <files>

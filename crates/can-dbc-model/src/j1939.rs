@@ -21,6 +21,12 @@ pub fn source_address(id: u32) -> u8 {
     id as u8
 }
 
+/// The 26 bits below the priority: data pages, PDU format, PDU specific and source address.
+#[must_use]
+pub fn without_priority(id: u32) -> u32 {
+    id & 0x03FF_FFFF
+}
+
 /// Proprietary A (PF 239) and B (PF 255) groups mean whatever each sender defines, so they match
 /// only frames from the source address the DBC was written for.
 #[must_use]
@@ -42,6 +48,14 @@ pub fn matches(defined: u32, frame: u32) -> bool {
     let group = pgn(frame);
     pgn(defined) == group
         && (!is_proprietary(group) || source_address(defined) == source_address(frame))
+}
+
+/// SAE J1939-71 ranges for a parameter of 1 to 8 whole bytes: a most significant byte above
+/// 0xFA means a parameter-specific indicator, reserved, error or not available. Fields of other
+/// sizes always count as available.
+#[must_use]
+pub fn not_available(raw: u64, size: u16) -> bool {
+    size.is_multiple_of(8) && (8..=64).contains(&size) && raw >= 0xFB_u64 << (size - 8)
 }
 
 #[cfg(test)]

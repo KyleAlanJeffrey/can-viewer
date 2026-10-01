@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
-import { ALL_IDS, formatId, type Candidate, type FindRule, type IdSummary } from '../../core/api';
+import { ALL_IDS, formatId, isErrorFrame, type Candidate, type FindRule, type IdSummary } from '../../core/api';
 import { formatCount, formatPeriod } from '../../format';
 import { IdListSidebar } from '../shared/IdListSidebar';
 import { useViewState } from '../shared/viewState';
@@ -23,7 +23,7 @@ export function ReverseView({ ctx }: ViewProps) {
   const [, setForms] = useCandidateForms();
 
   const unknown = useMemo(
-    () => ids.filter((s) => !messageOf(s.key)).sort((a, b) => a.channel - b.channel || a.id - b.id),
+    () => ids.filter((s) => !messageOf(s.key) && !isErrorFrame(s)).sort((a, b) => a.channel - b.channel || a.id - b.id),
     [ids, messageOf],
   );
 

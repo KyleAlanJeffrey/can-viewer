@@ -82,7 +82,7 @@ export function Minimap({ core, spec, duration, range, cursorA, cursorB, markers
     ctx.fillRect(0, 0, width, TRACK_H);
     const xOf = (t: number) => (t / duration) * width;
 
-    if (overview && overview.handle === handle && overview.x.length > 0) {
+    if (overview && overview.handle === handle && overview.x.length > 0 && min !== null && max !== null) {
       const lo = min;
       const hi = max > min ? max : min + 1;
       const yOf = (v: number) => TRACK_H - 4 - ((v - lo) / (hi - lo)) * (TRACK_H - 8);

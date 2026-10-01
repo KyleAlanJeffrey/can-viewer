@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
-import { ALL_IDS, dbcId, formatId, type Database, type IdSummary, type MessageDef, type SignalDef } from '../../core/api';
+import { ALL_IDS, dbcId, formatId, isErrorFrame, type Database, type IdSummary, type MessageDef, type SignalDef } from '../../core/api';
 import { Sheet } from '../../components/Sheet';
 import { downloadText } from '../../download';
 import { cssVar, formatPeriod } from '../../format';
@@ -47,7 +47,8 @@ export function DatabaseView({ ctx }: ViewProps) {
   const dialogOpener = useRef<HTMLElement | null>(null);
   const seriesColors = useMemo(() => [1, 2, 3, 4, 5, 6].map((i) => cssVar(`--series-${i}`)), []);
   const overridden = useMemo(() => overriddenMessages(dbcs), [dbcs]);
-  const unknown = useMemo(() => ctx.ids.filter((s) => !ctx.messageOf(s.key)), [ctx.ids, ctx.messageOf]);
+  // Error frames have no message to describe.
+  const unknown = useMemo(() => ctx.ids.filter((s) => !ctx.messageOf(s.key) && !isErrorFrame(s)), [ctx.ids, ctx.messageOf]);
   const decodedInLog = useMemo(() => {
     const byDbc = new Map<string, Set<number>>();
     for (const s of ctx.ids) {

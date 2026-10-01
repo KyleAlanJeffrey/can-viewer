@@ -56,14 +56,17 @@ impl SignalDef {
     /// Physical value, ignoring multiplexing (see [`MessageDef::decode`]).
     #[must_use]
     pub fn value(&self, data: &[u8]) -> Option<f64> {
-        let raw = self.raw(data)?;
+        self.raw(data).map(|raw| self.physical(raw))
+    }
+
+    fn physical(&self, raw: u64) -> f64 {
         let v = match self.kind {
             ValueKind::Unsigned => raw as f64,
             ValueKind::Signed => bits::sign_extend(raw, self.size) as f64,
             ValueKind::Float32 => f64::from(f32::from_bits(raw as u32)),
             ValueKind::Float64 => f64::from_bits(raw),
         };
-        Some(v * self.factor + self.offset)
+        v * self.factor + self.offset
     }
 
     /// Raw field value for a physical value, rounded to the nearest step.
@@ -76,17 +79,6 @@ impl SignalDef {
             ValueKind::Float32 => u64::from((scaled as f32).to_bits()),
             ValueKind::Float64 => scaled.to_bits(),
         }
-    }
-
-    /// Whether `physical` is within min..max, give or take half a step for rounding in the DBC.
-    /// An empty range, often written [0|0], means none was given.
-    #[must_use]
-    pub fn in_range(&self, physical: f64) -> bool {
-        if self.min >= self.max {
-            return true;
-        }
-        let slack = self.factor.abs() / 2.0;
-        (self.min - slack..=self.max + slack).contains(&physical)
     }
 
     pub fn encode(&self, data: &mut [u8], physical: f64) -> Option<()> {
@@ -109,8 +101,8 @@ pub struct MessageDef {
     pub transmitter: Option<String>,
     pub comment: Option<String>,
     pub signals: Vec<SignalDef>,
-    /// A J1939 parameter group (DBC `VFrameFormat` J1939PG). It decodes frames by PGN, and its
-    /// values outside min..max mean error or not available.
+    /// A J1939 parameter group (DBC `VFrameFormat` J1939PG). It decodes frames by PGN, and some
+    /// raw values of its signals mean error or not available; see [`j1939::not_available`].
     #[serde(default)]
     pub j1939: bool,
 }
@@ -127,7 +119,8 @@ impl MessageDef {
     }
 
     /// Physical value of `signal`, or `None` if the frame is too short, the signal is
-    /// multiplexed out of this frame, or this is J1939 and the value is out of range.
+    /// multiplexed out of this frame, or this is J1939 and an unsigned signal of whole bytes has
+    /// a raw value meaning error or not available ([`j1939::not_available`]).
     ///
     /// Extended multiplexing (`SG_MUL_VAL_`) is not handled yet: every multiplexed signal is
     /// assumed to be switched by the message's single multiplexor.
@@ -138,8 +131,14 @@ impl MessageDef {
                 return None;
             }
         }
-        let value = signal.value(data)?;
-        (!self.j1939 || signal.in_range(value)).then_some(value)
+        let raw = signal.raw(data)?;
+        if self.j1939
+            && signal.kind == ValueKind::Unsigned
+            && j1939::not_available(raw, signal.size)
+        {
+            return None;
+        }
+        Some(signal.physical(raw))
     }
 }
 
@@ -193,22 +192,37 @@ impl Database {
         self.messages.iter().find(|m| m.id == id)
     }
 
-    /// The J1939 message whose PGN a frame with ID `id` carries; see [`j1939::matches`]. Look
-    /// for an exact [`Database::message`] first.
+    /// The J1939 message whose PGN a frame with ID `id` carries; see [`j1939::matches`]. Of
+    /// several, the first with the frame's ID apart from priority wins, then the first from the
+    /// frame's source address, then the first. Look for an exact [`Database::message`] first.
     #[must_use]
     pub fn j1939_message(&self, id: u32) -> Option<&MessageDef> {
+        let rank = |m: &MessageDef| {
+            if j1939::without_priority(m.id) == j1939::without_priority(id) {
+                0
+            } else if j1939::source_address(m.id) == j1939::source_address(id) {
+                1
+            } else {
+                2
+            }
+        };
         self.messages
             .iter()
-            .find(|m| m.j1939 && j1939::matches(m.id, id))
+            .filter(|m| m.j1939 && j1939::matches(m.id, id))
+            .min_by_key(|m| rank(m))
     }
 }
 
-/// `VFrameFormat` J1939PG, given for the message or as the default. A file that doesn't define
-/// `VFrameFormat` but has `ProtocolType` "J1939" counts its extended messages as J1939.
+/// An extended message with `VFrameFormat` J1939PG, given for the message or as the default. A
+/// file that doesn't define `VFrameFormat` but has `ProtocolType` "J1939" counts all its extended
+/// messages as J1939.
 fn is_j1939(dbc: &can_dbc::Dbc, id: can_dbc::MessageId) -> bool {
     use can_dbc::{AttributeDefinition as D, AttributeValue as V, AttributeValueType as T};
 
     const FRAME_FORMAT: &str = "VFrameFormat";
+    if !matches!(id, can_dbc::MessageId::Extended(_)) {
+        return false;
+    }
     let choices = dbc.attribute_definitions.iter().find_map(|d| match d {
         D::Message(name, T::Enum(choices)) if name == FRAME_FORMAT => Some(choices),
         _ => None,
@@ -219,8 +233,7 @@ fn is_j1939(dbc: &can_dbc::Dbc, id: can_dbc::MessageId) -> bool {
             .iter()
             .find(|a| a.name == "ProtocolType")
             .map(|a| &a.value);
-        return matches!(id, can_dbc::MessageId::Extended(_))
-            && matches!(protocol, Some(V::String(p)) if p == "J1939");
+        return matches!(protocol, Some(V::String(p)) if p == "J1939");
     };
     // Values are enum indexes, but defaults are usually written as the label.
     let choice = |i: Option<usize>| i.and_then(|i| choices.get(i)).map(String::as_str);
@@ -296,9 +309,11 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
 
 fn cp1252(b: u8) -> char {
     const HIGH: [char; 32] = [
-        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž',
-        '\u{8F}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9D}',
-        'ž', 'Ÿ',
+        '\u{20AC}', '\u{81}', '\u{201A}', '\u{192}', '\u{201E}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{2C6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8D}', '\u{17D}',
+        '\u{8F}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}',
+        '\u{2014}', '\u{2DC}', '\u{2122}', '\u{161}', '\u{203A}', '\u{153}', '\u{9D}', '\u{17E}',
+        '\u{178}',
     ];
     match b {
         0x80..=0x9F => HIGH[usize::from(b - 0x80)],
@@ -446,6 +461,7 @@ BU_: ECU
 BO_ 2364540158 EEC1: 8 ECU
  SG_ EngineSpeed : 24|16@1+ (0.125,0) [0|8031.875] "rpm" Vector__XXX
  SG_ Unspecified : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Switch : 8|2@1+ (1,0) [0|1] "" Vector__XXX
 
 BO_ 2566844672 RAW_EXT: 8 ECU
  SG_ Value : 0|8@1+ (1,0) [0|100] "" Vector__XXX
@@ -479,6 +495,28 @@ BA_ "VFrameFormat" BO_ 2566844672 1;
     }
 
     #[test]
+    fn standard_messages_are_never_j1939() {
+        let with_standard = J1939_DBC.replace(
+            "BO_ 2566844672 RAW_EXT",
+            "BO_ 1024 STANDARD: 8 ECU\n SG_ Value : 0|8@1+ (1,0) [0|100] \"\" Vector__XXX\n\n\
+             BO_ 2566844672 RAW_EXT",
+        );
+        let db = Database::from_dbc_str(&with_standard).unwrap();
+        assert!(!db.message(1024).unwrap().j1939, "J1939PG by default");
+        let text = db.to_dbc();
+        assert!(!text.contains("\"VFrameFormat\" BO_ 1024 "), "{text}");
+        assert_eq!(Database::from_dbc_str(&text).unwrap(), db);
+
+        let protocol_only = with_standard
+            .lines()
+            .filter(|l| !l.contains("VFrameFormat"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let db = Database::from_dbc_str(&protocol_only).unwrap();
+        assert!(!db.message(1024).unwrap().j1939);
+    }
+
+    #[test]
     fn j1939_lookup_and_not_available_values() {
         let db = Database::from_dbc_str(J1939_DBC).unwrap();
         let eec1 = db.j1939_message(0x0CF0_0400 | j1939::EXTENDED).unwrap();
@@ -488,24 +526,71 @@ BA_ "VFrameFormat" BO_ 2566844672 1;
             "RAW_EXT isn't J1939"
         );
 
-        let speed = eec1.signal("EngineSpeed").unwrap();
-        let rpm = |raw: u16| {
+        let mut speed = eec1.signal("EngineSpeed").unwrap().clone();
+        let rpm = |speed: &SignalDef, raw: u16| {
             let mut data = [0u8; 8];
             data[3..5].copy_from_slice(&raw.to_le_bytes());
             eec1.decode(speed, &data)
         };
-        assert_eq!(rpm(8000), Some(1000.0));
-        assert_eq!(rpm(0xFAFF), Some(8031.875));
-        assert_eq!(rpm(0xFE00), None, "error");
-        assert_eq!(rpm(0xFFFF), None, "not available");
-        let unspecified = eec1.signal("Unspecified").unwrap();
+        assert_eq!(rpm(&speed, 8000), Some(1000.0));
+        assert_eq!(rpm(&speed, 0xFAFF), Some(8031.875));
+        assert_eq!(rpm(&speed, 0xFB00), None, "parameter-specific indicator");
+        assert_eq!(rpm(&speed, 0xFE00), None, "error");
+        assert_eq!(rpm(&speed, 0xFFFF), None, "not available");
+        speed.max = 3000.0;
+        assert_eq!(rpm(&speed, 25_600), Some(3200.0), "beyond the DBC range");
+
+        let byte = |name, data: u8| eec1.decode(eec1.signal(name).unwrap(), &[data; 8]);
+        assert_eq!(byte("Unspecified", 200), Some(200.0));
+        assert_eq!(byte("Unspecified", 0xFB), None);
         assert_eq!(
-            eec1.decode(unspecified, &[200, 0, 0, 0, 0, 0, 0, 0]),
-            Some(200.0)
+            byte("Switch", 3),
+            Some(3.0),
+            "bit fields have no such range"
         );
 
         let raw_ext = db.message(0x98FE_F100).unwrap();
-        assert_eq!(raw_ext.decode(&raw_ext.signals[0], &[200; 8]), Some(200.0));
+        assert_eq!(raw_ext.decode(&raw_ext.signals[0], &[0xFF; 8]), Some(255.0));
+    }
+
+    fn j1939_messages(defs: &[(u32, &str)]) -> Database {
+        let messages = defs
+            .iter()
+            .map(|&(id, name)| MessageDef {
+                id,
+                name: name.into(),
+                size: 8,
+                transmitter: None,
+                comment: None,
+                signals: Vec::new(),
+                j1939: true,
+            })
+            .collect();
+        Database { messages }
+    }
+
+    fn j1939_name(db: &Database, id: u32) -> Option<&str> {
+        db.j1939_message(id).map(|m| m.name.as_str())
+    }
+
+    #[test]
+    fn j1939_lookup_prefers_the_frame_id_then_its_source_address() {
+        let db = j1939_messages(&[(0x98FE_F100, "CCVS_ENGINE"), (0x98FE_F117, "CCVS_CLUSTER")]);
+        assert_eq!(j1939_name(&db, 0x8CFE_F117), Some("CCVS_CLUSTER"));
+        assert_eq!(j1939_name(&db, 0x8CFE_F100), Some("CCVS_ENGINE"));
+        assert_eq!(j1939_name(&db, 0x8CFE_F121), Some("CCVS_ENGINE"));
+
+        // PDU1: TSC1 to the engine (0x00) and the retarder (0x01) from 0x03, and to the engine
+        // from 0x27.
+        let db = j1939_messages(&[
+            (0x8C00_0027, "TSC1_27_TO_ENGINE"),
+            (0x8C00_0003, "TSC1_TO_ENGINE"),
+            (0x8C00_0103, "TSC1_TO_RETARDER"),
+        ]);
+        assert_eq!(j1939_name(&db, 0x9800_0103), Some("TSC1_TO_RETARDER"));
+        assert_eq!(j1939_name(&db, 0x9800_0003), Some("TSC1_TO_ENGINE"));
+        assert_eq!(j1939_name(&db, 0x8C00_0F03), Some("TSC1_TO_ENGINE"));
+        assert_eq!(j1939_name(&db, 0x8C00_0199), Some("TSC1_27_TO_ENGINE"));
     }
 
     #[test]

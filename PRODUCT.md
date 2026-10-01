@@ -36,12 +36,14 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
 
 ## Capabilities and Constraints
 
-- **Built so far (spike):**
+- **Built so far:**
   - candump parsing;
-  - a columnar frame store with per-ID stats and bit-flip counts;
-  - DBC decode (Intel/Motorola, signed, float, simple multiplexing);
-  - a virtualized canvas trace table, a bit heatmap, and uPlot plots with decimation.
-- **Planned:** see [docs/screens.md](docs/screens.md) and [docs/research.md](docs/research.md). Key items are more formats, parallel parsing, drag-to-define signals, Find Signal, and DBC editing and export.
+  - a columnar frame store with per-ID stats, bit-flip counts, jitter, bus load and error-frame counts;
+  - DBC decode (Intel/Motorola, signed, float, simple multiplexing), with several DBCs per log, each for every bus or one bus, and J1939 messages matched by PGN;
+  - five views: Overview, Trace, Plot, Reverse Engineer (drag-to-define signals and Find Signal) and Database (DBC editing and export);
+  - a virtualized canvas trace table, a bit heatmap, and uPlot plots with decimation;
+  - the open log, DBCs and view state kept across reloads.
+- **Planned:** see [docs/screens.md](docs/screens.md), [docs/research.md](docs/research.md) and [TODO.md](TODO.md). Key items are more log formats, parallel parsing, extended multiplexing, J1939 multi-packet messages, and the Pro desktop app.
 - **Licensing:**
   - The product is closed-source and commercial, so no GPL or LGPL code can be copied in.
   - Pro-only features must not ship in the web bundle (the Cargo `pro` feature or desktop-only crates).
@@ -55,7 +57,7 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
 - **Names:** "FreeCAN Studio" for the free web app and "FreeCAN Studio Pro" for the paid desktop app. Pro is never described as free. The web app stays free with no caps, trials, nags or account.
 - **Mark:** the Twisted F, a capital F whose upright is two intertwined conductor ribbons (the CAN-H/CAN-L twisted pair). Two arms extend right and end in round terminals separated by negative-space gaps. The wordmark is "FreeCAN" in semibold and "Studio" in regular. The concepts are in `docs/freecan-twisted-f-*.png`, and a vector master does not exist yet.
 - **Voice:** calm and plain.
-  - Plain verbs: "Open Log…", "Try the Demo".
+  - Plain verbs: "Open Log...", "Try the Demo".
   - An ellipsis means a dialog follows.
   - No "Oops", no hype.
   - Errors explain what happened and what to do next.

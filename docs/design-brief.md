@@ -7,9 +7,9 @@ This brief makes the app feel friendly and Apple-like by following Apple's Human
 ## Principles
 
 - **Content first, chrome defers.** Only navigation and controls (toolbar, sidebar, popovers) sit on translucent Liquid Glass. The trace table, plots, heatmap and inspector are opaque and crisp. Glass never sits on glass.
-- **The standard Mac layout:** sidebar → content → inspector. Each pane keeps its selection highlighted, and each hidden pane can be brought back from the toolbar, a menu and a shortcut.
+- **The standard Mac layout:** sidebar -> content -> inspector. Each pane keeps its selection highlighted, and each hidden pane can be brought back from the toolbar, a menu and a shortcut.
 - **Friendly means calm and forgiving,** not cute:
-  - Plain verbs ("Open Log…", "Try the Demo").
+  - Plain verbs ("Open Log...", "Try the Demo").
   - No "Oops".
   - Undo is always available.
   - Springy but restrained motion.
@@ -23,15 +23,15 @@ This brief makes the app feel friendly and Apple-like by following Apple's Human
   - Inline errors next to the problem.
   - Alerts only for problems the user can act on.
 
-## Layout (1440 × 900 reference)
+## Layout (1440 x 900 reference)
 
 | Region | Spec |
 |---|---|
-| Toolbar | 52px tall, on glass. Leading: sidebar toggle, then the document title "demo.log" with subtitle "10,000,000 frames · 5 h 2 min" (the status lives here, not in a bottom bar). Centre: search field "Filter IDs and signals". Trailing: "Open DBC…" (borderless icon + label), "Open Log…" (the only tinted, prominent button: blue capsule), inspector toggle. |
-| Sidebar | 240px, full height and edge to edge (macOS 27 style), on glass. Top: small app mark + "FreeCAN Studio". Groups: "can0 · 10 IDs", "can1 · 1 ID". Rows 32px: accent-coloured waveform icon, hex ID in monospace, message name in secondary text, period ("10 ms") right-aligned in tertiary text. Selected row: blue rounded-rect fill, white semibold text. IDs missing from the DBC show "Unknown" plus a small orange dot. |
-| Content, top | Trace table, opaque white. 28px pinned header, 24px rows, alternating #FFFFFF / #F4F5F5. Columns: Time · Bus · ID · Name · Len · Data. Hex bytes use a monospace font with tabular figures. Bytes that changed since the previous frame sit on a soft blue tinted rounded chip. |
-| Content, bottom | Plots in a rounded (12px) opaque card: three stacked single-signal charts on one time axis, left edges aligned, about four light gridlines, Y labels on the trailing side. The scrub line is 30% gray and sits behind the data, with an annotation bubble kept inside the plot ("12.340 s · 2,140 rpm"). |
-| Inspector | 270px, opaque. Header: "0C9 ENGINE_1" (15px semibold) and "can0 · every 10 ms · 8 bytes" (secondary). Section **Bit Activity**: an 8 × 8 grid of 4px-rounded squares shaded pale to deep blue by change rate, bit numbers 7…0 across the top and byte numbers down the side; each DBC signal has a rounded outline in its plot colour; legend "Rarely → Every frame". Section **Signals**: rows with a colour dot, name, unit, DBC layout in tertiary monospace (`0\|16@1+`), and a Plot checkbox. A bordered button: "Define Signal from Selection". |
+| Toolbar | 52px tall, on glass. Leading: sidebar toggle, then the document title "demo.log" with subtitle "10,000,000 frames - 5 h 2 min" (the status lives here, not in a bottom bar). Centre: search field "Filter IDs and signals". Trailing: "Open DBC..." (borderless icon + label), "Open Log..." (the only tinted, prominent button: blue capsule), inspector toggle. |
+| Sidebar | 240px, full height and edge to edge (macOS 27 style), on glass. Top: small app mark + "FreeCAN Studio". Groups: "can0 - 10 IDs", "can1 - 1 ID". Rows 32px: accent-coloured waveform icon, hex ID in monospace, message name in secondary text, period ("10 ms") right-aligned in tertiary text. Selected row: blue rounded-rect fill, white semibold text. IDs missing from the DBC show "Unknown" plus a small orange dot. |
+| Content, top | Trace table, opaque white. 28px pinned header, 24px rows, alternating #FFFFFF / #F4F5F5. Columns: Time - Bus - ID - Name - Len - Data. Hex bytes use a monospace font with tabular figures. Bytes that changed since the previous frame sit on a soft blue tinted rounded chip. |
+| Content, bottom | Plots in a rounded (12px) opaque card: three stacked single-signal charts on one time axis, left edges aligned, about four light gridlines, Y labels on the trailing side. The scrub line is 30% gray and sits behind the data, with an annotation bubble kept inside the plot ("12.340 s - 2,140 rpm"). |
+| Inspector | 270px, opaque. Header: "0C9 ENGINE_1" (15px semibold) and "can0 - every 10 ms - 8 bytes" (secondary). Section **Bit Activity**: an 8 x 8 grid of 4px-rounded squares shaded pale to deep blue by change rate, bit numbers 7...0 across the top and byte numbers down the side; each DBC signal has a rounded outline in its plot colour; legend "Rarely -> Every frame". Section **Signals**: rows with a colour dot, name, unit, DBC layout in tertiary monospace (`0\|16@1+`), and a Plot checkbox. A bordered button: "Define Signal from Selection". |
 
 ## Tokens
 
@@ -52,7 +52,7 @@ This brief makes the app feel friendly and Apple-like by following Apple's Human
 | Content surface | #FFFFFF | #1E1E1E |
 | Alternate row | #F4F5F5 | rgba(255,255,255,.05) |
 | Primary label | rgba(0,0,0,.85) | rgba(255,255,255,.85) |
-| Secondary label (text) | rgba(0,0,0,.60)¹ | rgba(255,255,255,.55) |
+| Secondary label (text) | rgba(0,0,0,.60)[1] | rgba(255,255,255,.55) |
 | Tertiary label | rgba(0,0,0,.35) | rgba(255,255,255,.25) |
 | Separator | rgba(0,0,0,.10) | rgba(255,255,255,.10) |
 | Accent / selection | #0088FF (fills), #0064E1 (selected row) | #0091FF, #0059D1 |
@@ -61,12 +61,12 @@ This brief makes the app feel friendly and Apple-like by following Apple's Human
 | Changed-byte chip | rgba(0,136,255,.14) | rgba(0,145,255,.28) |
 | Warning / unknown | Orange #FF8D28, always with a label | #FF9230 |
 
-¹ Apple's 50% secondary label is 3.95:1 on white, below WCAG's 4.5:1 minimum, so we darken it for text.
+[1] Apple's 50% secondary label is 3.95:1 on white, below WCAG's 4.5:1 minimum, so we darken it for text.
 
 System blue, green and orange are too light for text on white. Use them for fills and chart lines only. Blue text uses the link colour.
 
 **Shape and depth**
-- **Corners:** window/card 12px; controls 6–8px, or a capsule for large buttons; heatmap cells 4px. Nested corners are concentric: inner radius = outer radius − padding.
+- **Corners:** window/card 12px; controls 6-8px, or a capsule for large buttons; heatmap cells 4px. Nested corners are concentric: inner radius = outer radius - padding.
 - **Shadows:** only on floating glass (toolbar, popovers), soft and wide: `0 8px 24px rgba(0,0,0,.08)`. None on content.
 - **Glass:** `backdrop-filter: blur(24px) saturate(180%)` over a tinted translucent fill, on the toolbar and sidebar only.
 
@@ -82,10 +82,10 @@ System blue, green and orange are too light for text on white. Use them for fill
   - Title "Open a CAN log to get started".
   - Body "Drop a candump, ASC, BLF, TRC, MF4 or CSV file here. Add a DBC to decode signals."
   - A row of format chips.
-  - Buttons "Open Log…" (primary) and "Try the Demo".
+  - Buttons "Open Log..." (primary) and "Try the Demo".
   - A lock icon with "Files are processed on your computer and never uploaded."
 - **Dragging a file over the window:** the drop zone gets a 2px blue rounded outline and a faint blue tint. They appear only while dragging.
-- **Parsing:** a thin determinate bar under the toolbar title, "Parsing demo.log — 4.1M of 10M frames", and a Cancel button. Rows stream in as they parse.
+- **Parsing:** a thin determinate bar under the toolbar title, "Parsing demo.log - 4.1M of 10M frames", and a Cancel button. Rows stream in as they parse.
 - **Errors:** an inline banner above the table with a plain explanation, such as "1,204 lines weren't CAN frames and were skipped. Show lines".
 
 ## Don'ts (these make it look like a cheap knock-off)
@@ -108,13 +108,13 @@ System blue, green and orange are too light for text on white. Use them for fill
 ### Hero: workspace, light mode
 > A high-resolution product screenshot of a desktop web app called "FreeCAN Studio", shown in a clean Safari browser window at 16:10. The design follows Apple's macOS 27 Human Interface Guidelines with Liquid Glass. The toolbar and a full-height left sidebar are translucent frosted glass with a subtle blur and a soft shadow. The main content areas are opaque, crisp white.
 >
-> The toolbar shows a sidebar toggle, the document title "demo.log" with a small gray subtitle "10,000,000 frames · 5 h 2 min", a centred rounded search field, a borderless "Open DBC…" button, and one blue capsule "Open Log…" button.
+> The toolbar shows a sidebar toggle, the document title "demo.log" with a small gray subtitle "10,000,000 frames - 5 h 2 min", a centred rounded search field, a borderless "Open DBC..." button, and one blue capsule "Open Log..." button.
 >
-> The left sidebar lists CAN message IDs under group headings "can0 · 10 IDs" and "can1 · 1 ID". Each row has a small blue waveform icon, a monospaced hex ID like "0C9", a gray message name like "ENGINE_1", and a light-gray period like "10 ms". The row "0C9 ENGINE_1" is selected with a rounded blue highlight and white text. One row reads "123 Unknown" with a small orange dot.
+> The left sidebar lists CAN message IDs under group headings "can0 - 10 IDs" and "can1 - 1 ID". Each row has a small blue waveform icon, a monospaced hex ID like "0C9", a gray message name like "ENGINE_1", and a light-gray period like "10 ms". The row "0C9 ENGINE_1" is selected with a rounded blue highlight and white text. One row reads "123 Unknown" with a small orange dot.
 >
-> The centre shows a dense data table with a pinned header "Time · Bus · ID · Name · Len · Data", 24px rows with very subtle alternating stripes, and monospaced hex bytes like "AF 0C 00 3C 00 00 00 F7". A few bytes have soft light-blue rounded highlight chips.
+> The centre shows a dense data table with a pinned header "Time - Bus - ID - Name - Len - Data", 24px rows with very subtle alternating stripes, and monospaced hex bytes like "AF 0C 00 3C 00 00 00 F7". A few bytes have soft light-blue rounded highlight chips.
 >
-> Below the table, a rounded white card holds three stacked line charts on a shared time axis: "Engine Speed (rpm)" in blue, "Steering Angle (°)" in orange, "Vehicle Speed (km/h)" in green. Each has thin 2px lines, a few faint gridlines, a thin vertical gray scrub line, and a small value bubble "12.340 s · 2,140 rpm".
+> Below the table, a rounded white card holds three stacked line charts on a shared time axis: "Engine Speed (rpm)" in blue, "Steering Angle (deg)" in orange, "Vehicle Speed (km/h)" in green. Each has thin 2px lines, a few faint gridlines, a thin vertical gray scrub line, and a small value bubble "12.340 s - 2,140 rpm".
 >
 > A right inspector panel shows "0C9 ENGINE_1", a heading "Bit Activity" above an 8 by 8 grid of small rounded squares shaded from pale to deep blue, with coloured rounded outlines grouping bits into signals, and a "Signals" list with coloured dots, names and checkboxes.
 >
@@ -126,7 +126,7 @@ System blue, green and orange are too light for text on white. Use them for fill
 > Same layout and content as the hero, in macOS dark mode. The window background is near-black charcoal (#161617, not pure black) and the content surfaces are #1E1E1E. The glass toolbar and sidebar are smoky and translucent. The text is soft white, with brighter system blue, orange and green accents. The heatmap shades from deep navy to pale blue.
 
 ### Variant: first run and empty state
-> The same FreeCAN Studio window with an empty sidebar and inspector. The centre shows a friendly, spacious empty state: a soft rounded-square icon of a document with a waveform, the title "Open a CAN log to get started", a gray line "Drop a candump, ASC, BLF, TRC, MF4 or CSV file here. Add a DBC to decode signals.", a row of small rounded format chips (candump, ASC, BLF, TRC, MF4, CSV, DBC), a blue capsule "Open Log…" button next to a bordered "Try the Demo" button, and small print with a lock icon: "Files are processed on your computer and never uploaded." The drop area has a faint 2px blue rounded dashed outline, as if a file is being dragged over it. Apple macOS 27 style, calm, lots of whitespace.
+> The same FreeCAN Studio window with an empty sidebar and inspector. The centre shows a friendly, spacious empty state: a soft rounded-square icon of a document with a waveform, the title "Open a CAN log to get started", a gray line "Drop a candump, ASC, BLF, TRC, MF4 or CSV file here. Add a DBC to decode signals.", a row of small rounded format chips (candump, ASC, BLF, TRC, MF4, CSV, DBC), a blue capsule "Open Log..." button next to a bordered "Try the Demo" button, and small print with a lock icon: "Files are processed on your computer and never uploaded." The drop area has a faint 2px blue rounded dashed outline, as if a file is being dragged over it. Apple macOS 27 style, calm, lots of whitespace.
 
 ### Variant: reverse-engineering close-up
-> A close-up crop of the FreeCAN Studio inspector panel in Apple macOS style. Under the heading "Bit Activity" for message "123 Unknown" sits an 8 by 8 grid of rounded squares: the top row is a counter pattern whose shading brightens from left to right; rows 3–4 are mid-blue; row 5 is empty gray; row 7 is uniformly bright, like noise. The user is dragging a translucent blue selection across rows 3–4. A small glass popover beside it says "New signal · 16 bits · Motorola" with a "Plot" button and a live mini sparkline. Crisp, friendly, precise.
+> A close-up crop of the FreeCAN Studio inspector panel in Apple macOS style. Under the heading "Bit Activity" for message "123 Unknown" sits an 8 by 8 grid of rounded squares: the top row is a counter pattern whose shading brightens from left to right; rows 3-4 are mid-blue; row 5 is empty gray; row 7 is uniformly bright, like noise. The user is dragging a translucent blue selection across rows 3-4. A small glass popover beside it says "New signal - 16 bits - Motorola" with a "Plot" button and a live mini sparkline. Crisp, friendly, precise.

@@ -2,9 +2,9 @@
 
 ![Workshop Light brand reference: Twisted F logo, IBM Plex Sans and Mono, amber and graphite palette, and interface details](docs/freecan-workshop-brand-guide-v2.png)
 
-**Approved identity: Workshop Light.** Twisted F mark · IBM Plex Sans for the interface · IBM Plex Mono for data · amber `#FFB547`, graphite `#20242B`, warm white `#F4F0E7`, and white content surfaces.
+**Approved identity: Workshop Light.** Twisted F mark - IBM Plex Sans for the interface - IBM Plex Mono for data - amber `#FFB547`, graphite `#20242B`, warm white `#F4F0E7`, and white content surfaces.
 
-[Full-size brand sheet](docs/freecan-workshop-brand-guide-v2.png) · [Design system and exact color values](DESIGN.md) · [Screen mockups](docs/screens.md#approved-workshop-light-mockups)
+[Full-size brand sheet](docs/freecan-workshop-brand-guide-v2.png) - [Design system and exact color values](DESIGN.md) - [Screen mockups](docs/screens.md#approved-workshop-light-mockups)
 
 A free, browser-based CAN bus analyzer and log viewer with reverse-engineering tools. FreeCAN Studio Pro, a paid desktop app on the same core, is planned. The stack rationale is in [docs/research.md](docs/research.md) and the naming research in [docs/naming.md](docs/naming.md).
 

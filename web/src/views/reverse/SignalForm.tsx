@@ -133,7 +133,8 @@ export function SignalForm({ ctx, summary, form, onChange, onByteOrder, range, r
   const factorError = factor === null ? 'Enter a number.' : factor === 0 ? "The factor can't be zero." : null;
   const offsetError = parseNumber(form.offset) === null ? 'Enter a number.' : null;
 
-  const autoLimits = decoded ? { min: plainNumber(decoded.min), max: plainNumber(decoded.max) } : { min: '', max: '' };
+  const autoLimits =
+    decoded && decoded.min !== null && decoded.max !== null ? { min: plainNumber(decoded.min), max: plainNumber(decoded.max) } : { min: '', max: '' };
   const limits = form.limits ?? autoLimits;
   // Blank limits are written as 0, which DBC files read as "no range given".
   const min = limits.min.trim() === '' ? 0 : parseNumber(limits.min);
@@ -160,7 +161,8 @@ export function SignalForm({ ctx, summary, form, onChange, onByteOrder, range, r
       valueTable: [],
       comment: null,
     };
-    const message: MessageDef = { id: dbcId(summary), name: messageName, size: bytes, transmitter: null, comment: null, signals: [signal] };
+    // The decoding message's own ID, which differs from this frame's for a J1939 match by PGN.
+    const message: MessageDef = { id: target?.id ?? dbcId(summary), name: messageName, size: bytes, transmitter: null, comment: null, signals: [signal] };
     ctx.run(`Adding ${name}\u2026`, async () => {
       if (destination) {
         // Built from the latest copy, so an edit queued from the Database view isn't overwritten.
@@ -388,7 +390,13 @@ export function SignalForm({ ctx, summary, form, onChange, onByteOrder, range, r
                 </div>
                 <div>
                   <dt>Whole log</dt>
-                  <dd>{decoded ? `${formatValue(decoded.min)} to ${formatValue(decoded.max)}${unit}` : '\u2026'}</dd>
+                  <dd>
+                    {!decoded
+                      ? '\u2026'
+                      : decoded.min === null || decoded.max === null
+                        ? 'No values'
+                        : `${formatValue(decoded.min)} to ${formatValue(decoded.max)}${unit}`}
+                  </dd>
                 </div>
               </>
             )

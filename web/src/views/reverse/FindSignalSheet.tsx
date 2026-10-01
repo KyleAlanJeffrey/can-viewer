@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { Plus, X } from 'lucide-react';
-import { ALL_IDS, formatId, type Behaviour, type Candidate, type FindRule } from '../../core/api';
+import { ALL_IDS, formatId, isErrorFrame, type Behaviour, type Candidate, type FindRule } from '../../core/api';
 import { Segmented } from '../../components/Segmented';
 import { Sheet } from '../../components/Sheet';
 import { formatCount } from '../../format';
@@ -63,7 +63,7 @@ export function FindSignalSheet({ open, onClose, ctx, duration, onUse }: Props) 
     if (open && selected === ALL_IDS && scope === 'selected') setScope('unknown');
   }, [open, selected, scope, setScope]);
 
-  const unknownKeys = useMemo(() => ids.filter((s) => !messageOf(s.key)).map((s) => s.key), [ids, messageOf]);
+  const unknownKeys = useMemo(() => ids.filter((s) => !messageOf(s.key) && !isErrorFrame(s)).map((s) => s.key), [ids, messageOf]);
   const keys = scope === 'selected' ? [selected] : scope === 'unknown' ? unknownKeys : [];
   const scopeProblem =
     scope === 'selected' && selected === ALL_IDS

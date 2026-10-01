@@ -12,11 +12,24 @@ export type SessionKey = 'log' | 'dbcs' | 'ui' | 'views';
 let opening: Promise<IDBDatabase> | null = null;
 
 function openDb(): Promise<IDBDatabase> {
-  opening ??= new Promise((resolve, reject) => {
+  opening ??= new Promise<IDBDatabase>((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Let a newer version of the app in another tab upgrade the database.
+      db.onversionchange = () => {
+        db.close();
+        opening = null;
+      };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
+    // An older tab is holding the database open; don't wait on it forever.
+    req.onblocked = () => reject(new Error('blocked'));
+  }).catch((err) => {
+    opening = null;
+    throw err;
   });
   return opening;
 }

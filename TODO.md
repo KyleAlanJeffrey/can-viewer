@@ -16,7 +16,7 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [x] Build installs with pnpm (the repo has `pnpm-lock.yaml`, not `package-lock.json`)
 - [x] Repo docs: CONTRIBUTING.md, VERSIONING.md, VERSION, COMPATIBILITY.md, API.md
 - [x] Check the Database view by hand: Move and its focus, New DBC, New Message, Remove with its confirmation and focus
-- [ ] Check Export DBC... in a browser (the exported text is covered by Rust tests)
+- [x] Check Export DBC... in a browser (the exported text is covered by Rust tests). Checked on the live app with the save picker: a cancelled save keeps the unexported-edits mark, and a save writes the edited text. The download fallback for browsers without `showSaveFilePicker` was not checked
 - [x] Commit to `main`, push, and open the first PR from a feature branch: https://github.com/KyleAlanJeffrey/can-viewer/pull/1
 - [x] CodeRabbit review, with every comment addressed (fixed, or answered on the PR)
 - [x] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)

@@ -5,7 +5,7 @@
 //! (type 10), zlib-compressed, and an object may continue from one container into the next,
 //! so the objects inside containers form a second stream with its own carry-over. CAN
 //! frames come as the message objects 1 and 86, CAN FD as 100 and 101, and error frames as
-//! 2 and 73; every other object type is skipped.
+//! 2, 73 and 104; every other object type is skipped.
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
@@ -34,6 +34,7 @@ const CAN_ERROR_EXT: u32 = 73;
 const CAN_MESSAGE2: u32 = 86;
 const CAN_FD_MESSAGE: u32 = 100;
 const CAN_FD_MESSAGE_64: u32 = 101;
+const CAN_FD_ERROR_64: u32 = 104;
 
 const ZLIB: u16 = 2;
 const UNCOMPRESSED: u16 = 0;
@@ -199,15 +200,42 @@ impl ObjectStream {
         stats: &mut ParseStats,
         mut on_object: impl FnMut(Object<'_>, &mut ParseStats),
     ) {
-        if self.carry.is_empty() {
-            let used = self.consume(data, stats, &mut on_object);
-            self.carry.extend_from_slice(&data[used..]);
+        let mut rest = data;
+        // Complete the carried object from the front of `data`, taking no more than it
+        // needs, before reading the rest of `data` in place.
+        while !self.carry.is_empty() {
+            let wanted = self.carried_object_size().saturating_sub(self.carry.len());
+            let take = wanted.min(rest.len());
+            self.carry.extend_from_slice(&rest[..take]);
+            rest = &rest[take..];
+            if take < wanted {
+                return;
+            }
+            let mut carried = std::mem::take(&mut self.carry);
+            let used = self.consume(&carried, stats, &mut on_object);
+            carried.drain(..used);
+            self.carry = carried;
+        }
+        let used = self.consume(rest, stats, &mut on_object);
+        self.carry.extend_from_slice(&rest[used..]);
+    }
+
+    /// How many bytes the carried bytes need to become something `consume` can act on: the
+    /// whole object when its header is there and sane, else enough to read a header.
+    fn carried_object_size(&self) -> usize {
+        let carry = &self.carry;
+        if carry.len() < BASE_HEADER {
+            return BASE_HEADER;
+        }
+        let header_size = usize::from(u16_at(carry, 4));
+        let object_size = u32_at(carry, 8) as usize;
+        let sane = carry.starts_with(OBJECT_SIGNATURE)
+            && header_size >= BASE_HEADER
+            && (header_size..=MAX_OBJECT).contains(&object_size);
+        if sane {
+            object_size
         } else {
-            let mut buffered = std::mem::take(&mut self.carry);
-            buffered.extend_from_slice(data);
-            let used = self.consume(&buffered, stats, &mut on_object);
-            buffered.drain(..used);
-            self.carry = buffered;
+            carry.len()
         }
     }
 
@@ -307,6 +335,7 @@ fn frame_object<S: FrameSink>(
         CAN_ERROR_EXT => can_error_ext(object.body),
         CAN_FD_MESSAGE => can_fd_message(object.body),
         CAN_FD_MESSAGE_64 => can_fd_message_64(object.body),
+        CAN_FD_ERROR_64 => can_fd_error_64(object.body),
         _ => return,
     };
     stats.lines += 1;
@@ -413,6 +442,14 @@ fn can_error_ext(body: &[u8]) -> Result<Frame, &'static str> {
         return Err("CAN error object too short");
     }
     Ok(Frame::error(u16_at(body, 0)).with_data(&body[24..32], usize::from(body[10]).min(8)))
+}
+
+/// CAN_FD_ERROR_64: a one-byte channel, then the details of the error.
+fn can_fd_error_64(body: &[u8]) -> Result<Frame, &'static str> {
+    if body.len() < 4 {
+        return Err("CAN error object too short");
+    }
+    Ok(Frame::error(u16::from(body[0])))
 }
 
 /// CAN_FD_MESSAGE: channel, flags, DLC, ID, frame length, bit count, FD flags, valid bytes
@@ -701,6 +738,7 @@ mod tests {
                 &can_fd_message_64_body(0x10, 0, 0, &[]),
             ),
             object(CAN_ERROR, NS, 50, &[3, 0, 0, 0]),
+            object(CAN_FD_ERROR_64, NS, 55, &[2, 0, 0, 0, 0, 0, 0, 0]),
             object(CAN_ERROR_EXT, NS, 60, &{
                 let mut body = vec![0u8; 32];
                 body[0] = 1;
@@ -711,7 +749,7 @@ mod tests {
         ]);
         let (sink, stats) = parse(&file);
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
-        assert_eq!(stats.frames, 6);
+        assert_eq!(stats.frames, 7);
         assert_eq!(
             sink.frames[0],
             (
@@ -738,8 +776,9 @@ mod tests {
             (40, 1, 0x18FE_F100 | EXT_FLAG, flags::RTR, vec![])
         );
         assert_eq!(sink.frames[4], (50, 2, ERR_FLAG, flags::ERROR, vec![]));
+        assert_eq!(sink.frames[5], (55, 1, ERR_FLAG, flags::ERROR, vec![]));
         assert_eq!(
-            sink.frames[5],
+            sink.frames[6],
             (60, 0, ERR_FLAG, flags::ERROR, vec![0xDE, 0xAD])
         );
         assert_eq!(

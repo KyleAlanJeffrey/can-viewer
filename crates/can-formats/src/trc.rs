@@ -171,12 +171,23 @@ impl Header {
     }
 }
 
-/// `45930.5`, days since 1899-12-30, as nanoseconds since the Unix epoch.
+/// `45930.5`, days since 1899-12-30, as nanoseconds since the Unix epoch. A nanosecond is
+/// about 1e-14 days, so the fraction is read to 18 digits.
 fn start_time_ns(value: &[u8]) -> Option<i64> {
-    let scaled_days = parse_decimal_ns(value, 9)?;
-    scaled_days
-        .checked_sub(UNIX_EPOCH_DAYS * 1_000_000_000)?
-        .checked_mul(86_400)
+    const NS_PER_DAY: i128 = 86_400_000_000_000;
+    let (days, fraction) = match memchr::memchr(b'.', value) {
+        Some(dot) => (&value[..dot], &value[dot + 1..]),
+        None => (value, &[][..]),
+    };
+    let fraction = &fraction[..fraction.len().min(18)];
+    let days = i128::from(parse_decimal(days)?) - i128::from(UNIX_EPOCH_DAYS);
+    let fraction_ns = if fraction.is_empty() {
+        0
+    } else {
+        let scale = 10i128.pow(fraction.len() as u32);
+        (i128::from(parse_decimal(fraction)?) * NS_PER_DAY + scale / 2) / scale
+    };
+    i64::try_from(days * NS_PER_DAY + fraction_ns).ok()
 }
 
 /// A frame line of a version 2.x file. Returns whether it held a frame.
@@ -570,6 +581,18 @@ mod tests {
             )
         );
         assert_eq!((sink.frames[1].2, sink.frames[1].3), (2, flags::RTR));
+    }
+
+    #[test]
+    fn start_time_keeps_sub_microsecond_precision() {
+        assert_eq!(start_time_ns(b"45930.5"), Some(NOON));
+        assert_eq!(
+            start_time_ns(b"45930.50000001157407407407"),
+            Some(NOON + 1_000_000)
+        );
+        assert_eq!(start_time_ns(b"45930"), Some(NOON - 43_200_000_000_000));
+        assert_eq!(start_time_ns(b"99999999999999999999.5"), None);
+        assert_eq!(start_time_ns(b"45930.5x"), None);
     }
 
     #[test]

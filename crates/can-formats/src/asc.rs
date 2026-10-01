@@ -18,9 +18,7 @@
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::lines::LineSplitter;
-use crate::text::{
-    dlc_to_len, fields, parse_decimal, parse_decimal_ns, parse_hex_u32, unix_ns, ChannelName,
-};
+use crate::text::{fields, parse_decimal, parse_decimal_ns, parse_hex_u32, unix_ns, ChannelName};
 use crate::{LogParser, ParseStats};
 
 /// Bits of the `Flags` field that follows the data of a CAN FD line.
@@ -241,12 +239,10 @@ fn event<S: FrameSink>(
         .ok_or("missing frame type after the direction")?
     {
         b"d" | b"D" => {
+            // CAN FD frames come on CANFD lines; a classic frame with a DLC of 9 to 15
+            // carries 8 bytes.
             let dlc = parse_dlc(words.next().ok_or("missing DLC")?, header.hex)?;
-            let len = dlc_to_len(dlc);
-            if len > 8 {
-                frame_flags |= flags::FD;
-            }
-            read_bytes(&mut words, len, header.hex, &mut data)?
+            read_bytes(&mut words, usize::from(dlc.min(8)), header.hex, &mut data)?
         }
         b"r" | b"R" => {
             frame_flags |= flags::RTR;
@@ -421,11 +417,12 @@ mod tests {
              0.004000 1  1FFFFFFF        Rx   d 1 FF\n\
              0.005000 2  123             Rx   r\n\
              0.006000 2  123             Rx   r 8\n\
+             0.006500 2  123             Rx   d F 00 11 22 33 44 55 66 77\n\
              0.007000 1  ErrorFrame  Flags = 0xe CodeExt = 0x20a2 Code = 0x82 ID = 0 DLC = 0 Position = 5 Length = 11300\n\
              End TriggerBlock\n"
         ));
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
-        assert_eq!(stats.frames, 7);
+        assert_eq!(stats.frames, 8);
         assert_eq!(sink.channels, [b"can1".to_vec(), b"can2".to_vec()]);
         let start = 1_759_190_400_000_000_000;
         assert_eq!(
@@ -460,7 +457,12 @@ mod tests {
         assert_eq!(sink.frames[4].3, flags::RTR);
         assert_eq!(sink.frames[5].3, flags::RTR);
         assert_eq!(
-            sink.frames[6],
+            (sink.frames[6].3, sink.frames[6].4.len()),
+            (0, 8),
+            "a classic DLC above 8 carries 8 bytes"
+        );
+        assert_eq!(
+            sink.frames[7],
             (start + 7_000_000, 0, ERR_FLAG, flags::ERROR, vec![])
         );
     }

@@ -18,11 +18,11 @@ const messages = new Map<number, MessageDef>([
 ]);
 const dbc: LoadedDbc = { id: 'car', db: { name: 'car.dbc', messages: [...messages.values()] }, channel: null, edited: false };
 
-/** Byte 0 of every known message changes across the window; the unknown one never does. */
+/** Byte 0 of Engine and of the unknown message changes across the window; Brakes never changes. */
 function testCore(): CoreApi {
   return fakeCore({
     byteLanes: async (key, _first, count, t0, t1) =>
-      Array.from({ length: count }, (_, byte) => lane(key !== unknown.key && byte === 0 ? [1, 2, 3] : [5, 5, 5], t0, t1)),
+      Array.from({ length: count }, (_, byte) => lane(key !== brakes.key && byte === 0 ? [1, 2, 3] : [5, 5, 5], t0, t1)),
     rowAtTime: async () => 1,
     rows: async (key, start) => makeRowBatch(key, start, [{ t: 0, id: 0x100, index: 0, data: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88] }]),
     decodeRaw: async () => seriesInfo(1, 'raw'),
@@ -82,21 +82,40 @@ function renderView() {
   return user;
 }
 
-const matrixRows = () => within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent);
+/** Asserts the matrix rows, in order, by ID and message name. */
+function expectMatrixRows(rows: [id: string, name: string][]) {
+  const headers = within(screen.getByRole('table')).getAllByRole('rowheader');
+  expect(headers).toHaveLength(rows.length);
+  rows.forEach(([id, name], i) => {
+    expect(within(headers[i]).getByText(id)).toBeTruthy();
+    expect(within(headers[i]).getByText(name)).toBeTruthy();
+  });
+}
+
+const allRows: [string, string][] = [
+  ['100', 'Engine'],
+  ['200', 'Unknown'],
+  ['300', 'Brakes'],
+];
 
 describe('Byte Values', () => {
   it('shows one row per message, sorted by ID, with its name or Unknown', () => {
     renderView();
-    expect(matrixRows()).toEqual(['100Enginecan0', '200Unknowncan0', '300Brakescan0']);
+    expectMatrixRows(allRows);
     expect(screen.getAllByRole('button', { name: /^100 byte \d$/ })).toHaveLength(8);
   });
 
-  it('hides a message whose bytes never change with Changing bytes only', async () => {
+  it('hides a message whose bytes never change with Changing bytes only, known or not', async () => {
     const user = renderView();
     await user.click(screen.getByRole('checkbox', { name: 'Changing bytes only' }));
-    await waitFor(() => expect(matrixRows()).toEqual(['100Enginecan0', '300Brakescan0']));
+    await waitFor(() =>
+      expectMatrixRows([
+        ['100', 'Engine'],
+        ['200', 'Unknown'],
+      ]),
+    );
     await user.click(screen.getByRole('checkbox', { name: 'Changing bytes only' }));
-    expect(matrixRows()).toHaveLength(3);
+    expectMatrixRows(allRows);
   });
 
   it('selects a byte and pins it', async () => {
@@ -129,34 +148,39 @@ describe('Pin signal sheet', () => {
     const user = renderView();
     await user.click(screen.getByRole('button', { name: 'Pin signal\u2026' }));
     const sheet = screen.getByRole('dialog', { name: 'Pin signal' });
-    const signalNames = () => [...sheet.querySelectorAll('.re-pin-name')].map((el) => el.textContent).sort();
-    return { user, sheet, signalNames };
+    /** Asserts the sheet lists exactly these signals. Each button's name starts with its signal. */
+    const expectSignals = (names: string[]) => {
+      const list = within(sheet).queryByRole('list', { name: 'Signals' });
+      expect(list ? within(list).getAllByRole('button') : []).toHaveLength(names.length);
+      for (const name of names) expect(within(sheet).getByRole('button', { name: new RegExp(`^${name}`) })).toBeTruthy();
+    };
+    return { user, sheet, expectSignals };
   }
 
   it('lists every decoded signal and none of the unknown message', async () => {
-    const { sheet, signalNames } = await openSheet();
-    expect(signalNames()).toEqual(['BrakePressure', 'EngineSpeed', 'Throttle']);
+    const { sheet, expectSignals } = await openSheet();
+    expectSignals(['BrakePressure', 'EngineSpeed', 'Throttle']);
     expect(within(sheet).queryByText('200')).toBeNull();
   });
 
   it('filters by signal name, and by message name or ID to show all of its signals', async () => {
-    const { user, sheet, signalNames } = await openSheet();
+    const { user, sheet, expectSignals } = await openSheet();
     const search = within(sheet).getByRole('textbox', { name: 'Filter signals' });
 
     await user.type(search, 'speed');
-    expect(signalNames()).toEqual(['EngineSpeed']);
+    expectSignals(['EngineSpeed']);
 
     await user.clear(search);
     await user.type(search, 'ENGINE');
-    expect(signalNames()).toEqual(['EngineSpeed', 'Throttle']);
+    expectSignals(['EngineSpeed', 'Throttle']);
 
     await user.clear(search);
     await user.type(search, '300');
-    expect(signalNames()).toEqual(['BrakePressure']);
+    expectSignals(['BrakePressure']);
 
     await user.clear(search);
     await user.type(search, 'nothing like it');
-    expect(signalNames()).toEqual([]);
+    expectSignals([]);
     expect(within(sheet).getByText('No signals match.')).toBeTruthy();
   });
 

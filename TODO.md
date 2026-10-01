@@ -56,7 +56,8 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Database view: show and edit whether a message is J1939
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
 - [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
-- [x] Automated UI tests (Vitest; Byte Values and Pin signal covered, other views still to do)
+- [x] Automated UI tests: Vitest setup, with Byte Values and Pin signal covered
+- [ ] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`
 - [x] Database view: show when a DBC was last exported
 - [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
 - [x] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)

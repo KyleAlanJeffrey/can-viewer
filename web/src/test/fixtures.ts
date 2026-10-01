@@ -9,6 +9,8 @@ export interface RowSpec {
   channel?: number;
   flags?: number;
   data: number[];
+  /** Payload length before truncation to the row; defaults to `data.length`. */
+  fullLength?: number;
   /** Payload bytes that differ from the previous frame of the ID. */
   changed?: number[];
 }
@@ -26,6 +28,7 @@ export function makeRowBatch(key: number, start: number, rows: RowSpec[]): RowBa
     bytes[at + 16] = row.channel ?? 0;
     bytes[at + 17] = row.flags ?? 0;
     bytes[at + 18] = row.data.length;
+    view.setUint16(at + 20, row.fullLength ?? row.data.length, true);
     let low = 0;
     let high = 0;
     for (const b of row.changed ?? []) {

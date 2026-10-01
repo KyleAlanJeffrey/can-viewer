@@ -6,8 +6,7 @@ Related: [VERSIONING.md](VERSIONING.md), [COMPATIBILITY.md](COMPATIBILITY.md), [
 
 ## Prerequisites
 
-- Rust stable, installed with `rustup`.
-- The wasm target: `rustup target add wasm32-unknown-unknown`.
+- Rust, installed with `rustup`. `rust-toolchain.toml` pins the version, with rustfmt, clippy and the wasm32-unknown-unknown target; run `rustup toolchain install` in the repository to install it. Bump the pin in its own pull request, since CI fails on any new clippy warning.
 - [wasm-pack](https://github.com/wasm-bindgen/wasm-pack). The Cloudflare build installs 0.15.0.
 - Node 22 or later, and pnpm 10.
 
@@ -45,7 +44,7 @@ Run the checks for the areas you touched before opening a pull request. From the
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cd web && npx tsc -b
+pnpm --dir web typecheck
 pnpm --dir web test
 ```
 
@@ -137,6 +136,6 @@ From [PRODUCT.md](PRODUCT.md):
 The app is a static site on Cloudflare Workers static assets, configured in `wrangler.jsonc`: an assets-only Worker named `freecan-studio` serving `web/dist`, with single-page-application fallback.
 
 - Cloudflare Workers Builds runs `npx wrangler deploy`, which first runs the `build.command`: `sh scripts/build-cloudflare.sh`.
-- That script installs Rust stable, the wasm target and wasm-pack 0.15.0 when they are missing, then in `web/` runs `pnpm install --frozen-lockfile` (through `npx` when pnpm isn't installed), then the `wasm`, `demo` and `build` scripts. It is safe to run locally to reproduce a deploy build.
+- That script installs the Rust toolchain from `rust-toolchain.toml`, the wasm target and wasm-pack 0.15.0 when they are missing, then in `web/` runs `pnpm install --frozen-lockfile` (through `npx` when pnpm isn't installed), then the `wasm`, `demo` and `build` scripts. It is safe to run locally to reproduce a deploy build.
 - The install fails if `web/pnpm-lock.yaml` is out of step with `web/package.json`, so commit them together.
 - `web/public/_headers` is copied into `web/dist` and sets the Content-Security-Policy and long-lived caching for `/assets/*`. Every asset must be under Cloudflare's 25 MiB per-file limit.

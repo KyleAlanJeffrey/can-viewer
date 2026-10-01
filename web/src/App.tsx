@@ -358,6 +358,9 @@ export function App({ core }: { core: CoreApi }) {
       await openLog(await gunzip(logGz), 'demo.log');
     });
 
+  // The landing page's Try the Demo links to `?demo=1`.
+  const demoRequested = useRef(new URLSearchParams(window.location.search).has('demo'));
+
   // Reopen the last session. Guarded because StrictMode runs effects twice in development.
   const restoreStarted = useRef(false);
   useEffect(() => {
@@ -372,7 +375,8 @@ export function App({ core }: { core: CoreApi }) {
       ]);
       if (savedViews) viewState.restore(savedViews);
       if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => withJ1939Flags(savedDbcs), false));
-      if (savedLog) {
+      // A saved log other than the demo would only be replaced by it, so it isn't parsed first.
+      if (savedLog && (!demoRequested.current || savedLog.name === 'demo.log')) {
         const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
         if (!(await openLog(savedLog.blob, savedLog.name, ui))) void forget('log');
       } else if (savedUi && savedDbcs?.length && !viewMeta(savedUi.view).needsLog) {
@@ -381,6 +385,16 @@ export function App({ core }: { core: CoreApi }) {
       setRestoring(false);
     })();
   }, [viewState, run, mutateDbcs, openLog]);
+
+  useEffect(() => {
+    if (restoring || !demoRequested.current) return;
+    demoRequested.current = false;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('demo');
+    window.history.replaceState(null, '', url);
+    if (logRef.current?.name !== 'demo.log') loadDemo();
+    // loadDemo is recreated each render; this runs once, when the restore is done.
+  }, [restoring]);
 
   useEffect(() => {
     if (restoring) return;

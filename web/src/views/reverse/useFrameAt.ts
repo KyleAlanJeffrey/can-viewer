@@ -40,18 +40,17 @@ export function useFrameAt(core: CoreApi, key: number | null, t: number | null, 
     if (running.current) return;
     running.current = true;
     void (async () => {
-      try {
-        while (pending.current && mounted.current) {
-          const job = pending.current;
-          pending.current = null;
+      while (pending.current && mounted.current) {
+        const job = pending.current;
+        pending.current = null;
+        try {
           const found = await frameAt(core, job.key, job.t);
           if (mounted.current && pending.current === null) setFrame(found);
+        } catch {
+          // The log changed under the request; a newer job queued meanwhile still runs.
         }
-      } catch {
-        // The log changed under the request; the next cursor move fetches afresh.
-      } finally {
-        running.current = false;
       }
+      running.current = false;
     })();
   }, [core, key, t, logVersion]);
 

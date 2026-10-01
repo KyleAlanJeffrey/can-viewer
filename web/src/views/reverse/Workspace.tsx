@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatId, type ByteLane, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo } from '../../core/api';
-import { ROW_PAYLOAD } from '../../core/rows';
 import { formatCount } from '../../format';
 import { signalBits } from '../../signalBits';
 import { InspectorSlot } from '../slots';
@@ -328,9 +327,7 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
             <h3 className="section-title" id="re-history-title">
               Bit History
             </h3>
-            <span className="re-card-note">
-              Newest frame on the right{bytes > ROW_PAYLOAD ? ` \u00b7 bytes past ${ROW_PAYLOAD} aren't shown here` : ''}
-            </span>
+            <span className="re-card-note">Newest frame on the right</span>
           </div>
           <BitHistory core={core} summary={summary} duration={duration} window={settled} logVersion={logVersion} selected={selected} />
         </section>

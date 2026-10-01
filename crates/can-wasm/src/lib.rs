@@ -6,7 +6,7 @@
 mod find;
 mod series;
 
-use can_core::{FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
+use can_core::{tp::MAX_TRANSFER, FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{CandumpParser, LogParser};
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,9 @@ use series::Series;
 
 /// Bytes per row returned by [`Session::rows`]; see `web/src/core/rows.ts` for the layout.
 pub const ROW_STRIDE: usize = 96;
+
+/// What [`Session::row_bytes`] gives for a byte past the end of a frame.
+pub const NO_BYTE: u16 = 0xFFFF;
 
 /// Rough candump bytes per frame, used to pre-size the store from the file size.
 const CANDUMP_BYTES_PER_FRAME: f64 = 40.0;
@@ -237,7 +240,7 @@ impl Session {
         let origin = self.origin_ns();
         let total = self.row_count(key) as usize;
         let start = (start as usize).min(total);
-        let end = (start + count as usize).min(total);
+        let end = start.saturating_add(count as usize).min(total);
         let mut out = Vec::with_capacity((end - start) * ROW_STRIDE);
         for row in start..end {
             let (index, prev) = match filter {
@@ -293,6 +296,48 @@ impl Session {
             Err(()) => None,
         };
         index.map_or_else(Vec::new, |i| self.store.frame(i).data.to_vec())
+    }
+
+    /// Payload bytes `first..first + byte_count` of rows `start..start + count` of the trace of
+    /// `key` (pass -1 for all), which [`Self::rows`] would cut at [`MAX_PAYLOAD`]: `byte_count`
+    /// values per row, row after row, with [`NO_BYTE`] for a byte past the end of the frame. Rows
+    /// are clamped to those that exist, as in [`Self::rows`]. Empty when `byte_count` is above
+    /// [`MAX_TRANSFER`], the longest payload, or `first + byte_count` overflows a `u32`.
+    pub fn row_bytes(
+        &self,
+        key: f64,
+        start: u32,
+        count: u32,
+        first: u32,
+        byte_count: u32,
+    ) -> Vec<u16> {
+        let Ok(filter) = self.filter(key) else {
+            return Vec::new();
+        };
+        let Some(end_byte) = first.checked_add(byte_count) else {
+            return Vec::new();
+        };
+        if byte_count as usize > MAX_TRANSFER {
+            return Vec::new();
+        }
+        let total = self.row_count(key) as usize;
+        let start = (start as usize).min(total);
+        let end = start.saturating_add(count as usize).min(total);
+        let Some(len) = (end - start).checked_mul(byte_count as usize) else {
+            return Vec::new();
+        };
+        let bytes = first as usize..end_byte as usize;
+        let mut out = Vec::with_capacity(len);
+        for row in start..end {
+            let index = filter.map_or(row, |stats| stats.frames[row] as usize);
+            let data = self.store.frame(index).data;
+            out.extend(
+                bytes
+                    .clone()
+                    .map(|b| data.get(b).map_or(NO_BYTE, |&v| u16::from(v))),
+            );
+        }
+        out
     }
 
     /// Per-bit change counts for one ID, indexed `byte * 8 + bit` (bit 0 = LSB).
@@ -1019,6 +1064,35 @@ mod tests {
         assert!(s.frame_data(-1.0, 34).is_empty());
         assert!(s.frame_data(12345.0, 0).is_empty());
 
+        // row_bytes gives a byte range of many rows past the 64 in a row, marking missing bytes.
+        assert_eq!(s.row_bytes(key, 0, 5, 69, 3), [69, 70, 71, 69, 71, 71]);
+        assert_eq!(s.row_bytes(key, 1, 1, 98, 3), [98, 99, NO_BYTE]);
+        assert_eq!(
+            s.row_bytes(-1.0, 15, 2, 6, 3),
+            [103, 104, NO_BYTE, 6, 7, 8],
+            "a packet, then the transfer"
+        );
+        assert!(s.row_bytes(key, 2, 1, 0, 8).is_empty());
+        assert!(s.row_bytes(12345.0, 0, 1, 0, 8).is_empty());
+        assert!(s.row_bytes(key, 0, 0, 0, 8).is_empty());
+        assert!(s.row_bytes(key, 0, 2, 0, 0).is_empty());
+        assert_eq!(
+            s.row_bytes(key, 0, u32::MAX, 99, 2),
+            [99, NO_BYTE, 99, NO_BYTE]
+        );
+        assert_eq!(s.row_bytes(key, 0, 2, 0, 1785).len(), 2 * 1785);
+        assert_eq!(s.row_bytes(key, 0, 1, u32::MAX - 1, 1), [NO_BYTE]);
+        assert!(
+            s.row_bytes(key, 0, 1, 0, 1786).is_empty(),
+            "past the longest payload"
+        );
+        assert!(s.row_bytes(-1.0, 0, 5, 0, 0x4000_0000).is_empty());
+        assert!(s.row_bytes(-1.0, 0, 1, 0, u32::MAX).is_empty());
+        assert!(
+            s.row_bytes(-1.0, 0, 5, 0xFFFF_FFF0, 0x20).is_empty(),
+            "first + byte_count overflows"
+        );
+
         // Raw decodes reach the whole payload.
         let info = s
             .decode_raw(key, &spec(792, 8, "intel", false).to_string())
@@ -1038,6 +1112,14 @@ mod tests {
             .iter()
             .all(|c| c["spec"]["startBit"].as_u64().unwrap() < 512));
         assert_eq!(found[0]["spec"]["startBit"], 0);
+    }
+
+    #[test]
+    fn rows_clamp_any_start_and_count() {
+        let s = session();
+        assert_eq!(s.rows(-1.0, 3, u32::MAX).len(), 3 * ROW_STRIDE);
+        assert!(s.rows(-1.0, u32::MAX, u32::MAX).is_empty());
+        assert!(s.rows(-1.0, 0, 0).is_empty());
     }
 
     #[test]

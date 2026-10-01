@@ -74,6 +74,45 @@ export interface SignalDef {
    * or null means simple multiplexing by the message's multiplexor.
    */
   muxSwitch?: MuxSwitch | null;
+  /** Attribute values (DBC `BA_ ... SG_`), kept for export. Absent means none. */
+  attributes?: Attribute[];
+}
+
+/** An attribute value on one object (a DBC `BA_` line). Enum values are the choice's index. */
+export interface Attribute {
+  name: string;
+  value: number | string;
+}
+
+/** What an attribute applies to; `network` is a `BA_DEF_` with no object type. */
+export type AttributeObject = 'network' | 'node' | 'message' | 'signal' | 'envVar';
+
+export type AttributeType =
+  | { type: 'int'; min: number; max: number }
+  | { type: 'hex'; min: number; max: number }
+  | { type: 'float'; min: number; max: number }
+  | { type: 'string' }
+  | { type: 'enum'; choices: string[] };
+
+/** A DBC `BA_DEF_` line with its `BA_DEF_DEF_` default. */
+export interface AttributeDefinition {
+  name: string;
+  object: AttributeObject;
+  kind: AttributeType;
+  default: number | string | null;
+}
+
+/** A node declared in `BU_`. */
+export interface NodeDef {
+  name: string;
+  comment?: string | null;
+  attributes?: Attribute[];
+}
+
+/** A named value table (DBC `VAL_TABLE_`), kept for export; signals hold their own copies. */
+export interface ValueTable {
+  name: string;
+  entries: [number, string][];
 }
 
 /** Which multiplexor switches a signal in, and when. The multiplexor may itself be multiplexed. */
@@ -98,11 +137,25 @@ export interface MessageDef {
    * raw values J1939 reserves for error and not available decode as no value. Absent means false.
    */
   j1939?: boolean;
+  /**
+   * Sent as CAN FD (DBC `VFrameFormat` StandardCAN_FD or ExtendedCAN_FD). Only kept for export;
+   * `j1939` wins when both are set. Absent means false.
+   */
+  fd?: boolean;
+  /** Attribute values (DBC `BA_ ... BO_`) other than `VFrameFormat`. Absent means none. */
+  attributes?: Attribute[];
 }
 
 export interface Database {
   name: string;
   messages: MessageDef[];
+  /** Nodes declared in `BU_`. Export also lists any transmitter or receiver missing from here. */
+  nodes?: NodeDef[];
+  valueTables?: ValueTable[];
+  /** `BA_DEF_` lines other than `VFrameFormat`, which export derives from `j1939` and `fd`. */
+  attributeDefinitions?: AttributeDefinition[];
+  /** Network attribute values (`BA_ "name" value;`). */
+  attributes?: Attribute[];
 }
 
 /** One loaded DBC and the bus it applies to. */

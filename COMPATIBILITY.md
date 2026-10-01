@@ -54,17 +54,21 @@ Import (`crates/can-dbc-model`) reads:
 - Messages with standard and extended IDs, with transmitters.
 - Signals: Intel and Motorola byte order; unsigned, signed, and IEEE float32 or float64 (`SIG_VALTYPE_`); factor, offset, range, unit and receivers.
 - Multiplexing, simple (one multiplexor per message) and extended (`SG_MUL_VAL_`): a signal names the multiplexor that switches it and the raw value ranges under which it is present, and a multiplexor can itself be multiplexed. A signal with an `SG_MUL_VAL_` entry is present only when its whole chain of multiplexors is; one without is switched by the message's multiplexor and its `m<value>`.
-- Comments on messages and signals (`CM_ BO_`, `CM_ SG_`), and value descriptions (`VAL_`).
+- Comments on nodes, messages and signals (`CM_ BU_`, `CM_ BO_`, `CM_ SG_`), and value descriptions (`VAL_`).
+- The nodes declared in `BU_`, and named value tables (`VAL_TABLE_`).
+- Attributes: definitions (`BA_DEF_`) for the network, nodes, messages, signals and environment variables, of type INT, HEX, FLOAT, STRING or ENUM; defaults (`BA_DEF_DEF_`); and values (`BA_`) on the network, nodes, messages and signals. They are kept as plain data (numbers and strings) for export; the app does not show or decode them. Numbers are held as doubles, so integers beyond 2^53 lose precision.
 - J1939 messages: extended messages with `VFrameFormat` J1939PG, given per message or as the default. A file without `VFrameFormat` whose `ProtocolType` is "J1939" counts its extended messages as J1939. An 11-bit message is never J1939.
+- CAN FD messages: `VFrameFormat` StandardCAN_FD or ExtendedCAN_FD sets the message's `fd` flag, which export writes back. The label is looked up in the file's own `VFrameFormat` enum, so a file that lists the labels in another order still works.
 - Text in UTF-8 (a byte-order mark is skipped), falling back to Windows-1252.
 
 Not supported:
 
-- Anything outside the model above is dropped on import, so it is also missing from an export. That includes attributes (`BA_DEF_`, `BA_`) other than `VFrameFormat`, `VAL_TABLE_`, signal groups, environment variables, node and network comments, `BO_TX_BU_` and the `VECTOR__INDEPENDENT_SIG_MSG` pseudo-message.
+- Anything outside the model above is dropped on import, so it is also missing from an export. That includes signal groups, environment variables and their attribute values, relation attributes (`BA_DEF_REL_`, `BA_REL_`), network comments (`CM_ "..."`), `BO_TX_BU_` and the `VECTOR__INDEPENDENT_SIG_MSG` pseudo-message. A `BA_DEF_DEF_` without a matching `BA_DEF_`, and a `BA_` on a node, message or signal the file does not define, are dropped too.
 
 Known export limits (`crates/can-dbc-model/src/writer.rs`):
 
-- The only attribute written is `VFrameFormat`, and only when some message is J1939: J1939PG for those, ExtendedCAN for other extended messages, and the default StandardCAN for the rest. CAN FD formats are not kept.
+- `VFrameFormat` is not kept as an attribute but derived from each message: J1939PG for `j1939` messages, StandardCAN_FD or ExtendedCAN_FD for `fd` messages, ExtendedCAN for other extended messages, and the default StandardCAN for the rest. It is written only when some message is J1939 or CAN FD, always with Vector's 16-entry enum, so a file's own enum order and its default are not preserved, only what they meant for each message.
+- `BU_` lists the declared nodes in their order, then any transmitter or receiver missing from them. After export and re-import those count as declared nodes.
 - `SG_MUL_VAL_` lines are written for every signal with a `muxSwitch`. DBC wants an `m<value>` indicator on every multiplexed signal, so a signal that has a `muxSwitch` but no `muxValue` (only possible in a database built in the app) is written with the low end of its first range as its `muxValue`, and reads back with it.
 - `VERSION` is written as `""`.
 - A double quote in a comment round-trips with a backslash. The writer escapes a bare `"` as `\"`, and the reader keeps the backslash, so after export and re-import the text holds `\"`. Units and value descriptions behave the same way.

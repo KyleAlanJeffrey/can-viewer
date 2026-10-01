@@ -102,6 +102,47 @@ A CAN database, as parsed from or exported to DBC.
 
 - **`name`** `string` - Display name, usually the file name. Set by the caller of `parseDbc`; the engine ignores it.
 - **`messages`** [`MessageDef[]`](#the-messagedef-object) - The messages, in file order.
+- **`nodes`** [`NodeDef[]`](#the-nodedef-object), optional - The nodes declared in `BU_`, in file order. Absent means none; `exportDbc` also lists any transmitter or receiver missing from here. `parseDbc` always fills it.
+- **`valueTables`** [`ValueTable[]`](#the-valuetable-object), optional - Named value tables (`VAL_TABLE_`), kept for export. Absent means none.
+- **`attributeDefinitions`** [`AttributeDefinition[]`](#the-attributedefinition-object), optional - Attribute definitions (`BA_DEF_`) with their defaults, in file order, except `VFrameFormat`, which `exportDbc` derives from each message's `j1939` and `fd`. Absent means none.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Network attribute values (`BA_ "name" value;`). Absent means none.
+
+The engine keeps nodes, value tables and attributes as data for export; nothing decodes them.
+
+### The NodeDef object
+
+**Attributes**
+
+- **`name`** `string` - Node name.
+- **`comment`** `string | null`, optional - Node comment (`CM_ BU_`), or null if none.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the node (`BA_ ... BU_`). Absent means none.
+
+### The ValueTable object
+
+**Attributes**
+
+- **`name`** `string` - Table name.
+- **`entries`** `[number, string][]` - (raw value, text) pairs. Signals hold their own copies in `valueTable`; the table is only kept for export.
+
+### The AttributeDefinition object
+
+A DBC `BA_DEF_` line and its `BA_DEF_DEF_` default.
+
+**Attributes**
+
+- **`name`** `string` - Attribute name.
+- **`object`** `'network' | 'node' | 'message' | 'signal' | 'envVar'` - What the attribute applies to. `network` is a definition with no object type. Environment variables are not kept, so an `envVar` definition survives without values.
+- **`kind`** `AttributeType` - The type and range, as one of `{ type: 'int', min, max }`, `{ type: 'hex', min, max }`, `{ type: 'float', min, max }`, `{ type: 'string' }` or `{ type: 'enum', choices: string[] }`.
+- **`default`** `number | string | null` - The default value, or null if the file gives none. An enum default is usually the label.
+
+### The Attribute object
+
+An attribute value on one object (a DBC `BA_` line).
+
+**Attributes**
+
+- **`name`** `string` - Attribute name, as in an `AttributeDefinition`.
+- **`value`** `number | string` - The value. Enum values are the index of the choice.
 
 ### The MessageDef object
 
@@ -114,6 +155,8 @@ A CAN database, as parsed from or exported to DBC.
 - **`comment`** `string | null` - Message comment, or null if none.
 - **`signals`** [`SignalDef[]`](#the-signaldef-object) - The message's signals.
 - **`j1939`** `boolean`, optional - A J1939 parameter group (`VFrameFormat` J1939PG). It decodes every frame with its PGN, and values that SAE J1939-71 reserves for error and not available (a byte-sized unsigned signal whose top byte is above 0xFA) decode as no value; see "J1939 decoding" in COMPATIBILITY.md. Absent means false. `parseDbc` always fills it.
+- **`fd`** `boolean`, optional - Sent as CAN FD (`VFrameFormat` StandardCAN_FD or ExtendedCAN_FD). Only kept for export, where `j1939` wins if both are set. Absent means false. `parseDbc` always fills it.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the message (`BA_ ... BO_`) other than `VFrameFormat`, which `j1939` and `fd` stand for. Absent means none.
 
 ### The SignalDef object
 
@@ -135,6 +178,7 @@ A CAN database, as parsed from or exported to DBC.
 - **`comment`** `string | null` - Signal comment, or null if none.
 - **`receivers`** `string[]`, optional - Receiving nodes. Absent means none. `parseDbc` always fills it.
 - **`muxSwitch`** [`MuxSwitch`](#the-muxswitch-object)` | null`, optional - Extended multiplexing (DBC `SG_MUL_VAL_`): the multiplexor that switches this signal and the raw values of it under which the signal is present. The multiplexor may itself be multiplexed, and then the signal is present only when the whole chain is. Absent or null means simple multiplexing by `muxValue`. `parseDbc` always fills it.
+- **`attributes`** [`Attribute[]`](#the-attribute-object), optional - Attribute values on the signal (`BA_ ... SG_`), such as `GenSigStartValue`. Absent means none.
 
 ### The MuxSwitch object
 

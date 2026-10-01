@@ -51,6 +51,77 @@ pub struct SignalDef {
     /// multiplexing by the message's multiplexor.
     #[serde(default)]
     pub mux_switch: Option<MuxSwitch>,
+    /// Attribute values (`BA_ ... SG_`), kept as data; nothing decodes them.
+    #[serde(default)]
+    pub attributes: Vec<Attribute>,
+}
+
+/// An attribute value on one object (a DBC `BA_` line).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attribute {
+    pub name: String,
+    pub value: AttributeValue,
+}
+
+/// DBC attribute values are numbers or strings. Enum values are numbers (the choice's index)
+/// except in defaults, which usually give the label.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AttributeValue {
+    Number(f64),
+    Text(String),
+}
+
+/// A `BA_DEF_` line with its `BA_DEF_DEF_` default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttributeDefinition {
+    pub name: String,
+    pub object: AttributeObject,
+    pub kind: AttributeType,
+    pub default: Option<AttributeValue>,
+}
+
+/// What an attribute applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AttributeObject {
+    /// The whole database (`BA_DEF_ "name"`, no object type).
+    Network,
+    Node,
+    Message,
+    Signal,
+    /// Environment variables are not kept, so only the definition survives.
+    EnvVar,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum AttributeType {
+    Int { min: f64, max: f64 },
+    Hex { min: f64, max: f64 },
+    Float { min: f64, max: f64 },
+    String,
+    Enum { choices: Vec<String> },
+}
+
+/// A node declared in `BU_`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeDef {
+    pub name: String,
+    #[serde(default)]
+    pub comment: Option<String>,
+    #[serde(default)]
+    pub attributes: Vec<Attribute>,
+}
+
+/// A named value table (`VAL_TABLE_`), kept for export; signals hold their own copies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValueTable {
+    pub name: String,
+    pub entries: Vec<(i64, String)>,
 }
 
 /// The multiplexor that switches a signal in, and when. The multiplexor may itself be
@@ -129,6 +200,14 @@ pub struct MessageDef {
     /// raw values of its signals mean error or not available; see [`j1939::not_available`].
     #[serde(default)]
     pub j1939: bool,
+    /// Sent as CAN FD (DBC `VFrameFormat` StandardCAN_FD or ExtendedCAN_FD). Only kept for
+    /// export; `j1939` wins when both are set.
+    #[serde(default)]
+    pub fd: bool,
+    /// Attribute values (`BA_ ... BO_`) other than `VFrameFormat`, which `j1939` and `fd`
+    /// stand for.
+    #[serde(default)]
+    pub attributes: Vec<Attribute>,
 }
 
 impl MessageDef {
@@ -193,8 +272,21 @@ impl MessageDef {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Database {
     pub messages: Vec<MessageDef>,
+    /// Nodes declared in `BU_`, in file order. Export also lists any transmitter or receiver
+    /// missing from here.
+    #[serde(default)]
+    pub nodes: Vec<NodeDef>,
+    #[serde(default)]
+    pub value_tables: Vec<ValueTable>,
+    /// `BA_DEF_` lines other than `VFrameFormat`, which export derives from the messages.
+    #[serde(default)]
+    pub attribute_definitions: Vec<AttributeDefinition>,
+    /// Network attribute values (`BA_ "name" value;`).
+    #[serde(default)]
+    pub attributes: Vec<Attribute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,9 +324,76 @@ impl Database {
                     .map(|s| signal_from_ast(&dbc, m.id, s))
                     .collect(),
                 j1939: is_j1939(&dbc, m.id),
+                fd: matches!(
+                    frame_format(&dbc, m.id),
+                    Some("StandardCAN_FD" | "ExtendedCAN_FD")
+                ),
+                attributes: dbc
+                    .attribute_values_message
+                    .iter()
+                    .filter(|a| a.message_id == m.id && a.name != FRAME_FORMAT)
+                    .map(|a| Attribute {
+                        name: a.name.clone(),
+                        value: value_from_ast(&a.value),
+                    })
+                    .collect(),
             })
             .collect();
-        Ok(Self { messages })
+        let nodes = dbc
+            .nodes
+            .iter()
+            .map(|n| NodeDef {
+                name: n.0.clone(),
+                comment: dbc.comments.iter().find_map(|c| match c {
+                    can_dbc::Comment::Node { name, comment } if *name == n.0 => {
+                        Some(comment.clone())
+                    }
+                    _ => None,
+                }),
+                attributes: dbc
+                    .attribute_values_node
+                    .iter()
+                    .filter(|a| a.node_name == n.0)
+                    .map(|a| Attribute {
+                        name: a.name.clone(),
+                        value: value_from_ast(&a.value),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let value_tables = dbc
+            .value_tables
+            .iter()
+            .map(|t| ValueTable {
+                name: t.name.clone(),
+                entries: t
+                    .descriptions
+                    .iter()
+                    .map(|d| (d.id, d.description.clone()))
+                    .collect(),
+            })
+            .collect();
+        let attribute_definitions = dbc
+            .attribute_definitions
+            .iter()
+            .map(|d| definition_from_ast(&dbc, d))
+            .filter(|d| !(d.name == FRAME_FORMAT && d.object == AttributeObject::Message))
+            .collect();
+        let attributes = dbc
+            .attribute_values_database
+            .iter()
+            .map(|a| Attribute {
+                name: a.name.clone(),
+                value: value_from_ast(&a.value),
+            })
+            .collect();
+        Ok(Self {
+            messages,
+            nodes,
+            value_tables,
+            attribute_definitions,
+            attributes,
+        })
     }
 
     #[must_use]
@@ -263,38 +422,99 @@ impl Database {
     }
 }
 
+/// The message attribute that marks J1939 and CAN FD messages. The model keeps it as the
+/// `j1939` and `fd` flags rather than as an attribute.
+const FRAME_FORMAT: &str = "VFrameFormat";
+
+/// The choices of the file's own `VFrameFormat` enum, in its order.
+fn frame_format_choices(dbc: &can_dbc::Dbc) -> Option<&[String]> {
+    use can_dbc::{AttributeDefinition as D, AttributeValueType as T};
+    dbc.attribute_definitions.iter().find_map(|d| match d {
+        D::Message(name, T::Enum(choices)) if name == FRAME_FORMAT => Some(choices.as_slice()),
+        _ => None,
+    })
+}
+
+/// The `VFrameFormat` label of a message, given for it or as the default, resolved through
+/// the file's own enum. Values are written as indexes, but defaults usually as the label.
+fn frame_format(dbc: &can_dbc::Dbc, id: can_dbc::MessageId) -> Option<&str> {
+    use can_dbc::AttributeValue as V;
+    let choices = frame_format_choices(dbc)?;
+    let choice = |i: Option<usize>| i.and_then(|i| choices.get(i)).map(String::as_str);
+    match dbc.resolved_message_attribute(id, FRAME_FORMAT)? {
+        V::String(label) => Some(label.as_str()),
+        &V::Uint(i) => choice(usize::try_from(i).ok()),
+        &V::Int(i) => choice(usize::try_from(i).ok()),
+        &V::Double(d) => choice(Some(d as usize)),
+    }
+}
+
 /// An extended message with `VFrameFormat` J1939PG, given for the message or as the default. A
 /// file that doesn't define `VFrameFormat` but has `ProtocolType` "J1939" counts all its extended
 /// messages as J1939.
 fn is_j1939(dbc: &can_dbc::Dbc, id: can_dbc::MessageId) -> bool {
-    use can_dbc::{AttributeDefinition as D, AttributeValue as V, AttributeValueType as T};
-
-    const FRAME_FORMAT: &str = "VFrameFormat";
+    use can_dbc::AttributeValue as V;
     if !matches!(id, can_dbc::MessageId::Extended(_)) {
         return false;
     }
-    let choices = dbc.attribute_definitions.iter().find_map(|d| match d {
-        D::Message(name, T::Enum(choices)) if name == FRAME_FORMAT => Some(choices),
-        _ => None,
-    });
-    let Some(choices) = choices else {
+    if frame_format_choices(dbc).is_none() {
         let protocol = dbc
             .attribute_values_database
             .iter()
             .find(|a| a.name == "ProtocolType")
             .map(|a| &a.value);
         return matches!(protocol, Some(V::String(p)) if p == "J1939");
+    }
+    frame_format(dbc, id) == Some("J1939PG")
+}
+
+fn value_from_ast(value: &can_dbc::AttributeValue) -> AttributeValue {
+    use can_dbc::AttributeValue as V;
+    match value {
+        &V::Uint(u) => AttributeValue::Number(u as f64),
+        &V::Int(i) => AttributeValue::Number(i as f64),
+        &V::Double(d) => AttributeValue::Number(d),
+        V::String(s) => AttributeValue::Text(s.clone()),
+    }
+}
+
+fn definition_from_ast(
+    dbc: &can_dbc::Dbc,
+    definition: &can_dbc::AttributeDefinition,
+) -> AttributeDefinition {
+    use can_dbc::{AttributeDefinition as D, AttributeValueType as T};
+    let (name, object, value_type) = match definition {
+        D::Message(name, t) => (name, AttributeObject::Message, t),
+        D::Node(name, t) => (name, AttributeObject::Node, t),
+        D::Signal(name, t) => (name, AttributeObject::Signal, t),
+        D::EnvironmentVariable(name, t) => (name, AttributeObject::EnvVar, t),
+        D::Plain(name, t) => (name, AttributeObject::Network, t),
     };
-    // Values are enum indexes, but defaults are usually written as the label.
-    let choice = |i: Option<usize>| i.and_then(|i| choices.get(i)).map(String::as_str);
-    let label = match dbc.resolved_message_attribute(id, FRAME_FORMAT) {
-        Some(V::String(label)) => Some(label.as_str()),
-        Some(&V::Uint(i)) => choice(usize::try_from(i).ok()),
-        Some(&V::Int(i)) => choice(usize::try_from(i).ok()),
-        Some(&V::Double(d)) => choice(Some(d as usize)),
-        None => None,
+    let range = |lo, hi| (numeric(lo), numeric(hi));
+    let kind = match value_type {
+        T::Int(lo, hi) => {
+            let (min, max) = range(lo, hi);
+            AttributeType::Int { min, max }
+        }
+        T::Hex(lo, hi) => {
+            let (min, max) = range(lo, hi);
+            AttributeType::Hex { min, max }
+        }
+        T::Float(lo, hi) => {
+            let (min, max) = range(lo, hi);
+            AttributeType::Float { min, max }
+        }
+        T::String => AttributeType::String,
+        T::Enum(choices) => AttributeType::Enum {
+            choices: choices.clone(),
+        },
     };
-    label == Some("J1939PG")
+    AttributeDefinition {
+        name: name.clone(),
+        object,
+        kind,
+        default: dbc.attribute_default(name).map(value_from_ast),
+    }
 }
 
 fn signal_from_ast(dbc: &can_dbc::Dbc, id: can_dbc::MessageId, s: &can_dbc::Signal) -> SignalDef {
@@ -349,6 +569,15 @@ fn signal_from_ast(dbc: &can_dbc::Dbc, id: can_dbc::MessageId, s: &can_dbc::Sign
         comment: dbc.signal_comment(id, &s.name).map(str::to_owned),
         receivers: s.receivers.clone(),
         mux_switch,
+        attributes: dbc
+            .attribute_values_signal
+            .iter()
+            .filter(|a| a.message_id == id && a.signal_name == s.name)
+            .map(|a| Attribute {
+                name: a.name.clone(),
+                value: value_from_ast(&a.value),
+            })
+            .collect(),
     }
 }
 
@@ -627,9 +856,14 @@ BA_ "VFrameFormat" BO_ 2566844672 1;
                 comment: None,
                 signals: Vec::new(),
                 j1939: true,
+                fd: false,
+                attributes: Vec::new(),
             })
             .collect();
-        Database { messages }
+        Database {
+            messages,
+            ..Database::default()
+        }
     }
 
     fn j1939_name(db: &Database, id: u32) -> Option<&str> {
@@ -752,6 +986,242 @@ SG_MUL_VAL_ 400 C Mux2 3-5, 16-24;
             json!({ "signal": "Mux2", "ranges": [[3, 5], [16, 24]] })
         );
         assert_eq!(signals[5]["muxSwitch"], Value::Null);
+        assert_eq!(serde_json::from_value::<Database>(json).unwrap(), db);
+    }
+
+    pub(crate) const ATTRIBUTES_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU GW
+
+VAL_TABLE_ OnOff 0 "Off" 1 "On" ;
+VAL_TABLE_ Gears 0 "P" 1 "R" 2 "N" 3 "D" ;
+
+BO_ 100 ENGINE: 8 ECU
+ SG_ RPM : 0|16@1+ (0.25,0) [0|16383.75] "rpm" GW
+
+BO_ 2566844672 CCVS: 8 ECU
+ SG_ Speed : 8|16@1+ (0.00390625,0) [0|250.996] "km/h" Vector__XXX
+
+BO_ 768 RADAR: 32 ECU
+ SG_ Range : 0|16@1+ (0.01,0) [0|655.35] "m" Vector__XXX
+
+BO_ 2415919104 BIG_FD: 64 GW
+ SG_ Payload : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+
+CM_ BU_ ECU "Engine control unit";
+CM_ BU_ GW "Gateway";
+BA_DEF_ BU_  "NodeLayerModules" STRING ;
+BA_DEF_ BO_  "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ BO_  "GenMsgSendType" ENUM  "cyclic","spontaneous","cyclicIfActive";
+BA_DEF_ BO_  "VFrameFormat" ENUM  "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";
+BA_DEF_ SG_  "GenSigStartValue" FLOAT -1e+30 1e+30;
+BA_DEF_ SG_  "SPN" HEX 0 524287;
+BA_DEF_  "BusType" STRING ;
+BA_DEF_  "Baudrate" INT 0 1000000;
+BA_DEF_ EV_  "GenEnvVarEndingDis" STRING ;
+BA_DEF_DEF_  "NodeLayerModules" "";
+BA_DEF_DEF_  "GenMsgCycleTime" 0;
+BA_DEF_DEF_  "GenMsgSendType" "cyclic";
+BA_DEF_DEF_  "VFrameFormat" "StandardCAN";
+BA_DEF_DEF_  "GenSigStartValue" 0;
+BA_DEF_DEF_  "Baudrate" 500000;
+BA_ "BusType" "CAN FD";
+BA_ "Baudrate" 500000;
+BA_ "NodeLayerModules" BU_ ECU "CANoeILNLVector.dll";
+BA_ "GenMsgCycleTime" BO_ 100 10;
+BA_ "GenMsgSendType" BO_ 100 1;
+BA_ "VFrameFormat" BO_ 2566844672 3;
+BA_ "VFrameFormat" BO_ 768 14;
+BA_ "VFrameFormat" BO_ 2415919104 15;
+BA_ "GenMsgCycleTime" BO_ 768 20;
+BA_ "GenSigStartValue" SG_ 100 RPM 800;
+BA_ "SPN" SG_ 2566844672 Speed 84;
+VAL_ 100 RPM 0 "Off" 1 "On" ;
+"#;
+
+    fn attribute(name: &str, value: AttributeValue) -> Attribute {
+        Attribute {
+            name: name.into(),
+            value,
+        }
+    }
+
+    #[test]
+    fn keeps_attributes_value_tables_and_node_comments() {
+        use AttributeValue::{Number, Text};
+
+        let db = Database::from_dbc_str(ATTRIBUTES_DBC).unwrap();
+        assert_eq!(
+            db.nodes,
+            vec![
+                NodeDef {
+                    name: "ECU".into(),
+                    comment: Some("Engine control unit".into()),
+                    attributes: vec![attribute(
+                        "NodeLayerModules",
+                        Text("CANoeILNLVector.dll".into())
+                    )],
+                },
+                NodeDef {
+                    name: "GW".into(),
+                    comment: Some("Gateway".into()),
+                    attributes: Vec::new(),
+                },
+            ]
+        );
+        assert_eq!(db.value_tables.len(), 2);
+        assert_eq!(
+            db.value_tables[1],
+            ValueTable {
+                name: "Gears".into(),
+                entries: vec![
+                    (0, "P".into()),
+                    (1, "R".into()),
+                    (2, "N".into()),
+                    (3, "D".into())
+                ],
+            }
+        );
+
+        let objects: Vec<(&str, AttributeObject)> = db
+            .attribute_definitions
+            .iter()
+            .map(|d| (d.name.as_str(), d.object))
+            .collect();
+        assert_eq!(
+            objects,
+            [
+                ("NodeLayerModules", AttributeObject::Node),
+                ("GenMsgCycleTime", AttributeObject::Message),
+                ("GenMsgSendType", AttributeObject::Message),
+                ("GenSigStartValue", AttributeObject::Signal),
+                ("SPN", AttributeObject::Signal),
+                ("BusType", AttributeObject::Network),
+                ("Baudrate", AttributeObject::Network),
+                ("GenEnvVarEndingDis", AttributeObject::EnvVar),
+            ],
+            "VFrameFormat is the j1939 and fd flags, not an attribute"
+        );
+        let definition = |name: &str| {
+            db.attribute_definitions
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap()
+        };
+        assert_eq!(
+            definition("GenMsgCycleTime").kind,
+            AttributeType::Int {
+                min: 0.0,
+                max: 65535.0
+            }
+        );
+        assert_eq!(definition("GenMsgCycleTime").default, Some(Number(0.0)));
+        assert_eq!(
+            definition("GenMsgSendType").kind,
+            AttributeType::Enum {
+                choices: vec![
+                    "cyclic".into(),
+                    "spontaneous".into(),
+                    "cyclicIfActive".into()
+                ]
+            }
+        );
+        assert_eq!(
+            definition("GenMsgSendType").default,
+            Some(Text("cyclic".into()))
+        );
+        assert_eq!(
+            definition("GenSigStartValue").kind,
+            AttributeType::Float {
+                min: -1e30,
+                max: 1e30
+            }
+        );
+        assert_eq!(
+            definition("SPN").kind,
+            AttributeType::Hex {
+                min: 0.0,
+                max: 524287.0
+            }
+        );
+        assert_eq!(definition("BusType").kind, AttributeType::String);
+        assert_eq!(definition("BusType").default, None);
+        assert_eq!(definition("GenEnvVarEndingDis").default, None);
+
+        assert_eq!(
+            db.attributes,
+            vec![
+                attribute("BusType", Text("CAN FD".into())),
+                attribute("Baudrate", Number(500000.0)),
+            ]
+        );
+        let engine = db.message(100).unwrap();
+        assert_eq!(
+            engine.attributes,
+            vec![
+                attribute("GenMsgCycleTime", Number(10.0)),
+                attribute("GenMsgSendType", Number(1.0)),
+            ]
+        );
+        assert_eq!(
+            engine.signals[0].attributes,
+            vec![attribute("GenSigStartValue", Number(800.0))]
+        );
+        assert_eq!((engine.j1939, engine.fd), (false, false));
+
+        let ccvs = db.message(0x98FE_F100).unwrap();
+        assert_eq!((ccvs.j1939, ccvs.fd), (true, false));
+        assert!(ccvs.attributes.is_empty());
+        assert_eq!(
+            ccvs.signals[0].attributes,
+            vec![attribute("SPN", Number(84.0))]
+        );
+        let radar = db.message(768).unwrap();
+        assert_eq!((radar.j1939, radar.fd), (false, true));
+        assert_eq!(
+            radar.attributes,
+            vec![attribute("GenMsgCycleTime", Number(20.0))]
+        );
+        assert!(db.message(0x1000_0000 | j1939::EXTENDED).unwrap().fd);
+    }
+
+    #[test]
+    fn attributes_serialise_as_plain_json() {
+        use serde_json::{json, Value};
+
+        let db = Database::from_dbc_str(ATTRIBUTES_DBC).unwrap();
+        let json = serde_json::to_value(&db).unwrap();
+        assert_eq!(
+            json["attributeDefinitions"][1],
+            json!({ "name": "GenMsgCycleTime", "object": "message",
+                    "kind": { "type": "int", "min": 0.0, "max": 65535.0 }, "default": 0.0 })
+        );
+        assert_eq!(
+            json["attributeDefinitions"][2]["kind"],
+            json!({ "type": "enum", "choices": ["cyclic", "spontaneous", "cyclicIfActive"] })
+        );
+        assert_eq!(
+            json["attributeDefinitions"][5]["kind"],
+            json!({ "type": "string" })
+        );
+        assert_eq!(json["attributeDefinitions"][5]["default"], Value::Null);
+        assert_eq!(
+            json["attributes"][0],
+            json!({ "name": "BusType", "value": "CAN FD" })
+        );
+        assert_eq!(
+            json["nodes"][1],
+            json!({ "name": "GW", "comment": "Gateway", "attributes": [] })
+        );
+        assert_eq!(
+            json["valueTables"][0],
+            json!({ "name": "OnOff", "entries": [[0, "Off"], [1, "On"]] })
+        );
+        assert_eq!(json["messages"][2]["fd"], json!(true));
         assert_eq!(serde_json::from_value::<Database>(json).unwrap(), db);
     }
 

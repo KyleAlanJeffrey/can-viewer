@@ -27,6 +27,7 @@ pnpm dev     # start the Vite dev server
 - `pnpm demo` runs `crates/sample-gen` to write a 1M-frame candump log to `target/demo/demo.log` and the DBC to `web/public/demo/demo.dbc`, then gzips the log to `web/public/demo/demo.log.gz`. It ships gzipped because the raw log is over Cloudflare's 25 MiB per-asset limit. The generated files are git-ignored.
 - `pnpm dev` serves the app. Open the URL Vite prints and click **Try the Demo**, or drop a candump log and a DBC on the window.
 - `pnpm typecheck` (`tsc -b`) type-checks the UI. `pnpm build` type-checks and builds `web/dist`.
+- `pnpm test` runs the UI tests once with Vitest; `pnpm exec vitest` watches.
 
 For a bigger demo log, run the two demo steps by hand with a frame count:
 
@@ -42,13 +43,16 @@ Run the checks for the areas you touched before opening a pull request. From the
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cd web && npx tsc -b
+pnpm --dir web test
 ```
 
-- Fix any clippy warning your change introduces.
-- There are no automated UI tests yet. Check UI changes by hand in `pnpm dev`, including keyboard use and focus.
+- Fix any clippy warning your change introduces. CI fails on warnings.
+- `.github/workflows/ci.yml` runs all of these, plus the wasm and Vite builds, on every pull request.
+- UI tests are Vitest with jsdom and Testing Library. They sit next to the code as `*.test.ts` or `*.test.tsx`; shared fixtures, including a fake `CoreApi`, are in `web/src/test/fixtures.ts`, and `web/src/test/setup.ts` stubs the browser APIs jsdom lacks (canvas, `ResizeObserver`, `matchMedia`, `document.fonts`, modal dialogs). Session tests use `fake-indexeddb`. Test files are type-checked with the app, but the Vite build never imports them.
+- The tests don't draw canvases or check layout, so still check UI changes by hand in `pnpm dev`, including keyboard use and focus.
 - If you change the DBC decoder, cross-check it against cantools (`pip install cantools`, after `pnpm demo`):
 
 ```bash

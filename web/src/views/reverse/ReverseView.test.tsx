@@ -1,0 +1,172 @@
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
+import { describe, expect, it } from 'vitest';
+import type { CoreApi, IdSummary, MessageDef } from '../../core/api';
+import { fakeCore, lane, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
+import { ViewStateContext, ViewStateStore } from '../shared/viewState';
+import type { LoadedDbc, ViewContext } from '../types';
+import { ReverseView } from './ReverseView';
+
+const engine = summary({ id: 0x100, name: 'Engine' });
+const unknown = summary({ id: 0x200 });
+const brakes = summary({ id: 0x300, name: 'Brakes' });
+
+const messages = new Map<number, MessageDef>([
+  [engine.key, message(0x100, 'Engine', { signals: [signal('EngineSpeed', { unit: 'rpm' }), signal('Throttle', { startBit: 8, unit: '%' })] })],
+  [brakes.key, message(0x300, 'Brakes', { signals: [signal('BrakePressure', { unit: 'bar' })] })],
+]);
+const dbc: LoadedDbc = { id: 'car', db: { name: 'car.dbc', messages: [...messages.values()] }, channel: null, edited: false };
+
+/** Byte 0 of every known message changes across the window; the unknown one never does. */
+function testCore(): CoreApi {
+  return fakeCore({
+    byteLanes: async (key, _first, count, t0, t1) =>
+      Array.from({ length: count }, (_, byte) => lane(key !== unknown.key && byte === 0 ? [1, 2, 3] : [5, 5, 5], t0, t1)),
+    rowAtTime: async () => 1,
+    rows: async (key, start) => makeRowBatch(key, start, [{ t: 0, id: 0x100, index: 0, data: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88] }]),
+    decodeRaw: async () => seriesInfo(1, 'raw'),
+    decodeSignal: async (_key, name) => seriesInfo(2, name),
+    seriesView: async () => [Float64Array.of(40, 70), Float64Array.of(0, 1)],
+  });
+}
+
+/** The shell's part of ViewContext, with the selection and pinned time held in state. */
+function Shell({ core, ids }: { core: CoreApi; ids: IdSummary[] }) {
+  const [selected, select] = useState(-1);
+  const [pinnedTime, setPinnedTime] = useState<number | null>(null);
+  const [store] = useState(() => new ViewStateStore());
+  const unused = () => Promise.reject(new Error('not used by this test'));
+  const ctx: ViewContext = {
+    core,
+    log: logInfo({ durationS: 100, channels: ['can0'] }),
+    logVersion: 1,
+    ids,
+    dbcs: [dbc],
+    messageOf: (key) => messages.get(key) ?? null,
+    dbcOf: (key) => (messages.has(key) ? dbc : null),
+    addDbc: unused,
+    updateDbc: unused,
+    removeDbc: unused,
+    moveDbc: unused,
+    selected,
+    select,
+    query: '',
+    plots: [],
+    togglePlot: unused,
+    removePlot: () => {},
+    clearPlots: () => {},
+    signalColor: () => 'black',
+    pinnedTime,
+    setPinnedTime,
+    run: async (_label, task) => {
+      await task();
+      return true;
+    },
+    setError: () => {},
+    setView: () => {},
+    setInspectorHidden: () => {},
+    openLogPicker: () => {},
+    openDbcPicker: () => {},
+  };
+  return (
+    <ViewStateContext.Provider value={store}>
+      <ReverseView ctx={ctx} />
+    </ViewStateContext.Provider>
+  );
+}
+
+function renderView() {
+  const user = userEvent.setup();
+  render(<Shell core={testCore()} ids={[brakes, unknown, engine]} />);
+  return user;
+}
+
+const matrixRows = () => within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent);
+
+describe('Byte Values', () => {
+  it('shows one row per message, sorted by ID, with its name or Unknown', () => {
+    renderView();
+    expect(matrixRows()).toEqual(['100Enginecan0', '200Unknowncan0', '300Brakescan0']);
+    expect(screen.getAllByRole('button', { name: /^100 byte \d$/ })).toHaveLength(8);
+  });
+
+  it('hides a message whose bytes never change with Changing bytes only', async () => {
+    const user = renderView();
+    await user.click(screen.getByRole('checkbox', { name: 'Changing bytes only' }));
+    await waitFor(() => expect(matrixRows()).toEqual(['100Enginecan0', '300Brakescan0']));
+    await user.click(screen.getByRole('checkbox', { name: 'Changing bytes only' }));
+    expect(matrixRows()).toHaveLength(3);
+  });
+
+  it('selects a byte and pins it', async () => {
+    const user = renderView();
+    expect(screen.getByText(/^Select a byte to pin it/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Pin byte' }).hasAttribute('disabled')).toBe(true);
+
+    await user.click(screen.getByRole('button', { name: /^100 byte 2/ }));
+    const cell = screen.getByRole('button', { name: /^100 byte 2/ });
+    expect(cell.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: /^100 byte 3/ }).getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByText('100 \u00b7 Byte 2')).toBeTruthy();
+    expect(within(screen.getAllByRole('rowheader')[0]).getByRole('button').getAttribute('aria-pressed')).toBe('true');
+    // The cursor parks where the cell was clicked, so the cell shows that frame's byte.
+    await waitFor(() => expect(screen.getByRole('button', { name: '100 byte 2, 33 hex' })).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Pin byte' }));
+    expect(screen.getByRole('button', { name: 'Unpin byte' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^100 byte 2, .*pinned$/ })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Unpin byte' }));
+    expect(screen.getByRole('button', { name: 'Pin byte' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeNull();
+  });
+});
+
+describe('Pin signal sheet', () => {
+  async function openSheet() {
+    const user = renderView();
+    await user.click(screen.getByRole('button', { name: 'Pin signal\u2026' }));
+    const sheet = screen.getByRole('dialog', { name: 'Pin signal' });
+    const signalNames = () => [...sheet.querySelectorAll('.re-pin-name')].map((el) => el.textContent).sort();
+    return { user, sheet, signalNames };
+  }
+
+  it('lists every decoded signal and none of the unknown message', async () => {
+    const { sheet, signalNames } = await openSheet();
+    expect(signalNames()).toEqual(['BrakePressure', 'EngineSpeed', 'Throttle']);
+    expect(within(sheet).queryByText('200')).toBeNull();
+  });
+
+  it('filters by signal name, and by message name or ID to show all of its signals', async () => {
+    const { user, sheet, signalNames } = await openSheet();
+    const search = within(sheet).getByRole('textbox', { name: 'Filter signals' });
+
+    await user.type(search, 'speed');
+    expect(signalNames()).toEqual(['EngineSpeed']);
+
+    await user.clear(search);
+    await user.type(search, 'ENGINE');
+    expect(signalNames()).toEqual(['EngineSpeed', 'Throttle']);
+
+    await user.clear(search);
+    await user.type(search, '300');
+    expect(signalNames()).toEqual(['BrakePressure']);
+
+    await user.clear(search);
+    await user.type(search, 'nothing like it');
+    expect(signalNames()).toEqual([]);
+    expect(within(sheet).getByText('No signals match.')).toBeTruthy();
+  });
+
+  it('pins a signal as a reference', async () => {
+    const { user, sheet } = await openSheet();
+    const throttle = within(sheet).getByRole('button', { name: /^Throttle/ });
+    expect(throttle.getAttribute('aria-pressed')).toBe('false');
+    await user.click(throttle);
+    expect(within(sheet).getByRole('button', { name: /^Throttle/ }).getAttribute('aria-pressed')).toBe('true');
+    await user.click(within(sheet).getByRole('button', { name: 'Done' }));
+    expect(await screen.findByRole('button', { name: 'Unpin Throttle' })).toBeTruthy();
+  });
+});

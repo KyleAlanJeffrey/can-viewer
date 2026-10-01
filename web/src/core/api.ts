@@ -10,6 +10,8 @@ export const FLAG_ERROR = 1 << 4;
 /** Not from the log: a J1939 parameter group reassembled from its transport protocol packets. */
 export const FLAG_REASSEMBLED = 1 << 6;
 export const EXT_FLAG = 0x8000_0000;
+/** What `CoreApi.rowBytes` gives for a byte past the end of a frame. */
+export const NO_BYTE = 0xffff;
 
 /** A log file format the engine reads. */
 export type LogFormat = 'candump' | 'asc' | 'trc' | 'csv' | 'blf' | 'mf4';
@@ -234,6 +236,13 @@ export interface CoreApi {
    * payload at 64 bytes. Empty for an unknown key or a row past the end.
    */
   frameData(key: number, row: number): Promise<Uint8Array>;
+  /**
+   * Payload bytes `first..first + byteCount` of rows `start..start + count` of `key` (or ALL_IDS),
+   * not cut at 64 bytes like `rows`: `byteCount` values per row, row after row, with `NO_BYTE`
+   * for a byte past the end of the frame. Rows are clamped to those that exist, as in `rows`.
+   * Empty when `byteCount` is above 1785, the longest payload.
+   */
+  rowBytes(key: number, start: number, count: number, first: number, byteCount: number): Promise<Uint16Array>;
   bitFlips(key: number): Promise<Uint32Array>;
   /** Parse a DBC file. Nothing changes until it is passed to `setDatabases`. */
   parseDbc(file: Blob, name: string): Promise<Database>;
@@ -250,6 +259,8 @@ export interface CoreApi {
 
   /** Index of the first row of `key` (or ALL_IDS) at or after `t` seconds, clamped to the last row. */
   rowAtTime(key: number, t: number): Promise<number>;
+  /** Rows of `key` (or ALL_IDS) timestamped within [t0, t1] seconds; for an ID key, the frames `bitFlipsBetween` compares. */
+  rowCountBetween(key: number, t0: number, t1: number): Promise<number>;
   /**
    * Estimated load (0..1) of one bus at `bitrate` bit/s, in `buckets` buckets between t0 and t1
    * seconds: [bucket centre times, load]. Counts frame bits without stuffing; CAN FD frames as if

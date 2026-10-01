@@ -6,7 +6,7 @@
 mod find;
 mod series;
 
-use can_core::{FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
+use can_core::{tp::MAX_TRANSFER, FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{AnyParser, Format, LogParser, ParseStats};
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,9 @@ fn bytes_per_frame(format: Format) -> f64 {
 
 /// Bytes of a log held back until there are enough to tell its format from its content.
 const SNIFF_BYTES: usize = 4096;
+
+/// What [`Session::row_bytes`] gives for a byte past the end of a frame.
+pub const NO_BYTE: u16 = 0xFFFF;
 
 #[wasm_bindgen]
 #[derive(Default)]
@@ -316,7 +319,7 @@ impl Session {
         let origin = self.origin_ns();
         let total = self.row_count(key) as usize;
         let start = (start as usize).min(total);
-        let end = (start + count as usize).min(total);
+        let end = start.saturating_add(count as usize).min(total);
         let mut out = Vec::with_capacity((end - start) * ROW_STRIDE);
         for row in start..end {
             let (index, prev) = match filter {
@@ -372,6 +375,48 @@ impl Session {
             Err(()) => None,
         };
         index.map_or_else(Vec::new, |i| self.store.frame(i).data.to_vec())
+    }
+
+    /// Payload bytes `first..first + byte_count` of rows `start..start + count` of the trace of
+    /// `key` (pass -1 for all), which [`Self::rows`] would cut at [`MAX_PAYLOAD`]: `byte_count`
+    /// values per row, row after row, with [`NO_BYTE`] for a byte past the end of the frame. Rows
+    /// are clamped to those that exist, as in [`Self::rows`]. Empty when `byte_count` is above
+    /// [`MAX_TRANSFER`], the longest payload, or `first + byte_count` overflows a `u32`.
+    pub fn row_bytes(
+        &self,
+        key: f64,
+        start: u32,
+        count: u32,
+        first: u32,
+        byte_count: u32,
+    ) -> Vec<u16> {
+        let Ok(filter) = self.filter(key) else {
+            return Vec::new();
+        };
+        let Some(end_byte) = first.checked_add(byte_count) else {
+            return Vec::new();
+        };
+        if byte_count as usize > MAX_TRANSFER {
+            return Vec::new();
+        }
+        let total = self.row_count(key) as usize;
+        let start = (start as usize).min(total);
+        let end = start.saturating_add(count as usize).min(total);
+        let Some(len) = (end - start).checked_mul(byte_count as usize) else {
+            return Vec::new();
+        };
+        let bytes = first as usize..end_byte as usize;
+        let mut out = Vec::with_capacity(len);
+        for row in start..end {
+            let index = filter.map_or(row, |stats| stats.frames[row] as usize);
+            let data = self.store.frame(index).data;
+            out.extend(
+                bytes
+                    .clone()
+                    .map(|b| data.get(b).map_or(NO_BYTE, |&v| u16::from(v))),
+            );
+        }
+        out
     }
 
     /// Per-bit change counts for one ID, indexed `byte * 8 + bit` (bit 0 = LSB).
@@ -459,6 +504,22 @@ impl Session {
             Err(()) => return 0,
         };
         row.min(rows.saturating_sub(1)) as u32
+    }
+
+    /// Number of rows of `key` (-1 for all frames) timestamped between `t0` and `t1` seconds,
+    /// both ends included. For an ID key these are the frames [`Session::bit_flips_between`]
+    /// compares.
+    pub fn row_count_between(&self, key: f64, t0: f64, t1: f64) -> u32 {
+        let (t0, t1) = (self.ns_at(t0), self.ns_at(t1));
+        let rows = match self.filter(key) {
+            Ok(Some(stats)) => self.store.id_frames_between(stats, t0, t1).len(),
+            Ok(None) => self
+                .store
+                .first_at_or_after(t1.saturating_add(1))
+                .saturating_sub(self.store.first_at_or_after(t0)),
+            Err(()) => 0,
+        };
+        rows as u32
     }
 
     /// Estimated load (0..1) of `channel` at `bitrate` bit/s in `buckets` buckets between `t0`
@@ -742,6 +803,37 @@ mod tests {
         assert_eq!(s.row_at_time(key_123(), 99.0), 2);
         assert_eq!(s.row_at_time(id_key(3, 0x123) as f64, 0.0), 0);
         assert_eq!(Session::new().row_at_time(-1.0, 0.0), 0);
+    }
+
+    #[test]
+    fn counts_rows_in_a_window_as_bit_flips_between_sees_them() {
+        let s = session();
+        // 123 is at 0, 0.01 and 0.06 s. A window ending on or after the last frame takes it in,
+        // where the row_at_time difference of the window's ends would leave it out.
+        assert_eq!(s.row_count_between(key_123(), 0.0, 0.06), 3);
+        assert_eq!(s.row_count_between(key_123(), 0.0, 99.0), 3);
+        assert_eq!(
+            s.row_at_time(key_123(), 0.06) - s.row_at_time(key_123(), 0.0),
+            2
+        );
+        assert_eq!(s.row_count_between(key_123(), 0.005, 0.01), 1);
+        assert_eq!(s.row_count_between(key_123(), 0.02, 0.05), 0);
+        assert_eq!(s.row_count_between(key_123(), 0.5, 1.0), 0);
+        assert_eq!(s.row_count_between(-1.0, 0.0, 0.03), 3);
+        assert_eq!(s.row_count_between(-1.0, -5.0, 99.0), 6);
+        assert_eq!(s.row_count_between(id_key(3, 0x123) as f64, 0.0, 1.0), 0);
+
+        // No bit can change more often than there are steps between the rows of the window.
+        for (t0, t1) in [(0.0, 0.06), (0.0, 0.01), (0.01, 99.0), (0.02, 0.05)] {
+            let steps = s.row_count_between(key_123(), t0, t1).saturating_sub(1);
+            let flips = s.bit_flips_between(key_123(), t0, t1);
+            assert!(flips.iter().all(|&n| n <= steps), "{t0}..{t1}");
+            assert_eq!(
+                flips.iter().max().copied().unwrap_or(0),
+                steps,
+                "{t0}..{t1}"
+            );
+        }
     }
 
     #[test]
@@ -1098,6 +1190,35 @@ mod tests {
         assert!(s.frame_data(-1.0, 34).is_empty());
         assert!(s.frame_data(12345.0, 0).is_empty());
 
+        // row_bytes gives a byte range of many rows past the 64 in a row, marking missing bytes.
+        assert_eq!(s.row_bytes(key, 0, 5, 69, 3), [69, 70, 71, 69, 71, 71]);
+        assert_eq!(s.row_bytes(key, 1, 1, 98, 3), [98, 99, NO_BYTE]);
+        assert_eq!(
+            s.row_bytes(-1.0, 15, 2, 6, 3),
+            [103, 104, NO_BYTE, 6, 7, 8],
+            "a packet, then the transfer"
+        );
+        assert!(s.row_bytes(key, 2, 1, 0, 8).is_empty());
+        assert!(s.row_bytes(12345.0, 0, 1, 0, 8).is_empty());
+        assert!(s.row_bytes(key, 0, 0, 0, 8).is_empty());
+        assert!(s.row_bytes(key, 0, 2, 0, 0).is_empty());
+        assert_eq!(
+            s.row_bytes(key, 0, u32::MAX, 99, 2),
+            [99, NO_BYTE, 99, NO_BYTE]
+        );
+        assert_eq!(s.row_bytes(key, 0, 2, 0, 1785).len(), 2 * 1785);
+        assert_eq!(s.row_bytes(key, 0, 1, u32::MAX - 1, 1), [NO_BYTE]);
+        assert!(
+            s.row_bytes(key, 0, 1, 0, 1786).is_empty(),
+            "past the longest payload"
+        );
+        assert!(s.row_bytes(-1.0, 0, 5, 0, 0x4000_0000).is_empty());
+        assert!(s.row_bytes(-1.0, 0, 1, 0, u32::MAX).is_empty());
+        assert!(
+            s.row_bytes(-1.0, 0, 5, 0xFFFF_FFF0, 0x20).is_empty(),
+            "first + byte_count overflows"
+        );
+
         // Raw decodes reach the whole payload.
         let info = s
             .decode_raw(key, &spec(792, 8, "intel", false).to_string())
@@ -1117,6 +1238,14 @@ mod tests {
             .iter()
             .all(|c| c["spec"]["startBit"].as_u64().unwrap() < 512));
         assert_eq!(found[0]["spec"]["startBit"], 0);
+    }
+
+    #[test]
+    fn rows_clamp_any_start_and_count() {
+        let s = session();
+        assert_eq!(s.rows(-1.0, 3, u32::MAX).len(), 3 * ROW_STRIDE);
+        assert!(s.rows(-1.0, u32::MAX, u32::MAX).is_empty());
+        assert!(s.rows(-1.0, 0, 0).is_empty());
     }
 
     #[test]

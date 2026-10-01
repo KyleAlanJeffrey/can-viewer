@@ -77,6 +77,8 @@ const handlers = {
   rowCount: (key: number) => session.row_count(key),
   rows: (key: number, start: number, count: number) => transfer(session.rows(key, start, count)),
   frameData: (key: number, row: number) => transfer(session.frame_data(key, row)),
+  rowBytes: (key: number, start: number, count: number, first: number, byteCount: number) =>
+    transfer(session.row_bytes(key, start, count, first, byteCount)),
   bitFlips: (key: number) => transfer(session.bit_flips(key)),
   parseDbc: async (file: Blob) => JSON.parse(parse_dbc(new Uint8Array(await file.arrayBuffer()))),
   decodeSignal: (key: number, signal: string) => JSON.parse(session.decode_signal(key, signal)),
@@ -86,6 +88,7 @@ const handlers = {
   byteLanes: (key: number, first: number, count: number, t0: number, t1: number, buckets: number) =>
     transfer(session.byte_lanes(key, first, count, t0, t1, buckets)),
   rowAtTime: (key: number, t: number) => session.row_at_time(key, t),
+  rowCountBetween: (key: number, t0: number, t1: number) => session.row_count_between(key, t0, t1),
   busLoad: (channel: number, t0: number, t1: number, buckets: number, bitrate: number) =>
     halves(session.bus_load(channel, t0, t1, buckets, bitrate)),
   bitFlipsBetween: (key: number, t0: number, t1: number) => transfer(session.bit_flips_between(key, t0, t1)),
@@ -102,7 +105,7 @@ const handlers = {
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
 };
 
-const withTransfer = new Set(['rows', 'frameData', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
+const withTransfer = new Set(['rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
 
 // Requests run one at a time so a request never observes a half-parsed log.
 let initError: unknown = null;

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatId, type ByteLane, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo } from '../../core/api';
-import { ROW_PAYLOAD } from '../../core/rows';
 import { formatCount } from '../../format';
 import { signalBits } from '../../signalBits';
 import { InspectorSlot } from '../slots';
@@ -19,7 +18,6 @@ import {
   layoutString,
   rangeBits,
   rectBits,
-  rowIndexAt,
   useDebounced,
   windowStats,
   type BitRange,
@@ -89,9 +87,8 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
     const [t0, t1] = settled;
     (async (): Promise<Activity> => {
       try {
-        const flips = await core.bitFlipsBetween(summary.key, t0, t1);
-        const [i0, i1] = await Promise.all([rowIndexAt(core, summary, t0, duration), rowIndexAt(core, summary, t1, duration)]);
-        return { flips, frames: Math.max(1, i1 - i0), seconds: t1 - t0, wholeLog: false };
+        const [flips, frames] = await Promise.all([core.bitFlipsBetween(summary.key, t0, t1), core.rowCountBetween(summary.key, t0, t1)]);
+        return { flips, frames, seconds: t1 - t0, wholeLog: false };
       } catch {
         return { flips: await core.bitFlips(summary.key), frames: summary.count, seconds: duration, wholeLog: true };
       }
@@ -114,15 +111,15 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
     setBaselineCounts(null);
     if (b1 <= b0) return;
     let stale = false;
-    Promise.all([core.bitFlipsBetween(summary.key, b0, b1), rowIndexAt(core, summary, b0, duration), rowIndexAt(core, summary, b1, duration)]).then(
-      ([flips, i0, i1]) => !stale && setBaselineCounts({ flips, frames: i1 - i0 }),
+    Promise.all([core.bitFlipsBetween(summary.key, b0, b1), core.rowCountBetween(summary.key, b0, b1)]).then(
+      ([flips, frames]) => !stale && setBaselineCounts({ flips, frames }),
       // Without window counts there is nothing to dim.
       () => {},
     );
     return () => {
       stale = true;
     };
-  }, [core, summary, b0, b1, duration, logVersion]);
+  }, [core, summary, b0, b1, logVersion]);
   // With fewer than two frames nothing can change, so nothing would dim.
   const baselineFlips = baselineCounts && baselineCounts.frames >= 2 ? baselineCounts.flips : null;
 
@@ -291,7 +288,7 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
               Bit Activity
             </h3>
             <span className="re-card-note">
-              {activity && (activity.wholeLog ? 'Whole log; window counts are not available yet' : `${formatCount(activity.frames)} frames in the window`)}
+              {activity && (activity.wholeLog ? 'Whole log; window counts are not available yet' : `${formatCount(activity.frames)} ${activity.frames === 1 ? 'frame' : 'frames'} in the window`)}
             </span>
           </div>
           {bytes === 0 ? (
@@ -328,9 +325,7 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
             <h3 className="section-title" id="re-history-title">
               Bit History
             </h3>
-            <span className="re-card-note">
-              Newest frame on the right{bytes > ROW_PAYLOAD ? ` \u00b7 bytes past ${ROW_PAYLOAD} aren't shown here` : ''}
-            </span>
+            <span className="re-card-note">Newest frame on the right</span>
           </div>
           <BitHistory core={core} summary={summary} duration={duration} window={settled} logVersion={logVersion} selected={selected} />
         </section>

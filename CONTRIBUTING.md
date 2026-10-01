@@ -50,7 +50,7 @@ pnpm --dir web test
 
 - Fix any clippy warning your change introduces. CI fails on warnings.
 - `.github/workflows/ci.yml` runs all of these, plus the wasm and Vite builds, on every pull request.
-- UI tests are Vitest with jsdom and Testing Library. They sit next to the code as `*.test.ts` or `*.test.tsx`; shared fixtures, including a fake `CoreApi`, are in `web/src/test/fixtures.ts`, and `web/src/test/setup.ts` stubs the browser APIs jsdom lacks (canvas, `ResizeObserver`, `matchMedia`, `document.fonts`, modal dialogs). Session tests use `fake-indexeddb`. Test files are type-checked with the app, but the Vite build never imports them.
+- UI tests are Vitest with jsdom and Testing Library. They sit next to the code as `*.test.ts` or `*.test.tsx`; shared fixtures, including a fake `CoreApi`, are in `web/src/test/fixtures.ts`; `web/src/test/shell.tsx` renders a view inside a stand-in for the app shell, which owns the `ViewContext` state and gives the view its sidebar, inspector and search field; and `web/src/test/setup.ts` stubs the browser APIs jsdom lacks (canvas, `ResizeObserver`, `matchMedia`, `document.fonts`, `scrollIntoView`, modal dialogs). Session tests use `fake-indexeddb`. Test files are type-checked with the app, but the Vite build never imports them.
 - The tests don't draw canvases or check layout, so still check UI changes by hand in `pnpm dev`, including keyboard use and focus.
 - If you change the DBC decoder, cross-check it against cantools (`pip install cantools`, after `pnpm demo`):
 

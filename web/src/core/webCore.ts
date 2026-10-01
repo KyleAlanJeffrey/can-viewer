@@ -97,6 +97,10 @@ export class WebCore implements CoreApi {
     return new RowBatch(key, start, bytes.buffer as ArrayBuffer);
   }
 
+  rowBytes(key: number, start: number, count: number, first: number, byteCount: number) {
+    return this.call<Uint16Array>('rowBytes', key, start, count, first, byteCount);
+  }
+
   async parseDbc(file: Blob, name: string): Promise<Database> {
     return { ...(await this.call<Omit<Database, 'name'>>('parseDbc', file)), name };
   }
@@ -117,6 +121,7 @@ export class WebCore implements CoreApi {
   }
 
   rowAtTime = (key: number, t: number) => this.call<number>('rowAtTime', key, t);
+  rowCountBetween = (key: number, t0: number, t1: number) => this.call<number>('rowCountBetween', key, t0, t1);
   bitFlipsBetween = (key: number, t0: number, t1: number) => this.call<Uint32Array>('bitFlipsBetween', key, t0, t1);
   decodeRaw = (key: number, spec: RawSignalSpec) => this.call<SeriesInfo>('decodeRaw', key, spec);
   exportDbc = (db: Database) => this.call<string>('exportDbc', db);

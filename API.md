@@ -41,6 +41,7 @@ Exported from `web/src/core/api.ts`:
 | `FLAG_ERROR` | `1 << 4` | Error frame |
 | `FLAG_REASSEMBLED` | `1 << 6` | Not from the log: a J1939 parameter group reassembled from its transport protocol packets (see "J1939 transport protocol" in COMPATIBILITY.md) |
 | `EXT_FLAG` | `0x8000_0000` | Bit 31: extended ID |
+| `NO_BYTE` | `0xffff` | What [`rowBytes`](#rowbytes) gives for a byte past the end of a frame |
 | `dbcId(s)` | function | The ID of an `IdSummary` with `EXT_FLAG` set when extended, as used in DBC files |
 | `isErrorFrame(s)` | function | Whether an `IdSummary` is for CAN error frames (`FLAG_ERROR` in its flags) |
 | `formatId(id, extended)` | function | Upper-case hex: 3 digits for standard IDs, 8 for extended |
@@ -267,7 +268,7 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 - **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID. Always false for an ID's first frame.
 - **`data(i)`** `Uint8Array` - The payload, as a view into the batch.
 
-A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, and [`frameData`](#framedata) fetches the whole payload. `decodeRaw` and `decodeSignal` work on the whole payload.
+A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, [`frameData`](#framedata) fetches the whole payload, and [`rowBytes`](#rowbytes) fetches a range of bytes of many rows. `decodeRaw` and `decodeSignal` work on the whole payload.
 
 ## Logs
 
@@ -404,6 +405,30 @@ const batch = await core.rows(key, 0, 1);
 const payload = batch.fullLength(0) > batch.len(0) ? await core.frameData(key, batch.start) : batch.data(0);
 ```
 
+### rowBytes
+
+```ts
+rowBytes(key: number, start: number, count: number, first: number, byteCount: number): Promise<Uint16Array>
+```
+
+Payload bytes `first` to `first + byteCount - 1` of rows `start` to `start + count - 1`, in one round trip. Unlike [`rows`](#rows), it does not cut a payload at 64 bytes, so it reads a byte range of a long reassembled J1939 transfer across many rows without a `frameData` call per row. Rows are clamped to the rows that exist, as in `rows`.
+
+**Parameters**
+
+- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`start`** `number` - First row, counted within the filter as in `rows`.
+- **`count`** `number` - Number of rows.
+- **`first`** `number` - The first byte index.
+- **`byteCount`** `number` - How many bytes of each row, at most 1785 (the longest payload, a full J1939 transfer).
+
+**Returns** `byteCount` values per row, row after row: value `r * byteCount + j` is byte `first + j` of row `start + r`. Each is 0 to 255, or `NO_BYTE` for a byte past the end of that frame. The array is empty for an unknown key, a start past the end, a `byteCount` of 0 or above 1785, or a `first + byteCount` above 2^32 - 1.
+
+```ts
+const values = await core.rowBytes(key, 0, 400, 96, 4);
+const b97OfRow2 = values[2 * 4 + 1];
+if (b97OfRow2 !== NO_BYTE) console.log(b97OfRow2);
+```
+
 ### rowAtTime
 
 ```ts
@@ -422,6 +447,28 @@ The index of the first row of `key` (or `ALL_IDS`) at or after `t` seconds, clam
 ```ts
 const row = await core.rowAtTime(ALL_IDS, 12.5);
 const batch = await core.rows(ALL_IDS, row, 1);
+```
+
+### rowCountBetween
+
+```ts
+rowCountBetween(key: number, t0: number, t1: number): Promise<number>
+```
+
+The number of rows of `key` (or `ALL_IDS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares, so a bit changes at most `rowCountBetween - 1` times. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
+
+**Parameters**
+
+- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`t0`** `number` - Window start, in seconds.
+- **`t1`** `number` - Window end, in seconds.
+
+**Returns** a row count. It is 0 for an unknown key or a window with no frames.
+
+```ts
+const frames = await core.rowCountBetween(summary.key, 120, 135);
+const flips = await core.bitFlipsBetween(summary.key, 120, 135);
+const share = flips[0] / Math.max(1, frames - 1);
 ```
 
 ## Bit activity

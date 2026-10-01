@@ -99,9 +99,9 @@ fn first_line(head: &[u8]) -> Option<&[u8]> {
     lines(head).next()
 }
 
-/// The first line that is not a `#` comment, where a CSV header would be.
+/// The first line that is not a `#` comment or `sep=` line, where a CSV header would be.
 fn first_header_line(head: &[u8]) -> Option<&[u8]> {
-    lines(head).find(|line| !line.starts_with(b"#"))
+    lines(head).find(|line| !crate::csv::is_preamble(line))
 }
 
 #[cfg(test)]
@@ -174,6 +174,8 @@ mod tests {
         assert_eq!(Format::sniff(dated), Some(Format::Csv));
         let commented = b"# exported by a logger\n# bus: can0\ntime,id,data\n1,2,00\n";
         assert_eq!(Format::sniff(commented), Some(Format::Csv));
+        let excel = b"sep=,\r\ntime,id,data\r\n1,2,00\r\n";
+        assert_eq!(Format::sniff(excel), Some(Format::Csv));
     }
 
     #[test]

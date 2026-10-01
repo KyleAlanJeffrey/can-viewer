@@ -9,14 +9,16 @@
 //!   error, FD, BRS, ESI, direction and bus columns.
 //!
 //! The time unit is the one named in the time column's header (`Time (ms)`, `time_us`).
-//! Otherwise the first row decides it for the whole file: a decimal point or exponent means
-//! seconds, a whole number of 17 or more digits nanoseconds (Unix time in seconds has 10),
-//! and any other whole number microseconds.
+//! Otherwise the first row with a time other than a whole zero decides it for the whole
+//! file: a decimal point or exponent means seconds, a whole number of 17 or more digits
+//! nanoseconds (Unix time in seconds has 10), and any other whole number microseconds.
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::lines::LineSplitter;
-use crate::text::{hex_value, parse_decimal, parse_decimal_ns, parse_hex_u32, ChannelName};
+use crate::text::{
+    hex_value, parse_decimal, parse_decimal_ns, parse_hex_u32, starts_with_ignore_case, ChannelName,
+};
 use crate::{LogParser, ParseStats};
 
 /// Enough for 64 byte columns and the rest.
@@ -90,6 +92,12 @@ pub fn is_header(line: &[u8]) -> bool {
     Layout::from_header(line).is_some()
 }
 
+/// Whether `line`, before the header, is a `#` comment or Excel's `sep=,` line.
+#[must_use]
+pub fn is_preamble(line: &[u8]) -> bool {
+    line.starts_with(b"#") || starts_with_ignore_case(line, b"sep=")
+}
+
 impl LogParser for CsvParser {
     fn push<S: FrameSink>(&mut self, chunk: &[u8], sink: &mut S) {
         let (layout, bad_header) = (&mut self.layout, &mut self.bad_header);
@@ -120,7 +128,7 @@ fn line_into<S: FrameSink>(
     let result = match layout {
         Some(layout) => row(layout, line, sink),
         None if *bad_header => Err(BAD_HEADER),
-        None if line.starts_with(b"#") => return,
+        None if is_preamble(line) => return,
         None => {
             *layout = Layout::from_header(line);
             *bad_header = layout.is_none();
@@ -314,7 +322,10 @@ fn row<S: FrameSink>(layout: &mut Layout, line: &[u8], sink: &mut S) -> Result<(
         Some(unit) => unit,
         None => {
             let unit = unit_by_shape(time).ok_or("bad timestamp")?;
-            layout.time_unit = Some(unit);
+            // Zero is zero in every unit, so a later row decides.
+            if !is_whole_zero(time) {
+                layout.time_unit = Some(unit);
+            }
             unit
         }
     };
@@ -401,7 +412,12 @@ fn row<S: FrameSink>(layout: &mut Layout, line: &[u8], sink: &mut S) -> Result<(
     Ok(())
 }
 
-/// The time unit a first row's value implies, if the value is a number: seconds for a
+fn is_whole_zero(value: &[u8]) -> bool {
+    let digits = value.strip_prefix(b"-").unwrap_or(value);
+    !digits.is_empty() && digits.iter().all(|&b| b == b'0')
+}
+
+/// The time unit a row's value implies, if the value is a number: seconds for a
 /// decimal point or exponent (python-can's `1e-05`), nanoseconds for a whole number too large
 /// to be microseconds of Unix time, microseconds for any other.
 fn unit_by_shape(value: &[u8]) -> Option<u32> {
@@ -701,11 +717,25 @@ mod tests {
             first_time("time,id,data\n1759190400123456,1,00\n"),
             [1_759_190_400_123_456_000]
         );
+        assert_eq!(
+            first_time("time,id,data\n0,1,00\n0,1,00\n0.5,1,00\n1.25,1,00\n"),
+            [0, 0, 500_000_000, 1_250_000_000],
+            "a zero leaves the unit to the next row"
+        );
+        assert_eq!(
+            first_time("time,id,data\n0,1,00\n500,1,00\n1.5,1,00\n"),
+            [0, 500_000, 1_500],
+            "the first time other than zero decides"
+        );
     }
 
     #[test]
     fn comment_lines_before_the_header_are_skipped() {
         let (sink, stats) = parse("# exported by a logger\n# bus: can0\ntime,id,data\n1,2,00\n");
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(sink.frames, [(1_000, 0, 2, 0, vec![0])]);
+
+        let (sink, stats) = parse("sep=;\ntime;id;data\n1;2;00\n");
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(sink.frames, [(1_000, 0, 2, 0, vec![0])]);
     }

@@ -50,14 +50,14 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 
 The landing site (`site/public/index.html` and the BLF, MF4 and CANalyzer pages) lists these formats too; change it with this table.
 
-How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format is read as what its extension says, or as candump if the extension is unknown too. The content rules are:
+How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format, or could be more than one, is read as what its extension says, or as candump if the extension is unknown too. The content rules, in order:
 
 - Vector BLF: the file starts with `LOGG`.
-- ASAM MF4: the file starts with `MDF` and five spaces.
+- ASAM MF4: the file starts with `MDF` and five spaces, or `UnFinMF ` (unfinalized).
 - candump: the first non-blank line starts with `(`.
-- Vector ASC: the first non-blank line starts with `date `, `base hex`, `base dec` or `Begin Triggerblock` (case-insensitive).
-- PEAK TRC: the first non-blank line starts with `;` (`;$FILEVERSION=` or a comment).
-- CSV: the first non-blank line is a header with a time column, an ID column and data columns that the CSV reader knows (see below).
+- CSV: the first non-blank line that is not a `#` comment is a header with a time column, an ID column and data columns that the CSV reader knows (see below). This comes before the TRC and ASC rules, so a header such as `;time;id;data` (pandas with `sep=';'`) or `Date Time,Timestamp,ID,Data` is CSV.
+- PEAK TRC: the first non-blank line starts with `;$` (`;$FILEVERSION=`), `;#` or `;-`. Any other `;` line is left to the extension.
+- Vector ASC: the first non-blank line starts with `base hex`, `base dec` or `Begin Triggerblock` (case-insensitive), or is a `date` line whose date the ASC reader reads. A `date` line in another layout is left to the extension.
 
 The result is reported as `LogInfo.format` (see [API.md](API.md)). Whatever the format, `LogInfo.lines` counts the lines of a text file or the records of a binary one, and the first line or record that does not parse is reported with its number and a reason.
 

@@ -133,6 +133,15 @@ impl Header {
     }
 }
 
+/// Whether `line` is a `date` header line with a date this parser reads.
+pub(crate) fn is_date_line(line: &[u8]) -> bool {
+    let mut words = fields(line);
+    words
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case(b"date"))
+        && parse_date(words).is_some()
+}
+
 /// `Mon Sep 1 10:00:00.123 am 2025`, with or without the weekday, milliseconds and am/pm,
 /// as nanoseconds since the Unix epoch.
 fn parse_date<'a>(words: impl Iterator<Item = &'a [u8]>) -> Option<i64> {

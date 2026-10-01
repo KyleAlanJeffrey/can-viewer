@@ -40,18 +40,21 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 
 - [x] DBCs saved in the browser before J1939 support have no `j1939` flag, so they only match by exact ID until they are opened again
 - [x] Database view: "Overridden by" compares exact IDs only, so it misses a J1939 message whose PGN an earlier DBC decodes
-- [ ] Extended multiplexing (`SG_MUL_VAL_`) is not decoded; every multiplexed signal is switched by the message's one multiplexor
-- [ ] DBC export drops attributes other than `VFrameFormat`, including CAN FD frame formats
-- [ ] A DBC with two `BO_` lines for the same ID loads, but the Database view selects, edits and deletes messages by ID, so both change together (PR #1 review)
+- [x] Extended multiplexing (`SG_MUL_VAL_`) is not decoded; every multiplexed signal is switched by the message's one multiplexor
+- [x] DBC export drops attributes other than `VFrameFormat`, including CAN FD frame formats
+- [x] A DBC with two `BO_` lines for the same ID loads, but the Database view selects, edits and deletes messages by ID, so both change together (PR #1 review)
 - [x] Export DBC... marks the DBC clean before the file is saved, so a cancelled save dialog loses the "unexported edits" guard on Remove and on reopening the file (PR #1 review; use `showSaveFilePicker` where available)
 - [x] Two tabs both save their DBC list to IndexedDB, so an older tab can overwrite the other's edits (PR #1 review)
 
 ## Follow-ups
 
+- [ ] Rows of reassembled J1939 transfers carry only their first 64 bytes; read the full length (row bytes 20 to 22) in `web/src/core/rows.ts` so Trace and Reverse Engineer can show longer payloads
+- [ ] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
+- [ ] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)
 - [ ] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
 
 - [x] Database view: show and edit whether a message is J1939
-- [ ] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
+- [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
 - [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
 - [ ] Automated UI tests
 - [x] Database view: show when a DBC was last exported

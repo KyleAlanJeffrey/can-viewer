@@ -428,7 +428,8 @@ impl Session {
     }
 
     /// Number of rows of `key` (-1 for all frames) timestamped between `t0` and `t1` seconds,
-    /// both ends included: the frames [`Session::bit_flips_between`] compares.
+    /// both ends included. For an ID key these are the frames [`Session::bit_flips_between`]
+    /// compares.
     pub fn row_count_between(&self, key: f64, t0: f64, t1: f64) -> u32 {
         let (t0, t1) = (self.ns_at(t0), self.ns_at(t1));
         let rows = match self.filter(key) {

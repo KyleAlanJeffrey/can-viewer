@@ -239,7 +239,7 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
         ) : (
           <>
             <span className="mono">{firstTime !== null ? formatSeconds(firstTime) : ''}</span>
-            <span>{frames ? (shown > 0 ? `Last ${formatCount(shown)} frames of the window` : 'No frames in this window') : 'Loading frames\u2026'}</span>
+            <span>{frames ? (shown > 0 ? shown === 1 ? 'Last frame of the window' : `Last ${formatCount(shown)} frames of the window` : 'No frames in this window') : 'Loading frames\u2026'}</span>
             <span className="mono">{lastTime !== null ? formatSeconds(lastTime) : ''}</span>
           </>
         )}

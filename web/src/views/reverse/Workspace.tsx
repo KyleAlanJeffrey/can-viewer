@@ -288,7 +288,7 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
               Bit Activity
             </h3>
             <span className="re-card-note">
-              {activity && (activity.wholeLog ? 'Whole log; window counts are not available yet' : `${formatCount(activity.frames)} frames in the window`)}
+              {activity && (activity.wholeLog ? 'Whole log; window counts are not available yet' : `${formatCount(activity.frames)} ${activity.frames === 1 ? 'frame' : 'frames'} in the window`)}
             </span>
           </div>
           {bytes === 0 ? (

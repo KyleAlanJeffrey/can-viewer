@@ -176,6 +176,21 @@ describe('Advanced', () => {
     await user.keyboard('{ArrowRight}');
     expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed 4 times, 100% of frames\./)).toBeTruthy();
   });
+
+  it('says a bit that changed one time changed once', async () => {
+    const flips = new Uint32Array(64);
+    flips[6] = 1;
+    const core = testCore({ rowCountBetween: async () => 2, bitFlipsBetween: async () => flips });
+    const user = renderView([engine], core);
+    await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(await screen.findByText('2 frames in the window')).toBeTruthy();
+
+    const grid = screen.getByRole('application', { name: /^Bit activity/ });
+    grid.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed once, 100% of frames\./)).toBeTruthy();
+  });
 });
 
 describe('Pin signal sheet', () => {

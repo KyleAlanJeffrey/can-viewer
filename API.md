@@ -454,7 +454,7 @@ const batch = await core.rows(ALL_IDS, row, 1);
 rowCountBetween(key: number, t0: number, t1: number): Promise<number>
 ```
 
-The number of rows of `key` (or `ALL_IDS`) timestamped inside `[t0, t1]` seconds, both ends included. These are the frames [`bitFlipsBetween`](#bitflipsbetween) compares, so no bit changes more than one less than this many times. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
+The number of rows of `key` (or `ALL_IDS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares, so a bit changes at most `rowCountBetween - 1` times. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
 
 **Parameters**
 

@@ -254,7 +254,7 @@ export interface CoreApi {
 
   /** Index of the first row of `key` (or ALL_IDS) at or after `t` seconds, clamped to the last row. */
   rowAtTime(key: number, t: number): Promise<number>;
-  /** Rows of `key` (or ALL_IDS) timestamped within [t0, t1] seconds: the frames `bitFlipsBetween` compares. */
+  /** Rows of `key` (or ALL_IDS) timestamped within [t0, t1] seconds; for an ID key, the frames `bitFlipsBetween` compares. */
   rowCountBetween(key: number, t0: number, t1: number): Promise<number>;
   /**
    * Estimated load (0..1) of one bus at `bitrate` bit/s, in `buckets` buckets between t0 and t1

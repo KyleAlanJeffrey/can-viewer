@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import type { CoreApi, IdSummary } from '../../core/api';
-import type { RowBatch } from '../../core/rows';
+import { ROW_PAYLOAD, type RowBatch } from '../../core/rows';
 import { cssVar, formatCount, useFontsReady } from '../../format';
 import { errorText, formatSeconds, rowIndexAt, type TimeWindow } from './bits';
 
@@ -42,7 +42,8 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState<{ row: number; x: number; y: number } | null>(null);
   const fontsReady = useFontsReady();
-  const bytes = summary.maxLen;
+  // Drawn from trace rows, which stop at 64 bytes; Workspace notes it for longer messages.
+  const bytes = Math.min(summary.maxLen, ROW_PAYLOAD);
   const [t0, t1] = win;
 
   useEffect(() => {
@@ -55,9 +56,10 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const [firstByte, lastByte] = useMemo(() => {
-    if (selected.length === 0) return [0, Math.min(bytes, 8) - 1];
-    const lo = Math.max(0, Math.min(...selected.map((b) => b >> 3)) - 1);
-    const hi = Math.min(bytes - 1, Math.max(...selected.map((b) => b >> 3)) + 1);
+    const selectedBytes = selected.map((b) => b >> 3).filter((b) => b < bytes);
+    if (selectedBytes.length === 0) return [0, Math.min(bytes, 8) - 1];
+    const lo = Math.max(0, Math.min(...selectedBytes) - 1);
+    const hi = Math.min(bytes - 1, Math.max(...selectedBytes) + 1);
     return [lo, Math.min(hi, lo + MAX_BYTES - 1)];
   }, [selected, bytes]);
   const shownBytes = Math.max(0, lastByte - firstByte + 1);
@@ -193,7 +195,10 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       {hover && frames && (
         <div className="tooltip" style={hover.x > width / 2 ? { right: width - hover.x + 12, top: hover.y + 14 } : { left: hover.x + 12, top: hover.y + 14 }}>
           <div className="mono">{formatSeconds(frames.batch.time(hover.row))}</div>
-          <div className="mono muted">{hex(frames.batch.data(hover.row))}</div>
+          <div className="mono muted re-history-bytes">
+            {hex(frames.batch.data(hover.row))}
+            {frames.batch.fullLength(hover.row) > frames.batch.len(hover.row) ? ` \u2026 (${frames.batch.fullLength(hover.row)} bytes)` : ''}
+          </div>
         </div>
       )}
       <div className="re-history-axis" style={{ paddingLeft: LABEL_W }}>

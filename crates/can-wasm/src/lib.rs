@@ -254,6 +254,7 @@ impl Session {
                     .data
                     .iter()
                     .zip(before)
+                    .take(MAX_PAYLOAD)
                     .enumerate()
                     .fold(
                         0u64,
@@ -280,6 +281,18 @@ impl Session {
             out.extend_from_slice(&rec);
         }
         out
+    }
+
+    /// The whole payload of row `row` of the trace of `key` (pass -1 for all), which [`Self::rows`]
+    /// cuts at [`MAX_PAYLOAD`] bytes. Empty for an unknown key or a row past the end.
+    pub fn frame_data(&self, key: f64, row: u32) -> Vec<u8> {
+        let row = row as usize;
+        let index = match self.filter(key) {
+            Ok(Some(stats)) => stats.frames.get(row).map(|&f| f as usize),
+            Ok(None) => (row < self.store.len()).then_some(row),
+            Err(()) => None,
+        };
+        index.map_or_else(Vec::new, |i| self.store.frame(i).data.to_vec())
     }
 
     /// Per-bit change counts for one ID, indexed `byte * 8 + bit` (bit 0 = LSB).
@@ -967,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_cut_reassembled_payloads_at_64_bytes_and_give_the_full_length() {
+    fn rows_cut_reassembled_payloads_at_64_bytes_and_frame_data_gives_all_of_them() {
         // Two 100-byte transfers of bytes 0..99; the second changes bytes 0 and 70.
         let mut log = String::new();
         for (second, change) in [(1, 0), (2, 1)] {
@@ -991,6 +1004,20 @@ mod tests {
         assert_eq!(rows[18], 64);
         assert_eq!(u16::from_le_bytes([rows[20], rows[21]]), 100);
         assert_eq!(rows[32..96], (0..64).collect::<Vec<u8>>()[..]);
+        // Only byte 0 counts as changed in the second row: byte 70 is past the row's payload.
+        let rows = s.rows(key, 1, 1);
+        assert_eq!(u64::from_le_bytes(rows[24..32].try_into().unwrap()), 1);
+
+        // frame_data gives the whole payload, by row of the ID or of the whole trace.
+        let mut second: Vec<u8> = (0..100).collect();
+        second[0] = 1;
+        second[70] = 71;
+        assert_eq!(s.frame_data(key, 1), second);
+        assert_eq!(s.frame_data(-1.0, 16), (0..100).collect::<Vec<u8>>());
+        assert_eq!(s.frame_data(-1.0, 15).len(), 8, "a packet");
+        assert!(s.frame_data(key, 2).is_empty());
+        assert!(s.frame_data(-1.0, 34).is_empty());
+        assert!(s.frame_data(12345.0, 0).is_empty());
 
         // Raw decodes reach the whole payload.
         let info = s

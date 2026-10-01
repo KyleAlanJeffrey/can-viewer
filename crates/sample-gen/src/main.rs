@@ -16,7 +16,7 @@ use std::io::{self, BufWriter, Read, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use can_core::{FrameStore, EXT_FLAG};
+use can_core::{flags, FrameStore, EXT_FLAG};
 use can_dbc_model::{Database, MessageDef};
 use can_formats::{CandumpParser, LogParser};
 
@@ -98,8 +98,12 @@ fn decode(log: &str, dbc: &str, limit: usize) -> Result<(), String> {
     let mut out = BufWriter::new(io::stdout().lock());
     let write_err = |e: io::Error| e.to_string();
     writeln!(out, "frame,message,signal,value").map_err(write_err)?;
-    for index in 0..store.len().min(limit) {
-        let frame = store.frame(index);
+    // Numbered by log line, as the cross-check reads the log: reassembled J1939 frames are not
+    // in the log, so they are left out.
+    let log_frames = (0..store.len())
+        .map(|i| store.frame(i))
+        .filter(|f| f.flags & flags::REASSEMBLED == 0);
+    for (index, frame) in log_frames.take(limit).enumerate() {
         let Some(message) = db.message(frame.id) else {
             continue;
         };

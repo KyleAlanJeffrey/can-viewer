@@ -60,9 +60,9 @@ Describes the current log. Returned by [`openLog`](#openlog).
 - **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md).
 - **`frames`** `number` - Frames stored.
 - **`bytes`** `number` - Bytes read from the file.
-- **`lines`** `number` - Lines read, including blank lines.
-- **`rejected`** `number` - Lines that did not parse as a frame.
-- **`firstRejection`** `[number, string] | null` - The 1-based line number and reason of the first rejected line, or null if none.
+- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records.
+- **`rejected`** `number` - Lines or records that did not parse as a frame.
+- **`firstRejection`** `[number, string] | null` - The 1-based line number (for a binary format, record number) and reason of the first rejected line or record, or null if none.
 - **`durationS`** `number` - Seconds from the first frame to the last.
 - **`channels`** `string[]` - Bus names from the log, such as `can0`. The index is the channel number.
 - **`heapBytes`** `number` - Bytes the frame store has allocated.

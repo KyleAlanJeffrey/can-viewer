@@ -4,7 +4,7 @@ import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type Lo
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
-import { cssVar, formatBytes, formatCount, formatDuration } from './format';
+import { cssVar, formatBytes, formatCount, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
@@ -270,9 +270,8 @@ export function App({ core }: { core: CoreApi }) {
             info = await core.openLog(file, name, (p) =>
               setBusy({ label: `Parsing ${name}\u2026 ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total }),
             );
-            if (info.frames === 0 && info.rejected > 0) {
-              throw new Error(`${name} has no CAN frames that FreeCAN Studio can read. It reads candump logs (candump -l), Vector ASC and BLF, PEAK TRC, ASAM MF4 bus logging and CSV files.`);
-            }
+            const noFrames = noFramesMessage(info);
+            if (noFrames) throw new Error(noFrames);
           } catch (e) {
             showNoLog();
             throw e;
@@ -642,7 +641,7 @@ export function App({ core }: { core: CoreApi }) {
                   : restoring
                     ? 'Restoring your last session\u2026'
                     : log
-                      ? `${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
+                      ? `${logFormatName(log.format)} \u00b7 ${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
                       : dbcs.length > 0
                         ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
                         : 'Open a CAN log to begin'}
@@ -731,14 +730,8 @@ export function App({ core }: { core: CoreApi }) {
               <div className="banner">
                 <AlertTriangle size={16} strokeWidth={1.75} />
                 <p>
-                  {formatCount(log.rejected)} {log.rejected === 1 ? "line wasn't a CAN frame and was" : "lines weren't CAN frames and were"}{' '}
-                  skipped.
-                  {log.firstRejection && (
-                    <span className="detail">
-                      {' '}
-                      First at line {formatCount(log.firstRejection[0])}: {log.firstRejection[1]}
-                    </span>
-                  )}
+                  {formatSkipped(log)}
+                  {log.firstRejection && <span className="detail"> {formatFirstRejection(log)}</span>}
                 </p>
                 <button className="icon-button small" onClick={() => setSkippedDismissed(true)} aria-label="Dismiss">
                   <X size={14} strokeWidth={1.75} />

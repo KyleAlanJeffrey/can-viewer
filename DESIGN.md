@@ -332,7 +332,7 @@ Three panes in a full-height grid on a 1440 x 900 reference.
   - Collapsible bus groups ("can0", then the ID count in Slate) with 12px above each header.
   - 34px ID rows inset 8px from the pane edges, 10px gaps: activity icon, mono ID, name, period right-aligned in Slate. The ID column is sized per bus group to its 11-bit IDs; a 29-bit ID or one with an FD tag gets its own auto-width column on that row.
 - **Toolbar** (60px, Paper White, hairline bottom border, 12px gaps), spanning content and inspector:
-  - Leading: sidebar toggle, a 28px hairline divider, the document title over its Slate status subtitle (frames, duration, DBC; progress text while busy).
+  - Leading: sidebar toggle, a 28px hairline divider, the document title over its Slate status subtitle (log format, frames, duration, DBC; progress text while busy).
   - Centre: the view switcher, a segmented control (Overview / Trace / Plot / Reverse Engineer / Database). Views that need a log are disabled until one is open; Database opens with a DBC alone.
   - Trailing: Open DBC... (quiet), Open Log..., inspector toggle. Open Log is amber unless the view has its own primary, then it is an outline button. The inspector toggle is disabled on views without an inspector.
   - Below 1280px, Open DBC goes icon-only (its label stays for screen readers) and the switcher tightens, so the log name stays readable.

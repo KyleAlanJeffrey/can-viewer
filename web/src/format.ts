@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { LogFormat, LogInfo } from './core/api';
 
 const count = new Intl.NumberFormat('en-US');
 
@@ -27,6 +28,51 @@ export function formatPeriod(ms: number | null): string {
   if (ms < 9.95) return `${ms.toFixed(1)} ms`;
   if (ms < 999.5) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+const LOG_FORMAT_NAMES: Record<LogFormat, string> = {
+  candump: 'candump',
+  asc: 'ASC',
+  trc: 'TRC',
+  csv: 'CSV',
+  blf: 'BLF',
+  mf4: 'MF4',
+};
+
+export function logFormatName(format: LogFormat): string {
+  return LOG_FORMAT_NAMES[format];
+}
+
+/** BLF and MF4 count records where the text formats count lines. */
+function isBinary(format: LogFormat): boolean {
+  return format === 'blf' || format === 'mf4';
+}
+
+/** How many lines (records, for BLF and MF4) weren't frames, e.g. `3 lines weren't CAN frames and were skipped.` */
+export function formatSkipped(log: LogInfo): string {
+  const one = log.rejected === 1;
+  const noun = `${isBinary(log.format) ? 'record' : 'line'}${one ? '' : 's'}`;
+  return `${formatCount(log.rejected)} ${noun} ${one ? "wasn't a CAN frame and was" : "weren't CAN frames and were"} skipped.`;
+}
+
+/** Where the first line or record that wasn't a frame is, and why, e.g. `First at line 3: bad CAN ID`. */
+export function formatFirstRejection(log: LogInfo): string | null {
+  if (!log.firstRejection) return null;
+  const [at, reason] = log.firstRejection;
+  return `First at ${isBinary(log.format) ? 'record' : 'line'} ${formatCount(at)}: ${reason}`;
+}
+
+/** Why an opened log gives nothing to show, or null when it has frames, or is just empty. */
+export function noFramesMessage(log: LogInfo): string | null {
+  if (log.frames > 0) return null;
+  const file = `${log.name} (${logFormatName(log.format)})`;
+  if (log.rejected === 0) {
+    return isBinary(log.format)
+      ? `No CAN frames in ${file}. It holds no CAN, CAN FD or error frames, only other data such as LIN, FlexRay or Ethernet.`
+      : null;
+  }
+  const reason = log.firstRejection ? `: ${log.firstRejection[1]}` : '';
+  return `No CAN frames in ${file}${reason}. FreeCAN Studio reads candump logs (candump -l), Vector ASC and BLF, PEAK TRC, ASAM MF4 bus logging and CSV files.`;
 }
 
 /** Read a CSS custom property from the document root. */

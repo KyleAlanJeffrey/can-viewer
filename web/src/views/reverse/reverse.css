@@ -297,6 +297,12 @@
   display: block;
 }
 
+/* Sixteen bytes a line, so a 64-byte payload stays inside the card. */
+.re-history-bytes {
+  max-width: 48ch;
+  white-space: normal;
+}
+
 .re-history-axis {
   display: flex;
   justify-content: space-between;

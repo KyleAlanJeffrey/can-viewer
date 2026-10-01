@@ -224,6 +224,11 @@ export interface CoreApi {
   idSummary(): Promise<IdSummary[]>;
   rowCount(key: number): Promise<number>;
   rows(key: number, start: number, count: number): Promise<RowBatch>;
+  /**
+   * The whole payload of row `row` of `key` (or ALL_IDS), numbered as in `rows`, which cuts a
+   * payload at 64 bytes. Empty for an unknown key or a row past the end.
+   */
+  frameData(key: number, row: number): Promise<Uint8Array>;
   bitFlips(key: number): Promise<Uint32Array>;
   /** Parse a DBC file. Nothing changes until it is passed to `setDatabases`. */
   parseDbc(file: Blob, name: string): Promise<Database>;

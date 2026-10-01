@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds web/dist for Cloudflare (see wrangler.jsonc). The Workers Builds image has Node but no
-# Rust, so rustup, the wasm target and wasm-pack are installed when missing. Also runs on macOS.
+# Rust, so rustup, the toolchain from rust-toolchain.toml, the wasm target and wasm-pack are
+# installed when missing. Also runs on macOS.
 set -eu
 
 WASM_PACK_VERSION=0.15.0
@@ -9,10 +10,12 @@ PNPM_VERSION=10.18.2
 cd "$(dirname "$0")/.."
 
 if ! command -v cargo >/dev/null 2>&1; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
   . "$HOME/.cargo/env"
 fi
 if command -v rustup >/dev/null 2>&1; then
+  # Installs the toolchain pinned in rust-toolchain.toml; the target add covers one installed without it.
+  rustup toolchain install
   rustup target add wasm32-unknown-unknown
 else
   echo "rustup not found; make sure your Rust has the wasm32-unknown-unknown target." >&2

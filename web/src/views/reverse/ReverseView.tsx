@@ -7,6 +7,7 @@ import { useViewState } from '../shared/viewState';
 import { InspectorSlot } from '../slots';
 import type { ViewProps } from '../types';
 import { AnalysisWindow } from './AnalysisWindow';
+import { BaselineSheet } from './BaselineSheet';
 import { ByteMatrix, type SelectedByte } from './ByteMatrix';
 import { FindSignalSheet } from './FindSignalSheet';
 import { PinSignalSheet } from './PinSignalSheet';
@@ -36,9 +37,12 @@ export function ReverseView({ ctx }: ViewProps) {
   const [pins, setPins] = useViewState<Pin[]>('re.pins', [], 'log');
   const [selectedByte, setSelectedByte] = useViewState<SelectedByte | null>('re.byte', null, 'log');
   const [bus, setBus] = useViewState<string | null>('re.bus', null, 'log');
+  const [savedBaseline, setBaseline] = useViewState<TimeWindow | null>('re.baseline', null, 'log');
+  const baseline = savedBaseline && windowFits(savedBaseline, duration) ? savedBaseline : null;
   const [hover, setHover] = useState<number | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
+  const [baselineOpen, setBaselineOpen] = useState(false);
   const [, setForms] = useCandidateForms();
   const scroller = useRef<HTMLDivElement>(null);
   const references = useReferences(ctx, pins);
@@ -64,13 +68,13 @@ export function ReverseView({ ctx }: ViewProps) {
   const park = (t: number) => setPinnedTime(clampTime(t, duration));
 
   useEffect(() => {
-    if (findOpen || pinOpen) return;
+    if (findOpen || pinOpen || baselineOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && pinnedTime !== null) setPinnedTime(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [findOpen, pinOpen, pinnedTime, setPinnedTime]);
+  }, [findOpen, pinOpen, baselineOpen, pinnedTime, setPinnedTime]);
 
   const channels = useMemo(() => log?.channels ?? [], [log]);
   const messages = useMemo(() => ids.filter((s) => !isErrorFrame(s)).sort((a, b) => a.channel - b.channel || a.id - b.id), [ids]);
@@ -153,10 +157,15 @@ export function ReverseView({ ctx }: ViewProps) {
           {mode === 'bytes' ? (
             <span className="re-scope-note">{scope}</span>
           ) : (
-            <button type="button" className="button" onClick={() => setMode('bytes')}>
-              <ArrowLeft size={16} strokeWidth={1.5} aria-hidden="true" />
-              All byte values
-            </button>
+            <>
+              <button type="button" className="button" onClick={() => setMode('bytes')}>
+                <ArrowLeft size={16} strokeWidth={1.5} aria-hidden="true" />
+                All byte values
+              </button>
+              <button type="button" className="button" onClick={() => setBaselineOpen(true)}>
+                {baseline ? 'Ignore Baseline (On)\u2026' : 'Ignore Baseline\u2026'}
+              </button>
+            </>
           )}
           <button type="button" className="button" onClick={() => setFindOpen(true)}>
             <Search size={16} strokeWidth={1.5} aria-hidden="true" />
@@ -218,6 +227,7 @@ export function ReverseView({ ctx }: ViewProps) {
           onPark={park}
           onUnpin={unpin}
           onPinSignal={() => setPinOpen(true)}
+          baseline={baseline}
         />
       ) : (
         <div className="content-scroll re-scroll" role="tabpanel" aria-label="Advanced">
@@ -260,6 +270,14 @@ export function ReverseView({ ctx }: ViewProps) {
         </InspectorSlot>
       )}
 
+      <BaselineSheet
+        open={baselineOpen}
+        onClose={() => setBaselineOpen(false)}
+        ctx={ctx}
+        duration={duration}
+        baseline={baseline}
+        onApply={setBaseline}
+      />
       <PinSignalSheet open={pinOpen} onClose={() => setPinOpen(false)} ctx={ctx} pins={pins} onToggle={togglePin} />
       <FindSignalSheet key={logVersion} open={findOpen} onClose={() => setFindOpen(false)} ctx={ctx} duration={duration} onUse={loadCandidate} />
     </>

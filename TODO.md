@@ -46,19 +46,27 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] A DBC with two `BO_` lines for the same ID loads, but the Database view selects, edits and deletes messages by ID, so both change together (PR #1 review)
 - [x] Export DBC... marks the DBC clean before the file is saved, so a cancelled save dialog loses the "unexported edits" guard on Remove and on reopening the file (PR #1 review; use `showSaveFilePicker` where available)
 - [x] Two tabs both save their DBC list to IndexedDB, so an older tab can overwrite the other's edits (PR #1 review)
+- [x] J1939 RTS/CTS transfers time out after T1 (750 ms) where J1939-21 allows T2 or T3 (1250 ms) after a CTS, an RTS or the end of a block (PR #7 review)
+- [x] A J1939 Conn Abort also drops an unrelated transfer the other way between the same two nodes; match the PGN in bytes 5 to 7 (PR #7 review)
+- [x] Unfinished J1939 transfers are never swept, so a log of announcements alone can hold about 117 MB per bus (PR #7 review)
+- [x] A TP.DT shorter than 8 bytes shifts the reassembled data (PR #7 review)
+- [x] Reverse Engineer Bit History reads only the row's 64 bytes but offers bytes up to the message length, drawing nothing past 64 (PR #7 review; capped at 64 with a note)
+- [x] The Trace view's "(N bytes)" label is not clipped to the Data column (PR #7 review)
 
 ## Follow-ups
 
 - [x] Interaction: make the mouse cursor show what a press or drag will do, in every view and kept in step with state changes: `pointer` on buttons, clickable rows, toggles and switch labels; `crosshair` where a click parks the time cursor (plots, byte cells, reference plots) and where a click in the bit grid selects bits; `grab` / `grabbing` on draggable windows; `ew-resize` on window handles, held for the whole drag; `text` on fields; `default` (not `pointer`) on disabled controls, empty-state rows and read-only cells, even while busy; `progress` elsewhere while busy. Audit the CSS and canvas hit areas (BitGrid cells, WindowStrip, Trace rows, uPlot overlays)
-- [ ] Rows of reassembled J1939 transfers carry only their first 64 bytes; read the full length (row bytes 20 to 22) in `web/src/core/rows.ts` so Trace and Reverse Engineer can show longer payloads
-- [ ] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
-- [ ] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)
-- [ ] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
+- [x] Rows of reassembled J1939 transfers carry only their first 64 bytes; read the full length (row bytes 20 to 22) in `web/src/core/rows.ts` so Trace and Reverse Engineer can show longer payloads
+- [x] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
+- [x] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)
+- [x] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
+- [ ] Reverse Engineer Bit History: show bytes past 64 of a long reassembled J1939 transfer (fetch them with `frameData`, or a core call for a byte range of many rows)
 
 - [x] Database view: show and edit whether a message is J1939
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
 - [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
-- [ ] Automated UI tests
+- [x] Automated UI tests: Vitest setup, with Byte Values and Pin signal covered
+- [ ] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`
 - [x] Database view: show when a DBC was last exported
 - [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
 - [x] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)

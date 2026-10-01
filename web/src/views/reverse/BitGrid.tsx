@@ -9,6 +9,9 @@ const PAD = 4;
 const RAMP_STEPS = 6;
 const VISIBLE_ROWS = 8;
 
+/** Bits that also change in the baseline keep their heat but fade back. */
+const DIMMED_ALPHA = 0.25;
+
 interface Props {
   flips: Uint32Array;
   bytes: number;
@@ -20,6 +23,8 @@ interface Props {
   selected: number[];
   /** DBC signal name per bit, for the tooltip. */
   owners: (string | null)[];
+  /** Changes per bit in the baseline; bits that changed there are dimmed. */
+  dimmed?: Uint32Array | null;
   /** Select the range covering the rectangle from `anchor` to `focus`. */
   onSelect: (anchor: number, focus: number) => void;
   onClear: () => void;
@@ -29,7 +34,7 @@ interface Props {
  * How often each payload bit changed in the window, one row per byte with bit 7 on the left.
  * Drag, or use Shift with the arrow keys, to select a bit range.
  */
-export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, onSelect, onClear }: Props) {
+export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, dimmed = null, onSelect, onClear }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -93,7 +98,9 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
           g.stroke();
         } else {
           g.fillStyle = ramp[heatStep(count, transitions, RAMP_STEPS)];
+          g.globalAlpha = dimmed && (dimmed[byte * 8 + (7 - col)] ?? 0) > 0 ? DIMMED_ALPHA : 1;
           g.fill();
+          g.globalAlpha = 1;
         }
       }
     }
@@ -122,7 +129,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
       g.strokeStyle = cssVar('--ochre-control');
       g.strokeRect(cell.x + 1, cell.y + 1, cell.w - 2, cell.h - 2);
     }
-  }, [flips, bytes, transitions, selectedSet, width, height, pitch, rowPitch, available, focusBit, showFocus, fontsReady]);
+  }, [flips, dimmed, bytes, transitions, selectedSet, width, height, pitch, rowPitch, available, focusBit, showFocus, fontsReady]);
 
   /** The cell under the pointer, with the pointer's position in the wrapper for the tooltip. */
   const cellAt = (e: PointerEvent<HTMLCanvasElement>, clamp: boolean) => {
@@ -169,7 +176,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
     const owner = owners[bit];
     return `Byte ${bit >> 3}, bit ${bit & 7}. ${
       count === 0 ? 'Never changes' : `Changed ${formatCount(count)} times, ${percent(count, transitions)} of frames`
-    }.${owner ? ` In ${owner}.` : ''}${selectedSet.has(bit) ? ' Selected.' : ''}`;
+    }.${dimmed && (dimmed[bit] ?? 0) > 0 ? ' Also changes in the baseline.' : ''}${owner ? ` In ${owner}.` : ''}${selectedSet.has(bit) ? ' Selected.' : ''}`;
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -221,6 +228,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
     bit: hover.bit & 7,
     flips: flips[hover.bit] ?? 0,
     owner: owners[hover.bit] ?? null,
+    baseline: !!dimmed && (dimmed[hover.bit] ?? 0) > 0,
   };
 
   return (
@@ -282,6 +290,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
               ? 'Never changes in this window'
               : `Changed ${formatCount(hovered.flips)} times \u00b7 ${percent(hovered.flips, transitions)} of frames \u00b7 ${rate(hovered.flips, seconds)}`}
           </div>
+          {hovered.baseline && <div className="muted">Also changes in the baseline</div>}
           {hovered.owner && <div className="muted">In {hovered.owner}</div>}
         </div>
       )}
@@ -293,7 +302,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
 }
 
 /** Horizontal key for the heat ramp and the selection outline. */
-export function HeatLegend({ selection }: { selection: string | null }) {
+export function HeatLegend({ selection, baseline = null, baselineNote = null }: { selection: string | null; baseline?: string | null; baselineNote?: string | null }) {
   return (
     <div className="re-legend">
       <span className="re-legend-item">
@@ -309,6 +318,13 @@ export function HeatLegend({ selection }: { selection: string | null }) {
         </span>
         Every frame
       </span>
+      {baseline && (
+        <span className="re-legend-item">
+          <span className="re-swatch" style={{ background: 'var(--heat-4)', opacity: DIMMED_ALPHA }} aria-hidden="true" />
+          Changes in the baseline, {baseline}
+        </span>
+      )}
+      {baselineNote && <span className="re-legend-item">{baselineNote}</span>}
       <span className="re-legend-item re-legend-selection">
         <span className="re-swatch dashed" aria-hidden="true" />
         {selection ?? 'Drag across bits to select a range'}

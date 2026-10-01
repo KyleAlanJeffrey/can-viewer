@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { ArrowRight, Pin as PinIcon, PinOff } from 'lucide-react';
-import { formatId, type ByteLane, type IdSummary, type MessageDef } from '../../core/api';
+import { FLAG_FD, FLAG_REASSEMBLED, formatId, type ByteLane, type IdSummary, type MessageDef } from '../../core/api';
 import { formatCount } from '../../format';
 import { useViewState } from '../shared/viewState';
 import type { ViewContext } from '../types';
@@ -39,7 +39,7 @@ interface Props {
   onOpenAdvanced: () => void;
 }
 
-/** One table row: a message's first eight bytes, or a further group of eight for CAN FD. */
+/** One table row: a message's first eight bytes, or a further group of eight of a longer payload. */
 interface RowSpec {
   summary: IdSummary;
   message: MessageDef | null;
@@ -152,7 +152,7 @@ export function ByteMatrix(props: Props) {
                   const row = lanes.get(specKey(key, first)) ?? null;
                   const isSelectedRow = key === selected;
                   const id = formatId(summary.id, summary.extended);
-                  const fd = summary.maxLen > LANES;
+                  const long = summary.maxLen > LANES;
                   const isExpanded = expanded.includes(key);
                   return (
                     <tr key={specKey(key, first)} className={isSelectedRow ? 're-row-selected' : undefined}>
@@ -174,10 +174,10 @@ export function ByteMatrix(props: Props) {
                             B{first}-{Math.min(first + LANES, summary.maxLen) - 1}
                           </span>
                         )}
-                        {first === 0 && fd && (
+                        {first === 0 && long && (
                           <span className="re-row-note">
                             <span>
-                              CAN FD {'\u00b7'} {isExpanded ? `${summary.maxLen} bytes` : `B0-7 of ${summary.maxLen}`}
+                              {lengthNote(summary, isExpanded)}
                             </span>
                             <button type="button" className="text-button" onClick={() => toggleExpanded(key)}>
                               {isExpanded ? 'Fewer' : 'View all'}
@@ -250,6 +250,12 @@ export function ByteMatrix(props: Props) {
       </div>
     </>
   );
+}
+
+/** The length of a payload longer than eight bytes, after what carries it. */
+function lengthNote(s: IdSummary, expanded: boolean): string {
+  const kind = s.flags & FLAG_FD ? 'CAN FD \u00b7 ' : s.flags & FLAG_REASSEMBLED ? 'J1939 TP \u00b7 ' : '';
+  return kind + (expanded ? `${s.maxLen} bytes` : `B0-7 of ${s.maxLen}`);
 }
 
 function idText(rows: IdSummary[], key: number): string {

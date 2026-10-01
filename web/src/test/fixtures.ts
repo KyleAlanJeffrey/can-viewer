@@ -126,6 +126,7 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     dropSeries: () => Promise.resolve(),
     byteLanes: notInFake('byteLanes'),
     rowAtTime: notInFake('rowAtTime'),
+    rowCountBetween: notInFake('rowCountBetween'),
     busLoad: notInFake('busLoad'),
     bitFlipsBetween: notInFake('bitFlipsBetween'),
     changeActivity: notInFake('changeActivity'),

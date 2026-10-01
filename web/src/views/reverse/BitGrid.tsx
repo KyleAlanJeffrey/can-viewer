@@ -175,7 +175,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
     const count = flips[bit] ?? 0;
     const owner = owners[bit];
     return `Byte ${bit >> 3}, bit ${bit & 7}. ${
-      count === 0 ? 'Never changes' : `Changed ${formatCount(count)} times, ${percent(count, transitions)} of frames`
+      count === 0 ? 'Never changes' : `Changed ${times(count)}, ${percent(count, transitions)} of frames`
     }.${dimmed && (dimmed[bit] ?? 0) > 0 ? ' Also changes in the baseline.' : ''}${owner ? ` In ${owner}.` : ''}${selectedSet.has(bit) ? ' Selected.' : ''}`;
   };
 
@@ -288,7 +288,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
           <div className="muted">
             {hovered.flips === 0
               ? 'Never changes in this window'
-              : `Changed ${formatCount(hovered.flips)} times \u00b7 ${percent(hovered.flips, transitions)} of frames \u00b7 ${rate(hovered.flips, seconds)}`}
+              : `Changed ${times(hovered.flips)} \u00b7 ${percent(hovered.flips, transitions)} of frames \u00b7 ${rate(hovered.flips, seconds)}`}
           </div>
           {hovered.baseline && <div className="muted">Also changes in the baseline</div>}
           {hovered.owner && <div className="muted">In {hovered.owner}</div>}
@@ -381,6 +381,8 @@ function traceOutline(g: CanvasRenderingContext2D, selected: Set<number>, bytes:
     }
   }
 }
+
+const times = (n: number) => (n === 1 ? 'once' : `${formatCount(n)} times`);
 
 function percent(count: number, transitions: number): string {
   return `${((100 * count) / Math.max(1, transitions)).toFixed(count >= transitions / 10 ? 0 : 2)}%`;

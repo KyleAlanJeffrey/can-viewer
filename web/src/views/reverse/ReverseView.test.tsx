@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
-import type { CoreApi, IdSummary, MessageDef } from '../../core/api';
+import { FLAG_FD, FLAG_REASSEMBLED, type CoreApi, type IdSummary, type MessageDef } from '../../core/api';
 import { fakeCore, lane, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
 import { ViewStateContext, ViewStateStore } from '../shared/viewState';
 import type { LoadedDbc, ViewContext } from '../types';
@@ -11,6 +11,8 @@ import { ReverseView } from './ReverseView';
 const engine = summary({ id: 0x100, name: 'Engine' });
 const unknown = summary({ id: 0x200 });
 const brakes = summary({ id: 0x300, name: 'Brakes' });
+const dm1 = summary({ id: 0x18feca00, extended: true, minLen: 100, maxLen: 100, flags: FLAG_REASSEMBLED });
+const fd = summary({ id: 0x400, minLen: 64, maxLen: 64, flags: FLAG_FD });
 
 const messages = new Map<number, MessageDef>([
   [engine.key, message(0x100, 'Engine', { signals: [signal('EngineSpeed', { unit: 'rpm' }), signal('Throttle', { startBit: 8, unit: '%' })] })],
@@ -19,7 +21,7 @@ const messages = new Map<number, MessageDef>([
 const dbc: LoadedDbc = { id: 'car', db: { name: 'car.dbc', messages: [...messages.values()] }, channel: null, edited: false };
 
 /** Byte 0 of Engine and of the unknown message changes across the window; Brakes never changes. */
-function testCore(): CoreApi {
+function testCore(overrides: Partial<CoreApi> = {}): CoreApi {
   return fakeCore({
     byteLanes: async (key, _first, count, t0, t1) =>
       Array.from({ length: count }, (_, byte) => lane(key !== brakes.key && byte === 0 ? [1, 2, 3] : [5, 5, 5], t0, t1)),
@@ -28,6 +30,7 @@ function testCore(): CoreApi {
     decodeRaw: async () => seriesInfo(1, 'raw'),
     decodeSignal: async (_key, name) => seriesInfo(2, name),
     seriesView: async () => [Float64Array.of(40, 70), Float64Array.of(0, 1)],
+    ...overrides,
   });
 }
 
@@ -76,9 +79,9 @@ function Shell({ core, ids }: { core: CoreApi; ids: IdSummary[] }) {
   );
 }
 
-function renderView() {
+function renderView(ids = [brakes, unknown, engine], core = testCore()) {
   const user = userEvent.setup();
-  render(<Shell core={testCore()} ids={[brakes, unknown, engine]} />);
+  render(<Shell core={core} ids={ids} />);
   return user;
 }
 
@@ -118,6 +121,20 @@ describe('Byte Values', () => {
     expectMatrixRows(allRows);
   });
 
+  it('labels a long payload by what carries it and expands it in groups of eight', async () => {
+    const user = renderView([dm1, fd]);
+    const [fdHead, dm1Head] = screen.getAllByRole('rowheader');
+    expect(within(fdHead).getByText('CAN FD \u00b7 B0-7 of 64')).toBeTruthy();
+    expect(within(dm1Head).getByText('J1939 TP \u00b7 B0-7 of 100')).toBeTruthy();
+    expect(within(dm1Head).queryByText(/CAN FD/)).toBeNull();
+
+    await user.click(within(dm1Head).getByRole('button', { name: 'View all' }));
+    expect(screen.getByText('J1939 TP \u00b7 100 bytes')).toBeTruthy();
+    expect(screen.getByText('B8-15')).toBeTruthy();
+    expect(screen.getByText('B96-99')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /^18FECA00 byte \d+$/ })).toHaveLength(100);
+  });
+
   it('selects a byte and pins it', async () => {
     const user = renderView();
     expect(screen.getByText(/^Select a byte to pin it/)).toBeTruthy();
@@ -140,6 +157,39 @@ describe('Byte Values', () => {
     await user.click(screen.getByRole('button', { name: 'Unpin byte' }));
     expect(screen.getByRole('button', { name: 'Pin byte' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeNull();
+  });
+});
+
+describe('Advanced', () => {
+  it('rates bit changes against the steps between the frames of the window', async () => {
+    // Five frames in the window, so four steps; bit 6 of byte 0 changes at every one of them.
+    const flips = new Uint32Array(64);
+    flips[6] = 4;
+    const core = testCore({ rowCountBetween: async () => 5, bitFlipsBetween: async () => flips });
+    const user = renderView([engine], core);
+    await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(await screen.findByText('5 frames in the window')).toBeTruthy();
+
+    const grid = screen.getByRole('application', { name: /^Bit activity/ });
+    grid.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed 4 times, 100% of frames\./)).toBeTruthy();
+  });
+
+  it('says a bit that changed one time changed once', async () => {
+    const flips = new Uint32Array(64);
+    flips[6] = 1;
+    const core = testCore({ rowCountBetween: async () => 2, bitFlipsBetween: async () => flips });
+    const user = renderView([engine], core);
+    await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(await screen.findByText('2 frames in the window')).toBeTruthy();
+
+    const grid = screen.getByRole('application', { name: /^Bit activity/ });
+    grid.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed once, 100% of frames\./)).toBeTruthy();
   });
 });
 

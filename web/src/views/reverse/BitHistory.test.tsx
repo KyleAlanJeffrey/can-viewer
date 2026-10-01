@@ -82,6 +82,15 @@ describe('Bit History', () => {
     expect(await screen.findByText('B96-B98: 20 23 26 (100 bytes)')).toBeTruthy();
   });
 
+  it('draws nothing for a window that starts after the last frame', async () => {
+    // Both ends of the window find the last row, which is clamped and lies before it.
+    const { ids, core, rowBytes } = transfersOf([100, 100, 100]);
+    render(<BitHistory core={core} summary={ids} duration={10} window={[5, 10]} logVersion={1} selected={bitsOfByte(97)} />);
+
+    expect(await screen.findByText('No frames in this window')).toBeTruthy();
+    expect(rowBytes).not.toHaveBeenCalled();
+  });
+
   it('reads a selection under byte 64 from the rows alone', async () => {
     const { ids, core, rowBytes } = transfersOf([100, 100, 100]);
     render(<BitHistory core={core} summary={ids} duration={10} window={[0, 10]} logVersion={1} selected={bitsOfByte(10)} />);

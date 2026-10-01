@@ -448,6 +448,28 @@ const row = await core.rowAtTime(ALL_IDS, 12.5);
 const batch = await core.rows(ALL_IDS, row, 1);
 ```
 
+### rowCountBetween
+
+```ts
+rowCountBetween(key: number, t0: number, t1: number): Promise<number>
+```
+
+The number of rows of `key` (or `ALL_IDS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares, so a bit changes at most `rowCountBetween - 1` times. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
+
+**Parameters**
+
+- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`t0`** `number` - Window start, in seconds.
+- **`t1`** `number` - Window end, in seconds.
+
+**Returns** a row count. It is 0 for an unknown key or a window with no frames.
+
+```ts
+const frames = await core.rowCountBetween(summary.key, 120, 135);
+const flips = await core.bitFlipsBetween(summary.key, 120, 135);
+const share = flips[0] / Math.max(1, frames - 1);
+```
+
 ## Bit activity
 
 ### bitFlips

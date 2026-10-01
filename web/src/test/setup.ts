@@ -71,6 +71,8 @@ HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
   return noopContext(this);
 } as unknown as HTMLCanvasElement['getContext'];
 
+Element.prototype.scrollIntoView ??= function () {};
+
 // jsdom has the dialog element but not its modal methods.
 HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
   this.open = true;

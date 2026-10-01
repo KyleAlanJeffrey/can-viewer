@@ -19,8 +19,10 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Check Export DBC... in a browser (the exported text is covered by Rust tests)
 - [x] Commit to `main`, push, and open the first PR from a feature branch: https://github.com/KyleAlanJeffrey/can-viewer/pull/1
 - [x] CodeRabbit review, with every comment addressed (fixed, or answered on the PR)
-- [ ] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)
-- [ ] After the first deploy, check the demo, reload restore and the CSP on the live site
+- [x] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)
+- [x] After the first deploy, check the demo, reload restore and the CSP on the live site
+- [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
+- [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
 
 ## Landing page
@@ -33,7 +35,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] No drop zone on the landing page (a dropped file can't be handed to another site); send people to the app to open files
 - [x] Analytics, newsletter signup or video embeds stay on the landing page only; the app keeps its strict CSP in `web/public/_headers` and loads nothing from third parties
 - [x] State the privacy claim on the landing page: the app domain loads nothing from anyone else
-- [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `freecan.studio` and `freecan.app` redirecting to it, and build watch paths so a push to `site/` only rebuilds the site (owner)
+- [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `www.freecanstudio.com`, `freecan.studio` and `freecan.app` redirecting to it (none of the three answer yet), and build watch paths so a push to `site/` only rebuilds the site (owner)
 - [ ] Later: downloads, pricing and Pro license pages on the main site (a `pro/` page describing the planned app is in)
 - [ ] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land, and the CSP quoted on the home page if `web/public/_headers` changes
 

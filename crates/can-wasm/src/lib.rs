@@ -8,7 +8,7 @@ mod series;
 
 use can_core::{tp::MAX_TRANSFER, FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
-use can_formats::{AnyParser, Format, LogParser, ParseStats};
+use can_formats::{mf4, AnyParser, Format, LogParser, ParseStats};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -21,7 +21,8 @@ pub const ROW_STRIDE: usize = 96;
 /// Rough bytes per frame of a log in each format, to pre-size the store from the file size.
 /// Binary formats are taken as compressed, as `sample-gen convert` writes them (an MF4 or
 /// BLF file of 10M classic frames is 112 MB or 149 MB): an uncompressed file then reserves
-/// a little more than it needs, rather than a compressed one growing the store at the end.
+/// up to about four times what it needs, rather than a compressed one growing the store at
+/// the end. [`MAX_RESERVED_FRAMES`] bounds what that costs.
 fn bytes_per_frame(format: Format) -> f64 {
     match format {
         Format::Candump => 40.0,
@@ -31,6 +32,15 @@ fn bytes_per_frame(format: Format) -> f64 {
         Format::Blf => 15.0,
         Format::Mf4 => 11.0,
     }
+}
+
+/// The store is pre-sized for at most this many frames, about 520 MB on wasm32; a log with
+/// more grows it as it is read.
+const MAX_RESERVED_FRAMES: usize = 20_000_000;
+
+/// Frames to pre-size the store for, from the file's size.
+fn reserved_frames(format: Format, total_bytes: f64) -> usize {
+    ((total_bytes / bytes_per_frame(format)) as usize).min(MAX_RESERVED_FRAMES)
 }
 
 /// Bytes of a log held back until there are enough to tell its format from its content.
@@ -73,8 +83,11 @@ impl LogInput {
 
     fn choose_parser(&mut self, store: &mut FrameStore) {
         let format = self.format();
-        let frames = (self.total_bytes / bytes_per_frame(format)) as usize;
-        store.reserve(frames, frames * 8);
+        // An MF4 file is buffered whole before its frames are read, so its store is sized
+        // in `finish`, once the buffer has stopped growing.
+        if format != Format::Mf4 {
+            self.reserve(format, store);
+        }
         let mut parser = AnyParser::new(format);
         parser.push(&self.head, store);
         self.head = Vec::new();
@@ -85,9 +98,17 @@ impl LogInput {
         if self.parser.is_none() {
             self.choose_parser(store);
         }
+        if self.format() == Format::Mf4 && self.total_bytes <= mf4::MAX_FILE as f64 {
+            self.reserve(Format::Mf4, store);
+        }
         if let Some(parser) = &mut self.parser {
             parser.finish(store);
         }
+    }
+
+    fn reserve(&self, format: Format, store: &mut FrameStore) {
+        let frames = reserved_frames(format, self.total_bytes);
+        store.reserve(frames, frames * 8);
     }
 
     fn format(&self) -> Format {
@@ -708,6 +729,38 @@ mod tests {
 (100.050000) can0 20000080#0000000000000000
 (100.060000) can0 123#05060000
 ";
+
+    #[test]
+    fn the_store_is_sized_from_the_file_size_up_to_a_cap() {
+        assert_eq!(reserved_frames(Format::Candump, 4000.0), 100);
+        assert_eq!(
+            reserved_frames(Format::Blf, 2.0 * (1u64 << 30) as f64),
+            MAX_RESERVED_FRAMES
+        );
+
+        let mut head = b"MDF     4.10    ".to_vec();
+        head.resize(SNIFF_BYTES, 0);
+        let mf4_heap = |total_bytes: f64| {
+            let mut s = Session::new();
+            s.set_file_name("drive.mf4");
+            s.reserve_for_bytes(total_bytes);
+            s.push_chunk(&head);
+            let before_finish = s.store.heap_bytes();
+            s.finish();
+            (before_finish, s.store.heap_bytes())
+        };
+        let (before_finish, after_finish) = mf4_heap(1100.0);
+        assert_eq!(
+            before_finish, 0,
+            "an MF4 store is sized after the file is buffered"
+        );
+        assert!(after_finish > 0);
+        assert_eq!(
+            mf4_heap(2.0 * (1u64 << 30) as f64),
+            (0, 0),
+            "an MF4 file too large to read sizes no store"
+        );
+    }
 
     fn session() -> Session {
         let mut s = Session::new();

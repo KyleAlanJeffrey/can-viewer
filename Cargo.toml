@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+publish = false
+
+[workspace.dependencies]
+can-core = { path = "crates/can-core" }
+can-formats = { path = "crates/can-formats" }
+can-dbc-model = { path = "crates/can-dbc-model" }
+can-dbc = { version = "10", default-features = false }
+memchr = "2"
+rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1

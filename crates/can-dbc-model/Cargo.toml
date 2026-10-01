@@ -1,0 +1,13 @@
+[package]
+name = "can-dbc-model"
+description = "Editable CAN database model loaded from DBC, with signal decoding and encoding"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+can-dbc.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

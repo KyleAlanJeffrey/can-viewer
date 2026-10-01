@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { EXT_FLAG, FLAG_ERROR, FLAG_FD, FLAG_RTR, formatId, type CoreApi } from '../core/api';
+import { EXT_FLAG, FLAG_ERROR, FLAG_FD, FLAG_RTR, formatId, idLabel, type CoreApi } from '../core/api';
 import type { RowBatch } from '../core/rows';
 import { cssVar, useFontsReady } from '../format';
 
@@ -318,9 +318,11 @@ function draw(
           if (flags & FLAG_ERROR) cell(ctx, 'ERR', left, mid, c.warning, 'left');
           else cell(ctx, formatId(id & 0x1fff_ffff, extended), left, mid, c.text, 'left');
           break;
-        case 'name':
-          cell(ctx, clip(ctx, nameOf(batch.channel(i), id >>> 0) ?? '', w - PAD * 2), left, mid, c.text, 'left');
+        case 'name': {
+          const name = flags & FLAG_ERROR ? idLabel({ id: (id & ~EXT_FLAG) >>> 0, extended, flags }) : (nameOf(batch.channel(i), id >>> 0) ?? '');
+          cell(ctx, clip(ctx, name, w - PAD * 2), left, mid, c.text, 'left');
           break;
+        }
         case 'len':
           cell(ctx, flags & FLAG_RTR ? 'RTR' : String(len), left, mid, c.text, 'left');
           break;

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Activity, ChevronDown, ChevronRight, List } from 'lucide-react';
-import { ALL_IDS, FLAG_FD, formatId, type IdSummary } from '../core/api';
+import { ALL_IDS, FLAG_FD, idLabel, isErrorFrame, type IdSummary } from '../core/api';
 import { formatCount, formatPeriod } from '../format';
 
 type SortKey = 'id' | 'count' | 'period';
@@ -66,7 +66,7 @@ export function IdList({ ids, channels, totalFrames, hasDbc, filtered, selected,
         // Size the ID column to the bus's 11-bit IDs when it has any; a wider ID (or one with
         // a tag) takes the room it needs on its own row rather than pushing every name aside.
         const sized = g.ids.some((s) => !s.extended) ? g.ids.filter((s) => !s.extended) : g.ids;
-        const idChars = Math.max(3, ...sized.map((s) => formatId(s.id, s.extended).length));
+        const idChars = Math.max(3, ...sized.map((s) => idLabel(s).length));
         return (
           <section key={g.name} style={{ '--id-col': `${idChars + 0.2}ch` } as React.CSSProperties}>
             <button className="group-head" aria-expanded={open} onClick={() => toggle(g.name)}>
@@ -81,18 +81,20 @@ export function IdList({ ids, channels, totalFrames, hasDbc, filtered, selected,
                 {g.ids.map((s) => (
                   <li key={s.key}>
                     <button
-                      className={`id-row${formatId(s.id, s.extended).length > idChars || s.flags & FLAG_FD ? ' wide' : ''}`}
+                      className={`id-row${idLabel(s).length > idChars || s.flags & FLAG_FD ? ' wide' : ''}`}
                       aria-current={selected === s.key}
                       onClick={() => onSelect(s.key)}
                       title={`${s.name ? `${s.name} \u00b7 ` : ''}${formatCount(s.count)} frames`}
                     >
                       <Activity size={16} strokeWidth={1.5} />
                       <span className="id">
-                        {formatId(s.id, s.extended)}
+                        {idLabel(s)}
                         {s.flags & FLAG_FD ? <span className="tag">FD</span> : null}
                       </span>
                       {s.name ? (
                         <span className="name">{s.name}</span>
+                      ) : isErrorFrame(s) ? (
+                        <span className="name">Error frames</span>
                       ) : hasDbc ? (
                         <span className="name unknown">
                           Unknown <span className="status-dot" aria-hidden="true" />

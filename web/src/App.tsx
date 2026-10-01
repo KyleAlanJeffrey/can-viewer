@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, FileText, Lock, PanelLeft, PanelRight, Search, X } from 'lucide-react';
-import { ALL_IDS, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
+import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
 import { cssVar, formatBytes, formatCount, formatDuration } from './format';
-import { forget, loadSaved, save } from './session';
+import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
@@ -61,6 +61,19 @@ function resolve(dbcs: LoadedDbc[], summary: IdSummary): Resolved | null {
   return dbc && message ? { message, dbc } : null;
 }
 
+/** DBCs saved before J1939 support have no `j1939` on their messages; then every 29-bit message was one. */
+function withJ1939Flags(dbcs: LoadedDbc[]): LoadedDbc[] {
+  return dbcs.map((d) => ({
+    ...d,
+    db: { ...d.db, messages: d.db.messages.map((m) => ('j1939' in m ? m : { ...m, j1939: m.id >= EXT_FLAG })) },
+  }));
+}
+
+/** Whether `next` changes anything the core sees: a DBC's contents, bus or place in the lookup order. */
+function coreSees(prev: LoadedDbc[], next: LoadedDbc[]): boolean {
+  return prev.length !== next.length || next.some((d, i) => d.db !== prev[i].db || d.channel !== prev[i].channel);
+}
+
 /** `name`, or `name` with a number before the extension if another loaded DBC already uses it. */
 function uniqueName(dbcs: LoadedDbc[], name: string): string {
   const taken = new Set(dbcs.map((d) => d.db.name));
@@ -84,6 +97,7 @@ export function App({ core }: { core: CoreApi }) {
   const [skippedDismissed, setSkippedDismissed] = useState(false);
   const [notKept, setNotKept] = useState<string | null>(null);
   const [dbcsNotKept, setDbcsNotKept] = useState(false);
+  const [dbcsChangedElsewhere, setDbcsChangedElsewhere] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const [query, setQuery] = useState('');
@@ -164,12 +178,27 @@ export function App({ core }: { core: CoreApi }) {
     return next;
   }, []);
 
-  /** Send `next` to the core, then refresh names and decode again any plot whose signal changed. */
+  /**
+   * Send `next` to the core, then refresh names and decode again any plot whose signal changed.
+   * `persist` is false when `next` came from the store: writing it back would only make every
+   * other open tab stale.
+   */
   const applyDbcs = useCallback(
-    async (next: LoadedDbc[]) => {
-      await core.setDatabases(next.map((d) => ({ channel: d.channel, db: d.db })));
+    async (next: LoadedDbc[], persist = true) => {
+      const changed = coreSees(dbcsRef.current, next);
+      if (changed) await core.setDatabases(next.map((d) => ({ channel: d.channel, db: d.db })));
       dbcsRef.current = next;
-      void save('dbcs', next).then((kept) => setDbcsNotKept(!kept));
+      if (persist) {
+        void saveDbcs(next).then((result) => {
+          setDbcsNotKept(result === 'failed');
+          if (result === 'conflict') setDbcsChangedElsewhere(true);
+        });
+      }
+      // Only edited or exportedAt changed: the core's summaries and the plots stand.
+      if (!changed) {
+        setDbcs(next);
+        return;
+      }
       const nextIds = await core.idSummary();
       // Set together: summaries name their DBC by its index in this list.
       setDbcs(next);
@@ -196,7 +225,7 @@ export function App({ core }: { core: CoreApi }) {
   );
 
   const mutateDbcs = useCallback(
-    (change: (prev: LoadedDbc[]) => LoadedDbc[]) => serially(() => applyDbcs(change(dbcsRef.current))),
+    (change: (prev: LoadedDbc[]) => LoadedDbc[], persist = true) => serially(() => applyDbcs(change(dbcsRef.current), persist)),
     [serially, applyDbcs],
   );
 
@@ -337,12 +366,12 @@ export function App({ core }: { core: CoreApi }) {
     void (async () => {
       const [savedLog, savedDbcs, savedUi, savedViews] = await Promise.all([
         loadSaved<SavedLog>('log'),
-        loadSaved<LoadedDbc[]>('dbcs'),
+        loadSavedDbcs<LoadedDbc[]>(),
         loadSaved<SavedUi>('ui'),
         loadSaved<ReturnType<ViewStateStore['snapshot']>>('views'),
       ]);
       if (savedViews) viewState.restore(savedViews);
-      if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => savedDbcs));
+      if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => withJ1939Flags(savedDbcs), false));
       if (savedLog) {
         const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
         if (!(await openLog(savedLog.blob, savedLog.name, ui))) void forget('log');
@@ -381,6 +410,18 @@ export function App({ core }: { core: CoreApi }) {
       clearTimeout(timer);
     };
   }, [viewState]);
+
+  useEffect(() => onDbcsChangedElsewhere(() => setDbcsChangedElsewhere(true)), []);
+
+  // The restarted core has the databases back but no log; the user opens it again.
+  useEffect(
+    () =>
+      core.onReset?.(() => {
+        showNoLog();
+        setError('The CAN core stopped and was restarted. Open the log again.');
+      }),
+    [core, showNoLog],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -710,6 +751,21 @@ export function App({ core }: { core: CoreApi }) {
                   <span className="detail"> Its storage may be full or turned off.</span>
                 </p>
                 <button className="icon-button small" onClick={() => setDbcsNotKept(false)} aria-label="Dismiss">
+                  <X size={14} strokeWidth={1.75} />
+                </button>
+              </div>
+            )}
+            {dbcsChangedElsewhere && (
+              <div className="banner">
+                <AlertTriangle size={16} strokeWidth={1.75} />
+                <p>
+                  Your DBCs were changed in another tab. Reload to see them.
+                  <span className="detail"> Until then, changes made here aren&rsquo;t saved. Export DBC&hellip; keeps them in a file.</span>
+                </p>
+                <button className="button" onClick={() => location.reload()}>
+                  Reload
+                </button>
+                <button className="icon-button small" onClick={() => setDbcsChangedElsewhere(false)} aria-label="Dismiss">
                   <X size={14} strokeWidth={1.75} />
                 </button>
               </div>

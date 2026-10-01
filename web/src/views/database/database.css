@@ -284,6 +284,7 @@
 .db-switch-control {
   display: flex;
   align-items: center;
+  gap: 10px;
   min-height: 32px;
 }
 

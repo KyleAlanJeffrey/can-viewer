@@ -461,6 +461,13 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.banner .button {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 /* Empty state */
 .empty {
   flex: 1;

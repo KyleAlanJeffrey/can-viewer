@@ -8,6 +8,7 @@
 - Each call posts `{ id, method, args }` to the worker. The worker answers with `{ id, result }` or `{ id, error }`, and pushes parse progress as `{ event: 'progress', bytes, total }`.
 - Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it.
 - Bulk results (trace rows, bit counts, series points, bus load) arrive as typed arrays whose buffers are transferred, not copied. Small structured results cross the wasm boundary as JSON.
+- If the worker itself stops (an uncaught error or a reply that cannot be read), `WebCore` terminates it and starts another: every call in flight rejects with `The CAN core stopped and was restarted. Open the log again.`, the databases from the last `setDatabases` are set again, and the listeners given to [`onReset`](#onreset) are called. The log and every series are gone. A worker that stopped before it ever answered is not replaced, since another would fail the same way; every later call then rejects with the worker's error.
 - The planned desktop app will implement the same interface over Tauri commands, with the same crates running natively.
 
 ```ts
@@ -40,7 +41,9 @@ Exported from `web/src/core/api.ts`:
 | `FLAG_ERROR` | `1 << 4` | Error frame |
 | `EXT_FLAG` | `0x8000_0000` | Bit 31: extended ID |
 | `dbcId(s)` | function | The ID of an `IdSummary` with `EXT_FLAG` set when extended, as used in DBC files |
+| `isErrorFrame(s)` | function | Whether an `IdSummary` is for CAN error frames (`FLAG_ERROR` in its flags) |
 | `formatId(id, extended)` | function | Upper-case hex: 3 digits for standard IDs, 8 for extended |
+| `idLabel(s)` | function | What an ID list shows for an `IdSummary`: `formatId` text, or for error frames their class under the error flag, such as `Error 080` (`Error frames` when the class is 0) |
 
 Frame flags can also carry bits with no constant in `api.ts`: ESI (`1 << 2`) and transmitted (`1 << 5`, from `candump -x`). See `flags` in `crates/can-core/src/lib.rs`.
 
@@ -598,6 +601,29 @@ Writes `db` as DBC text. It neither reads nor changes the session. Parsing the t
 ```ts
 const text = await core.exportDbc(db);
 downloadText('vehicle.dbc', text); // web/src/download.ts
+```
+
+## Engine lifecycle
+
+### onReset
+
+```ts
+onReset?(listener: () => void): () => void
+```
+
+Registers `listener` to be called after the engine stopped and was started again. By then every call that was in flight has rejected, the databases from the last `setDatabases` are loaded again, and the log and every series are gone, so the app shows no log and asks for it to be opened again. The method is optional: an implementation whose engine never restarts leaves it out, and callers use `core.onReset?.(...)`.
+
+**Parameters**
+
+- **`listener`** `() => void` - Called once per restart.
+
+**Returns** a function that removes the listener.
+
+```ts
+const stop = core.onReset?.(() => {
+  showNoLog();
+  showError('The CAN core stopped and was restarted. Open the log again.');
+});
 ```
 
 ## Find Signal

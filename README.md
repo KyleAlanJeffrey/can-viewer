@@ -15,7 +15,7 @@ Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker
 | Path | What |
 |---|---|
 | `crates/can-core` | Frame types; columnar frame store with per-ID stats and bit-flip counts |
-| `crates/can-formats` | Streaming log parsers: candump and Vector ASC, chosen by file name and content |
+| `crates/can-formats` | Streaming log parsers: candump, Vector ASC and PEAK TRC, chosen by file name and content |
 | `crates/can-dbc-model` | DBC loading via `can-dbc`, our own editable model, signal decode and encode |
 | `crates/can-wasm` | wasm-bindgen `Session` used by the web worker; min/max plot decimation |
 | `crates/sample-gen` | Dev tool: synthetic demo log + DBC, native benchmark, decode dumps |
@@ -84,7 +84,7 @@ These use the 10M-frame demo: a 552 MB candump file, about 5 h of driving, 11 ID
 ## Known gaps / next steps
 
 - **Memory:** the store's columns are plain `Vec`s, and doubling on growth nearly doubles peak memory. Switch to fixed-size chunked columns to hold wasm memory close to the actual data size.
-- **Formats:** candump and Vector ASC are supported. Next are TRC, CSV, BLF (CAN objects) and MF4 bus logging, all using the streaming `LogParser` interface.
+- **Formats:** candump, Vector ASC and PEAK TRC are supported. Next are CSV, BLF (CAN objects) and MF4 bus logging, all using the streaming `LogParser` interface.
 - **Parallel parsing:** add a pool of workers parsing `Blob.slice` ranges for multi-core throughput.
 - **Plot queries:** add level-of-detail pyramids so a query no longer scales linearly with the points in range.
 - **Reverse engineering:** drag-to-define signals on the heatmap, a scrubbable time window for bit flips, counter/CRC auto-labels, and DBC export.

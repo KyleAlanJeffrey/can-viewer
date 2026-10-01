@@ -10,10 +10,12 @@ mod lines;
 #[cfg(test)]
 mod testing;
 mod text;
+pub mod trc;
 
 pub use asc::AscParser;
 pub use candump::CandumpParser;
 pub use detect::Format;
+pub use trc::TrcParser;
 
 use can_core::FrameSink;
 
@@ -50,6 +52,7 @@ impl ParseStats {
 pub enum AnyParser {
     Candump(CandumpParser),
     Asc(AscParser),
+    Trc(TrcParser),
 }
 
 impl AnyParser {
@@ -58,6 +61,7 @@ impl AnyParser {
         match format {
             Format::Candump => AnyParser::Candump(CandumpParser::new()),
             Format::Asc => AnyParser::Asc(AscParser::new()),
+            Format::Trc => AnyParser::Trc(TrcParser::new()),
         }
     }
 
@@ -66,6 +70,7 @@ impl AnyParser {
         match self {
             AnyParser::Candump(_) => Format::Candump,
             AnyParser::Asc(_) => Format::Asc,
+            AnyParser::Trc(_) => Format::Trc,
         }
     }
 }
@@ -75,6 +80,7 @@ impl LogParser for AnyParser {
         match self {
             AnyParser::Candump(parser) => parser.push(chunk, sink),
             AnyParser::Asc(parser) => parser.push(chunk, sink),
+            AnyParser::Trc(parser) => parser.push(chunk, sink),
         }
     }
 
@@ -82,6 +88,7 @@ impl LogParser for AnyParser {
         match self {
             AnyParser::Candump(parser) => parser.finish(sink),
             AnyParser::Asc(parser) => parser.finish(sink),
+            AnyParser::Trc(parser) => parser.finish(sink),
         }
     }
 
@@ -89,6 +96,7 @@ impl LogParser for AnyParser {
         match self {
             AnyParser::Candump(parser) => parser.stats(),
             AnyParser::Asc(parser) => parser.stats(),
+            AnyParser::Trc(parser) => parser.stats(),
         }
     }
 }

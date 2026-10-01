@@ -7,6 +7,7 @@ use crate::text::starts_with_ignore_case;
 pub enum Format {
     Candump,
     Asc,
+    Trc,
 }
 
 impl Format {
@@ -16,6 +17,7 @@ impl Format {
         match self {
             Format::Candump => "candump",
             Format::Asc => "asc",
+            Format::Trc => "trc",
         }
     }
 
@@ -26,6 +28,7 @@ impl Format {
         match extension.to_ascii_lowercase().as_str() {
             "log" | "txt" | "candump" => Some(Format::Candump),
             "asc" => Some(Format::Asc),
+            "trc" => Some(Format::Trc),
             _ => None,
         }
     }
@@ -36,6 +39,9 @@ impl Format {
         let first = first_line(head)?;
         if first.starts_with(b"(") {
             return Some(Format::Candump);
+        }
+        if first.starts_with(b";") {
+            return Some(Format::Trc);
         }
         let asc_header = [
             &b"date "[..],
@@ -104,6 +110,9 @@ mod tests {
             Some(Format::Asc)
         );
         assert_eq!(Format::sniff(b"0.000 1 123 Rx d 0\n"), None);
+        assert_eq!(Format::sniff(b";$FILEVERSION=2.1\n"), Some(Format::Trc));
+        assert_eq!(Format::sniff(b"\n;####\n"), Some(Format::Trc));
+        assert_eq!(Format::from_file_name("x.TRC"), Some(Format::Trc));
         assert_eq!(Format::detect("drive.bin", candump), Format::Candump);
         assert_eq!(Format::detect("drive.log", b"date Tue"), Format::Asc);
         assert_eq!(

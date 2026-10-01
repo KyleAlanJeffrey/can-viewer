@@ -36,16 +36,18 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 |---|---|---|
 | candump log files (`candump -l` / `-L`) | `.log`, `.txt`, `.candump` | Supported |
 | Vector ASC | `.asc` | Supported |
-| Vector BLF, PEAK TRC, ASAM MF4, CSV | | Planned. Not supported |
+| PEAK TRC (file versions 1.0 to 2.1) | `.trc` | Supported |
+| Vector BLF, ASAM MF4, CSV | | Planned. Not supported |
 
 How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format is read as what its extension says, or as candump if the extension is unknown too. The content rules are:
 
 - candump: the first non-blank line starts with `(`.
 - Vector ASC: the first non-blank line starts with `date `, `base hex`, `base dec` or `Begin Triggerblock` (case-insensitive).
+- PEAK TRC: the first non-blank line starts with `;` (`;$FILEVERSION=` or a comment).
 
 The result is reported as `LogInfo.format` (see [API.md](API.md)). Whatever the format, `LogInfo.lines` counts the lines of a text file or the records of a binary one, and the first line or record that does not parse is reported with its number and a reason.
 
-Bus names: candump keeps the interface names from the file (`can0`, `vcan1`). Formats that number their buses instead (ASC) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1`. A DBC scoped to a bus is matched by that name.
+Bus names: candump keeps the interface names from the file (`can0`, `vcan1`). Formats that number their buses instead (ASC, TRC) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1`. A DBC scoped to a bus is matched by that name.
 
 Error frames from formats other than candump get the ID `0x20000000`: the CAN error flag with no error class, because those formats carry no SocketCAN error class. They are flagged as error frames, counted in `LogInfo.errorFrames`, and never decoded.
 
@@ -68,6 +70,16 @@ Vector ASC support (`crates/can-formats/src/asc.rs`), as written by CANoe, CANal
 - `Tx` and `TxRq` set the transmitted flag.
 - Lines that are not frames (`Statistic:`, `Start of measurement`, J1939 transport, chip status, comments, trigger block markers) are skipped without counting as rejected. A frame line that does not parse (bad ID, DLC or data byte, too few bytes, unknown frame type) is rejected with a reason.
 - Not read: symbolic names, CAN XL, LIN, FlexRay and Ethernet lines, and the fields after a CAN FD line's data other than the flags.
+
+PEAK TRC support (`crates/can-formats/src/trc.rs`), as written by PCAN-View, PCAN-Explorer and python-can:
+
+- Header lines start with `;`. `;$STARTTIME=` (days since 1899-12-30, as PEAK writes it) gives the absolute start time, taken as UTC; without it, times count from zero. Time offsets are milliseconds from the start.
+- Versions 2.0 and 2.1 declare their columns with `;$COLUMNS=`. Read columns: `O` (time offset), `T` (type), `B` (bus), `I` (ID), `d` (direction), `l` (data length in bytes) or `L` (DLC), and `D` (data), which must be last. Other columns (`N`, `R`) are skipped. A 2.x file without a usable `;$COLUMNS=` line rejects every frame line with that reason.
+- 2.x types: `DT` (data frame), `FD`, `FB` (bit rate switch), `FE` (error state indicator), `BI` (both), `RR` (remote frame), and `ER`, `EC`, `EB` (error frames, with whatever data bytes the line holds). `ST`, `EV` and any other type are skipped without counting as rejected. With an `L` column, a DLC of 9 to 15 gives the CAN FD length for FD types and 8 bytes for others.
+- Versions 1.0 to 1.3 are told apart by what follows the time offset (1.1: `Rx`/`Tx`; 1.2 and 1.3: bus number then `Rx`/`Tx`, 1.3 with a `-` after the ID; 1.0: the ID), so a file without `;$FILEVERSION=` is read as 1.0. `RTR` in place of the data bytes marks a remote frame. The bus status lines PCAN-View writes with ID `FFFFFFFF`, and lines whose type is `Warng` or `Error`, are skipped.
+- An ID of more than four hex digits, or above 0x7FF, is 29-bit. A bus column names the bus `can<number>`; without one the bus is `can1`.
+- A frame line that does not parse (bad offset, ID, DLC or data byte, too few bytes or columns) is rejected with a reason.
+- Not read: `EV` user events, `ST` status lines, and the error details of `ER` lines beyond their data bytes.
 
 ## DBC files
 

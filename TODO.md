@@ -62,7 +62,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
 - [x] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)
 - [x] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
-- [ ] Reverse Engineer Bit History: show bytes past 64 of a long reassembled J1939 transfer (fetch them with `frameData`, or a core call for a byte range of many rows)
+- [x] Reverse Engineer Bit History: show bytes past 64 of a long reassembled J1939 transfer (fetch them with `frameData`, or a core call for a byte range of many rows)
 
 - [x] Database view: show and edit whether a message is J1939
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full

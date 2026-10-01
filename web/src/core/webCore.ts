@@ -97,6 +97,10 @@ export class WebCore implements CoreApi {
     return new RowBatch(key, start, bytes.buffer as ArrayBuffer);
   }
 
+  rowBytes(key: number, start: number, count: number, first: number, byteCount: number) {
+    return this.call<Uint16Array>('rowBytes', key, start, count, first, byteCount);
+  }
+
   async parseDbc(file: Blob, name: string): Promise<Database> {
     return { ...(await this.call<Omit<Database, 'name'>>('parseDbc', file)), name };
   }

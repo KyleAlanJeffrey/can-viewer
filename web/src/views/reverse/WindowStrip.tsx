@@ -18,17 +18,21 @@ interface Props {
   onChange: (w: TimeWindow) => void;
   /** Without the title, for a strip that sits inside another card. */
   compact?: boolean;
+  title?: string;
+  /** What the bars show, per bucket across the log; the ID's changed bits when left out. */
+  bars?: (buckets: number) => Promise<ArrayLike<number>>;
+  barsLabel?: string;
 }
 
 /**
  * The analysis window over the whole log. Bars show how many payload bits of the ID changed in
  * each slice of the log, so busy stretches are easy to aim at; everything below uses the window.
  */
-export function WindowStrip({ core, idKey, logVersion, duration, window: win, onChange, compact = false }: Props) {
+export function WindowStrip({ core, idKey, logVersion, duration, window: win, onChange, compact = false, title = 'Time Window', bars, barsLabel = 'payload bits changed' }: Props) {
   const stripRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
-  const [activity, setActivity] = useState<Uint32Array | null>(null);
+  const [activity, setActivity] = useState<ArrayLike<number> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const drag = useRef<{ edge: Edge; x0: number; from: TimeWindow } | null>(null);
   const titleId = useId();
@@ -47,7 +51,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
   useEffect(() => {
     if (buckets < 1 || !(duration > 0)) return;
     let stale = false;
-    core.changeActivity(idKey, 0, duration, buckets).then(
+    (bars ? bars(buckets) : core.changeActivity(idKey, 0, duration, buckets)).then(
       (a) => {
         if (stale) return;
         setActivity(a);
@@ -62,7 +66,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
     return () => {
       stale = true;
     };
-  }, [core, idKey, logVersion, duration, buckets]);
+  }, [core, idKey, logVersion, duration, buckets, bars]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -85,7 +89,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
     if (!activity || activity.length === 0) return;
 
     let peak = 1;
-    for (const v of activity) peak = Math.max(peak, v);
+    for (let i = 0; i < activity.length; i++) peak = Math.max(peak, activity[i]);
     const inside = cssVar('--ochre-control');
     const outside = cssVar('--slate');
     const pitch = width / activity.length;
@@ -163,7 +167,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
     <div className="re-window">
       <div className="re-card-head">
         <h3 className={compact ? 're-subtitle' : 'section-title'} id={titleId}>
-          Time Window
+          {title}
         </h3>
         <div className="re-window-fields">
           <TimeField label="Window start, seconds" value={t0} onCommit={(t) => onChange(resize('start', win, t - t0))} />
@@ -227,7 +231,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
       </div>
       <div className="re-strip-axis">
         <span>0 s</span>
-        {error ? <span className="re-quiet">Change activity: {error}</span> : <span>Bars: payload bits changed</span>}
+        {error ? <span className="re-quiet">Bars: {error}</span> : <span>Bars: {barsLabel}</span>}
         <span>{formatDuration(duration)}</span>
       </div>
     </div>

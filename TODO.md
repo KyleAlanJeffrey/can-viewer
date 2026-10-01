@@ -28,7 +28,7 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 A separate static site on `freecanstudio.com`, with the app moving to `app.freecanstudio.com`. Two Cloudflare deployments; the owner sets them up.
 
 - [ ] New `site/` folder for the landing page (a static site tool such as Astro), built and deployed on its own so copy edits don't rebuild Rust and wasm
-- [ ] Main button goes straight into the app; add a demo link (`app.freecanstudio.com/?demo=1`) and make the app open the demo log from it
+- [x] Main button goes straight into the app; add a demo link (`app.freecanstudio.com/?demo=1`) and make the app open the demo log from it
 - [ ] Content pages for the searches people make: BLF viewer online, MF4 viewer online, DBC viewer, CANalyzer alternative; each with a big "Open a BLF file" style button into the app
 - [ ] No drop zone on the landing page (a dropped file can't be handed to another site); send people to the app to open files
 - [ ] Analytics, newsletter signup or video embeds stay on the landing page only; the app keeps its strict CSP in `web/public/_headers` and loads nothing from third parties

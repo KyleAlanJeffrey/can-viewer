@@ -18,8 +18,20 @@ use series::Series;
 /// Bytes per row returned by [`Session::rows`]; see `web/src/core/rows.ts` for the layout.
 pub const ROW_STRIDE: usize = 96;
 
-/// Rough candump bytes per frame, used to pre-size the store from the file size.
-const CANDUMP_BYTES_PER_FRAME: f64 = 40.0;
+/// Rough bytes per frame of a log in each format, to pre-size the store from the file size.
+/// Binary formats are taken as compressed, as `sample-gen convert` writes them (an MF4 or
+/// BLF file of 10M classic frames is 112 MB or 149 MB): an uncompressed file then reserves
+/// a little more than it needs, rather than a compressed one growing the store at the end.
+fn bytes_per_frame(format: Format) -> f64 {
+    match format {
+        Format::Candump => 40.0,
+        Format::Asc => 80.0,
+        Format::Trc => 85.0,
+        Format::Csv => 65.0,
+        Format::Blf => 15.0,
+        Format::Mf4 => 11.0,
+    }
+}
 
 /// Bytes of a log held back until there are enough to tell its format from its content.
 const SNIFF_BYTES: usize = 4096;
@@ -37,6 +49,8 @@ pub struct Session {
 #[derive(Default)]
 struct LogInput {
     file_name: String,
+    /// The file's size, if given, to size the store by once the format is known.
+    total_bytes: f64,
     head: Vec<u8>,
     parser: Option<AnyParser>,
 }
@@ -55,7 +69,10 @@ impl LogInput {
     }
 
     fn choose_parser(&mut self, store: &mut FrameStore) {
-        let mut parser = AnyParser::new(self.format());
+        let format = self.format();
+        let frames = (self.total_bytes / bytes_per_frame(format)) as usize;
+        store.reserve(frames, frames * 8);
+        let mut parser = AnyParser::new(format);
         parser.push(&self.head, store);
         self.head = Vec::new();
         self.parser = Some(parser);
@@ -215,10 +232,10 @@ impl Session {
         self.input.file_name = name.to_owned();
     }
 
-    /// Size the frame store for a log of `total_bytes`, avoiding repeated regrowth.
+    /// Size the frame store for a log of `total_bytes`, avoiding repeated regrowth. Call it
+    /// before pushing the first chunk: the store is sized once the format is known.
     pub fn reserve_for_bytes(&mut self, total_bytes: f64) {
-        let frames = (total_bytes / CANDUMP_BYTES_PER_FRAME) as usize;
-        self.store.reserve(frames, frames * 8);
+        self.input.total_bytes = total_bytes;
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) {

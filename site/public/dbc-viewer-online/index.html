@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DBC Viewer and Editor Online - View, Edit and Export DBC Files | FreeCAN Studio</title>
+  <meta name="description" content="View and edit DBC files in your browser. See every message and signal with its bit layout, change them and export a DBC. Decode CAN logs with it too. Free, no account, nothing uploaded.">
+  <link rel="canonical" href="https://freecanstudio.com/dbc-viewer-online/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="FreeCAN Studio">
+  <meta property="og:title" content="DBC Viewer and Editor Online - View, Edit and Export DBC Files | FreeCAN Studio">
+  <meta property="og:description" content="View and edit DBC files in your browser. See every message and signal with its bit layout, change them and export a DBC. Decode CAN logs with it too. Free, no account, nothing uploaded.">
+  <meta property="og:url" content="https://freecanstudio.com/dbc-viewer-online/">
+  <meta property="og:image" content="https://freecanstudio.com/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="FreeCAN Studio: the CAN log viewer that lives in your browser.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/logo.svg" alt="" width="30" height="32"><span><strong>FreeCAN</strong> Studio</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="/#features">Features</a>
+      <a href="/#privacy">Privacy</a>
+      <a href="/#formats">Formats</a>
+      <a href="/pro/">Pro</a>
+    </nav>
+    <a class="button" href="https://app.freecanstudio.com/">Open App</a>
+  </div>
+</header>
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap">
+      <h1 class="display">DBC viewer and editor online</h1>
+      <p class="lead">Open a DBC file in your browser to see every message and signal with its bit layout. Edit them, add new ones and export the result as a DBC. You don&rsquo;t need a log, and nothing is uploaded.</p>
+      <p class="trust">Free. No account.</p>
+      <a class="button primary large" href="https://app.freecanstudio.com/">Open a DBC file</a>
+      <p class="button-note">Opens FreeCAN Studio. Then choose Open DBC&hellip; or drop the .dbc file on the window.</p>
+      <p class="privacy-line"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Files are processed on your computer and never uploaded.</p>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="how-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="how-title">How to view and edit a DBC file online</h2>
+      </div>
+      <ol class="steps">
+        <li class="card">
+          <h3>Open the app</h3>
+          <p>Go to <a href="https://app.freecanstudio.com/">app.freecanstudio.com</a> in a desktop browser. There is nothing to install and no account to create.</p>
+        </li>
+        <li class="card">
+          <h3>Open the DBC</h3>
+          <p>Click Open DBC&hellip; and choose the .dbc file. The Database view opens with its messages in the sidebar.</p>
+        </li>
+        <li class="card">
+          <h3>Edit and export</h3>
+          <p>Select a message to see its signals and a grid of the bits they use. Edit a signal, add a message with New Message, then click Export DBC&hellip; to save the file.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="faq-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="faq-title">Questions</h2>
+      </div>
+      <div class="card faq">
+        <div class="faq-item">
+          <h3>What does the DBC viewer show?</h3>
+          <p>Every message with its ID and length, and every signal with its start bit, length, byte order, sign, factor, offset, range, unit and receivers. A layout grid shows which bits each signal uses.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Which parts of a DBC are supported?</h3>
+          <p>Standard and extended IDs; Intel and Motorola byte order; unsigned, signed and IEEE float signals; simple and extended multiplexing (<span class="mono">SG_MUL_VAL_</span>); comments, value descriptions and value tables; attributes; and J1939 and CAN FD messages marked with <span class="mono">VFrameFormat</span>.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Is anything lost when I export?</h3>
+          <p>Parts of a DBC outside FreeCAN Studio&rsquo;s model are dropped when the file is opened, so an export leaves them out: signal groups, environment variables, relation attributes, network comments and <span class="mono">BO_TX_BU_</span>.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Can I decode a log with it?</h3>
+          <p>Yes. Open a log as well and every matching frame is decoded. You can load several DBCs at once, each for every bus or for one bus, and J1939 messages match by PGN.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Are my edits kept?</h3>
+          <p>Open DBCs and your edits are kept in your browser&rsquo;s storage, so a reload doesn&rsquo;t lose them. Nothing is uploaded. Export DBC&hellip; writes a file you can keep or share.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Is my DBC uploaded?</h3>
+          <p>No. FreeCAN Studio runs in your browser: a Rust core compiled to WebAssembly reads the file on your computer. The app loads nothing from third parties, and its Content-Security-Policy makes your browser enforce that. <a href="/#privacy">How to check it</a>.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Which browsers does it run in?</h3>
+          <p>Current desktop versions of Chrome, Edge, Firefox and Safari. Phones and tablets are not supported.</p>
+        </div>
+        <div class="faq-item">
+          <h3>Is it free?</h3>
+          <p>Yes. FreeCAN Studio is free and needs no account. <a href="/pro/">FreeCAN Studio Pro</a>, a paid desktop app, is planned separately.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="more-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="more-title">More guides</h2>
+      </div>
+      <ul class="guide-links">
+        <li class="card"><a href="/"><strong>FreeCAN Studio</strong><span>The CAN log viewer that lives in your browser.</span></a></li>
+        <li class="card"><a href="/blf-viewer-online/"><strong>BLF viewer online</strong><span>Open Vector BLF logs in your browser.</span></a></li>
+        <li class="card"><a href="/mf4-viewer-online/"><strong>MF4 viewer online</strong><span>Open MF4 bus logging files in your browser.</span></a></li>
+        <li class="card"><a href="/canalyzer-alternative/"><strong>CANalyzer alternative</strong><span>A free tool for reading and decoding CAN logs.</span></a></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" aria-label="Demo">
+    <div class="wrap">
+      <div class="card closing">
+        <p>Want to look around first? The demo opens a 1,000,000-frame log with its DBC.</p>
+        <a class="button" href="https://app.freecanstudio.com/?demo=1">Try the Demo</a>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="/"><img src="/logo.svg" alt="" width="30" height="32"><span><strong>FreeCAN</strong> Studio</span></a>
+        <p>Files are processed on your computer and never uploaded.</p>
+      </div>
+      <nav aria-labelledby="footer-app">
+        <h2 id="footer-app">FreeCAN Studio</h2>
+        <ul>
+          <li><a href="https://app.freecanstudio.com/">Open FreeCAN Studio</a></li>
+          <li><a href="https://app.freecanstudio.com/?demo=1">Try the Demo</a></li>
+          <li><a href="/#privacy">Privacy</a></li>
+          <li><a href="/pro/">FreeCAN Studio Pro</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="footer-guides">
+        <h2 id="footer-guides">Guides</h2>
+        <ul>
+          <li><a href="/blf-viewer-online/">BLF viewer online</a></li>
+          <li><a href="/mf4-viewer-online/">MF4 viewer online</a></li>
+          <li><a href="/dbc-viewer-online/">DBC viewer and editor</a></li>
+          <li><a href="/canalyzer-alternative/">CANalyzer alternative</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="footer-legal">
+      <p>&copy; 2026 FreeCAN Studio.</p>
+      <p>Other product names are trademarks of their owners.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

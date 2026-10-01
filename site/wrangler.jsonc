@@ -1,0 +1,11 @@
+// Cloudflare Workers deployment for the landing site (freecanstudio.com): plain static files, no build.
+// Workers Builds runs `npx wrangler deploy` with `site` as the root directory.
+{
+  "name": "freecan-site",
+  "compatibility_date": "2026-09-30",
+  "assets": {
+    "directory": "./public",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  }
+}

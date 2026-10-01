@@ -597,7 +597,7 @@ export function App({ core }: { core: CoreApi }) {
   };
 
   return (
-    <div className={`app${sidebarOpen ? '' : ' sidebar-hidden'}`}>
+    <div className={`app${sidebarOpen ? '' : ' sidebar-hidden'}`} data-busy={busy ? '' : undefined}>
       <aside className="sidebar" aria-label="Sidebar">
         <div className="brand">
           <Logo size={40} />

@@ -87,6 +87,7 @@ export class WebCore implements CoreApi {
 
   idSummary = () => this.call<IdSummary[]>('idSummary');
   rowCount = (key: number) => this.call<number>('rowCount', key);
+  frameData = (key: number, row: number) => this.call<Uint8Array>('frameData', key, row);
   bitFlips = (key: number) => this.call<Uint32Array>('bitFlips', key);
   decodeSignal = (key: number, signal: string) => this.call<SeriesInfo>('decodeSignal', key, signal);
   dropSeries = (handle: number) => this.call<void>('dropSeries', handle);

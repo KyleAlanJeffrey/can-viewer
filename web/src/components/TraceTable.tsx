@@ -171,10 +171,19 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
     draw(ctx, size.width, size.height, visible, rows, channels, nameOf, selectedFrame);
   }, [size, batch, visible, filterKey, channels, nameOf, selectedFrame, fontsReady]);
 
-  const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const rowAt = (e: React.MouseEvent<HTMLCanvasElement>): number | null => {
     const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
     const row = Math.floor((y - HEADER_H) / ROW_H);
-    if (!batch || y < HEADER_H || row >= batch.length) return;
+    return batch && y >= HEADER_H && row < batch.length ? row : null;
+  };
+
+  const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.style.cursor = rowAt(e) === null ? '' : 'pointer';
+  };
+
+  const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const row = rowAt(e);
+    if (!batch || row === null) return;
     const frame = batch.index(row);
     if (frame === selectedFrame) {
       setSelectedFrame(null);
@@ -230,7 +239,7 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
       aria-rowcount={rowCount}
       aria-label="Frame trace"
     >
-      <canvas ref={canvasRef} onClick={onCanvasClick} />
+      <canvas ref={canvasRef} onClick={onCanvasClick} onPointerMove={onCanvasPointerMove} />
       <div className="scrollbar" onPointerDown={onTrackDown}>
         {maxTop > 0 && (
           <div
@@ -304,7 +313,7 @@ function draw(
     const id = batch.id(i);
     const flags = batch.flags(i);
     const extended = (id & EXT_FLAG) !== 0;
-    const len = batch.len(i);
+    const len = batch.fullLength(i);
     for (const [key, { x: cx, w }] of at) {
       const left = cx + PAD;
       switch (key) {
@@ -327,6 +336,11 @@ function draw(
           cell(ctx, flags & FLAG_RTR ? 'RTR' : String(len), left, mid, c.text, 'left');
           break;
         case 'data': {
+          // The length label is drawn whole even when no byte fits, so the column clips it.
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(cx, y, w, ROW_H);
+          ctx.clip();
           ctx.textAlign = 'left';
           let dx = left;
           if (flags & FLAG_FD) {
@@ -334,8 +348,12 @@ function draw(
             dx += pitch;
           }
           const data = batch.data(i);
-          const fits = Math.floor((cx + w - dx) / pitch);
-          for (let k = 0; k < Math.min(data.length, fits); k++) {
+          // A reassembled J1939 transfer longer than the row's 64 bytes says how long it is.
+          const cut = len > data.length ? `\u2026 (${len} bytes)` : null;
+          const room = cx + w - dx - (cut ? ctx.measureText(cut).width : 0);
+          const fits = Math.max(0, Math.floor(room / pitch));
+          const shown = Math.min(data.length, fits);
+          for (let k = 0; k < shown; k++) {
             const bx = dx + k * pitch;
             if (batch.changed(i, k)) {
               ctx.fillStyle = isSelected ? c.changedSelected : c.changed;
@@ -345,7 +363,9 @@ function draw(
             }
             cell(ctx, HEX[data[k]], bx, mid, c.text, 'left');
           }
-          if (data.length > fits && fits > 0) cell(ctx, '\u2026', dx + fits * pitch - cw, mid, c.secondary, 'left');
+          if (cut) cell(ctx, cut, dx + shown * pitch, mid, c.secondary, 'left');
+          else if (data.length > fits && fits > 0) cell(ctx, '\u2026', dx + fits * pitch - cw, mid, c.secondary, 'left');
+          ctx.restore();
           break;
         }
       }

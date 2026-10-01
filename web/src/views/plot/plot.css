@@ -580,3 +580,7 @@
 .pv-marker .icon-button {
   margin-left: auto;
 }
+
+.pv-lane-host .u-over {
+  cursor: crosshair;
+}

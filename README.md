@@ -22,6 +22,7 @@ Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker
 | `web/` | Vite + React UI: canvas trace table, bit heatmap, uPlot plots |
 | `site/` | The landing site for `freecanstudio.com`: static HTML, no build ([site/README.md](site/README.md)) |
 | `scripts/crosscheck_cantools.py` | Compares our decoder with cantools |
+| `scripts/gen_extended_mux.py` | Test log + DBC with nested multiplexors, for the cantools cross-check |
 
 ## Develop
 

@@ -262,11 +262,12 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 - **`index(i)`** `number` - The frame's index in the whole log.
 - **`channel(i)`** `number` - Bus index.
 - **`flags(i)`** `number` - Frame flags.
-- **`len(i)`** `number` - Payload length in bytes, at most 64.
+- **`len(i)`** `number` - Bytes of payload in the row, at most 64.
+- **`fullLength(i)`** `number` - The frame's whole payload length in bytes. It equals `len(i)` except for a reassembled J1939 transfer longer than 64 bytes, up to 1785.
 - **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID. Always false for an ID's first frame.
 - **`data(i)`** `Uint8Array` - The payload, as a view into the batch.
 
-A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)` and `data(i)`; its full length is packed as a little-endian `u16` at byte offset 20 of the row, which `rows.ts` does not expose yet. `decodeRaw` and `decodeSignal` work on the whole payload.
+A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, and [`frameData`](#framedata) fetches the whole payload. `decodeRaw` and `decodeSignal` work on the whole payload.
 
 ## Logs
 
@@ -381,6 +382,26 @@ const batch = await core.rows(ALL_IDS, 0, 40);
 for (let i = 0; i < batch.length; i++) {
   console.log(batch.time(i).toFixed(6), log.channels[batch.channel(i)], batch.data(i));
 }
+```
+
+### frameData
+
+```ts
+frameData(key: number, row: number): Promise<Uint8Array>
+```
+
+The whole payload of one trace row. [`rows`](#rows) cuts a payload at 64 bytes, which only a reassembled J1939 transfer exceeds; fetch it with this when `fullLength(i) > len(i)`.
+
+**Parameters**
+
+- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`row`** `number` - Row index, counted within the filter as in `rows`.
+
+**Returns** the payload, up to 1785 bytes. It is empty for an unknown key or a row past the end.
+
+```ts
+const batch = await core.rows(key, 0, 1);
+const payload = batch.fullLength(0) > batch.len(0) ? await core.frameData(key, batch.start) : batch.data(0);
 ```
 
 ### rowAtTime

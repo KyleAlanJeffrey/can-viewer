@@ -53,7 +53,7 @@ export function SignalTable({ message, colors, selected, onSelect, onDelete }: P
             const mux = muxLabel(s);
             const receivers = receiversOf(s);
             return (
-              <tr key={i} className={i === selected ? 'db-selected' : undefined} onClick={() => onSelect(i)}>
+              <tr key={i} className={`db-signal-row${i === selected ? ' db-selected' : ''}`} onClick={() => onSelect(i)}>
                 <td className="db-col-dot">
                   <span className="db-dot" style={{ background: colors[i] }} />
                 </td>

@@ -126,7 +126,30 @@ button {
   background: none;
   border: 0;
   padding: 0;
+}
+
+button,
+select,
+summary,
+[role='tab'],
+[role='switch'],
+input[type='checkbox'],
+input[type='radio'],
+label:has(> input[type='checkbox']),
+label:has(> input[type='radio']) {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+input:disabled,
+[aria-disabled='true'],
+label:has(> input:disabled) {
   cursor: default;
+}
+
+.app[data-busy] {
+  cursor: progress;
 }
 
 button:disabled {
@@ -780,6 +803,11 @@ button:disabled {
 
 .plot-host {
   position: relative;
+}
+
+/* A click pins a time; a drag zooms. */
+.plot-host .u-over {
+  cursor: crosshair;
 }
 
 .callout {

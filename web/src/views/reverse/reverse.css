@@ -115,6 +115,7 @@
 /* Inset by a handle's width so the handles stay inside the card at either end of the log. */
 .re-strip {
   position: relative;
+  cursor: pointer;
   height: 40px;
   margin: 0 10px;
   touch-action: none;
@@ -134,9 +135,6 @@
   cursor: grab;
 }
 
-.re-strip-window:active {
-  cursor: grabbing;
-}
 
 .re-handle {
   position: absolute;
@@ -147,6 +145,24 @@
   border-radius: 4px;
   background: var(--paper);
   cursor: ew-resize;
+}
+
+/* The strip holds pointer capture, so the drag cursor stays put when the pointer leaves the handle. */
+.re-strip[data-drag='move'],
+.re-strip[data-drag='move'] * {
+  cursor: grabbing;
+}
+
+.re-strip[data-drag='start'],
+.re-strip[data-drag='start'] *,
+.re-strip[data-drag='end'],
+.re-strip[data-drag='end'] * {
+  cursor: ew-resize;
+}
+
+.re-strip.empty,
+.re-strip.empty * {
+  cursor: default;
 }
 
 .re-handle.start {
@@ -279,6 +295,12 @@
 
 .re-history canvas {
   display: block;
+}
+
+/* Sixteen bytes a line, so a 64-byte payload stays inside the card. */
+.re-history-bytes {
+  max-width: 48ch;
+  white-space: normal;
 }
 
 .re-history-axis {
@@ -616,7 +638,6 @@
   color: var(--slate);
   font: inherit;
   font-size: 15px;
-  cursor: pointer;
 }
 
 .re-mode:hover {
@@ -657,7 +678,6 @@
   gap: 8px;
   color: var(--graphite);
   font-size: 13px;
-  cursor: pointer;
 }
 
 .re-check input {
@@ -1245,4 +1265,8 @@
 .re-pin-action {
   color: var(--ochre-control);
   font-weight: 500;
+}
+
+.re-ref-plot .u-over {
+  cursor: crosshair;
 }

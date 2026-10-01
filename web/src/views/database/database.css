@@ -288,6 +288,10 @@
   min-height: 32px;
 }
 
+.field-label:has(+ .db-switch-control > input[role='switch']) {
+  cursor: pointer;
+}
+
 .db-readonly {
   display: flex;
   align-items: center;
@@ -379,7 +383,11 @@
   border-bottom: 0;
 }
 
-.db-table tbody tr:hover {
+.db-table tbody tr.db-signal-row {
+  cursor: pointer;
+}
+
+.db-table tbody tr.db-signal-row:hover {
   background: var(--hover-wash);
 }
 
@@ -539,6 +547,7 @@
   font-size: 12px;
   line-height: 16px;
   container-type: inline-size;
+  cursor: pointer;
 }
 
 .db-region:hover {

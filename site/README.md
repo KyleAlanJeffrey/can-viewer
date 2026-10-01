@@ -28,7 +28,7 @@ Each folder holds an `index.html`, so pages have clean URLs (`/blf-viewer-online
 - One amber primary button per page; everything else is an outline button or a text link.
 - Copy stays truthful: only claim what the app does today (see [PRODUCT.md](../PRODUCT.md) and [COMPATIBILITY.md](../COMPATIBILITY.md)). No prices, dates, customers or usage numbers.
 - No inline styles or scripts: the Content-Security-Policy allows only this origin.
-- Analytics, a newsletter signup or video embeds would be allowed here, by widening `public/_headers`, and never in the app, whose policy in `web/public/_headers` stays self-only.
+- Analytics, a newsletter signup or video embeds are allowed here, by widening `public/_headers`, and never in the app, whose policy in `web/public/_headers` stays self-only. The site's policy allows Cloudflare Web Analytics, which Cloudflare injects and which sets no cookies. The app domain must be excluded from Web Analytics in the Cloudflare dashboard; its policy would block the beacon anyway.
 - ASCII only in the source. Use HTML entities such as `&hellip;`, `&middot;` and `&rsquo;` for typographic characters.
 
 ## Preview locally

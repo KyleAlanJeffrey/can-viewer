@@ -311,11 +311,15 @@
   scroll-margin-top: 28px;
 }
 
+.ov-table tbody tr[data-key] {
+  cursor: pointer;
+}
+
 .ov-table tbody tr:nth-child(even) {
   background: var(--alt-row);
 }
 
-.ov-table tbody tr:hover {
+.ov-table tbody tr[data-key]:hover {
   background: var(--hover-wash);
 }
 

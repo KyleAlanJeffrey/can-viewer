@@ -19,7 +19,6 @@ import {
   layoutString,
   rangeBits,
   rectBits,
-  rowIndexAt,
   useDebounced,
   windowStats,
   type BitRange,
@@ -89,9 +88,8 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
     const [t0, t1] = settled;
     (async (): Promise<Activity> => {
       try {
-        const flips = await core.bitFlipsBetween(summary.key, t0, t1);
-        const [i0, i1] = await Promise.all([rowIndexAt(core, summary, t0, duration), rowIndexAt(core, summary, t1, duration)]);
-        return { flips, frames: Math.max(1, i1 - i0), seconds: t1 - t0, wholeLog: false };
+        const [flips, frames] = await Promise.all([core.bitFlipsBetween(summary.key, t0, t1), core.rowCountBetween(summary.key, t0, t1)]);
+        return { flips, frames, seconds: t1 - t0, wholeLog: false };
       } catch {
         return { flips: await core.bitFlips(summary.key), frames: summary.count, seconds: duration, wholeLog: true };
       }
@@ -114,15 +112,15 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
     setBaselineCounts(null);
     if (b1 <= b0) return;
     let stale = false;
-    Promise.all([core.bitFlipsBetween(summary.key, b0, b1), rowIndexAt(core, summary, b0, duration), rowIndexAt(core, summary, b1, duration)]).then(
-      ([flips, i0, i1]) => !stale && setBaselineCounts({ flips, frames: i1 - i0 }),
+    Promise.all([core.bitFlipsBetween(summary.key, b0, b1), core.rowCountBetween(summary.key, b0, b1)]).then(
+      ([flips, frames]) => !stale && setBaselineCounts({ flips, frames }),
       // Without window counts there is nothing to dim.
       () => {},
     );
     return () => {
       stale = true;
     };
-  }, [core, summary, b0, b1, duration, logVersion]);
+  }, [core, summary, b0, b1, logVersion]);
   // With fewer than two frames nothing can change, so nothing would dim.
   const baselineFlips = baselineCounts && baselineCounts.frames >= 2 ? baselineCounts.flips : null;
 

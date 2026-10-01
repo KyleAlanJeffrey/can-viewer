@@ -382,6 +382,21 @@ impl Session {
         row.min(rows.saturating_sub(1)) as u32
     }
 
+    /// Number of rows of `key` (-1 for all frames) timestamped between `t0` and `t1` seconds,
+    /// both ends included: the frames [`Session::bit_flips_between`] compares.
+    pub fn row_count_between(&self, key: f64, t0: f64, t1: f64) -> u32 {
+        let (t0, t1) = (self.ns_at(t0), self.ns_at(t1));
+        let rows = match self.filter(key) {
+            Ok(Some(stats)) => self.store.id_frames_between(stats, t0, t1).len(),
+            Ok(None) => self
+                .store
+                .first_at_or_after(t1.saturating_add(1))
+                .saturating_sub(self.store.first_at_or_after(t0)),
+            Err(()) => 0,
+        };
+        rows as u32
+    }
+
     /// Estimated load (0..1) of `channel` at `bitrate` bit/s in `buckets` buckets between `t0`
     /// and `t1` seconds; see [`FrameStore::bus_load`]. Returns bucket centre times followed by
     /// loads, each half the array.
@@ -663,6 +678,37 @@ mod tests {
         assert_eq!(s.row_at_time(key_123(), 99.0), 2);
         assert_eq!(s.row_at_time(id_key(3, 0x123) as f64, 0.0), 0);
         assert_eq!(Session::new().row_at_time(-1.0, 0.0), 0);
+    }
+
+    #[test]
+    fn counts_rows_in_a_window_as_bit_flips_between_sees_them() {
+        let s = session();
+        // 123 is at 0, 0.01 and 0.06 s. A window ending on or after the last frame takes it in,
+        // where the row_at_time difference of the window's ends would leave it out.
+        assert_eq!(s.row_count_between(key_123(), 0.0, 0.06), 3);
+        assert_eq!(s.row_count_between(key_123(), 0.0, 99.0), 3);
+        assert_eq!(
+            s.row_at_time(key_123(), 0.06) - s.row_at_time(key_123(), 0.0),
+            2
+        );
+        assert_eq!(s.row_count_between(key_123(), 0.005, 0.01), 1);
+        assert_eq!(s.row_count_between(key_123(), 0.02, 0.05), 0);
+        assert_eq!(s.row_count_between(key_123(), 0.5, 1.0), 0);
+        assert_eq!(s.row_count_between(-1.0, 0.0, 0.03), 3);
+        assert_eq!(s.row_count_between(-1.0, -5.0, 99.0), 6);
+        assert_eq!(s.row_count_between(id_key(3, 0x123) as f64, 0.0, 1.0), 0);
+
+        // No bit can change more often than there are steps between the rows of the window.
+        for (t0, t1) in [(0.0, 0.06), (0.0, 0.01), (0.01, 99.0), (0.02, 0.05)] {
+            let steps = s.row_count_between(key_123(), t0, t1).saturating_sub(1);
+            let flips = s.bit_flips_between(key_123(), t0, t1);
+            assert!(flips.iter().all(|&n| n <= steps), "{t0}..{t1}");
+            assert_eq!(
+                flips.iter().max().copied().unwrap_or(0),
+                steps,
+                "{t0}..{t1}"
+            );
+        }
     }
 
     #[test]

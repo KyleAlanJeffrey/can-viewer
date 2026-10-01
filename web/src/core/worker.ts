@@ -85,6 +85,7 @@ const handlers = {
   byteLanes: (key: number, first: number, count: number, t0: number, t1: number, buckets: number) =>
     transfer(session.byte_lanes(key, first, count, t0, t1, buckets)),
   rowAtTime: (key: number, t: number) => session.row_at_time(key, t),
+  rowCountBetween: (key: number, t0: number, t1: number) => session.row_count_between(key, t0, t1),
   busLoad: (channel: number, t0: number, t1: number, buckets: number, bitrate: number) =>
     halves(session.bus_load(channel, t0, t1, buckets, bitrate)),
   bitFlipsBetween: (key: number, t0: number, t1: number) => transfer(session.bit_flips_between(key, t0, t1)),

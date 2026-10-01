@@ -21,7 +21,7 @@ const messages = new Map<number, MessageDef>([
 const dbc: LoadedDbc = { id: 'car', db: { name: 'car.dbc', messages: [...messages.values()] }, channel: null, edited: false };
 
 /** Byte 0 of Engine and of the unknown message changes across the window; Brakes never changes. */
-function testCore(): CoreApi {
+function testCore(overrides: Partial<CoreApi> = {}): CoreApi {
   return fakeCore({
     byteLanes: async (key, _first, count, t0, t1) =>
       Array.from({ length: count }, (_, byte) => lane(key !== brakes.key && byte === 0 ? [1, 2, 3] : [5, 5, 5], t0, t1)),
@@ -30,6 +30,7 @@ function testCore(): CoreApi {
     decodeRaw: async () => seriesInfo(1, 'raw'),
     decodeSignal: async (_key, name) => seriesInfo(2, name),
     seriesView: async () => [Float64Array.of(40, 70), Float64Array.of(0, 1)],
+    ...overrides,
   });
 }
 
@@ -156,6 +157,24 @@ describe('Byte Values', () => {
     await user.click(screen.getByRole('button', { name: 'Unpin byte' }));
     expect(screen.getByRole('button', { name: 'Pin byte' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeNull();
+  });
+});
+
+describe('Advanced', () => {
+  it('rates bit changes against the steps between the frames of the window', async () => {
+    // Five frames in the window, so four steps; bit 6 of byte 0 changes at every one of them.
+    const flips = new Uint32Array(64);
+    flips[6] = 4;
+    const core = testCore({ rowCountBetween: async () => 5, bitFlipsBetween: async () => flips });
+    const user = renderView([engine], core);
+    await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(await screen.findByText('5 frames in the window')).toBeTruthy();
+
+    const grid = screen.getByRole('application', { name: /^Bit activity/ });
+    grid.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed 4 times, 100% of frames\./)).toBeTruthy();
   });
 });
 

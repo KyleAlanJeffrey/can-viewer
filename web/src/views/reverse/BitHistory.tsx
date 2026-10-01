@@ -81,9 +81,12 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       const from = Math.max(i0, i1 - columns);
       const batch = await core.rows(summary.key, from, i1 - from + 1);
       // The row found for t1 is the first at or after it, so it may lie just past the window.
+      // Both rows are clamped to the last one, which is before a window that starts after it.
       let end = batch.length;
       while (end > 0 && batch.time(end - 1) > t1) end--;
-      return { batch, first: Math.max(0, end - columns), end };
+      let start = 0;
+      while (start < end && batch.time(start) < t0) start++;
+      return { batch, first: Math.max(start, end - columns), end };
     })().then(
       (f) => {
         if (stale) return;

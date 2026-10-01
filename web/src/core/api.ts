@@ -68,6 +68,20 @@ export interface SignalDef {
   comment: string | null;
   /** Receiving nodes. Absent means none. */
   receivers?: string[];
+  /**
+   * Extended multiplexing (DBC `SG_MUL_VAL_`): the multiplexor that switches this signal and the
+   * raw values of it under which the signal is present. Takes precedence over `muxValue`. Absent
+   * or null means simple multiplexing by the message's multiplexor.
+   */
+  muxSwitch?: MuxSwitch | null;
+}
+
+/** Which multiplexor switches a signal in, and when. The multiplexor may itself be multiplexed. */
+export interface MuxSwitch {
+  /** Name of the multiplexor signal, in the same message. */
+  signal: string;
+  /** Inclusive [low, high] raw value ranges of that signal under which this one is present. */
+  ranges: [number, number][];
 }
 
 export interface MessageDef {

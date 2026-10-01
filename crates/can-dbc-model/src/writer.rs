@@ -108,6 +108,26 @@ impl Database {
                 )?;
             }
         }
+        for message in &self.messages {
+            for signal in &message.signals {
+                let Some(switch) = &signal.mux_switch else {
+                    continue;
+                };
+                let ranges: Vec<String> = switch
+                    .ranges
+                    .iter()
+                    .map(|(lo, hi)| format!("{lo}-{hi}"))
+                    .collect();
+                writeln!(
+                    out,
+                    "SG_MUL_VAL_ {} {} {} {};",
+                    message.id,
+                    signal.name,
+                    switch.signal,
+                    ranges.join(", ")
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -162,7 +182,14 @@ fn write_message(out: &mut String, message: &MessageDef) -> fmt::Result {
 }
 
 fn write_signal(out: &mut String, s: &SignalDef) -> fmt::Result {
-    let mux = match (s.is_multiplexor, s.mux_value) {
+    // DBC wants an `m` indicator on every multiplexed signal, so a signal switched only by
+    // `SG_MUL_VAL_` borrows the start of its first range.
+    let mux_value = s.mux_value.or_else(|| {
+        s.mux_switch
+            .as_ref()
+            .and_then(|switch| switch.ranges.first().map(|&(lo, _)| lo))
+    });
+    let mux = match (s.is_multiplexor, mux_value) {
         (false, None) => String::new(),
         (true, None) => " M".into(),
         (false, Some(v)) => format!(" m{v}"),
@@ -308,6 +335,26 @@ mod tests {
             .comment
             .clone_from(&again.messages[0].comment);
         assert_eq!(again, db);
+    }
+
+    #[test]
+    fn extended_multiplexing_round_trips() {
+        let (mut db, text) = round_trip(crate::tests::EXTENDED_MUX_DBC);
+        assert!(text.contains(" SG_ Mux2 m1M : 8|8@1+ "), "{text}");
+        assert!(
+            text.contains(
+                "SG_MUL_VAL_ 400 Mux2 Mux1 1-1;\nSG_MUL_VAL_ 400 A Mux1 0-0, 2-2;\n\
+                 SG_MUL_VAL_ 400 B Mux2 3-3;\nSG_MUL_VAL_ 400 C Mux2 3-5, 16-24;\n"
+            ),
+            "{text}"
+        );
+
+        // A signal switched only by SG_MUL_VAL_ gets its `m` indicator from its first range.
+        db.messages[0].signals[4].mux_value = None;
+        let text = db.to_dbc();
+        assert!(text.contains(" SG_ C m3 : 24|8@1+ "), "{text}");
+        let again = Database::from_dbc_str(&text).unwrap();
+        assert_eq!(again.messages[0].signals[4].mux_value, Some(3));
     }
 
     #[test]

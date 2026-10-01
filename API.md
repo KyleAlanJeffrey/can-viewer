@@ -130,10 +130,18 @@ A CAN database, as parsed from or exported to DBC.
 - **`max`** `number` - Declared maximum physical value.
 - **`unit`** `string` - Unit text, possibly empty.
 - **`isMultiplexor`** `boolean` - True if this signal selects which multiplexed signals are present.
-- **`muxValue`** `number | null` - The signal is present only when the multiplexor has this raw value; null if it is not multiplexed.
+- **`muxValue`** `number | null` - The signal is present only when the message's multiplexor has this raw value; null if it is not multiplexed. Ignored when `muxSwitch` is set.
 - **`valueTable`** `[number, string][]` - Value descriptions as (raw value, text) pairs.
 - **`comment`** `string | null` - Signal comment, or null if none.
 - **`receivers`** `string[]`, optional - Receiving nodes. Absent means none. `parseDbc` always fills it.
+- **`muxSwitch`** [`MuxSwitch`](#the-muxswitch-object)` | null`, optional - Extended multiplexing (DBC `SG_MUL_VAL_`): the multiplexor that switches this signal and the raw values of it under which the signal is present. The multiplexor may itself be multiplexed, and then the signal is present only when the whole chain is. Absent or null means simple multiplexing by `muxValue`. `parseDbc` always fills it.
+
+### The MuxSwitch object
+
+**Attributes**
+
+- **`signal`** `string` - Name of the multiplexor signal, in the same message.
+- **`ranges`** `[number, number][]` - Inclusive (low, high) raw value ranges of that signal under which this one is present.
 
 ### The ScopedDatabase object
 

@@ -38,13 +38,37 @@ pub struct SignalDef {
     pub unit: String,
     /// This signal selects which multiplexed signals are present.
     pub is_multiplexor: bool,
-    /// Only present when the message's multiplexor has this raw value.
+    /// Only present when the message's multiplexor has this raw value, unless `mux_switch`
+    /// says otherwise.
     pub mux_value: Option<u64>,
     pub value_table: Vec<(i64, String)>,
     pub comment: Option<String>,
     /// Receiving nodes. Not in the UI's `SignalDef` yet, so absent means none.
     #[serde(default)]
     pub receivers: Vec<String>,
+    /// Extended multiplexing (`SG_MUL_VAL_`): which multiplexor switches this signal and under
+    /// which of its raw values. Takes precedence over `mux_value`. Absent means simple
+    /// multiplexing by the message's multiplexor.
+    #[serde(default)]
+    pub mux_switch: Option<MuxSwitch>,
+}
+
+/// The multiplexor that switches a signal in, and when. The multiplexor may itself be
+/// multiplexed, in which case the signal is present only when the multiplexor is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MuxSwitch {
+    /// Name of the multiplexor signal, in the same message.
+    pub signal: String,
+    /// Inclusive raw value ranges of the multiplexor under which the signal is present.
+    pub ranges: Vec<(u64, u64)>,
+}
+
+impl MuxSwitch {
+    #[must_use]
+    pub fn covers(&self, raw: u64) -> bool {
+        self.ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&raw))
+    }
 }
 
 impl SignalDef {
@@ -119,17 +143,13 @@ impl MessageDef {
     }
 
     /// Physical value of `signal`, or `None` if the frame is too short, the signal is
-    /// multiplexed out of this frame, or this is J1939 and an unsigned signal of whole bytes has
-    /// a raw value meaning error or not available ([`j1939::not_available`]).
-    ///
-    /// Extended multiplexing (`SG_MUL_VAL_`) is not handled yet: every multiplexed signal is
-    /// assumed to be switched by the message's single multiplexor.
+    /// multiplexed out of this frame ([`MessageDef::is_present`]), or this is J1939 and an
+    /// unsigned signal of whole bytes has a raw value meaning error or not available
+    /// ([`j1939::not_available`]).
     #[must_use]
     pub fn decode(&self, signal: &SignalDef, data: &[u8]) -> Option<f64> {
-        if let Some(want) = signal.mux_value {
-            if self.multiplexor()?.raw(data)? != want {
-                return None;
-            }
+        if !self.is_present(signal, data) {
+            return None;
         }
         let raw = signal.raw(data)?;
         if self.j1939
@@ -139,6 +159,36 @@ impl MessageDef {
             return None;
         }
         Some(signal.physical(raw))
+    }
+
+    /// Whether `signal` is switched into this frame. A signal with a `mux_switch` is present
+    /// when its multiplexor's raw value is in one of the ranges and that multiplexor is itself
+    /// present; one with only a `mux_value` when the message's multiplexor has that value.
+    #[must_use]
+    pub fn is_present(&self, signal: &SignalDef, data: &[u8]) -> bool {
+        // A chain of switches can't be longer than the signal list, so anything deeper is a
+        // cycle in a hand-edited database.
+        let mut hops = 0;
+        let mut current = signal;
+        loop {
+            let Some(switch) = &current.mux_switch else {
+                return match current.mux_value {
+                    Some(want) => self.multiplexor().and_then(|m| m.raw(data)) == Some(want),
+                    None => true,
+                };
+            };
+            let Some(multiplexor) = self.signal(&switch.signal) else {
+                return false;
+            };
+            if !multiplexor.raw(data).is_some_and(|raw| switch.covers(raw)) {
+                return false;
+            }
+            hops += 1;
+            if hops > self.signals.len() {
+                return false;
+            }
+            current = multiplexor;
+        }
     }
 }
 
@@ -262,6 +312,18 @@ fn signal_from_ast(dbc: &can_dbc::Dbc, id: can_dbc::MessageId, s: &can_dbc::Sign
         M::MultiplexedSignal(v) => (false, Some(v)),
         M::MultiplexorAndMultiplexedSignal(v) => (true, Some(v)),
     };
+    let mux_switch = dbc
+        .extended_multiplex
+        .iter()
+        .find(|x| x.message_id == id && x.signal_name == s.name)
+        .map(|x| MuxSwitch {
+            signal: x.multiplexor_signal_name.clone(),
+            ranges: x
+                .mappings
+                .iter()
+                .map(|m| (m.min_value, m.max_value))
+                .collect(),
+        });
     SignalDef {
         name: s.name.clone(),
         start_bit: u16::try_from(s.start_bit).unwrap_or(u16::MAX),
@@ -286,6 +348,7 @@ fn signal_from_ast(dbc: &can_dbc::Dbc, id: can_dbc::MessageId, s: &can_dbc::Sign
             .collect(),
         comment: dbc.signal_comment(id, &s.name).map(str::to_owned),
         receivers: s.receivers.clone(),
+        mux_switch,
     }
 }
 
@@ -591,6 +654,105 @@ BA_ "VFrameFormat" BO_ 2566844672 1;
         assert_eq!(j1939_name(&db, 0x9800_0003), Some("TSC1_TO_ENGINE"));
         assert_eq!(j1939_name(&db, 0x8C00_0F03), Some("TSC1_TO_ENGINE"));
         assert_eq!(j1939_name(&db, 0x8C00_0199), Some("TSC1_27_TO_ENGINE"));
+    }
+
+    pub(crate) const EXTENDED_MUX_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 400 NESTED: 8 ECU
+ SG_ Mux1 M : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Mux2 m1M : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ A m0 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ B m3 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ C m3 : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ Plain : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+
+SG_MUL_VAL_ 400 Mux2 Mux1 1-1;
+SG_MUL_VAL_ 400 A Mux1 0-0, 2-2;
+SG_MUL_VAL_ 400 B Mux2 3-3;
+SG_MUL_VAL_ 400 C Mux2 3-5, 16-24;
+"#;
+
+    #[test]
+    fn extended_multiplexing_follows_the_switch_chain() {
+        let db = Database::from_dbc_str(EXTENDED_MUX_DBC).unwrap();
+        let nested = db.message(400).unwrap();
+        let mux2 = nested.signal("Mux2").unwrap();
+        assert_eq!(
+            mux2.mux_switch,
+            Some(MuxSwitch {
+                signal: "Mux1".into(),
+                ranges: vec![(1, 1)]
+            })
+        );
+        assert!(mux2.is_multiplexor);
+        assert_eq!(mux2.mux_value, Some(1));
+        let c = nested.signal("C").unwrap();
+        assert_eq!(
+            c.mux_switch.as_ref().unwrap().ranges,
+            vec![(3, 5), (16, 24)]
+        );
+        assert_eq!(nested.signal("Plain").unwrap().mux_switch, None);
+
+        let present = |mux1: u8, mux2: u8| -> Vec<&str> {
+            let data = [mux1, mux2, 10, 20, 30, 0, 0, 0];
+            nested
+                .signals
+                .iter()
+                .filter(|s| nested.decode(s, &data).is_some())
+                .map(|s| s.name.as_str())
+                .collect()
+        };
+        assert_eq!(present(0, 3), ["Mux1", "A", "Plain"]);
+        assert_eq!(present(2, 3), ["Mux1", "A", "Plain"]);
+        assert_eq!(present(1, 3), ["Mux1", "Mux2", "B", "C", "Plain"]);
+        assert_eq!(present(1, 4), ["Mux1", "Mux2", "C", "Plain"]);
+        assert_eq!(present(1, 20), ["Mux1", "Mux2", "C", "Plain"]);
+        assert_eq!(present(1, 6), ["Mux1", "Mux2", "Plain"]);
+        // Mux2 reads 3 here, but it isn't switched in, so neither are its signals.
+        assert_eq!(present(3, 3), ["Mux1", "Plain"]);
+    }
+
+    #[test]
+    fn a_switch_naming_itself_or_a_missing_signal_decodes_nothing() {
+        let mut db = Database::from_dbc_str(EXTENDED_MUX_DBC).unwrap();
+        let nested = &mut db.messages[0];
+        nested.signals[3].mux_switch = Some(MuxSwitch {
+            signal: "B".into(),
+            ranges: vec![(0, 255)],
+        });
+        nested.signals[4].mux_switch = Some(MuxSwitch {
+            signal: "Nope".into(),
+            ranges: vec![(0, 255)],
+        });
+        let nested = &db.messages[0];
+        let data = [1, 3, 10, 20, 30, 0, 0, 0];
+        assert_eq!(nested.decode(nested.signal("B").unwrap(), &data), None);
+        assert_eq!(nested.decode(nested.signal("C").unwrap(), &data), None);
+        assert_eq!(
+            nested.decode(nested.signal("Mux2").unwrap(), &data),
+            Some(3.0)
+        );
+    }
+
+    #[test]
+    fn mux_switch_serialises_in_camel_case_and_defaults_to_none() {
+        use serde_json::{json, Value};
+
+        let db = Database::from_dbc_str(EXTENDED_MUX_DBC).unwrap();
+        let json = serde_json::to_value(&db).unwrap();
+        let signals = &json["messages"][0]["signals"];
+        assert_eq!(
+            signals[4]["muxSwitch"],
+            json!({ "signal": "Mux2", "ranges": [[3, 5], [16, 24]] })
+        );
+        assert_eq!(signals[5]["muxSwitch"], Value::Null);
+        assert_eq!(serde_json::from_value::<Database>(json).unwrap(), db);
     }
 
     #[test]

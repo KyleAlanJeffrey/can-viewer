@@ -13,7 +13,7 @@
  */
 export const ROW_STRIDE = 96;
 
-/** Payload bytes a row carries; `CoreApi.frameData` fetches the rest. */
+/** Payload bytes a row carries; `CoreApi.frameData` and `CoreApi.rowBytes` fetch the rest. */
 export const ROW_PAYLOAD = 64;
 
 export class RowBatch {

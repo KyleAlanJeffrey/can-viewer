@@ -5,7 +5,7 @@ import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
 import { cssVar, formatBytes, formatCount, formatDuration } from './format';
-import { forget, loadSaved, save } from './session';
+import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
@@ -84,6 +84,7 @@ export function App({ core }: { core: CoreApi }) {
   const [skippedDismissed, setSkippedDismissed] = useState(false);
   const [notKept, setNotKept] = useState<string | null>(null);
   const [dbcsNotKept, setDbcsNotKept] = useState(false);
+  const [dbcsChangedElsewhere, setDbcsChangedElsewhere] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const [query, setQuery] = useState('');
@@ -162,12 +163,21 @@ export function App({ core }: { core: CoreApi }) {
     return next;
   }, []);
 
-  /** Send `next` to the core, then refresh names and decode again any plot whose signal changed. */
+  /**
+   * Send `next` to the core, then refresh names and decode again any plot whose signal changed.
+   * `persist` is false when `next` came from the store: writing it back would only make every
+   * other open tab stale.
+   */
   const applyDbcs = useCallback(
-    async (next: LoadedDbc[]) => {
+    async (next: LoadedDbc[], persist = true) => {
       await core.setDatabases(next.map((d) => ({ channel: d.channel, db: d.db })));
       dbcsRef.current = next;
-      void save('dbcs', next).then((kept) => setDbcsNotKept(!kept));
+      if (persist) {
+        void saveDbcs(next).then((result) => {
+          setDbcsNotKept(result === 'failed');
+          if (result === 'conflict') setDbcsChangedElsewhere(true);
+        });
+      }
       const nextIds = await core.idSummary();
       // Set together: summaries name their DBC by its index in this list.
       setDbcs(next);
@@ -194,7 +204,7 @@ export function App({ core }: { core: CoreApi }) {
   );
 
   const mutateDbcs = useCallback(
-    (change: (prev: LoadedDbc[]) => LoadedDbc[]) => serially(() => applyDbcs(change(dbcsRef.current))),
+    (change: (prev: LoadedDbc[]) => LoadedDbc[], persist = true) => serially(() => applyDbcs(change(dbcsRef.current), persist)),
     [serially, applyDbcs],
   );
 
@@ -335,12 +345,12 @@ export function App({ core }: { core: CoreApi }) {
     void (async () => {
       const [savedLog, savedDbcs, savedUi, savedViews] = await Promise.all([
         loadSaved<SavedLog>('log'),
-        loadSaved<LoadedDbc[]>('dbcs'),
+        loadSavedDbcs<LoadedDbc[]>(),
         loadSaved<SavedUi>('ui'),
         loadSaved<ReturnType<ViewStateStore['snapshot']>>('views'),
       ]);
       if (savedViews) viewState.restore(savedViews);
-      if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => savedDbcs));
+      if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => savedDbcs, false));
       if (savedLog) {
         const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
         if (!(await openLog(savedLog.blob, savedLog.name, ui))) void forget('log');
@@ -379,6 +389,8 @@ export function App({ core }: { core: CoreApi }) {
       clearTimeout(timer);
     };
   }, [viewState]);
+
+  useEffect(() => onDbcsChangedElsewhere(() => setDbcsChangedElsewhere(true)), []);
 
   // The restarted core has the databases back but no log; the user opens it again.
   useEffect(
@@ -717,6 +729,21 @@ export function App({ core }: { core: CoreApi }) {
                   <span className="detail"> Its storage may be full or turned off.</span>
                 </p>
                 <button className="icon-button small" onClick={() => setDbcsNotKept(false)} aria-label="Dismiss">
+                  <X size={14} strokeWidth={1.75} />
+                </button>
+              </div>
+            )}
+            {dbcsChangedElsewhere && (
+              <div className="banner">
+                <AlertTriangle size={16} strokeWidth={1.75} />
+                <p>
+                  Your DBCs were changed in another tab. Reload to see them.
+                  <span className="detail"> Until then, changes made here aren&rsquo;t saved. Export DBC&hellip; keeps them in a file.</span>
+                </p>
+                <button className="button" onClick={() => location.reload()}>
+                  Reload
+                </button>
+                <button className="icon-button small" onClick={() => setDbcsChangedElsewhere(false)} aria-label="Dismiss">
                   <X size={14} strokeWidth={1.75} />
                 </button>
               </div>

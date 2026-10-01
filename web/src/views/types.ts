@@ -65,9 +65,11 @@ export interface LoadedDbc {
   channel: string | null;
   /** Changed since it was opened or last exported. */
   edited: boolean;
+  /** When it was last exported from this app, in epoch milliseconds. Absent if never. */
+  exportedAt?: number;
 }
 
-export type DbcChange = Partial<Pick<LoadedDbc, 'db' | 'channel' | 'edited'>>;
+export type DbcChange = Partial<Pick<LoadedDbc, 'db' | 'channel' | 'edited' | 'exportedAt'>>;
 
 export interface ViewProps {
   ctx: ViewContext;

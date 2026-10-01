@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { ALL_IDS, dbcId, formatId, isErrorFrame, type Database, type IdSummary, type MessageDef, type SignalDef } from '../../core/api';
 import { Sheet } from '../../components/Sheet';
-import { downloadText } from '../../download';
 import { cssVar, formatPeriod } from '../../format';
 import { InspectorSlot, SidebarSlot } from '../slots';
+import { startTextSave } from '../shared/saveFile';
 import { useViewState } from '../shared/viewState';
 import type { LoadedDbc, ViewProps } from '../types';
-import { DLC_SIZES, UNTITLED_DBC, dbcFileName, firstFreeRun, messageIdText, newSignal, overriddenMessages, uniqueName } from './dbcModel';
+import { DLC_SIZES, UNTITLED_DBC, dbcFileName, firstFreeRun, messageIdText, messageMatches, newSignal, overriddenMessages, uniqueName } from './dbcModel';
+import { ExportStatus } from './ExportStatus';
 import { LayoutGrid } from './LayoutGrid';
 import { MessageCard } from './MessageCard';
 import { MessageSidebar, messageRowKey, type DbcActions } from './MessageSidebar';
@@ -18,6 +19,7 @@ import { useWorkingDbcs } from './workingDbcs';
 import './database.css';
 
 const EXPORT_NOTE = 'Writes nodes, messages, signals, comments, value descriptions and which messages are J1939. Other attributes (BA_) are not written yet.';
+const DBC_FILE = { description: 'DBC file', mime: 'application/octet-stream', extension: '.dbc' };
 
 interface Selection {
   /** LoadedDbc id. */
@@ -84,13 +86,19 @@ export function DatabaseView({ ctx }: ViewProps) {
 
   /**
    * The log's IDs for message `id`: those `of` decodes (several for a J1939 message, one per
-   * sender), the selected one first, then those with the same ID that another DBC decodes.
+   * sender), the selected one first, then those the message would match (its ID, or its PGN
+   * when J1939) that another DBC decodes instead.
    */
   const summariesFor = (of: LoadedDbc, id: number): IdSummary[] => {
     const channels = ctx.log?.channels ?? [];
+    const message = of.db.messages.find((m) => m.id === id);
     const decoded = ctx.ids.filter((s) => decodes(s, of, id)).sort((a, b) => Number(b.key === ctx.selected) - Number(a.key === ctx.selected));
     const shadowed = ctx.ids.filter(
-      (s) => !decodes(s, of, id) && dbcId(s) === id && (of.channel === null || channels[s.channel] === of.channel),
+      (s) =>
+        !decodes(s, of, id) &&
+        ctx.dbcOf(s.key)?.id !== of.id &&
+        (message ? messageMatches(message, dbcId(s)) : dbcId(s) === id) &&
+        (of.channel === null || channels[s.channel] === of.channel),
     );
     return [...decoded, ...shadowed];
   };
@@ -210,23 +218,23 @@ export function DatabaseView({ ctx }: ViewProps) {
       setSelection({ dbc: id, message: null, signal: null, key: ctx.selected });
     });
 
-  const exportDbc = (of: LoadedDbc) =>
+  const exportDbc = (of: LoadedDbc) => {
+    // The save dialog must open straight from the click, before the text is ready.
+    const write = startTextSave(dbcFileName(of.db.name), DBC_FILE);
     void ctx.run('Exporting\u2026', async () => {
-      // Marked clean in queue order, so the file holds exactly the version marked, and an edit
-      // still in flight lands before it while a later one marks the DBC edited again.
-      let marked = null as Database | null;
+      // Read in queue order, so the file holds the version every edit in flight lands on.
+      let exported = null as Database | null;
       await ctx.updateDbc(of.id, (current) => {
-        marked = current.db;
-        return { edited: false };
+        exported = current.db;
+        return {};
       });
-      if (!marked) return;
-      try {
-        downloadText(dbcFileName(marked.name), await ctx.core.exportDbc(marked), 'application/octet-stream');
-      } catch (e) {
-        await ctx.updateDbc(of.id, (current) => (current.db === marked ? { edited: true } : {}));
-        throw e;
-      }
+      if (!exported) return;
+      const text = await ctx.core.exportDbc(exported);
+      if (!(await write(text))) return;
+      // Clean only if nothing changed while the file was being saved.
+      await ctx.updateDbc(of.id, (current) => ({ exportedAt: Date.now(), ...(current.db === exported ? { edited: false } : {}) }));
     });
+  };
 
   const removeDbc = async (of: LoadedDbc) => {
     const at = dbcs.findIndex((d) => d.id === of.id);
@@ -379,9 +387,7 @@ export function DatabaseView({ ctx }: ViewProps) {
           </p>
         </div>
         <div className="content-actions db-actions">
-          <p className="db-status" role="status">
-            {dbc.edited && <>Edited &middot; Export DBC&hellip; to keep changes</>}
-          </p>
+          <ExportStatus dbc={dbc} />
           <button className="button" onClick={addSignal} disabled={!message}>
             <Plus size={16} strokeWidth={1.5} aria-hidden="true" />
             Add Signal

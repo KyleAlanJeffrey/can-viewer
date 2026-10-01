@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, FileText, Lock, PanelLeft, PanelRight, Search, X } from 'lucide-react';
-import { ALL_IDS, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
+import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
@@ -59,6 +59,19 @@ function resolve(dbcs: LoadedDbc[], summary: IdSummary): Resolved | null {
   const dbc = summary.dbc === null ? undefined : dbcs[summary.dbc];
   const message = dbc && summary.messageId !== null ? messagesById(dbc.db).get(summary.messageId) : undefined;
   return dbc && message ? { message, dbc } : null;
+}
+
+/** DBCs saved before J1939 support have no `j1939` on their messages; then every 29-bit message was one. */
+function withJ1939Flags(dbcs: LoadedDbc[]): LoadedDbc[] {
+  return dbcs.map((d) => ({
+    ...d,
+    db: { ...d.db, messages: d.db.messages.map((m) => ('j1939' in m ? m : { ...m, j1939: m.id >= EXT_FLAG })) },
+  }));
+}
+
+/** Whether `next` changes anything the core sees: a DBC's contents, bus or place in the lookup order. */
+function coreSees(prev: LoadedDbc[], next: LoadedDbc[]): boolean {
+  return prev.length !== next.length || next.some((d, i) => d.db !== prev[i].db || d.channel !== prev[i].channel);
 }
 
 /** `name`, or `name` with a number before the extension if another loaded DBC already uses it. */
@@ -170,13 +183,19 @@ export function App({ core }: { core: CoreApi }) {
    */
   const applyDbcs = useCallback(
     async (next: LoadedDbc[], persist = true) => {
-      await core.setDatabases(next.map((d) => ({ channel: d.channel, db: d.db })));
+      const changed = coreSees(dbcsRef.current, next);
+      if (changed) await core.setDatabases(next.map((d) => ({ channel: d.channel, db: d.db })));
       dbcsRef.current = next;
       if (persist) {
         void saveDbcs(next).then((result) => {
           setDbcsNotKept(result === 'failed');
           if (result === 'conflict') setDbcsChangedElsewhere(true);
         });
+      }
+      // Only edited or exportedAt changed: the core's summaries and the plots stand.
+      if (!changed) {
+        setDbcs(next);
+        return;
       }
       const nextIds = await core.idSummary();
       // Set together: summaries name their DBC by its index in this list.
@@ -350,7 +369,7 @@ export function App({ core }: { core: CoreApi }) {
         loadSaved<ReturnType<ViewStateStore['snapshot']>>('views'),
       ]);
       if (savedViews) viewState.restore(savedViews);
-      if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => savedDbcs, false));
+      if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => withJ1939Flags(savedDbcs), false));
       if (savedLog) {
         const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
         if (!(await openLog(savedLog.blob, savedLog.name, ui))) void forget('log');

@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, ChevronRight, Download, Plus, X } from 'lucide-reac
 import { dbcId, formatId, type IdSummary, type MessageDef } from '../../core/api';
 import { formatPeriod } from '../../format';
 import type { LoadedDbc } from '../types';
-import { isExtended, messageIdText } from './dbcModel';
+import { isExtended, messageIdText, messageMatches } from './dbcModel';
 
 /** What a DBC group's header can do to its DBC. */
 export interface DbcActions {
@@ -148,12 +148,13 @@ function DbcGroup({ dbc, first, last, channels, ids, decoded, overridden, query,
   const name = dbc.db.name;
 
   // Messages the log carries on the buses this DBC applies to, including J1939 ones whose PGN
-  // arrives from another sender.
+  // arrives from another sender, whether this DBC or an earlier one decodes those frames.
   const inLog = useMemo(() => {
     const found = new Set(decoded.get(dbc.id));
-    for (const s of ids) if (dbc.channel === null || channels?.[s.channel] === dbc.channel) found.add(dbcId(s));
+    const frames = ids.filter((s) => dbc.channel === null || channels?.[s.channel] === dbc.channel).map(dbcId);
+    for (const m of dbc.db.messages) if (!found.has(m.id) && frames.some((id) => messageMatches(m, id))) found.add(m.id);
     return found;
-  }, [ids, channels, dbc.channel, dbc.id, decoded]);
+  }, [ids, channels, dbc.channel, dbc.id, dbc.db.messages, decoded]);
 
   const messages = dbc.db.messages.filter(
     (m) =>

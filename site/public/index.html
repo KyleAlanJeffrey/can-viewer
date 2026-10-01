@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FreeCAN Studio - The CAN log viewer that lives in your browser</title>
+  <meta name="description" content="Open candump CAN bus logs in your browser (ASC, BLF, TRC, MF4 and CSV coming soon). Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
+  <link rel="canonical" href="https://freecanstudio.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="FreeCAN Studio">
+  <meta property="og:title" content="FreeCAN Studio - The CAN log viewer that lives in your browser">
+  <meta property="og:description" content="Open candump CAN bus logs in your browser (ASC, BLF, TRC, MF4 and CSV coming soon). Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
+  <meta property="og:url" content="https://freecanstudio.com/">
+  <meta property="og:image" content="https://freecanstudio.com/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="FreeCAN Studio: the CAN log viewer that lives in your browser.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/logo.svg" alt="" width="30" height="32"><span><strong>FreeCAN</strong> Studio</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="/#features">Features</a>
+      <a href="/#privacy">Privacy</a>
+      <a href="/#formats">Formats</a>
+      <a href="/pro/">Pro</a>
+    </nav>
+    <a class="button" href="https://app.freecanstudio.com/">Open App</a>
+  </div>
+</header>
+<main id="main">
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <h1 class="display">The CAN log viewer that lives in your browser.</h1>
+        <p class="lead">Open CAN bus logs, decode them with a DBC, plot signals and work out unknown messages bit by bit. It all runs in a browser tab, with nothing to install.</p>
+        <p class="trust">Free. No account.</p>
+        <div class="hero-actions">
+          <a class="button primary large" href="https://app.freecanstudio.com/">Open FreeCAN Studio</a>
+          <a class="text-link" href="https://app.freecanstudio.com/?demo=1">Try the Demo <span aria-hidden="true">&rarr;</span></a>
+        </div>
+        <p class="privacy-line"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Files are processed on your computer and never uploaded.</p>
+      </div>
+      <figure class="product">
+        <div class="pw" aria-hidden="true">
+          <div class="pw-toolbar">
+            <div class="pw-doc"><strong>demo.log</strong><span>1,000,000 frames &middot; 30 min 15 s</span></div>
+            <div class="pw-switch"><span>Overview</span><span class="on">Trace</span><span>Plot</span><span>Reverse Engineer</span><span>Database</span></div>
+          </div>
+          <div class="pw-body">
+          <div class="pw-sidebar">
+            <div class="pw-group">can0 <span>10 IDs</span></div>
+            <div class="pw-id on"><span class="mono">0C9</span><span class="name">ENGINE_1</span><span class="period">10 ms</span></div>
+            <div class="pw-id"><span class="mono">123</span><span class="name unknown">Unknown</span><span class="period">20 ms</span></div>
+            <div class="pw-id"><span class="mono">1F5</span><span class="name">WHEEL_SPEEDS</span><span class="period">20 ms</span></div>
+            <div class="pw-id"><span class="mono">2A0</span><span class="name">STEERING</span><span class="period">10 ms</span></div>
+            <div class="pw-id"><span class="mono">3E9</span><span class="name">VEHICLE_STATE</span><span class="period">50 ms</span></div>
+            <div class="pw-id"><span class="mono">450</span><span class="name">BODY</span><span class="period">100 ms</span></div>
+            <div class="pw-id"><span class="mono">456</span><span class="name unknown">Unknown</span><span class="period">1 s</span></div>
+            <div class="pw-id"><span class="mono">5A0</span><span class="name">IMU</span><span class="period">10 ms</span></div>
+            <div class="pw-id"><span class="mono">6B0</span><span class="name">BATTERY</span><span class="period">100 ms</span></div>
+            <div class="pw-id wide"><span class="mono">18FEF100</span><span class="name">CCVS</span><span class="period">100 ms</span></div>
+            <div class="pw-group">can1 <span>1 ID</span></div>
+            <div class="pw-id"><span class="mono">300</span><span class="name">RADAR_TRACKS</span><span class="period">10 ms</span></div>
+          </div>
+          <div class="pw-main">
+            <table class="pw-table">
+              <thead><tr><th>Time</th><th class="bus">Bus</th><th>ID</th><th class="name">Name</th><th class="len">Len</th><th>Data</th></tr></thead>
+              <tbody>
+                <tr><td>52.340007</td><td class="bus">can0</td><td>0C9</td><td class="name">ENGINE_1</td><td class="len">8</td><td>CB 1F 67 45 00 00 10 A6</td></tr>
+                <tr><td>52.340383</td><td class="bus">can0</td><td>1F5</td><td class="name">WHEEL_SPEEDS</td><td class="len">8</td><td>28 2D 31 F4 28 2E 31 F4</td></tr>
+                <tr><td>52.340748</td><td class="bus">can0</td><td>2A0</td><td class="name">STEERING</td><td class="len">8</td><td>04 3D 00 12 02 00 00 00</td></tr>
+                <tr><td>52.343334</td><td class="bus">can0</td><td>123</td><td class="name"><span class="unknown">Unknown</span></td><td class="len">8</td><td>39 00 2D 11 AA 0B F4 00</td></tr>
+                <tr><td>52.351111</td><td class="bus">can0</td><td>3E9</td><td class="name">VEHICLE_STATE</td><td class="len">8</td><td>23 48 47 E2 01 00 00 00</td></tr>
+                <tr class="on"><td>54.750000</td><td class="bus">can0</td><td>0C9</td><td class="name">ENGINE_1</td><td class="len">8</td><td>EF 23 36 45 00 00 18 A5</td></tr>
+                <tr><td>54.750751</td><td class="bus">can0</td><td>2A0</td><td class="name">STEERING</td><td class="len">8</td><td>02 B3 FF D8 03 00 00 00</td></tr>
+                <tr><td>54.751081</td><td class="bus">can0</td><td>3E9</td><td class="name">VEHICLE_STATE</td><td class="len">8</td><td>C3 49 48 E2 01 00 00 00</td></tr>
+                <tr><td>54.760367</td><td class="bus">can0</td><td>1F5</td><td class="name">WHEEL_SPEEDS</td><td class="len">8</td><td>2A EA 31 40 2A EB 31 42</td></tr>
+                <tr><td>54.763350</td><td class="bus">can0</td><td>123</td><td class="name"><span class="unknown">Unknown</span></td><td class="len">8</td><td>B2 00 2E 15 AA 00 29 00</td></tr>
+              </tbody>
+            </table>
+            <div class="pw-plot">
+              <div class="lane-head"><span class="dot s1"></span>EngineSpeed <span class="unit">rpm</span><span class="readout">2,299.75 rpm</span></div>
+              <svg class="lane" viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden="true"><line class="cursor" x1="440" y1="0" x2="440" y2="40"/><path class="line-1" d="M0 24.8 L15 21.9 L30 20.2 L45 20.1 L60 20.7 L75 21.2 L90 20.9 L105 20.1 L120 19.8 L135 20.9 L150 23.1 L165 25.3 L180 26.4 L195 25.8 L210 24.1 L225 22.4 L240 21.5 L255 21.3 L270 21.0 L285 19.6 L300 17.2 L315 14.7 L330 13.2 L345 13.5 L360 15.1 L375 16.9 L390 17.7 L405 17.6 L420 17.3 L435 17.6 L450 19.0 L465 20.5 L480 21.2 L495 20.1 L510 17.6 L525 14.9 L540 13.1 L555 12.5 L570 12.5 L585 12.1 L600 10.8"/></svg>
+              <div class="lane-head"><span class="dot s2"></span>SteeringAngle <span class="unit">deg</span><span class="readout">69.1 deg</span></div>
+              <svg class="lane" viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden="true"><line class="cursor" x1="440" y1="0" x2="440" y2="40"/><path class="line-2" d="M0 13.1 L15 11.1 L30 9.6 L45 8.6 L60 8.2 L75 8.4 L90 9.2 L105 10.5 L120 12.3 L135 14.4 L150 16.8 L165 19.3 L180 21.8 L195 24.1 L210 26.3 L225 28.0 L240 29.4 L255 30.3 L270 30.6 L285 30.4 L300 29.7 L315 28.5 L330 26.9 L345 25.0 L360 22.8 L375 20.6 L390 18.3 L405 16.2 L420 14.3 L435 12.7 L450 11.5 L465 10.7 L480 10.4 L495 10.6 L510 11.3 L525 12.4 L540 13.8 L555 15.6 L570 17.5 L585 19.5 L600 21.6"/></svg>
+              <div class="lane-head"><span class="dot s3"></span>VehicleSpeed <span class="unit">km/h</span><span class="readout">118.0 km/h</span></div>
+              <svg class="lane" viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden="true"><line class="cursor" x1="440" y1="0" x2="440" y2="40"/><path class="line-3" d="M0 28.0 L15 27.4 L30 26.7 L45 26.1 L60 25.5 L75 24.9 L90 24.4 L105 23.8 L120 23.3 L135 22.8 L150 22.3 L165 21.9 L180 21.5 L195 21.1 L210 20.7 L225 20.4 L240 20.1 L255 19.8 L270 19.5 L285 19.3 L300 19.0 L315 18.8 L330 18.5 L345 18.3 L360 18.0 L375 17.7 L390 17.4 L405 17.1 L420 16.8 L435 16.4 L450 16.1 L465 15.6 L480 15.2 L495 14.7 L510 14.2 L525 13.7 L540 13.1 L555 12.6 L570 12.0 L585 11.4 L600 10.8"/></svg>
+            </div>
+          </div>
+          </div>
+        </div>
+        <figcaption>A drawing of the Trace view with the built-in demo log: 1,000,000 frames from 11 IDs on two buses, decoded with its DBC.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap">
+      <div class="card privacy">
+        <div class="privacy-copy">
+          <h2 id="privacy-title">Files never leave your computer</h2>
+          <p class="privacy-claim"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Files are processed on your computer and never uploaded.</p>
+          <p>FreeCAN Studio is a set of static files. Its Rust core is compiled to WebAssembly and runs in a Web Worker inside your browser tab, so logs and DBC files are read and decoded on your machine. There is no server that receives them.</p>
+          <p>The app domain, <span class="mono">app.freecanstudio.com</span>, loads nothing from any third party: no analytics, no trackers, and no fonts or scripts from a CDN. Its Content-Security-Policy tells your browser to refuse anything from another origin, so the browser enforces this, not just this page.</p>
+          <p>To keep your work across a reload, the app stores the open log and DBCs in your browser&rsquo;s own storage. They stay on your computer.</p>
+        </div>
+        <div class="check">
+          <h3>Check it yourself</h3>
+          <p>Your IT team can read the policy from the app&rsquo;s response headers:</p>
+          <pre class="code">curl -sI https://app.freecanstudio.com/ | grep -i content-security-policy</pre>
+          <p>The policy allows only the app&rsquo;s own origin (<span class="mono">'self'</span>):</p>
+          <pre class="code">default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'</pre>
+          <p class="small">Or open your browser&rsquo;s developer tools on the app and watch the Network tab while you work: every request goes to <span class="mono">app.freecanstudio.com</span>. This site, <span class="mono">freecanstudio.com</span>, is separate from the app.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="formats" aria-labelledby="formats-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="formats-title">Supported formats</h2>
+        <p class="lead">Open a log, add one or more DBC files, and every matching frame is decoded.</p>
+      </div>
+      <div class="formats">
+        <div class="card format-card">
+          <h3>Log files</h3>
+          <ul class="format-list">
+            <li><strong>candump</strong><span>SocketCAN, <span class="mono">-l</span> and <span class="mono">-L</span></span></li>
+          </ul>
+          <p class="format-soon"><span class="tag">Coming soon</span>These formats are being added next.</p>
+          <ul class="format-list">
+            <li><strong>ASC</strong><span>Vector text log</span></li>
+            <li><strong>BLF</strong><span>Vector binary log</span></li>
+            <li><strong>TRC</strong><span>PEAK trace file</span></li>
+            <li><strong>MF4</strong><span>Most ASAM MDF 4 bus logging files</span></li>
+            <li><strong>CSV</strong><span>Frames as comma-separated rows</span></li>
+          </ul>
+          <p class="small">Classic CAN and CAN FD, 11-bit and 29-bit IDs, and J1939.</p>
+        </div>
+        <div class="card format-card">
+          <h3>Signal database</h3>
+          <ul class="format-list">
+            <li><strong>DBC</strong><span>Several at once, for every bus or one bus</span></li>
+          </ul>
+          <p class="small">Runs in current desktop versions of Chrome, Edge, Firefox and Safari.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="features" aria-labelledby="features-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="features-title">From raw frames to signals</h2>
+        <p class="lead">Open a log to see what is on the bus: every ID with its count, period and bit activity.</p>
+      </div>
+      <div class="features">
+        <article class="card feature">
+          <div class="feature-copy">
+            <h3>Decode with DBC</h3>
+            <p>Load the DBC files that describe your bus and every matching frame is decoded, with the raw bytes beside the values.</p>
+            <ul>
+              <li>Intel and Motorola byte order; unsigned, signed and float signals</li>
+              <li>Simple and extended multiplexing</li>
+              <li>Several DBCs at once, each for every bus or for one bus</li>
+              <li>J1939 messages matched by PGN, with multi-packet transfers reassembled</li>
+            </ul>
+          </div>
+          <div class="feature-visual">
+            <table class="decode-table">
+              <caption>0C9 ENGINE_1 at 52.340 s: <span>CB 1F 67 45 00 00 10 A6</span></caption>
+              <thead><tr><th scope="col">Signal</th><th scope="col">Bits</th><th scope="col" class="num">Value</th></tr></thead>
+              <tbody>
+                <tr><td>EngineSpeed</td><td class="mono">0|16@1+</td><td class="num">2,034.75 rpm</td></tr>
+                <tr><td>ThrottlePos</td><td class="mono">16|8@1+</td><td class="num">41.2 %</td></tr>
+                <tr><td>CoolantTemp</td><td class="mono">24|8@1+</td><td class="num">29 degC</td></tr>
+                <tr><td>Counter</td><td class="mono">51|4@1+</td><td class="num">2</td></tr>
+                <tr><td>Checksum</td><td class="mono">56|8@1+</td><td class="num">166</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article class="card feature">
+          <div class="feature-copy">
+            <h3>Plot signals</h3>
+            <p>Pick signals and plot them in stacked lanes on one time axis. Place A and B cursors to read values and the time between them, and move around a long recording with the full-log minimap.</p>
+            <ul>
+              <li>Fast on millions of points: plots are reduced to what the screen can show</li>
+              <li>Drag to zoom into any stretch of time</li>
+            </ul>
+          </div>
+          <div class="feature-visual plot-visual" aria-hidden="true">
+            <div class="lane-head"><span class="dot s1"></span>EngineSpeed <span class="unit">rpm</span><span class="readout">2,299.75 rpm</span></div>
+            <svg class="lane" viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden="true"><line class="cursor" x1="440" y1="0" x2="440" y2="40"/><path class="line-1" d="M0 24.8 L15 21.9 L30 20.2 L45 20.1 L60 20.7 L75 21.2 L90 20.9 L105 20.1 L120 19.8 L135 20.9 L150 23.1 L165 25.3 L180 26.4 L195 25.8 L210 24.1 L225 22.4 L240 21.5 L255 21.3 L270 21.0 L285 19.6 L300 17.2 L315 14.7 L330 13.2 L345 13.5 L360 15.1 L375 16.9 L390 17.7 L405 17.6 L420 17.3 L435 17.6 L450 19.0 L465 20.5 L480 21.2 L495 20.1 L510 17.6 L525 14.9 L540 13.1 L555 12.5 L570 12.5 L585 12.1 L600 10.8"/></svg>
+            <div class="lane-head"><span class="dot s2"></span>SteeringAngle <span class="unit">deg</span><span class="readout">69.1 deg</span></div>
+            <svg class="lane" viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden="true"><line class="cursor" x1="440" y1="0" x2="440" y2="40"/><path class="line-2" d="M0 13.1 L15 11.1 L30 9.6 L45 8.6 L60 8.2 L75 8.4 L90 9.2 L105 10.5 L120 12.3 L135 14.4 L150 16.8 L165 19.3 L180 21.8 L195 24.1 L210 26.3 L225 28.0 L240 29.4 L255 30.3 L270 30.6 L285 30.4 L300 29.7 L315 28.5 L330 26.9 L345 25.0 L360 22.8 L375 20.6 L390 18.3 L405 16.2 L420 14.3 L435 12.7 L450 11.5 L465 10.7 L480 10.4 L495 10.6 L510 11.3 L525 12.4 L540 13.8 L555 15.6 L570 17.5 L585 19.5 L600 21.6"/></svg>
+            <div class="lane-head"><span class="dot s3"></span>VehicleSpeed <span class="unit">km/h</span><span class="readout">118.0 km/h</span></div>
+            <svg class="lane" viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden="true"><line class="cursor" x1="440" y1="0" x2="440" y2="40"/><path class="line-3" d="M0 28.0 L15 27.4 L30 26.7 L45 26.1 L60 25.5 L75 24.9 L90 24.4 L105 23.8 L120 23.3 L135 22.8 L150 22.3 L165 21.9 L180 21.5 L195 21.1 L210 20.7 L225 20.4 L240 20.1 L255 19.8 L270 19.5 L285 19.3 L300 19.0 L315 18.8 L330 18.5 L345 18.3 L360 18.0 L375 17.7 L390 17.4 L405 17.1 L420 16.8 L435 16.4 L450 16.1 L465 15.6 L480 15.2 L495 14.7 L510 14.2 L525 13.7 L540 13.1 L555 12.6 L570 12.0 L585 11.4 L600 10.8"/></svg>
+          </div>
+        </article>
+        <article class="card feature">
+          <div class="feature-copy">
+            <h3>Reverse engineer unknown messages</h3>
+            <p>For IDs no DBC describes, see what changes before you guess what it means.</p>
+            <ul>
+              <li>Byte Values: a sparkline for every byte of every message, next to signals you already know</li>
+              <li>Bit activity: how often each bit changes, from rarely to every frame</li>
+              <li>Drag across bits to define a signal, add it to a DBC and export it</li>
+              <li>Find Signal: describe how a signal behaves over time and get ranked candidates</li>
+            </ul>
+          </div>
+          <div class="feature-visual bit-visual">
+            <div class="bit-grid" aria-hidden="true"><span></span><span>7</span><span>6</span><span>5</span><span>4</span><span>3</span><span>2</span><span>1</span><span>0</span><span>0</span><span class="cell h3"></span><span class="cell h3"></span><span class="cell h4"></span><span class="cell h4"></span><span class="cell h5"></span><span class="cell h5"></span><span class="cell h6"></span><span class="cell h6"></span><span>1</span><span class="cell"></span><span class="cell"></span><span class="cell h1"></span><span class="cell h2"></span><span class="cell h2"></span><span class="cell h3"></span><span class="cell h3"></span><span class="cell h4"></span><span>2</span><span class="cell h1"></span><span class="cell h2"></span><span class="cell h2"></span><span class="cell h3"></span><span class="cell h3"></span><span class="cell h4"></span><span class="cell h4"></span><span class="cell h5"></span><span>3</span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell h1"></span><span>4</span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span>5</span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span>6</span><span class="cell"></span><span class="cell h3"></span><span class="cell h4"></span><span class="cell h5"></span><span class="cell h6"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span>7</span><span class="cell h5"></span><span class="cell h5"></span><span class="cell h6"></span><span class="cell h5"></span><span class="cell h6"></span><span class="cell h6"></span><span class="cell h5"></span><span class="cell h6"></span><span class="selection"></span></div>
+            <div class="legend" aria-hidden="true"><span class="swatch h0"></span><span class="never">Never</span>Rarely <span class="swatch h1"></span><span class="swatch h2"></span><span class="swatch h3"></span><span class="swatch h4"></span><span class="swatch h5"></span><span class="swatch h6"></span> Every frame</div>
+            <p class="small">An example bit activity grid, bits 7 to 0 for bytes 0 to 7. The dashed outline marks a 4-bit counter, selected by dragging across it.</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="pro-title">
+    <div class="wrap">
+      <div class="card pro-teaser">
+        <h2 class="h2" id="pro-title">FreeCAN Studio Pro</h2>
+        <p>A paid desktop app on the same core is planned. It is not available yet.</p>
+        <a class="button" href="/pro/">About Pro</a>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="/"><img src="/logo.svg" alt="" width="30" height="32"><span><strong>FreeCAN</strong> Studio</span></a>
+        <p>Files are processed on your computer and never uploaded.</p>
+      </div>
+      <nav aria-labelledby="footer-app">
+        <h2 id="footer-app">FreeCAN Studio</h2>
+        <ul>
+          <li><a href="https://app.freecanstudio.com/">Open FreeCAN Studio</a></li>
+          <li><a href="https://app.freecanstudio.com/?demo=1">Try the Demo</a></li>
+          <li><a href="/#privacy">Privacy</a></li>
+          <li><a href="/pro/">FreeCAN Studio Pro</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="footer-guides">
+        <h2 id="footer-guides">Guides</h2>
+        <ul>
+          <li><a href="/blf-viewer-online/">BLF viewer online</a></li>
+          <li><a href="/mf4-viewer-online/">MF4 viewer online</a></li>
+          <li><a href="/dbc-viewer-online/">DBC viewer and editor</a></li>
+          <li><a href="/canalyzer-alternative/">CANalyzer alternative</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="footer-legal">
+      <p>&copy; 2026 FreeCAN Studio.</p>
+      <p>Vector is a trademark of Vector Informatik GmbH. FreeCAN Studio is not affiliated with Vector Informatik GmbH.</p>
+      <p>Other product names are trademarks of their owners.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

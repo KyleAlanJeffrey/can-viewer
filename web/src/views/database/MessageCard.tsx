@@ -28,6 +28,7 @@ interface Props {
 /** The selected message's own fields. Every field commits on its own once valid. */
 export function MessageCard({ db, message, period, onChange, onDelete }: Props) {
   const extendedId = useId();
+  const j1939Id = useId();
   const sizeId = useId();
   const nodesId = useId();
   const [extendedError, setExtendedError] = useState<string | null>(null);
@@ -102,6 +103,27 @@ export function MessageCard({ db, message, period, onChange, onDelete }: Props) 
             </p>
           )}
         </div>
+        {extended && (
+          <div className="field db-f-switch">
+            <label htmlFor={j1939Id} className="field-label">
+              J1939
+            </label>
+            <div className="db-switch-control">
+              <input
+                id={j1939Id}
+                type="checkbox"
+                role="switch"
+                className="switch"
+                checked={message.j1939 ?? false}
+                aria-describedby={`${j1939Id}-hint`}
+                onChange={(e) => onChange({ j1939: e.target.checked })}
+              />
+              <span id={`${j1939Id}-hint`} className="db-caption">
+                Matched by PGN, whatever the priority and source address
+              </span>
+            </div>
+          </div>
+        )}
         <div className="field db-f-size">
           <label htmlFor={sizeId} className="field-label">
             Bytes

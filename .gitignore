@@ -7,3 +7,4 @@ node_modules/
 *.tsbuildinfo
 .impeccable/hook.cache.json
 .impeccable/review/
+.wrangler/

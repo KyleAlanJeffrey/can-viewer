@@ -168,21 +168,99 @@ export function busesOverlap(a: string | null, b: string | null): boolean {
   return a === null || b === null || a === b;
 }
 
+/*
+ * J1939 matching, as the core does it (crates/can-dbc-model/src/j1939.rs). A J1939 message is
+ * written with one sender's CAN ID, but any node may send its parameter group at any priority,
+ * so frames match by PGN. IDs are in the DBC convention.
+ */
+
+/** The parameter group number of a 29-bit ID. For PDU1 formats (below 240) the low byte is a destination, not part of it. */
+export function pgn(id: number): number {
+  const group = (id >>> 8) & 0x3ffff;
+  return pduFormat(group) < 240 ? group & ~0xff : group;
+}
+
+function pduFormat(pgn: number): number {
+  return (pgn >>> 8) & 0xff;
+}
+
+export function sourceAddress(id: number): number {
+  return id & 0xff;
+}
+
+/** The 26 bits below the priority: data pages, PDU format, PDU specific and source address. */
+function withoutPriority(id: number): number {
+  return id & 0x03ff_ffff;
+}
+
+/** Proprietary A (PF 239) and B (PF 255) groups mean whatever each sender defines. */
+function isProprietary(pgn: number): boolean {
+  const pf = pduFormat(pgn);
+  return pf === 0xef || pf === 0xff;
+}
+
+/** Whether a J1939 message defined with ID `defined` decodes a frame with ID `frame`. */
+export function j1939Matches(defined: number, frame: number): boolean {
+  if (!isExtended({ id: defined }) || !isExtended({ id: frame })) return false;
+  const group = pgn(frame);
+  return pgn(defined) === group && (!isProprietary(group) || sourceAddress(defined) === sourceAddress(frame));
+}
+
+/** Whether `m` decodes a frame with ID `frame` on its own: exactly, or by PGN when it's J1939. */
+export function messageMatches(m: Pick<MessageDef, 'id' | 'j1939'>, frame: number): boolean {
+  return m.id === frame || (!!m.j1939 && j1939Matches(m.id, frame));
+}
+
+/**
+ * The J1939 message of `db` for a frame with ID `id`, ranked as the core ranks them: the frame's
+ * ID apart from priority first, then the frame's source address, then the first defined.
+ */
+export function j1939Message(db: Database, id: number): MessageDef | null {
+  const rank = (m: MessageDef) =>
+    withoutPriority(m.id) === withoutPriority(id) ? 0 : sourceAddress(m.id) === sourceAddress(id) ? 1 : 2;
+  let best: MessageDef | null = null;
+  for (const m of db.messages) {
+    if (!m.j1939 || !j1939Matches(m.id, id)) continue;
+    if (!best || rank(m) < rank(best)) best = m;
+  }
+  return best;
+}
+
+interface Decoder {
+  dbc: LoadedDbc;
+  message: MessageDef;
+}
+
+/**
+ * The message the core decodes a frame with ID `id` with, out of `dbcs` in lookup order (already
+ * narrowed to the frame's bus): the first exact ID, failing that the first J1939 match by PGN.
+ */
+export function decoderOf(dbcs: LoadedDbc[], id: number): Decoder | null {
+  for (const dbc of dbcs) {
+    const message = dbc.db.messages.find((m) => m.id === id);
+    if (message) return { dbc, message };
+  }
+  for (const dbc of dbcs) {
+    const message = j1939Message(dbc.db, id);
+    if (message) return { dbc, message };
+  }
+  return null;
+}
+
 /**
  * Per DBC id, the IDs of its messages that an earlier DBC decodes instead on at least one bus,
- * each with that earlier DBC's name. `dbcs` is in lookup order.
+ * each with that earlier DBC's name. `dbcs` is in lookup order. A message loses its own ID to
+ * an earlier exact match; a J1939 message also loses its PGN from other senders to an earlier
+ * J1939 message for that PGN.
  */
 export function overriddenMessages(dbcs: LoadedDbc[]): Map<string, Map<number, string>> {
   const result = new Map<string, Map<number, string>>();
   dbcs.forEach((dbc, index) => {
-    const earlier = dbcs
-      .slice(0, index)
-      .filter((e) => busesOverlap(e.channel, dbc.channel))
-      .map((e) => ({ name: e.db.name, ids: new Set(e.db.messages.map((m) => m.id)) }));
+    const earlier = dbcs.slice(0, index).filter((e) => busesOverlap(e.channel, dbc.channel));
     const overridden = new Map<number, string>();
     for (const m of dbc.db.messages) {
-      const winner = earlier.find((e) => e.ids.has(m.id));
-      if (winner) overridden.set(m.id, winner.name);
+      const winner = decoderOf(earlier, m.id);
+      if (winner && (winner.message.id === m.id || m.j1939)) overridden.set(m.id, winner.dbc.db.name);
     }
     result.set(dbc.id, overridden);
   });
@@ -248,4 +326,13 @@ if (import.meta.env.DEV) {
     'Counter 51|4@1+ should fill byte 6, bits 6 to 3',
     counter,
   );
+
+  // The cases crates/can-dbc-model/src/j1939.rs tests, so the port and the core agree.
+  const ext = (id: number) => (id | EXT_FLAG) >>> 0;
+  console.assert(pgn(0x0cf00400) === 0xf004 && pgn(ext(0x18f004fe)) === 0xf004, 'PGN drops priority and source');
+  console.assert(pgn(0x0c002a03) === 0 && pgn(0x09f80110) === 0x1f801, 'PDU1 drops the destination; data pages stay');
+  const eec1 = ext(0x0cf004fe);
+  console.assert(j1939Matches(eec1, ext(0x18f00417)) && !j1939Matches(eec1, ext(0x0cf00500)), 'match by PGN');
+  console.assert(!j1939Matches(eec1, 0x0cf00400), 'a standard frame has no PGN');
+  console.assert(j1939Matches(ext(0x18ef0017), ext(0x18ef2a17)) && !j1939Matches(ext(0x18ef0017), ext(0x18ef0018)), 'proprietary needs the source');
 }

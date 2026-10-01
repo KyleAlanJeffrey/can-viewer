@@ -20,6 +20,7 @@ Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker
 | `crates/can-wasm` | wasm-bindgen `Session` used by the web worker; min/max plot decimation |
 | `crates/sample-gen` | Dev tool: synthetic demo log + DBC, native benchmark, decode dumps |
 | `web/` | Vite + React UI: canvas trace table, bit heatmap, uPlot plots |
+| `site/` | The landing site for `freecanstudio.com`: static HTML, no build ([site/README.md](site/README.md)) |
 | `scripts/crosscheck_cantools.py` | Compares our decoder with cantools |
 
 ## Develop
@@ -42,7 +43,7 @@ Generate the demo: a 1M-frame log, gzipped to `web/public/demo/demo.log.gz` (the
 cd web && pnpm demo
 ```
 
-Start the dev server, then open the page and click **Load demo** or drop a log and a DBC. The formats read are listed in [COMPATIBILITY.md](COMPATIBILITY.md#log-formats).
+Start the dev server, then open the page and click **Try the Demo** or drop a log and a DBC. The formats read are listed in [COMPATIBILITY.md](COMPATIBILITY.md#log-formats).
 
 ```bash
 cd web && pnpm dev
@@ -66,6 +67,10 @@ Cross-check the decoder against cantools (needs `pip install cantools`):
 cargo run --release -p sample-gen -- decode target/demo/demo.log web/public/demo/demo.dbc 300000 > /tmp/ours.csv
 python scripts/crosscheck_cantools.py target/demo/demo.log web/public/demo/demo.dbc /tmp/ours.csv 300000
 ```
+
+## Deploy
+
+The app and the landing site are two Cloudflare Workers projects. The app (`wrangler.jsonc`, project `freecan-studio`) is served on `app.freecanstudio.com`; the landing site (`site/wrangler.jsonc`, project `freecan-site`) on `freecanstudio.com`. `freecan.studio` and `freecan.app` redirect to `freecanstudio.com` through Cloudflare redirect rules set up by the owner. See "Deployment" in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Spike results (2026-09-30, Apple Silicon, Chromium)
 

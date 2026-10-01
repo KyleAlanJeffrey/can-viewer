@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { CoreApi, IdSummary, RawSignalSpec } from '../../core/api';
+import { formatId, type CoreApi, type IdSummary, type MessageDef, type RawSignalSpec } from '../../core/api';
+import { formatCount, formatPeriod } from '../../format';
 
 export type ByteOrder = RawSignalSpec['byteOrder'];
 
@@ -174,4 +175,76 @@ export function windowStats(x: Float64Array, y: Float64Array, [t0, t1]: TimeWind
     last = v;
   }
   return { frames, changes, min, max, last };
+}
+
+/** Points of a series across a window: times in seconds and values, in time order. */
+export interface Trace {
+  x: ArrayLike<number>;
+  y: ArrayLike<number>;
+}
+
+export interface Point {
+  t: number;
+  v: number;
+}
+
+/** The last point at or before `t`, or the first point when `t` is before all of them. */
+export function pointAt(trace: Trace, t: number): Point | null {
+  const { x, y } = trace;
+  if (x.length === 0) return null;
+  let lo = 0;
+  let hi = x.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (x[mid] <= t) lo = mid + 1;
+    else hi = mid;
+  }
+  const i = Math.max(0, lo - 1);
+  return { t: x[i], v: y[i] };
+}
+
+/** The last point inside the window. */
+export function lastIn(trace: Trace, [t0, t1]: TimeWindow): Point | null {
+  const { x, y } = trace;
+  for (let i = x.length - 1; i >= 0; i--) if (x[i] >= t0 && x[i] <= t1) return { t: x[i], v: y[i] };
+  return null;
+}
+
+/** Whether the points inside the window take more than one value. */
+export function changesIn(trace: Trace, [t0, t1]: TimeWindow): boolean {
+  const { x, y } = trace;
+  let first: number | null = null;
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] < t0 || x[i] > t1) continue;
+    if (first === null) first = y[i];
+    else if (y[i] !== first) return true;
+  }
+  return false;
+}
+
+export function clampTime(t: number, duration: number): number {
+  return Math.min(Math.max(0, duration), Math.max(0, t));
+}
+
+/** The sidebar search's rule: the ID, the message name or one of its signals contains the text. */
+export function matchesQuery(s: IdSummary, message: MessageDef | null, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    formatId(s.id, s.extended).toLowerCase().includes(q) ||
+    (s.name ?? '').toLowerCase().includes(q) ||
+    (message?.signals.some((sig) => sig.name.toLowerCase().includes(q)) ?? false)
+  );
+}
+
+export function hexByte(v: number): string {
+  return Math.round(v).toString(16).toUpperCase().padStart(2, '0');
+}
+
+/** Bus, period, frame count and optionally payload length, separated by middle dots. */
+export function describeId(channels: string[], s: IdSummary, withLength: boolean): string {
+  const length = s.minLen === s.maxLen ? `${s.maxLen} bytes` : `${s.minLen}-${s.maxLen} bytes`;
+  return [channels[s.channel], s.periodMs !== null ? `every ${formatPeriod(s.periodMs)}` : null, `${formatCount(s.count)} frames`, withLength ? length : null]
+    .filter(Boolean)
+    .join(' \u00b7 ');
 }

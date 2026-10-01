@@ -52,7 +52,9 @@ impl Payload {
         Self([0; 2 * PADDED])
     }
 
+    /// Only the first [`MAX_PAYLOAD`] bytes of a reassembled frame are searched.
     fn set(&mut self, data: &[u8]) {
+        let data = &data[..data.len().min(MAX_PAYLOAD)];
         let (forward, reversed) = self.0.split_at_mut(PADDED);
         forward[..data.len()].copy_from_slice(data);
         for (r, &f) in reversed.iter_mut().zip(forward.iter().rev()) {
@@ -237,7 +239,7 @@ fn score_id(store: &FrameStore, stats: &IdStats, rules: &[Rule], out: &mut Vec<F
     windows.sort_by_key(|(_, frames)| frames.len());
 
     // Ranges must fit every frame of the ID.
-    let mut ranked: Vec<(BitRange, f64)> = candidates(usize::from(stats.min_len))
+    let mut ranked: Vec<(BitRange, f64)> = candidates(usize::from(stats.min_len).min(MAX_PAYLOAD))
         .into_iter()
         .map(|range| (range, 1.0))
         .collect();

@@ -3,6 +3,7 @@ import { dbcId, formatId, type Database, type IdSummary, type MessageDef, type R
 import { Segmented } from '../../components/Segmented';
 import { formatCount } from '../../format';
 import { useViewState } from '../shared/viewState';
+import { Sparkline } from './Sparkline';
 import type { ViewContext } from '../types';
 import {
   DBC_IDENTIFIER,
@@ -12,8 +13,13 @@ import {
   plainNumber,
   rangeFits,
   formatValue,
+  formatSeconds,
+  lastIn,
+  pointAt,
   type BitRange,
   type ByteOrder,
+  type TimeWindow,
+  type Trace,
   type WindowStats,
 } from './bits';
 
@@ -35,6 +41,8 @@ export interface FormState {
   limits: { min: string; max: string } | null;
   /** For an ID no DBC defines: the loaded DBC to add it to, NEW_DBC, or null for the first that applies. */
   addTo: string | null;
+  /** Draw the candidate over the first pinned signal in its unit. Missing in forms saved before it existed. */
+  overlay?: boolean;
 }
 
 /** `addTo` for a new DBC. Loaded DBC ids are UUIDs, so it can't name one. */
@@ -58,6 +66,7 @@ export function initialForm(spec: RawSignalSpec | null): FormState {
     unit: '',
     limits: null,
     addTo: null,
+    overlay: false,
   };
 }
 
@@ -98,10 +107,18 @@ interface Props {
   /** False when the window holds too many frames to count changes exactly. */
   statsExact: boolean;
   decodeError: string | null;
+  window: TimeWindow;
+  cursor: number | null;
+  /** The candidate's points across the window, once they have caught up with the form. */
+  trace: Trace | null;
+  /** The pinned signal the candidate can overlay, by name, or null when none shares its unit. */
+  overlayTarget: string | null;
 }
 
 /** The New Signal inspector: the candidate's definition, its decoded values, and Add to Database. */
-export function SignalForm({ ctx, summary, form, onChange, onByteOrder, range, rangeError, decoded, stats, statsExact, decodeError }: Props) {
+export function SignalForm(props: Props) {
+  const { ctx, summary, form, onChange, onByteOrder, range, rangeError, decoded, stats, statsExact, decodeError } = props;
+  const { window: win, cursor, trace, overlayTarget } = props;
   const [submitted, setSubmitted] = useState(false);
   /** `dbc` is the id of the DBC it went into; `file` its name, until the new DBC shows up in ctx. */
   const [added, setAdded] = useState<{ signal: string; message: string; dbc: string; file: string } | null>(null);
@@ -185,6 +202,7 @@ export function SignalForm({ ctx, summary, form, onChange, onByteOrder, range, r
   };
 
   const unit = form.unit.trim() ? ` ${form.unit.trim()}` : '';
+  const current = trace ? (cursor !== null ? pointAt(trace, cursor) : lastIn(trace, win)) : null;
   return (
     <div className="re-inspector">
       <header className="inspector-head">
@@ -200,6 +218,22 @@ export function SignalForm({ ctx, summary, form, onChange, onByteOrder, range, r
           add();
         }}
       >
+        <div className="re-value">
+          <div className="re-value-head">
+            <span className="re-value-label">{cursor !== null ? `Value (at ${formatSeconds(cursor)})` : 'Value (end of window)'}</span>
+            <span className="readout re-value-reading">{range ? (current ? `${formatValue(current.v)}${unit}` : '\u2026') : '\u2013'}</span>
+          </div>
+          <div className="re-value-spark">
+            {trace && trace.x.length > 0 ? <Sparkline x={trace.x} y={trace.y} x0={win[0]} x1={win[1]} /> : <span className="hint">{range ? 'Decoding\u2026' : 'Select bits to preview.'}</span>}
+          </div>
+          {overlayTarget && (
+            <label className="re-check">
+              <input type="checkbox" checked={form.overlay ?? false} onChange={(e) => onChange({ overlay: e.target.checked })} />
+              Overlay on {overlayTarget}
+            </label>
+          )}
+        </div>
+
         <Field id={`${ids}name`} label="Name" error={nameError}>
           <input
             id={`${ids}name`}
@@ -211,6 +245,17 @@ export function SignalForm({ ctx, summary, form, onChange, onByteOrder, range, r
             aria-invalid={!!nameError}
             aria-describedby={nameError ? `${ids}name-error` : undefined}
             onChange={(e) => onChange({ name: e.target.value })}
+          />
+        </Field>
+
+        <Field id={`${ids}unit`} label="Unit">
+          <input
+            id={`${ids}unit`}
+            className="input"
+            value={form.unit}
+            placeholder="e.g. km/h"
+            autoComplete="off"
+            onChange={(e) => onChange({ unit: e.target.value })}
           />
         </Field>
 
@@ -305,17 +350,6 @@ export function SignalForm({ ctx, summary, form, onChange, onByteOrder, range, r
             />
           </Field>
         </div>
-
-        <Field id={`${ids}unit`} label="Unit">
-          <input
-            id={`${ids}unit`}
-            className="input"
-            value={form.unit}
-            placeholder="e.g. km/h"
-            autoComplete="off"
-            onChange={(e) => onChange({ unit: e.target.value })}
-          />
-        </Field>
 
         <div className="re-pair">
           <Field id={`${ids}min`} label="Min">

@@ -16,13 +16,15 @@ interface Props {
   duration: number;
   window: TimeWindow;
   onChange: (w: TimeWindow) => void;
+  /** Without the title, for a strip that sits inside another card. */
+  compact?: boolean;
 }
 
 /**
  * The analysis window over the whole log. Bars show how many payload bits of the ID changed in
  * each slice of the log, so busy stretches are easy to aim at; everything below uses the window.
  */
-export function WindowStrip({ core, idKey, logVersion, duration, window: win, onChange }: Props) {
+export function WindowStrip({ core, idKey, logVersion, duration, window: win, onChange, compact = false }: Props) {
   const stripRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
@@ -160,7 +162,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
   return (
     <div className="re-window">
       <div className="re-card-head">
-        <h3 className="section-title" id={titleId}>
+        <h3 className={compact ? 're-subtitle' : 'section-title'} id={titleId}>
           Time Window
         </h3>
         <div className="re-window-fields">
@@ -233,7 +235,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
 }
 
 /** A seconds field that commits on Enter or blur, and reverts on Escape or bad input. */
-function TimeField({ label, value, onCommit }: { label: string; value: number; onCommit: (t: number) => void }) {
+export function TimeField({ label, value, onCommit }: { label: string; value: number; onCommit: (t: number) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
   const commit = () => {
     if (draft === null) return;

@@ -171,10 +171,19 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
     draw(ctx, size.width, size.height, visible, rows, channels, nameOf, selectedFrame);
   }, [size, batch, visible, filterKey, channels, nameOf, selectedFrame, fontsReady]);
 
-  const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const rowAt = (e: React.MouseEvent<HTMLCanvasElement>): number | null => {
     const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
     const row = Math.floor((y - HEADER_H) / ROW_H);
-    if (!batch || y < HEADER_H || row >= batch.length) return;
+    return batch && y >= HEADER_H && row < batch.length ? row : null;
+  };
+
+  const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.style.cursor = rowAt(e) === null ? '' : 'pointer';
+  };
+
+  const onCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const row = rowAt(e);
+    if (!batch || row === null) return;
     const frame = batch.index(row);
     if (frame === selectedFrame) {
       setSelectedFrame(null);
@@ -230,7 +239,7 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
       aria-rowcount={rowCount}
       aria-label="Frame trace"
     >
-      <canvas ref={canvasRef} onClick={onCanvasClick} />
+      <canvas ref={canvasRef} onClick={onCanvasClick} onPointerMove={onCanvasPointerMove} />
       <div className="scrollbar" onPointerDown={onTrackDown}>
         {maxTop > 0 && (
           <div

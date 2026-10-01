@@ -581,7 +581,6 @@
   margin-left: auto;
 }
 
-/* A click moves a cursor here; a drag zooms. */
 .pv-lane-host .u-over {
   cursor: crosshair;
 }

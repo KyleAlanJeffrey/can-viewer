@@ -437,6 +437,15 @@ Virtualised and canvas-drawn for 10M+ frames, with a custom 10px scrollbar (Grap
 - **Empty state:** centred, at most 440px wide. It holds the 64px mark on Paper, the empty title, a Slate lede, the secondary demo button, and a 12px Slate privacy line with a lock icon.
 - **Drop overlay:** a 2px dashed Ochre Control border, 12px corners, inset 8px, over Selected Row at 72%.
 
+### Cursor
+The cursor shows what a press or drag will do.
+- **Pointer:** anything a press activates: buttons, tabs, toggles, switch labels, clickable rows and cells.
+- **Default:** disabled controls, including while the app is busy.
+- **Text:** text fields.
+- **Crosshair:** where a click places or parks a time cursor (plots, byte cells, reference plots) or selects bits.
+- **Grab / grabbing:** a draggable window; **ew-resize** on its edges, held for the whole drag.
+- **Progress:** everywhere else while the app is busy.
+
 ### Motion
 Motion is minimal: 120ms ease-out background transitions on buttons. The progress bar animates `transform: scaleX` (120ms linear), never width.
 

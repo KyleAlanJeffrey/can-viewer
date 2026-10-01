@@ -49,7 +49,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 
 ## Follow-ups
 
-- [x] Interaction: make the mouse cursor show what a press or drag will do, in every view and kept in step with state changes: `pointer` on buttons, rows and toggles; `crosshair` where a click parks the time cursor (plots, byte cells, reference rows); `grab` / `grabbing` on draggable windows; `ew-resize` on window handles; `text` on fields; `default` (not `pointer`) on disabled controls and read-only cells. Audit the CSS and canvas hit areas (BitGrid cells, WindowStrip, uPlot overlays)
+- [x] Interaction: make the mouse cursor show what a press or drag will do, in every view and kept in step with state changes: `pointer` on buttons, clickable rows, toggles and switch labels; `crosshair` where a click parks the time cursor (plots, byte cells, reference plots) and where a click in the bit grid selects bits; `grab` / `grabbing` on draggable windows; `ew-resize` on window handles, held for the whole drag; `text` on fields; `default` (not `pointer`) on disabled controls, empty-state rows and read-only cells, even while busy; `progress` elsewhere while busy. Audit the CSS and canvas hit areas (BitGrid cells, WindowStrip, Trace rows, uPlot overlays)
 - [ ] Rows of reassembled J1939 transfers carry only their first 64 bytes; read the full length (row bytes 20 to 22) in `web/src/core/rows.ts` so Trace and Reverse Engineer can show longer payloads
 - [ ] Run `scripts/crosscheck_cantools.py` against a DBC with extended multiplexing (`SG_MUL_VAL_`) once cantools is installed
 - [ ] J1939 transport protocol: TP timeouts and RTS/CTS retransmission (a resent packet drops the transfer today)

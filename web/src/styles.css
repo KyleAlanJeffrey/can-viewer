@@ -128,7 +128,6 @@ button {
   padding: 0;
 }
 
-/* The cursor says what a press will do: a pointer on anything that acts, the arrow on what can't. */
 button,
 select,
 summary,
@@ -144,13 +143,12 @@ label:has(> input[type='radio']) {
 button:disabled,
 select:disabled,
 input:disabled,
+[aria-disabled='true'],
 label:has(> input:disabled) {
   cursor: default;
 }
 
-/* Waiting on the core: controls are disabled, so show that work is under way. */
-.app[aria-busy='true'],
-.app[aria-busy='true'] button:disabled {
+.app[data-busy] {
   cursor: progress;
 }
 
@@ -696,7 +694,6 @@ button:disabled {
 .trace canvas {
   position: absolute;
   inset: 0 10px 0 0;
-  cursor: pointer;
 }
 
 .scrollbar {

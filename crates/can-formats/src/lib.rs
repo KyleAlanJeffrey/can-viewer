@@ -88,6 +88,14 @@ impl AnyParser {
             AnyParser::Mf4(_) => Format::Mf4,
         }
     }
+
+    /// Tell the parser the file's size before its bytes are pushed. Only MF4, which buffers
+    /// the whole file, uses it.
+    pub fn expect_bytes(&mut self, total_bytes: u64) {
+        if let AnyParser::Mf4(parser) = self {
+            parser.expect_bytes(total_bytes);
+        }
+    }
 }
 
 impl LogParser for AnyParser {

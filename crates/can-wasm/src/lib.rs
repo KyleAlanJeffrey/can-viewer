@@ -6,7 +6,7 @@
 mod find;
 mod series;
 
-use can_core::{FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
+use can_core::{tp::MAX_TRANSFER, FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{CandumpParser, LogParser};
 use serde::{Deserialize, Serialize};
@@ -301,7 +301,8 @@ impl Session {
     /// Payload bytes `first..first + byte_count` of rows `start..start + count` of the trace of
     /// `key` (pass -1 for all), which [`Self::rows`] would cut at [`MAX_PAYLOAD`]: `byte_count`
     /// values per row, row after row, with [`NO_BYTE`] for a byte past the end of the frame. Rows
-    /// are clamped to those that exist, as in [`Self::rows`].
+    /// are clamped to those that exist, as in [`Self::rows`]. Empty when `byte_count` is above
+    /// [`MAX_TRANSFER`], the longest payload, or `first + byte_count` overflows a `u32`.
     pub fn row_bytes(
         &self,
         key: f64,
@@ -313,11 +314,20 @@ impl Session {
         let Ok(filter) = self.filter(key) else {
             return Vec::new();
         };
+        let Some(end_byte) = first.checked_add(byte_count) else {
+            return Vec::new();
+        };
+        if byte_count as usize > MAX_TRANSFER {
+            return Vec::new();
+        }
         let total = self.row_count(key) as usize;
         let start = (start as usize).min(total);
         let end = start.saturating_add(count as usize).min(total);
-        let bytes = first as usize..first as usize + byte_count as usize;
-        let mut out = Vec::with_capacity((end - start) * bytes.len());
+        let Some(len) = (end - start).checked_mul(byte_count as usize) else {
+            return Vec::new();
+        };
+        let bytes = first as usize..end_byte as usize;
+        let mut out = Vec::with_capacity(len);
         for row in start..end {
             let index = filter.map_or(row, |stats| stats.frames[row] as usize);
             let data = self.store.frame(index).data;
@@ -1064,6 +1074,24 @@ mod tests {
         );
         assert!(s.row_bytes(key, 2, 1, 0, 8).is_empty());
         assert!(s.row_bytes(12345.0, 0, 1, 0, 8).is_empty());
+        assert!(s.row_bytes(key, 0, 0, 0, 8).is_empty());
+        assert!(s.row_bytes(key, 0, 2, 0, 0).is_empty());
+        assert_eq!(
+            s.row_bytes(key, 0, u32::MAX, 99, 2),
+            [99, NO_BYTE, 99, NO_BYTE]
+        );
+        assert_eq!(s.row_bytes(key, 0, 2, 0, 1785).len(), 2 * 1785);
+        assert_eq!(s.row_bytes(key, 0, 1, u32::MAX - 1, 1), [NO_BYTE]);
+        assert!(
+            s.row_bytes(key, 0, 1, 0, 1786).is_empty(),
+            "past the longest payload"
+        );
+        assert!(s.row_bytes(-1.0, 0, 5, 0, 0x4000_0000).is_empty());
+        assert!(s.row_bytes(-1.0, 0, 1, 0, u32::MAX).is_empty());
+        assert!(
+            s.row_bytes(-1.0, 0, 5, 0xFFFF_FFF0, 0x20).is_empty(),
+            "first + byte_count overflows"
+        );
 
         // Raw decodes reach the whole payload.
         let info = s

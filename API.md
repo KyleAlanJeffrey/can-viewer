@@ -418,9 +418,9 @@ Payload bytes `first` to `first + byteCount - 1` of rows `start` to `start + cou
 - **`start`** `number` - First row, counted within the filter as in `rows`.
 - **`count`** `number` - Number of rows.
 - **`first`** `number` - The first byte index.
-- **`byteCount`** `number` - How many bytes of each row.
+- **`byteCount`** `number` - How many bytes of each row, at most 1785 (the longest payload, a full J1939 transfer).
 
-**Returns** `byteCount` values per row, row after row: value `r * byteCount + j` is byte `first + j` of row `start + r`. Each is 0 to 255, or `NO_BYTE` for a byte past the end of that frame. The array is empty for an unknown key or a start past the end.
+**Returns** `byteCount` values per row, row after row: value `r * byteCount + j` is byte `first + j` of row `start + r`. Each is 0 to 255, or `NO_BYTE` for a byte past the end of that frame. The array is empty for an unknown key, a start past the end, a `byteCount` of 0 or above 1785, or a `first + byteCount` above 2^32 - 1.
 
 ```ts
 const values = await core.rowBytes(key, 0, 400, 96, 4);

@@ -235,6 +235,7 @@ export interface CoreApi {
    * Payload bytes `first..first + byteCount` of rows `start..start + count` of `key` (or ALL_IDS),
    * not cut at 64 bytes like `rows`: `byteCount` values per row, row after row, with `NO_BYTE`
    * for a byte past the end of the frame. Rows are clamped to those that exist, as in `rows`.
+   * Empty when `byteCount` is above 1785, the longest payload.
    */
   rowBytes(key: number, start: number, count: number, first: number, byteCount: number): Promise<Uint16Array>;
   bitFlips(key: number): Promise<Uint32Array>;

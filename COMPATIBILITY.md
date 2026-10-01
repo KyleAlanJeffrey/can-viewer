@@ -31,7 +31,7 @@ Notes:
 - `crypto.randomUUID` exists only in secure contexts, so the app must be served over HTTPS or from `localhost`. A dev server opened over plain HTTP on a LAN address cannot load DBCs.
 - When IndexedDB is unavailable (private windows, blocked site data) or full, the app still works but cannot restore the session after a reload. It tells the user when a log could not be kept.
 - The production Content-Security-Policy (`web/public/_headers`) allows scripts only from the app's origin plus `'wasm-unsafe-eval'`, which wasm compilation needs.
-- The core runs on wasm32, so its memory is capped at 4 GiB, and a browser may allow less. In the spike, a 552 MB, 10M-frame candump log used about 654 MB of wasm memory (see [README.md](README.md)).
+- The core runs on wasm32, so its memory is capped at 4 GiB, and a browser may allow less. In the spike, a 552 MB, 10M-frame candump log used about 654 MB of wasm memory (see [README.md](README.md)). An MF4 file is held whole while it is read, on top of its frames: a 112 MB, 10M-frame MF4 from `sample-gen convert` uses about 620 MB, and a 178 MB, 16M-frame one about 1.0 GB. The frame store is pre-sized from the file size, for at most 20M frames (about 520 MB); a log with more grows it as it is read.
 
 ## Platforms
 
@@ -39,10 +39,31 @@ Desktop only. Phones and tablets are out of scope: no phone layout is designed, 
 
 ## Log formats
 
-| Format | Status |
-|---|---|
-| candump log files (`candump -l` / `-L`) | Supported |
-| Vector ASC, Vector BLF, PEAK TRC, ASAM MF4, CSV | Planned. Not supported |
+| Format | Extensions | Status |
+|---|---|---|
+| candump log files (`candump -l` / `-L`) | `.log`, `.txt`, `.candump` | Supported |
+| Vector ASC | `.asc` | Supported |
+| PEAK TRC (file versions 1.0 to 2.1) | `.trc` | Supported |
+| CSV (python-can, SavvyCAN, generic) | `.csv` | Supported |
+| Vector BLF (CAN and CAN FD objects) | `.blf` | Supported |
+| ASAM MF4 (CAN bus logging, MDF 4.x) | `.mf4`, `.mdf` | Supported |
+
+The landing site (`site/public/index.html` and the BLF, MF4 and CANalyzer pages) lists these formats too; change it with this table.
+
+How the format is chosen (`Format::detect` in `crates/can-formats/src/detect.rs`): the file name's extension suggests a format, and the first 4 KiB of the file confirm or correct it, so a log with the wrong extension still opens. A file whose content identifies no format, or could be more than one, is read as what its extension says, or as candump if the extension is unknown too. The content rules, in order:
+
+- Vector BLF: the file starts with `LOGG`.
+- ASAM MF4: the file starts with `MDF` and five spaces, or `UnFinMF ` (unfinalized).
+- candump: the first non-blank line starts with `(`.
+- CSV: the first non-blank line that is not a `#` comment or Excel's `sep=,` line is a header with a time column, an ID column and data columns that the CSV reader knows (see below). This comes before the TRC and ASC rules, so a header such as `;time;id;data` (pandas with `sep=';'`) or `Date Time,Timestamp,ID,Data` is CSV.
+- PEAK TRC: the first non-blank line starts with `;$` (`;$FILEVERSION=`), `;#` or `;-`. Any other `;` line is left to the extension.
+- Vector ASC: the first non-blank line starts with `base hex`, `base dec` or `Begin Triggerblock` (case-insensitive), or is a `date` line whose date the ASC reader reads. A `date` line in another layout is left to the extension.
+
+The result is reported as `LogInfo.format` (see [API.md](API.md)). Whatever the format, `LogInfo.lines` counts the lines of a text file or the records of a binary one, and the first line or record that does not parse is reported with its number and a reason.
+
+Bus names: candump keeps the interface names from the file (`can0`, `vcan1`), and so does a CSV with a bus column of names. Formats that number their buses instead (ASC, BLF, TRC, MF4, a CSV bus column of numbers) give `can<number>` with the number as written in the file, so CANoe's channel 1 is `can1` and SavvyCAN's bus 0 is `can0`. Formats and files without bus information put every frame on `can1`. A DBC scoped to a bus is matched by that name.
+
+Error frames from formats other than candump get the ID `0x20000000`: the CAN error flag with no error class, because those formats carry no SocketCAN error class. They are flagged as error frames, counted in `LogInfo.errorFrames`, and never decoded.
 
 candump support (`crates/can-formats/src/candump.rs`):
 
@@ -54,6 +75,56 @@ candump support (`crates/can-formats/src/candump.rs`):
 - A line that does not parse does not stop the load. It is counted in `LogInfo.rejected`, and the first one is reported with its line number.
 - Time lookups assume frames are in time order, as loggers write them. Slightly out-of-order timestamps only shift lookups by those frames.
 - J1939 multi-packet transfers are reassembled into extra frames as the log loads; see "J1939 transport protocol" below.
+
+Vector ASC support (`crates/can-formats/src/asc.rs`), as written by CANoe, CANalyzer and python-can:
+
+- Header: `base hex` (the default) or `base dec` sets the number base of IDs, DLCs and data bytes. `timestamps absolute` (the default) means seconds from the start of measurement; `timestamps relative` means seconds since the previous event line, summed over every event line including skipped ones, and `Begin Triggerblock` restarts the sum. A `date` line in CANoe's layout (`Tue Sep 30 00:00:00.000 2025`, with or without the weekday, milliseconds and am/pm, with English or German month names) gives the absolute start time, taken as UTC because the file names no time zone. Without one, times count from zero.
+- Classic lines: `<time> <channel> <id>[x] <Rx|Tx|TxRq> d <dlc> <bytes...>`, and remote frames with `r` in place of `d <dlc> <bytes...>`, with or without a DLC after the `r`. The `x` suffix marks a 29-bit ID; an ID above 0x7FF is read as 29-bit even without it. DLC codes 9 to 15 carry 8 bytes, as on a classic bus; CAN FD frames come on `CANFD` lines. Text after the data bytes (`Length = ...`) is ignored.
+- CAN FD lines: `<time> CANFD <channel> <Rx|Tx> <id>[x] [<name>] <brs> <esi> <dlc> <length> <bytes...> [<duration> <message length> <flags> ...]`. The symbolic name is optional. When the flags field is present and its EDL bit (0x1000) is clear, the line is a classic frame logged on an FD channel and loses its FD flags; its RTR bit (0x10) marks a remote frame.
+- `ErrorFrame` lines, classic or CANFD, give an error frame with no data (see the note on error frame IDs above).
+- `Tx` and `TxRq` set the transmitted flag.
+- Lines that are not frames (`Statistic:`, `Start of measurement`, J1939 transport, chip status, comments, trigger block markers) are skipped without counting as rejected. A frame line that does not parse (bad ID, DLC or data byte, too few bytes, unknown frame type) is rejected with a reason.
+- Not read: symbolic names, CAN XL, LIN, FlexRay and Ethernet lines, and the fields after a CAN FD line's data other than the flags.
+
+PEAK TRC support (`crates/can-formats/src/trc.rs`), as written by PCAN-View, PCAN-Explorer and python-can:
+
+- Header lines start with `;`. `;$STARTTIME=` (days since 1899-12-30, as PEAK writes it) gives the absolute start time, taken as UTC; without it, times count from zero. Time offsets are milliseconds from the start.
+- Versions 2.0 and 2.1 declare their columns with `;$COLUMNS=`. Read columns: `O` (time offset), `T` (type), `B` (bus), `I` (ID), `d` (direction), `l` (data length in bytes) or `L` (DLC), and `D` (data), which must be last. Other columns (`N`, `R`) are skipped. A 2.x file without a usable `;$COLUMNS=` line rejects every frame line with that reason.
+- 2.x types: `DT` (data frame), `FD`, `FB` (bit rate switch), `FE` (error state indicator), `BI` (both), `RR` (remote frame), and `ER`, `EC`, `EB` (error frames, with whatever data bytes the line holds). `ST`, `EV` and any other type are skipped without counting as rejected. With an `L` column, a DLC of 9 to 15 gives the CAN FD length for FD types and 8 bytes for others.
+- Versions 1.0 to 1.3 are told apart by what follows the time offset (1.1: `Rx`/`Tx`; 1.2 and 1.3: bus number then `Rx`/`Tx`, 1.3 with a `-` after the ID; 1.0: the ID), so a file without `;$FILEVERSION=` is read as 1.0. `RTR` in place of the data bytes marks a remote frame. The bus status lines PCAN-View writes with ID `FFFFFFFF`, and lines whose type is `Warng` or `Error`, are skipped.
+- An ID of more than four hex digits, or above 0x7FF, is 29-bit. A bus column names the bus `can<number>`; without one the bus is `can1`.
+- A frame line that does not parse (bad offset, ID, DLC or data byte, too few bytes or columns) is rejected with a reason.
+- Not read: `EV` user events, `ST` status lines, and the error details of `ER` lines beyond their data bytes.
+
+CSV support (`crates/can-formats/src/csv.rs`). There is no one CSV layout, so the header line (the first non-blank line that is not a `#` comment) names the columns, and the reader needs a time column, an ID column and data columns it knows:
+
+- python-can's `CSVWriter` layout: `timestamp,arbitration_id,extended,remote,error,dlc,data`, with seconds, a `0x` hex ID and base64 data (hex data is read too).
+- SavvyCAN's export: `Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,...,D8`, with microseconds, hex IDs, `true`/`false` flags and one column per byte.
+- Any other header whose names the reader knows. Names are matched case-insensitively, ignoring spaces, underscores and dashes, with a unit in parentheses allowed. Time: `t`, `ts` or a name starting with `time`. ID: `id`, `arbitration_id`, `can_id`, `identifier`, `frame_id`, `msg_id`, `message_id`, `arb_id`. Data: one column named `data`, `data_bytes`, `payload`, `bytes`, `hex_data` or `data_hex` holding every byte in hex (bytes optionally separated by spaces, colons, dashes or dots, with or without `0x`) or base64, or consecutive one-byte columns `D1..D8`, `byte0..`, `b0..` or `data[0]..`. Optional: `dlc`, `len`, `length`, `data_length`; `extended`, `ext`, `ide`, `is_extended`; `remote`, `rtr`; `error`, `err`; `fd`, `is_fd`, `canfd`, `edl`; `brs`; `esi`; `dir`, `direction`, `rx/tx`; `bus`, `channel`, `interface`, `chn`, `ch`. The first column of each kind wins. Flags read `1`/`0`, `true`/`false`, `yes`/`no`, `y`/`n`, `t`/`f`, `x`/`-` and empty (false). Direction `Tx` or `T` marks a transmitted frame.
+- The time unit comes from the time column's name when its last word is one: `ns`, `us` (or written with the micro sign), `ms`, `s`, `sec`, `seconds` and the longer words, as in `Time (ms)`, `timestamp_us`, `time_s` or `t[s]`. Otherwise the first row whose time is not a whole zero decides it for the whole file (zero is the same in every unit): a value with a decimal point or an exponent (`1e-05`) is seconds, a whole number of 17 or more digits is nanoseconds (Unix time in nanoseconds has 19), and any other whole number is microseconds. Times may be negative. Times are taken as absolute Unix time when they are large enough to be, since a CSV carries no start date; nothing is added or subtracted.
+- The delimiter is whichever of comma, semicolon and tab appears most in the header. Cells may be wrapped in double quotes, but a delimiter inside quotes is not supported. A UTF-8 byte order mark before the header is skipped.
+- An ID above 0x7FF, or an extended flag that is true, gives a 29-bit ID. A true error flag gives an error frame (see the note on error frame IDs above) keeping the low 29 bits of the written ID, so python-can's `0x20000080` reads back as it was. A data length above 8, or a true FD, BRS or ESI flag, marks a CAN FD frame. A length column truncates the data to that many bytes. Byte columns end at the first empty one.
+- A header the reader cannot use rejects every line of the file with the reason "the CSV header has no time, ID and data columns we know". A row with a bad time, ID, flag, length or data cell, or too few cells to reach the time, ID or data column, is rejected with a reason.
+- Not read: quoted delimiters, columns of decoded signal values (a CSV of signals is not a frame log), and any time base other than the one in the header, so a file of wall-clock strings (`12:34:56.789`) is rejected row by row.
+
+Vector BLF support (`crates/can-formats/src/blf.rs`), for files as CANoe, CANalyzer and python-can write them. It is tested with synthetic files from the unit tests and `sample-gen convert`, not yet with files from those tools:
+
+- The file header's start time (a Windows SYSTEMTIME, millisecond precision) gives the absolute start, taken as UTC because the file names no time zone; when it is unset, times count from zero. Object timestamps are nanoseconds, or 10 microsecond units when the object's flags say so, from that start.
+- Objects with version 1 or version 2 headers are read. Log containers (object type 10) holding zlib-compressed (method 2) or uncompressed (method 0) objects are unpacked as they arrive; an object that continues from one container into the next is joined. A container claiming more than 64 MiB uncompressed, or that does not inflate, is rejected as a record. Objects are read in order; nothing is sorted.
+- Frame objects: CAN_MESSAGE (1) and CAN_MESSAGE2 (86) give classic frames, with the direction bit setting the transmitted flag and the remote bit a remote frame with no data. CAN_FD_MESSAGE (100) and CAN_FD_MESSAGE_64 (101) give CAN FD frames with the BRS and ESI flags, or classic frames when their EDL bit is clear; the data length comes from the DLC, limited by the valid-bytes count of a CAN_FD_MESSAGE_64. CAN_ERROR (2) and CAN_FD_ERROR_64 (104) give an error frame with no data and CAN_ERROR_EXT (73) one with the DLC and data bytes the record holds (see the note on error frame IDs above). Bit 31 of an object's ID, or an ID above 0x7FF, marks a 29-bit ID. The bus is `can<channel>` with the channel number as written.
+- Every other object type (app triggers, statistics, environment variables, LIN, FlexRay, Ethernet, the CAN overload, driver status and statistic objects) is skipped without counting as rejected. `LogInfo.lines` counts the frame objects read plus the rejected records.
+- A frame object shorter than its type needs, an object with a bad header, more than 3 bytes of padding between objects, a timestamp outside the nanosecond range, and a file that ends inside an object are rejected with a reason. A file without the `LOGG` signature rejects a single record and reads no frames. Memory for one object is bounded at 32 MiB compressed and 64 MiB uncompressed.
+- Not read: the file header's end time and object counts, and the application and driver information.
+
+ASAM MF4 support (`crates/can-formats/src/mf4.rs`), for CAN bus logging as ASAM MDF 4.x describes it. It is tested with synthetic files built block by block in the unit tests and by `sample-gen convert`, not yet with files from real loggers:
+
+- Because an MF4 file's blocks link to each other anywhere in the file, the file is held in memory and read when it ends, up to 1 GiB. A larger file rejects a single record and reads no frames. The progress bar fills while the file is read and the frames appear at the end. The data is then read one data block at a time, so there is no limit on the uncompressed size; the frames only have to fit in memory (see the wasm memory note under Notes above).
+- Blocks read: ID, HD (the start time, taken as UTC nanoseconds), DG, CG, CN (with compositions, for the structure channel and its members), TX for names, CC (linear conversions of the time channel; other conversions count as none), DT, DV, SD, DZ (deflate, with or without transposition), DL lists and HL headers. Data groups may be sorted (one channel group, no record IDs) or unsorted (record IDs of 1, 2, 4 or 8 bytes).
+- Frame channel groups are the ones with a channel named `CAN_DataFrame`, `CAN_RemoteFrame` or `CAN_ErrorFrame`, or with members named `CAN_DataFrame.<member>` and so on. Members read: `BusChannel`, `ID`, `IDE`, `DLC`, `DataLength`, `DataBytes`, `Dir`, `EDL` (or `FDF`), `BRS` and `ESI`, of any integer or float type and either byte order. `DataBytes` may be a fixed byte array or variable length data, held in an SD block (or a list of them) or in a VLSD channel group of the same data group. Every other channel group (decoded signals, LIN, FlexRay, Ethernet) is skipped.
+- Time is the master channel (channel type 2 or 3, preferring sync type time) through its linear conversion, in seconds from the header's start time. A virtual master counts records. A group without one puts every frame at the start time.
+- Frames from every data group are merged by time as they are read, since each group is stored separately. MDF has the times of a channel group never decrease, so a data group with one CAN frame channel group is read straight through. In an unsorted data group with several, whose records interleave as a logger writes them, the frames are put in time order within a window of 65,536 frames, shared by all such data groups in the file; records further out of order than that keep the file's order. The data length is `DataLength`, else the DLC (a CAN FD length when EDL is set), and never more than the bytes the record holds. `IDE`, bit 31 of the ID, or an ID above 0x7FF marks a 29-bit ID. `Dir` 1 is transmitted. Error frames take the usual error ID (see the note above) with their data bytes, if any. The bus is `can<BusChannel>`, or `can1` without that member.
+- A file without the MDF signature, a version other than 4.x, a missing header, or a file with no CAN frame groups rejects a single record. An unfinalized file (`UnFinMF`) is read when its unfinalized flags only concern cycle counters and VLSD byte counts, which the reader does not use; otherwise it rejects a single record with "unfinalized MF4 file; finalize it with the logger's tool". A data group with a broken block, record ID or data list rejects one record and the other groups are still read. Links that lead back to a block already read (a data group, channel group, channel or data list), more channels than the file's size can hold (one per 32 bytes), a channel group with more than 65,536 channels named like CAN frame members, data blocks giving more than 100 bytes per byte of the file (a compressed block counts its compressed size when that is larger), and more frame records than the file has bytes are rejected with a reason, so a damaged file ends quickly. A frame record with a bad time, value or data offset is rejected with a reason, and a record cut short at the end of the data ends its data group with one.
+- Not read: MDF 3 files, CAN XL frames, CAN_OverloadFrame and other bus events, signal-based (decoded) MF4 files, sample reduction blocks, invalidation bits, attachments, events and the header's time zone and local-time flags.
 
 ## DBC files
 

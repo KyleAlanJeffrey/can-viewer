@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FreeCAN Studio - The CAN log viewer that lives in your browser</title>
-  <meta name="description" content="Open candump CAN bus logs in your browser (ASC, BLF, TRC, MF4 and CSV coming soon). Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
+  <meta name="description" content="Open candump, ASC, BLF, TRC, MF4 and CSV CAN bus logs in your browser. Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
   <link rel="canonical" href="https://freecanstudio.com/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="FreeCAN Studio">
   <meta property="og:title" content="FreeCAN Studio - The CAN log viewer that lives in your browser">
-  <meta property="og:description" content="Open candump CAN bus logs in your browser (ASC, BLF, TRC, MF4 and CSV coming soon). Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
+  <meta property="og:description" content="Open candump, ASC, BLF, TRC, MF4 and CSV CAN bus logs in your browser. Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
   <meta property="og:url" content="https://freecanstudio.com/">
   <meta property="og:image" content="https://freecanstudio.com/og-image.png">
   <meta property="og:image:width" content="1200">
@@ -49,7 +49,7 @@
       <figure class="product">
         <div class="pw" aria-hidden="true">
           <div class="pw-toolbar">
-            <div class="pw-doc"><strong>demo.log</strong><span>1,000,000 frames &middot; 30 min 15 s</span></div>
+            <div class="pw-doc"><strong>demo.log</strong><span>candump &middot; 1,000,000 frames &middot; 30 min 15 s</span></div>
             <div class="pw-switch"><span>Overview</span><span class="on">Trace</span><span>Plot</span><span>Reverse Engineer</span><span>Database</span></div>
           </div>
           <div class="pw-body">
@@ -133,14 +133,11 @@
           <h3>Log files</h3>
           <ul class="format-list">
             <li><strong>candump</strong><span>SocketCAN, <span class="mono">-l</span> and <span class="mono">-L</span></span></li>
-          </ul>
-          <p class="format-soon"><span class="tag">Coming soon</span>These formats are being added next.</p>
-          <ul class="format-list">
             <li><strong>ASC</strong><span>Vector text log</span></li>
             <li><strong>BLF</strong><span>Vector binary log</span></li>
-            <li><strong>TRC</strong><span>PEAK trace file</span></li>
-            <li><strong>MF4</strong><span>Most ASAM MDF 4 bus logging files</span></li>
-            <li><strong>CSV</strong><span>Frames as comma-separated rows</span></li>
+            <li><strong>TRC</strong><span>PEAK trace file, versions 1.0 to 2.1</span></li>
+            <li><strong>MF4</strong><span>ASAM MDF 4 bus logging files with raw CAN frames</span></li>
+            <li><strong>CSV</strong><span>python-can, SavvyCAN and other frame exports</span></li>
           </ul>
           <p class="small">Classic CAN and CAN FD, 11-bit and 29-bit IDs, and J1939.</p>
         </div>

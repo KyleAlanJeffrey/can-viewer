@@ -37,7 +37,8 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] State the privacy claim on the landing page: the app domain loads nothing from anyone else
 - [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `www.freecanstudio.com`, `freecan.studio` and `freecan.app` redirecting to it (none of the three answer yet), and build watch paths so a push to `site/` only rebuilds the site (owner)
 - [ ] Later: downloads, pricing and Pro license pages on the main site (a `pro/` page describing the planned app is in)
-- [ ] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land, and the CSP quoted on the home page if `web/public/_headers` changes
+- [x] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land
+- [ ] Recheck the CSP quoted on the home page if `web/public/_headers` changes
 
 ## Bugs
 
@@ -68,7 +69,12 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 
 - [x] Database view: show and edit whether a message is J1939
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
-- [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
+- [x] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
+- [ ] Check BLF and MF4 import against files from real loggers and tools (the tests use synthetic files)
+- [ ] MF4: repair unfinalized files (UnFinMF) whose last DT block or DL list was never updated; today the tail may be lost, and flags other than 0x01, 0x02 and 0x20 are rejected
+- [ ] MF4: an unsorted data group with records more than 65,536 frames out of order (a window shared by all such data groups) keeps the file's order
+- [ ] BLF: read the data bytes of CAN_FD_ERROR_64 objects (today an error frame without data)
+- [ ] MF4: size the file buffer from the file's size instead of letting it double, so a file near 1 GiB peaks around 1.6 GB of wasm memory instead of 2.2 GB (needs a size hint on `AnyParser`)
 - [x] Automated UI tests: Vitest setup, with Byte Values and Pin signal covered
 - [x] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`
 - [x] Trace: the canvas rows are not in the accessibility tree. The `grid` has `aria-rowcount` but no rows, so a screen reader hears none of the frames, and the UI tests can only check which rows are fetched and what a click pins

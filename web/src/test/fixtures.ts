@@ -89,6 +89,7 @@ export function message(id: number, name: string, fields: Partial<MessageDef> = 
 export function logInfo(fields: Partial<LogInfo> = {}): LogInfo {
   return {
     name: 'test.log',
+    format: 'candump',
     frames: 1000,
     bytes: 50_000,
     lines: 1000,

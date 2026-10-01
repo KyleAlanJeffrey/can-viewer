@@ -13,8 +13,13 @@ export const EXT_FLAG = 0x8000_0000;
 /** What `CoreApi.rowBytes` gives for a byte past the end of a frame. */
 export const NO_BYTE = 0xffff;
 
+/** A log file format the engine reads. */
+export type LogFormat = 'candump' | 'asc' | 'trc' | 'csv' | 'blf' | 'mf4';
+
 export interface LogInfo {
   name: string;
+  /** The format the log was read as, chosen from the file name and its first bytes. */
+  format: LogFormat;
   frames: number;
   bytes: number;
   lines: number;

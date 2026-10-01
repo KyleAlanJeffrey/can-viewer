@@ -9,3 +9,4 @@ publish.workspace = true
 can-core.workspace = true
 can-formats.workspace = true
 can-dbc-model.workspace = true
+miniz_oxide.workspace = true

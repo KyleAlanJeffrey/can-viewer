@@ -58,11 +58,12 @@ Describes the current log. Returned by [`openLog`](#openlog).
 **Attributes**
 
 - **`name`** `string` - The name passed to `openLog`.
+- **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md).
 - **`frames`** `number` - Frames stored.
 - **`bytes`** `number` - Bytes read from the file.
-- **`lines`** `number` - Lines read, including blank lines.
-- **`rejected`** `number` - Lines that did not parse as a frame.
-- **`firstRejection`** `[number, string] | null` - The 1-based line number and reason of the first rejected line, or null if none.
+- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records.
+- **`rejected`** `number` - Lines or records that did not parse as a frame.
+- **`firstRejection`** `[number, string] | null` - The 1-based line number (for a binary format, record number) and reason of the first rejected line or record, or null if none.
 - **`durationS`** `number` - Seconds from the first frame to the last.
 - **`channels`** `string[]` - Bus names from the log, such as `can0`. The index is the channel number.
 - **`heapBytes`** `number` - Bytes the frame store has allocated.
@@ -277,7 +278,7 @@ A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REA
 openLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>
 ```
 
-Parses a candump log and makes it the current log. It replaces the previous log and frees every decoded series. The loaded databases are kept and apply to the new log. The file is read in 8 MiB chunks, so it is never held in memory whole. Lines that do not parse do not fail the call; they are counted in `LogInfo.rejected`.
+Parses a CAN log and makes it the current log. It replaces the previous log and frees every decoded series. The loaded databases are kept and apply to the new log. The format is chosen from `name`'s extension and the file's first bytes, and reported in `LogInfo.format`; see "Log formats" in COMPATIBILITY.md for the formats and how one is chosen. The file is read in 8 MiB chunks, so a text log is never held in memory whole. Lines that do not parse do not fail the call; they are counted in `LogInfo.rejected`.
 
 Series handles restart from 0 for each log. Forget every handle from before the call, and do not pass one to `dropSeries`: it could name a new series.
 
@@ -286,7 +287,7 @@ To close a log, open an empty Blob.
 **Parameters**
 
 - **`file`** `Blob` - The log file.
-- **`name`** `string` - Returned as `LogInfo.name`. The engine does not use it.
+- **`name`** `string` - The file name. Its extension suggests the format; it is also returned as `LogInfo.name`.
 - **`onProgress`** `(p: Progress) => void` - Called as the file is read, at most about every 100 ms.
 
 **Returns** a [`LogInfo`](#the-loginfo-object).

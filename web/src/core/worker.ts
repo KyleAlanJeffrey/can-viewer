@@ -43,12 +43,13 @@ function halves(xy: Float64Array): [[Float64Array, Float64Array], Transferable[]
 }
 
 const handlers = {
-  async openLog(file: Blob) {
+  async openLog(file: Blob, name: string) {
     session.free();
     session = freshSession();
     const started = performance.now();
     let lastReport = 0;
     try {
+      session.set_file_name(name);
       session.reserve_for_bytes(file.size);
       for (let at = 0; at < file.size; at += CHUNK_BYTES) {
         const chunk = new Uint8Array(await file.slice(at, at + CHUNK_BYTES).arrayBuffer());

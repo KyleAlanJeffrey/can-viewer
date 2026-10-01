@@ -79,7 +79,7 @@ export class WebCore implements CoreApi {
   async openLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo> {
     this.onProgress = onProgress;
     try {
-      return { ...(await this.call<LogInfo>('openLog', file)), name };
+      return { ...(await this.call<LogInfo>('openLog', file, name)), name };
     } finally {
       this.onProgress = null;
     }

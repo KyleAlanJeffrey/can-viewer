@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
-import type { CoreApi, IdSummary, MessageDef } from '../../core/api';
+import { FLAG_FD, FLAG_REASSEMBLED, type CoreApi, type IdSummary, type MessageDef } from '../../core/api';
 import { fakeCore, lane, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
 import { ViewStateContext, ViewStateStore } from '../shared/viewState';
 import type { LoadedDbc, ViewContext } from '../types';
@@ -11,6 +11,8 @@ import { ReverseView } from './ReverseView';
 const engine = summary({ id: 0x100, name: 'Engine' });
 const unknown = summary({ id: 0x200 });
 const brakes = summary({ id: 0x300, name: 'Brakes' });
+const dm1 = summary({ id: 0x18feca00, extended: true, minLen: 100, maxLen: 100, flags: FLAG_REASSEMBLED });
+const fd = summary({ id: 0x400, minLen: 64, maxLen: 64, flags: FLAG_FD });
 
 const messages = new Map<number, MessageDef>([
   [engine.key, message(0x100, 'Engine', { signals: [signal('EngineSpeed', { unit: 'rpm' }), signal('Throttle', { startBit: 8, unit: '%' })] })],
@@ -76,9 +78,9 @@ function Shell({ core, ids }: { core: CoreApi; ids: IdSummary[] }) {
   );
 }
 
-function renderView() {
+function renderView(ids = [brakes, unknown, engine], core = testCore()) {
   const user = userEvent.setup();
-  render(<Shell core={testCore()} ids={[brakes, unknown, engine]} />);
+  render(<Shell core={core} ids={ids} />);
   return user;
 }
 
@@ -116,6 +118,20 @@ describe('Byte Values', () => {
     );
     await user.click(screen.getByRole('checkbox', { name: 'Changing bytes only' }));
     expectMatrixRows(allRows);
+  });
+
+  it('labels a long payload by what carries it and expands it in groups of eight', async () => {
+    const user = renderView([dm1, fd]);
+    const [fdHead, dm1Head] = screen.getAllByRole('rowheader');
+    expect(within(fdHead).getByText('CAN FD \u00b7 B0-7 of 64')).toBeTruthy();
+    expect(within(dm1Head).getByText('J1939 TP \u00b7 B0-7 of 100')).toBeTruthy();
+    expect(within(dm1Head).queryByText(/CAN FD/)).toBeNull();
+
+    await user.click(within(dm1Head).getByRole('button', { name: 'View all' }));
+    expect(screen.getByText('J1939 TP \u00b7 100 bytes')).toBeTruthy();
+    expect(screen.getByText('B8-15')).toBeTruthy();
+    expect(screen.getByText('B96-99')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /^18FECA00 byte \d+$/ })).toHaveLength(100);
   });
 
   it('selects a byte and pins it', async () => {

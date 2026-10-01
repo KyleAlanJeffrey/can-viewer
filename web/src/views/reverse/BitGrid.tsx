@@ -228,6 +228,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
     bit: hover.bit & 7,
     flips: flips[hover.bit] ?? 0,
     owner: owners[hover.bit] ?? null,
+    baseline: !!dimmed && (dimmed[hover.bit] ?? 0) > 0,
   };
 
   return (
@@ -288,6 +289,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
               ? 'Never changes in this window'
               : `Changed ${formatCount(hovered.flips)} times \u00b7 ${percent(hovered.flips, transitions)} of frames \u00b7 ${rate(hovered.flips, seconds)}`}
           </div>
+          {hovered.baseline && <div className="muted">Also changes in the baseline</div>}
           {hovered.owner && <div className="muted">In {hovered.owner}</div>}
         </div>
       )}
@@ -299,7 +301,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
 }
 
 /** Horizontal key for the heat ramp and the selection outline. */
-export function HeatLegend({ selection, baseline = null }: { selection: string | null; baseline?: string | null }) {
+export function HeatLegend({ selection, baseline = null, baselineNote = null }: { selection: string | null; baseline?: string | null; baselineNote?: string | null }) {
   return (
     <div className="re-legend">
       <span className="re-legend-item">
@@ -321,6 +323,7 @@ export function HeatLegend({ selection, baseline = null }: { selection: string |
           Changes in the baseline, {baseline}
         </span>
       )}
+      {baselineNote && <span className="re-legend-item">{baselineNote}</span>}
       <span className="re-legend-item re-legend-selection">
         <span className="re-swatch dashed" aria-hidden="true" />
         {selection ?? 'Drag across bits to select a range'}

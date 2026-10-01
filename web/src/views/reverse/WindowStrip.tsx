@@ -9,9 +9,11 @@ const BAR_PITCH = 3;
 
 type Edge = 'start' | 'end' | 'move';
 
-interface Props {
+/** The bars show the ID's changed bits, or what `bars` gives per bucket across the log. */
+type BarSource = { idKey: number; bars?: undefined } | { idKey?: undefined; bars: (buckets: number) => Promise<ArrayLike<number>> };
+
+type Props = BarSource & {
   core: CoreApi;
-  idKey: number;
   logVersion: number;
   duration: number;
   window: TimeWindow;
@@ -19,16 +21,16 @@ interface Props {
   /** Without the title, for a strip that sits inside another card. */
   compact?: boolean;
   title?: string;
-  /** What the bars show, per bucket across the log; the ID's changed bits when left out. */
-  bars?: (buckets: number) => Promise<ArrayLike<number>>;
+  /** What the window is called in its accessible labels. */
+  name?: string;
   barsLabel?: string;
-}
+};
 
 /**
  * The analysis window over the whole log. Bars show how many payload bits of the ID changed in
  * each slice of the log, so busy stretches are easy to aim at; everything below uses the window.
  */
-export function WindowStrip({ core, idKey, logVersion, duration, window: win, onChange, compact = false, title = 'Time Window', bars, barsLabel = 'payload bits changed' }: Props) {
+export function WindowStrip({ core, idKey, logVersion, duration, window: win, onChange, compact = false, title = 'Time Window', name = 'Window', bars, barsLabel = 'payload bits changed' }: Props) {
   const stripRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
@@ -170,11 +172,11 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
           {title}
         </h3>
         <div className="re-window-fields">
-          <TimeField label="Window start, seconds" value={t0} onCommit={(t) => onChange(resize('start', win, t - t0))} />
+          <TimeField label={`${name} start, seconds`} value={t0} onCommit={(t) => onChange(resize('start', win, t - t0))} />
           <span className="re-dash" aria-hidden="true">
             to
           </span>
-          <TimeField label="Window end, seconds" value={t1} onCommit={(t) => onChange(resize('end', win, t - t1))} />
+          <TimeField label={`${name} end, seconds`} value={t1} onCommit={(t) => onChange(resize('end', win, t - t1))} />
           <span className="re-window-span">{formatDuration(t1 - t0)} of {formatDuration(duration)}</span>
         </div>
       </div>
@@ -193,7 +195,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
           className="re-strip-window"
           role="slider"
           tabIndex={0}
-          aria-label="Window position"
+          aria-label={`${name} position`}
           aria-valuemin={0}
           aria-valuemax={Math.max(0, duration - (t1 - t0))}
           aria-valuenow={t0}
@@ -206,7 +208,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
           className="re-handle start"
           role="slider"
           tabIndex={0}
-          aria-label="Window start"
+          aria-label={`${name} start`}
           aria-valuemin={0}
           aria-valuemax={t1}
           aria-valuenow={t0}
@@ -219,7 +221,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
           className="re-handle end"
           role="slider"
           tabIndex={0}
-          aria-label="Window end"
+          aria-label={`${name} end`}
           aria-valuemin={t0}
           aria-valuemax={duration}
           aria-valuenow={t1}
@@ -259,7 +261,12 @@ export function TimeField({ label, value, onCommit }: { label: string; value: nu
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === 'Enter') commit();
-          if (e.key === 'Escape') setDraft(null);
+          // Only the draft is dropped, so Escape doesn't also close a sheet around the field.
+          if (e.key === 'Escape' && draft !== null) {
+            e.preventDefault();
+            e.stopPropagation();
+            setDraft(null);
+          }
         }}
       />
       <span aria-hidden="true">s</span>

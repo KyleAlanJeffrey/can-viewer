@@ -163,7 +163,7 @@ export function ReverseView({ ctx }: ViewProps) {
                 All byte values
               </button>
               <button type="button" className="button" onClick={() => setBaselineOpen(true)}>
-                Ignore Baseline&hellip;
+                {baseline ? 'Ignore Baseline (On)\u2026' : 'Ignore Baseline\u2026'}
               </button>
             </>
           )}

@@ -2,11 +2,16 @@ import { useCallback, useEffect, useState } from 'react';
 import { Sheet } from '../../components/Sheet';
 import type { ViewContext } from '../types';
 import { WindowStrip } from './WindowStrip';
-import { clampWindow, type TimeWindow } from './bits';
+import { MIN_SPAN, clampWindow, type TimeWindow } from './bits';
 
 /** Only the shape of the load matters here, so one nominal bit rate does for every bus. */
 const BITRATE = 500_000;
 const DEFAULT_SPAN_S = 5;
+
+/** A short stretch at the start of the log, so a short log isn't taken whole. */
+function defaultBaseline(duration: number): TimeWindow {
+  return clampWindow([0, Math.max(MIN_SPAN, Math.min(DEFAULT_SPAN_S, duration / 10))], duration);
+}
 
 interface Props {
   open: boolean;
@@ -20,10 +25,10 @@ interface Props {
 /** Pick a quiet stretch of the log; bits that change in it are dimmed in Bit Activity. */
 export function BaselineSheet({ open, onClose, ctx, duration, baseline, onApply }: Props) {
   const { core, log, logVersion } = ctx;
-  const [draft, setDraft] = useState<TimeWindow>(() => baseline ?? clampWindow([0, DEFAULT_SPAN_S], duration));
+  const [draft, setDraft] = useState<TimeWindow>(() => baseline ?? defaultBaseline(duration));
 
   useEffect(() => {
-    if (open) setDraft(baseline ?? clampWindow([0, DEFAULT_SPAN_S], duration));
+    if (open) setDraft(baseline ?? defaultBaseline(duration));
   }, [open, baseline, duration]);
 
   const channels = log?.channels.length ?? 0;
@@ -77,12 +82,12 @@ export function BaselineSheet({ open, onClose, ctx, duration, baseline, onApply 
       {open && (
         <WindowStrip
           core={core}
-          idKey={-1}
           logVersion={logVersion}
           duration={duration}
           window={draft}
           onChange={setDraft}
           title="Bus load"
+          name="Baseline"
           bars={busLoad}
           barsLabel="load of every bus, added up"
         />

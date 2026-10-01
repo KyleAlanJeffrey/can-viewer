@@ -1,0 +1,27 @@
+{
+  "name": "freecan-studio-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "wasm": "wasm-pack build ../crates/can-wasm --target web --release --out-dir ../../web/src/core/pkg --no-pack",
+    "demo": "cargo run --release -p sample-gen -- generate ../target/demo/demo.log public/demo/demo.dbc && node scripts/gzip.mjs ../target/demo/demo.log public/demo/demo.log.gz",
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "lucide-react": "^1.49.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
+  }
+}

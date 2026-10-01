@@ -1,0 +1,354 @@
+/*
+ * Overview: fact tiles, DBC coverage, bus load and the ID table. Every class is ov- prefixed.
+ * This sheet loads before styles.css, so rules that override a shared class need the extra specificity.
+ */
+.ov {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.ov > * {
+  flex: none;
+}
+
+.ov h2 {
+  margin: 0;
+}
+
+/* Facts and DBC coverage */
+.ov-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ov-facts {
+  flex: 3 1 420px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.ov-fact {
+  min-width: 0;
+  padding: 12px 16px;
+}
+
+.ov-fact dt,
+.ov-label {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+}
+
+.ov-fact dd {
+  margin: 0;
+}
+
+.ov-value {
+  color: var(--graphite);
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-fact .ov-value {
+  margin-top: 2px;
+}
+
+.ov-detail {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.ov-detail .tag {
+  margin-left: 4px;
+}
+
+.ov-dbc {
+  flex: 2 1 280px;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 12px 16px;
+}
+
+.ov-dbc-text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.ov-dbc-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* The first file name truncates; "+ N more" always shows. */
+.ov-dbc-name {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.ov-dbc-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-dbc-more {
+  flex: none;
+}
+
+.ov-dbc-line {
+  margin-top: 2px;
+}
+
+.ov-dbc .text-button {
+  margin: 0 -6px -2px;
+}
+
+/* Bus load */
+.ov-load.card {
+  padding: 12px 16px 8px;
+  background: var(--plot-paper);
+}
+
+.ov-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.ov-card-title {
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.ov-card-note {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.ov-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0 0 0 auto;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.ov-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ov-legend-stat {
+  color: var(--slate);
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-key {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  flex: none;
+}
+
+.ov-load-body {
+  height: 176px;
+  margin-top: 8px;
+}
+
+.ov-load-host {
+  position: relative;
+  height: 100%;
+}
+
+.ov-load-message {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--slate);
+}
+
+.ov-callout {
+  position: absolute;
+  top: 4px;
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--paper);
+  box-shadow: var(--shadow-float);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  transform: translateX(10px);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.ov-callout.flip {
+  transform: translateX(calc(-100% - 10px));
+}
+
+.ov-callout-time {
+  color: var(--slate);
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-callout-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ov-callout-row b {
+  min-width: 5ch;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-callout-row .mono {
+  color: var(--slate);
+}
+
+/* ID table: shrinks to scroll on short windows, but never below a few rows (or its own height). */
+.ov > .ov-table {
+  flex: 0 1 auto;
+  min-height: min(176px, var(--ov-table-h, 176px));
+  overflow: auto;
+}
+
+.ov-table table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.ov-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 28px;
+  padding: 0 12px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--slate);
+  font: 500 12px/16px var(--font-ui);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ov-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  margin: 0 -6px;
+  padding: 0 6px;
+  border-radius: 6px;
+}
+
+.ov-sort:hover {
+  background: var(--hover-wash);
+  color: var(--graphite);
+}
+
+.ov-table th[aria-sort] .ov-sort {
+  color: var(--graphite);
+}
+
+.ov-table td {
+  height: 24px;
+  padding: 0 12px;
+  font: 400 13px/24px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ov-table .ov-num {
+  text-align: right;
+}
+
+.ov-table .ov-name {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-table tbody tr {
+  scroll-margin-top: 28px;
+}
+
+.ov-table tbody tr:nth-child(even) {
+  background: var(--alt-row);
+}
+
+.ov-table tbody tr:hover {
+  background: var(--hover-wash);
+}
+
+.ov-table tbody tr[aria-current='true'] {
+  background: var(--selected-row);
+}
+
+.ov-table tbody tr:focus-visible {
+  outline-offset: -2px;
+}
+
+.ov-human {
+  font-family: var(--font-ui);
+}
+
+.ov-table .status.unknown {
+  color: var(--slate);
+}
+
+.ov-dbc-cell {
+  display: block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-dash {
+  color: var(--slate);
+}
+
+.ov-table .ov-empty {
+  padding: 12px;
+  color: var(--slate);
+  font-family: var(--font-ui);
+  line-height: 18px;
+}

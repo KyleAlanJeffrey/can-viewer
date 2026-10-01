@@ -41,7 +41,9 @@ Exported from `web/src/core/api.ts`:
 | `FLAG_ERROR` | `1 << 4` | Error frame |
 | `EXT_FLAG` | `0x8000_0000` | Bit 31: extended ID |
 | `dbcId(s)` | function | The ID of an `IdSummary` with `EXT_FLAG` set when extended, as used in DBC files |
+| `isErrorFrame(s)` | function | Whether an `IdSummary` is for CAN error frames (`FLAG_ERROR` in its flags) |
 | `formatId(id, extended)` | function | Upper-case hex: 3 digits for standard IDs, 8 for extended |
+| `idLabel(s)` | function | What an ID list shows for an `IdSummary`: `formatId` text, or for error frames their class under the error flag, such as `Error 080` (`Error frames` when the class is 0) |
 
 Frame flags can also carry bits with no constant in `api.ts`: ESI (`1 << 2`) and transmitted (`1 << 5`, from `candump -x`). See `flags` in `crates/can-core/src/lib.rs`.
 

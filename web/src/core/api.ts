@@ -207,3 +207,13 @@ export function isErrorFrame(s: Pick<IdSummary, 'flags'>): boolean {
 export function formatId(id: number, extended: boolean): string {
   return extended ? id.toString(16).toUpperCase().padStart(8, '0') : id.toString(16).toUpperCase().padStart(3, '0');
 }
+
+/**
+ * What an ID list shows for a summary: its hex ID, or for error frames their class in hex under
+ * the error flag, such as `Error 080` (bus error), so the flag never reads as a 29-bit ID.
+ */
+export function idLabel(s: Pick<IdSummary, 'id' | 'extended' | 'flags'>): string {
+  if (!isErrorFrame(s)) return formatId(s.id, s.extended);
+  const errorClass = s.id & 0x1fff_ffff;
+  return errorClass === 0 ? 'Error frames' : `Error ${errorClass.toString(16).toUpperCase().padStart(3, '0')}`;
+}

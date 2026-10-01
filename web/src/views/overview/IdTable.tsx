@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import { FLAG_FD, formatId, type IdSummary, type MessageDef } from '../../core/api';
+import { FLAG_FD, idLabel, isErrorFrame, type IdSummary, type MessageDef } from '../../core/api';
 import { formatCount, formatPeriod } from '../../format';
 import { useViewState } from '../shared/viewState';
 import type { ViewContext } from '../types';
@@ -65,7 +65,7 @@ const naturalOrder = (a: Row, b: Row) => a.summary.channel - b.summary.channel |
 /** Same match as the sidebar list: ID, message name or any of its signal names. */
 function matchesQuery(s: IdSummary, message: MessageDef | null, q: string): boolean {
   return (
-    formatId(s.id, s.extended).toLowerCase().includes(q) ||
+    idLabel(s).toLowerCase().includes(q) ||
     (s.name ?? '').toLowerCase().includes(q) ||
     (message?.signals.some((sig) => sig.name.toLowerCase().includes(q)) ?? false)
   );
@@ -89,7 +89,8 @@ export function IdTable({ ctx }: { ctx: ViewContext }) {
       if (q && !matchesQuery(summary, message, q)) continue;
       all.push({
         summary,
-        name: message?.name ?? summary.name,
+        // Error frames come from no message; they are named rather than left unknown.
+        name: message?.name ?? summary.name ?? (isErrorFrame(summary) ? 'Error frames' : null),
         dbc: dbcOf(summary.key)?.db.name ?? null,
         rate: durationS > 0 ? summary.count / durationS : null,
       });
@@ -184,11 +185,15 @@ export function IdTable({ ctx }: { ctx: ViewContext }) {
             >
               <td>{channels[s.channel] ?? s.channel}</td>
               <td>
-                {formatId(s.id, s.extended)}
+                {idLabel(s)}
                 {s.flags & FLAG_FD ? <span className="tag">FD</span> : null}
               </td>
               <td className="ov-name">
-                {name ?? (dbcs.length > 0 ? <span className="status unknown ov-human">Unknown</span> : <Dash label="No DBC loaded" />)}
+                {isErrorFrame(s) ? (
+                  <span className="ov-human">{name}</span>
+                ) : (
+                  (name ?? (dbcs.length > 0 ? <span className="status unknown ov-human">Unknown</span> : <Dash label="No DBC loaded" />))
+                )}
               </td>
               <td className="ov-num">{s.minLen === s.maxLen ? s.maxLen : `${s.minLen}\u2013${s.maxLen}`}</td>
               <td className="ov-num">{formatCount(s.count)}</td>
@@ -201,7 +206,7 @@ export function IdTable({ ctx }: { ctx: ViewContext }) {
                     {dbc}
                   </span>
                 ) : (
-                  <Dash label="Not decoded" />
+                  <Dash label={isErrorFrame(s) ? 'Error frames have no message' : 'Not decoded'} />
                 )}
               </td>
             </tr>

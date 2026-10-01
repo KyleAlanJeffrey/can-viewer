@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { formatId } from '../../core/api';
+import { idLabel } from '../../core/api';
 import { IdList } from '../../components/IdList';
 import { SidebarSlot } from '../slots';
 import type { ViewContext } from '../types';
@@ -13,7 +13,7 @@ export function IdListSidebar({ ctx }: { ctx: ViewContext }) {
     return ids.filter((s) => {
       const m = messageOf(s.key);
       return (
-        formatId(s.id, s.extended).toLowerCase().includes(q) ||
+        idLabel(s).toLowerCase().includes(q) ||
         (s.name ?? '').toLowerCase().includes(q) ||
         (m?.signals.some((sig) => sig.name.toLowerCase().includes(q)) ?? false)
       );

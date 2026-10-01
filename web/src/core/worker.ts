@@ -129,6 +129,13 @@ port.onmessage = (e) => {
       }
     } catch (err) {
       port.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
+      // A trapped instance can't be trusted afterwards. Thrown uncaught, it reaches the page's
+      // worker.onerror, which starts a new worker.
+      if (err instanceof WebAssembly.RuntimeError) {
+        setTimeout(() => {
+          throw err;
+        });
+      }
     }
   });
 };

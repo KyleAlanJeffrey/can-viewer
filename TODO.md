@@ -38,23 +38,23 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 
 ## Bugs
 
-- [ ] DBCs saved in the browser before J1939 support have no `j1939` flag, so they only match by exact ID until they are opened again
-- [ ] Database view: "Overridden by" compares exact IDs only, so it misses a J1939 message whose PGN an earlier DBC decodes
+- [x] DBCs saved in the browser before J1939 support have no `j1939` flag, so they only match by exact ID until they are opened again
+- [x] Database view: "Overridden by" compares exact IDs only, so it misses a J1939 message whose PGN an earlier DBC decodes
 - [ ] Extended multiplexing (`SG_MUL_VAL_`) is not decoded; every multiplexed signal is switched by the message's one multiplexor
 - [ ] DBC export drops attributes other than `VFrameFormat`, including CAN FD frame formats
 - [ ] A DBC with two `BO_` lines for the same ID loads, but the Database view selects, edits and deletes messages by ID, so both change together (PR #1 review)
-- [ ] Export DBC... marks the DBC clean before the file is saved, so a cancelled save dialog loses the "unexported edits" guard on Remove and on reopening the file (PR #1 review; use `showSaveFilePicker` where available)
-- [ ] Two tabs both save their DBC list to IndexedDB, so an older tab can overwrite the other's edits (PR #1 review)
+- [x] Export DBC... marks the DBC clean before the file is saved, so a cancelled save dialog loses the "unexported edits" guard on Remove and on reopening the file (PR #1 review; use `showSaveFilePicker` where available)
+- [x] Two tabs both save their DBC list to IndexedDB, so an older tab can overwrite the other's edits (PR #1 review)
 
 ## Follow-ups
 
 - [ ] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
 
-- [ ] Database view: show and edit whether a message is J1939
+- [x] Database view: show and edit whether a message is J1939
 - [ ] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
 - [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
 - [ ] Automated UI tests
-- [ ] Database view: show when a DBC was last exported
-- [ ] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
-- [ ] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)
-- [ ] Start a new core worker after a wasm trap (an out-of-memory parse, say); today the failed open leaves a fresh session, but a trapped instance may stay unusable until a reload (PR #1 review)
+- [x] Database view: show when a DBC was last exported
+- [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
+- [x] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)
+- [x] Start a new core worker after a wasm trap (an out-of-memory parse, say); today the failed open leaves a fresh session, but a trapped instance may stay unusable until a reload (PR #1 review)

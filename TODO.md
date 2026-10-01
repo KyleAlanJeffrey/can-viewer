@@ -76,7 +76,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] BLF: read the data bytes of CAN_FD_ERROR_64 objects (today an error frame without data)
 - [x] Automated UI tests: Vitest setup, with Byte Values and Pin signal covered
 - [x] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`
-- [ ] Trace: the canvas rows are not in the accessibility tree. The `grid` has `aria-rowcount` but no rows, so a screen reader hears none of the frames, and the UI tests can only check which rows are fetched and what a click pins
+- [x] Trace: the canvas rows are not in the accessibility tree. The `grid` has `aria-rowcount` but no rows, so a screen reader hears none of the frames, and the UI tests can only check which rows are fetched and what a click pins
 - [x] Plot: the cursor rail, drag to zoom and the minimap need layout jsdom lacks, so no UI test covers them; check them by hand
 - [x] Database view: show when a DBC was last exported
 - [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed

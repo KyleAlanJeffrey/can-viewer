@@ -696,6 +696,46 @@ button:disabled {
   inset: 0 10px 0 0;
 }
 
+/* The rows again as DOM for assistive technology, over the canvas and see-through. */
+.trace-rows {
+  position: absolute;
+  inset: 0 10px 0 0;
+  overflow: hidden;
+  color: transparent;
+  forced-color-adjust: none;
+  pointer-events: none;
+  user-select: none;
+  font: 13px/24px var(--font-mono);
+  white-space: nowrap;
+}
+
+.trace-header,
+.trace-row {
+  display: flex;
+}
+
+.trace-header {
+  height: 28px;
+  font: 500 12px/28px var(--font-ui);
+}
+
+.trace-row {
+  height: 24px;
+}
+
+.trace-header > *,
+.trace-row > * {
+  flex: none;
+  overflow: hidden;
+  /* The canvas's cell padding (PAD in TraceTable.tsx). */
+  padding: 0 12px;
+}
+
+/* Data, always the last column: the canvas puts 12px between two-digit bytes. */
+.trace-row > :last-child {
+  word-spacing: calc(12px - 1ch);
+}
+
 .scrollbar {
   position: absolute;
   top: 28px;

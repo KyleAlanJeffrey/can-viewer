@@ -380,6 +380,16 @@ export function App({ core }: { core: CoreApi }) {
     };
   }, [viewState]);
 
+  // The restarted core has the databases back but no log; the user opens it again.
+  useEffect(
+    () =>
+      core.onReset?.(() => {
+        showNoLog();
+        setError('The CAN core stopped and was restarted. Open the log again.');
+      }),
+    [core, showNoLog],
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;

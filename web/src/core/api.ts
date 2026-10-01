@@ -186,6 +186,12 @@ export interface CoreApi {
   setDatabases(dbs: ScopedDatabase[]): Promise<void>;
   /** `db` as DBC text. */
   exportDbc(db: Database): Promise<string>;
+  /**
+   * Called after the engine stopped and was started again: the log and every series are gone,
+   * calls in flight were rejected, and the databases were set again. Returns an unsubscribe.
+   * Absent in an implementation whose engine never restarts.
+   */
+  onReset?(listener: () => void): () => void;
 }
 
 /** Key for the DBC message map: the ID with the extended flag, as in DBC files. */

@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
-import type { CoreApi, IdSummary } from '../../core/api';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { NO_BYTE, type CoreApi, type IdSummary } from '../../core/api';
 import { ROW_PAYLOAD, type RowBatch } from '../../core/rows';
 import { cssVar, formatCount, useFontsReady } from '../../format';
 import { errorText, formatSeconds, rowIndexAt, type TimeWindow } from './bits';
@@ -30,6 +30,14 @@ interface Frames {
   end: number;
 }
 
+/** Bytes `firstByte..firstByte + byteCount` of the drawn rows of `frames`, from `CoreApi.rowBytes`. */
+interface LongBytes {
+  frames: Frames;
+  firstByte: number;
+  byteCount: number;
+  values: Uint16Array;
+}
+
 /**
  * The latest frames of the window as a logic-analyser strip: one lane per bit, MSB first in each
  * byte, one column per frame. Shows the selection's bytes with a byte of context either side.
@@ -39,11 +47,11 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
   const [frames, setFrames] = useState<Frames | null>(null);
+  const [longBytes, setLongBytes] = useState<LongBytes | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState<{ row: number; x: number; y: number } | null>(null);
   const fontsReady = useFontsReady();
-  // Drawn from trace rows, which stop at 64 bytes; Workspace notes it for longer messages.
-  const bytes = Math.min(summary.maxLen, ROW_PAYLOAD);
+  const bytes = summary.maxLen;
   const [t0, t1] = win;
 
   useEffect(() => {
@@ -101,6 +109,42 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
     };
   }, [core, summary, duration, t0, t1, columns, logVersion]);
 
+  // Rows stop at 64 bytes, so a range reaching past them is fetched for the drawn rows.
+  const pastRows = lastByte >= ROW_PAYLOAD;
+  useEffect(() => {
+    if (!frames || !pastRows || frames.end <= frames.first) return;
+    let stale = false;
+    const { batch, first, end } = frames;
+    core.rowBytes(batch.key, batch.start + first, end - first, firstByte, shownBytes).then(
+      (values) => {
+        if (!stale) setLongBytes({ frames, firstByte, byteCount: shownBytes, values });
+      },
+      (e) => {
+        if (!stale) setError(errorText(e));
+      },
+    );
+    return () => {
+      stale = true;
+    };
+  }, [core, frames, pastRows, firstByte, shownBytes]);
+
+  const long =
+    pastRows && longBytes && longBytes.frames === frames && longBytes.firstByte === firstByte && longBytes.byteCount === shownBytes
+      ? longBytes.values
+      : null;
+  /** Byte `b` of row `f` of the frames' batch, or null if the frame is too short or the byte hasn't arrived. */
+  const byteAt = useCallback(
+    (f: number, b: number): number | null => {
+      if (!frames) return null;
+      if (long) {
+        const value = long[(f - frames.first) * shownBytes + b - firstByte];
+        return value === NO_BYTE ? null : value;
+      }
+      return b < frames.batch.len(f) ? frames.batch.data(f)[b] : null;
+    },
+    [frames, long, firstByte, shownBytes],
+  );
+
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     const g = canvas?.getContext('2d');
@@ -127,15 +171,16 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
     }
 
     if (frames) {
-      const { batch, first, end } = frames;
+      const { first, end } = frames;
       for (let f = first; f < end; f++) {
         const x = LABEL_W + (f - first) * COL_W;
-        const data = batch.data(f);
-        for (let b = firstByte; b <= lastByte && b < data.length; b++) {
+        for (let b = firstByte; b <= lastByte; b++) {
+          const value = byteAt(f, b);
+          if (value === null) continue;
           const top = PAD + (b - firstByte) * bytePitch;
           for (let k = 0; k < 8; k++) {
             const bit = 7 - k;
-            g.fillStyle = (data[b] >> bit) & 1 ? one : selectedSet.has(b * 8 + bit) ? band : zero;
+            g.fillStyle = (value >> bit) & 1 ? one : selectedSet.has(b * 8 + bit) ? band : zero;
             g.fillRect(x, top + k * lanePitch, CELL_W, laneH);
           }
         }
@@ -166,13 +211,25 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       }
     }
     g.setLineDash([]);
-  }, [frames, width, height, firstByte, lastByte, lanes, laneH, lanePitch, bytePitch, selectedSet, fontsReady]);
+  }, [frames, byteAt, width, height, firstByte, lastByte, lanes, laneH, lanePitch, bytePitch, selectedSet, fontsReady]);
 
   const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
     if (!frames) return;
     const r = e.currentTarget.getBoundingClientRect();
     const row = frames.first + Math.floor((e.clientX - r.left - LABEL_W) / COL_W);
     setHover(row >= frames.first && row < frames.end ? { row, x: e.clientX - r.left, y: e.clientY - r.top } : null);
+  };
+
+  /** The hovered frame's payload, or for a long one the drawn bytes once they have arrived. */
+  const hoverBytes = (f: Frames, row: number): string => {
+    const { batch } = f;
+    const full = batch.fullLength(row);
+    const last = Math.min(lastByte, full - 1);
+    if (long && full > batch.len(row) && last >= firstByte) {
+      const drawn = Array.from({ length: last - firstByte + 1 }, (_, i) => byteAt(row, firstByte + i) ?? 0);
+      return `B${firstByte}-B${last}: ${hex(drawn)} (${full} bytes)`;
+    }
+    return hex(batch.data(row)) + (full > batch.len(row) ? ` \u2026 (${full} bytes)` : '');
   };
 
   if (bytes === 0) return <p className="hint">These frames carry no payload.</p>;
@@ -195,10 +252,7 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       {hover && frames && (
         <div className="tooltip" style={hover.x > width / 2 ? { right: width - hover.x + 12, top: hover.y + 14 } : { left: hover.x + 12, top: hover.y + 14 }}>
           <div className="mono">{formatSeconds(frames.batch.time(hover.row))}</div>
-          <div className="mono muted re-history-bytes">
-            {hex(frames.batch.data(hover.row))}
-            {frames.batch.fullLength(hover.row) > frames.batch.len(hover.row) ? ` \u2026 (${frames.batch.fullLength(hover.row)} bytes)` : ''}
-          </div>
+          <div className="mono muted re-history-bytes">{hoverBytes(frames, hover.row)}</div>
         </div>
       )}
       <div className="re-history-axis" style={{ paddingLeft: LABEL_W }}>
@@ -228,6 +282,6 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
   );
 }
 
-function hex(data: Uint8Array): string {
+function hex(data: ArrayLike<number>): string {
   return Array.from(data, (b) => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 }

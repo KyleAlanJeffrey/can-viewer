@@ -18,6 +18,9 @@ use series::Series;
 /// Bytes per row returned by [`Session::rows`]; see `web/src/core/rows.ts` for the layout.
 pub const ROW_STRIDE: usize = 96;
 
+/// What [`Session::row_bytes`] gives for a byte past the end of a frame.
+pub const NO_BYTE: u16 = 0xFFFF;
+
 /// Rough candump bytes per frame, used to pre-size the store from the file size.
 const CANDUMP_BYTES_PER_FRAME: f64 = 40.0;
 
@@ -293,6 +296,38 @@ impl Session {
             Err(()) => None,
         };
         index.map_or_else(Vec::new, |i| self.store.frame(i).data.to_vec())
+    }
+
+    /// Payload bytes `first..first + byte_count` of rows `start..start + count` of the trace of
+    /// `key` (pass -1 for all), which [`Self::rows`] would cut at [`MAX_PAYLOAD`]: `byte_count`
+    /// values per row, row after row, with [`NO_BYTE`] for a byte past the end of the frame. Rows
+    /// are clamped to those that exist, as in [`Self::rows`].
+    pub fn row_bytes(
+        &self,
+        key: f64,
+        start: u32,
+        count: u32,
+        first: u32,
+        byte_count: u32,
+    ) -> Vec<u16> {
+        let Ok(filter) = self.filter(key) else {
+            return Vec::new();
+        };
+        let total = self.row_count(key) as usize;
+        let start = (start as usize).min(total);
+        let end = start.saturating_add(count as usize).min(total);
+        let bytes = first as usize..first as usize + byte_count as usize;
+        let mut out = Vec::with_capacity((end - start) * bytes.len());
+        for row in start..end {
+            let index = filter.map_or(row, |stats| stats.frames[row] as usize);
+            let data = self.store.frame(index).data;
+            out.extend(
+                bytes
+                    .clone()
+                    .map(|b| data.get(b).map_or(NO_BYTE, |&v| u16::from(v))),
+            );
+        }
+        out
     }
 
     /// Per-bit change counts for one ID, indexed `byte * 8 + bit` (bit 0 = LSB).
@@ -1018,6 +1053,17 @@ mod tests {
         assert!(s.frame_data(key, 2).is_empty());
         assert!(s.frame_data(-1.0, 34).is_empty());
         assert!(s.frame_data(12345.0, 0).is_empty());
+
+        // row_bytes gives a byte range of many rows past the 64 in a row, marking missing bytes.
+        assert_eq!(s.row_bytes(key, 0, 5, 69, 3), [69, 70, 71, 69, 71, 71]);
+        assert_eq!(s.row_bytes(key, 1, 1, 98, 3), [98, 99, NO_BYTE]);
+        assert_eq!(
+            s.row_bytes(-1.0, 15, 2, 6, 3),
+            [103, 104, NO_BYTE, 6, 7, 8],
+            "a packet, then the transfer"
+        );
+        assert!(s.row_bytes(key, 2, 1, 0, 8).is_empty());
+        assert!(s.row_bytes(12345.0, 0, 1, 0, 8).is_empty());
 
         // Raw decodes reach the whole payload.
         let info = s

@@ -10,6 +10,8 @@ export const FLAG_ERROR = 1 << 4;
 /** Not from the log: a J1939 parameter group reassembled from its transport protocol packets. */
 export const FLAG_REASSEMBLED = 1 << 6;
 export const EXT_FLAG = 0x8000_0000;
+/** What `CoreApi.rowBytes` gives for a byte past the end of a frame. */
+export const NO_BYTE = 0xffff;
 
 export interface LogInfo {
   name: string;
@@ -229,6 +231,12 @@ export interface CoreApi {
    * payload at 64 bytes. Empty for an unknown key or a row past the end.
    */
   frameData(key: number, row: number): Promise<Uint8Array>;
+  /**
+   * Payload bytes `first..first + byteCount` of rows `start..start + count` of `key` (or ALL_IDS),
+   * not cut at 64 bytes like `rows`: `byteCount` values per row, row after row, with `NO_BYTE`
+   * for a byte past the end of the frame. Rows are clamped to those that exist, as in `rows`.
+   */
+  rowBytes(key: number, start: number, count: number, first: number, byteCount: number): Promise<Uint16Array>;
   bitFlips(key: number): Promise<Uint32Array>;
   /** Parse a DBC file. Nothing changes until it is passed to `setDatabases`. */
   parseDbc(file: Blob, name: string): Promise<Database>;

@@ -118,6 +118,7 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     rowCount: notInFake('rowCount'),
     rows: notInFake('rows'),
     frameData: notInFake('frameData'),
+    rowBytes: notInFake('rowBytes'),
     bitFlips: notInFake('bitFlips'),
     parseDbc: notInFake('parseDbc'),
     decodeSignal: notInFake('decodeSignal'),

@@ -46,6 +46,7 @@ candump support (`crates/can-formats/src/candump.rs`):
 - CAN XL lines are rejected, and so is candump's default console output (without `-l` or `-L`).
 - A line that does not parse does not stop the load. It is counted in `LogInfo.rejected`, and the first one is reported with its line number.
 - Time lookups assume frames are in time order, as loggers write them. Slightly out-of-order timestamps only shift lookups by those frames.
+- J1939 multi-packet transfers are reassembled into extra frames as the log loads; see "J1939 transport protocol" below.
 
 ## DBC files
 
@@ -84,6 +85,16 @@ A J1939 message decodes every extended frame with its PGN, whatever the frame's 
 When several J1939 messages share the frame's PGN, the one written for the same source address (and, for PDU1, the same destination) wins, then one for the same source address, then the first.
 
 SAE J1939-71 reserves the top of a parameter's raw range for "error" and "not available". So for J1939 messages, an unsigned signal of 8, 16, 24, 32 or more bits (a multiple of 8) whose most significant byte is above 0xFA decodes as no value, which leaves a gap in a plot. The DBC's min and max are not used for this, so a narrow engineering range never hides real data. Smaller fields, such as 2-bit states, and signed or float signals decode as they are.
+
+## J1939 transport protocol
+
+Parameter groups longer than 8 bytes (DM1 with several trouble codes is the common one) travel as a TP.CM announcement (PGN 0xEC00: a BAM to every node, or an RTS to one) followed by TP.DT data packets (PGN 0xEB00) of 7 bytes each, up to 1785 bytes in 255 packets. The core reassembles them while the log is loaded (`crates/can-core/src/tp.rs`):
+
+- Each completed transfer becomes one frame of its own, stored right after its last packet with that packet's timestamp, flagged `FLAG_REASSEMBLED` (`1 << 6`). Its ID is the announced PGN in a 29-bit ID with the TP.CM frame's priority and source address and, for a PDU1 group, the destination address. So it appears in `idSummary` like any other ID, with the frame flag set, and decodes through the J1939 lookup above with the DBC's message for that PGN.
+- The TP.CM and TP.DT frames stay in the log unchanged. `LogInfo.reassembledFrames` counts the frames added, which `LogInfo.frames` includes.
+- Transfers are tracked per bus, source address and destination address, so interleaved senders do not mix. A missing or repeated packet, an abort, or a new announcement from the same sender to the same destination before the last packet drops the unfinished transfer quietly. Packets without an announcement (a log that starts mid-transfer) are ignored. There is no timeout.
+- Reassembled frames count towards nothing on the bus: `busLoad` skips them, since their packets are already counted.
+- The payload of a reassembled frame can be longer than 64 bytes. `decodeSignal` and `decodeRaw` work on the whole payload; a trace row carries the first 64 bytes (see `RowBatch` in API.md); Find Signal searches the first 64 bytes.
 
 ## CoreApi
 

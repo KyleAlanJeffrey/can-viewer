@@ -38,6 +38,7 @@ Exported from `web/src/core/api.ts`:
 | `FLAG_BRS` | `1 << 1` | CAN FD bit rate switch |
 | `FLAG_RTR` | `1 << 3` | Remote frame |
 | `FLAG_ERROR` | `1 << 4` | Error frame |
+| `FLAG_REASSEMBLED` | `1 << 6` | Not from the log: a J1939 parameter group reassembled from its transport protocol packets (see "J1939 transport protocol" in COMPATIBILITY.md) |
 | `EXT_FLAG` | `0x8000_0000` | Bit 31: extended ID |
 | `dbcId(s)` | function | The ID of an `IdSummary` with `EXT_FLAG` set when extended, as used in DBC files |
 | `formatId(id, extended)` | function | Upper-case hex: 3 digits for standard IDs, 8 for extended |
@@ -64,6 +65,7 @@ Describes the current log. Returned by [`openLog`](#openlog).
 - **`parseMs`** `number` - Wall-clock parse time in the worker, in milliseconds.
 - **`wasmBytes`** `number` - Size of the wasm memory after parsing, in bytes.
 - **`errorFrames`** `number` - Frames flagged as CAN error frames.
+- **`reassembledFrames`** `number` - J1939 transport protocol transfers that were reassembled into frames of their own (flag `FLAG_REASSEMBLED`). They are counted in `frames` too.
 
 ### The Progress object
 
@@ -88,7 +90,7 @@ One arbitration ID on one bus. Returned by [`idSummary`](#idsummary).
 - **`periodMs`** `number | null` - Mean interval between frames in milliseconds, or null with fewer than two frames.
 - **`jitterMs`** `number | null` - Population standard deviation of the interval between frames in milliseconds, or null with fewer than three frames.
 - **`minLen`** `number` - Shortest payload in bytes.
-- **`maxLen`** `number` - Longest payload in bytes.
+- **`maxLen`** `number` - Longest payload in bytes. Above 64 only for reassembled J1939 transfers, which go up to 1785.
 - **`flags`** `number` - The frame flags of every frame, ORed together.
 - **`name`** `string | null` - Message name from the loaded databases, by the lookup order of [`setDatabases`](#setdatabases), or null if none defines it.
 - **`dbc`** `number | null` - Index, in the last array passed to [`setDatabases`](#setdatabases), of the database that decodes this ID, or null.
@@ -256,9 +258,11 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 - **`index(i)`** `number` - The frame's index in the whole log.
 - **`channel(i)`** `number` - Bus index.
 - **`flags(i)`** `number` - Frame flags.
-- **`len(i)`** `number` - Payload length in bytes.
+- **`len(i)`** `number` - Payload length in bytes, at most 64.
 - **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID. Always false for an ID's first frame.
 - **`data(i)`** `Uint8Array` - The payload, as a view into the batch.
+
+A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)` and `data(i)`; its full length is packed as a little-endian `u16` at byte offset 20 of the row, which `rows.ts` does not expose yet. `decodeRaw` and `decodeSignal` work on the whole payload.
 
 ## Logs
 

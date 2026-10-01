@@ -7,6 +7,8 @@ export const FLAG_FD = 1 << 0;
 export const FLAG_BRS = 1 << 1;
 export const FLAG_RTR = 1 << 3;
 export const FLAG_ERROR = 1 << 4;
+/** Not from the log: a J1939 parameter group reassembled from its transport protocol packets. */
+export const FLAG_REASSEMBLED = 1 << 6;
 export const EXT_FLAG = 0x8000_0000;
 
 export interface LogInfo {
@@ -23,6 +25,11 @@ export interface LogInfo {
   wasmBytes: number;
   /** Frames flagged as CAN error frames. */
   errorFrames: number;
+  /**
+   * J1939 transport protocol transfers reassembled into frames of their own (`FLAG_REASSEMBLED`),
+   * counted in `frames` as well.
+   */
+  reassembledFrames: number;
 }
 
 export interface Progress {

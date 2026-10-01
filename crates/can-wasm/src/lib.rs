@@ -50,6 +50,7 @@ struct LogInfo<'a> {
     channels: &'a [String],
     heap_bytes: usize,
     error_frames: usize,
+    reassembled_frames: usize,
 }
 
 #[derive(Serialize)]
@@ -62,8 +63,8 @@ struct IdSummary<'a> {
     count: usize,
     period_ms: Option<f64>,
     jitter_ms: Option<f64>,
-    min_len: u8,
-    max_len: u8,
+    min_len: u16,
+    max_len: u16,
     flags: u8,
     name: Option<&'a str>,
     /// Index in the `set_databases` array of the database that decodes this ID.
@@ -185,6 +186,7 @@ impl Session {
             channels: self.store.channels(),
             heap_bytes: self.store.heap_bytes(),
             error_frames: self.store.error_frames(),
+            reassembled_frames: self.store.reassembled_frames(),
         })
     }
 
@@ -225,7 +227,9 @@ impl Session {
         }
     }
 
-    /// Rows `start..start + count` of the trace, packed [`ROW_STRIDE`] bytes each.
+    /// Rows `start..start + count` of the trace, packed [`ROW_STRIDE`] bytes each. A row holds
+    /// at most [`MAX_PAYLOAD`] bytes of payload: a reassembled frame is cut there, and its full
+    /// length is at offset 20 as a `u16`.
     pub fn rows(&self, key: f64, start: u32, count: u32) -> Vec<u8> {
         let Ok(filter) = self.filter(key) else {
             return Vec::new();
@@ -266,11 +270,13 @@ impl Session {
             rec[0..8].copy_from_slice(&(((frame.ts_ns - origin) as f64) / 1e9).to_le_bytes());
             rec[8..12].copy_from_slice(&frame.id.to_le_bytes());
             rec[12..16].copy_from_slice(&(index as u32).to_le_bytes());
+            let shown = frame.data.len().min(MAX_PAYLOAD);
             rec[16] = frame.channel;
             rec[17] = frame.flags;
-            rec[18] = frame.data.len() as u8;
+            rec[18] = shown as u8;
+            rec[20..22].copy_from_slice(&(frame.data.len() as u16).to_le_bytes());
             rec[24..32].copy_from_slice(&changed.to_le_bytes());
-            rec[32..32 + frame.data.len()].copy_from_slice(frame.data);
+            rec[32..32 + shown].copy_from_slice(&frame.data[..shown]);
             out.extend_from_slice(&rec);
         }
         out
@@ -315,8 +321,8 @@ impl Session {
             .ok()
             .flatten()
             .ok_or_else(|| js_err("unknown ID"))?;
-        let longest = &[0; MAX_PAYLOAD][..usize::from(stats.max_len)];
-        if bits::extract(longest, spec.start_bit, spec.size, spec.byte_order).is_none() {
+        let longest = vec![0u8; usize::from(stats.max_len)];
+        if bits::extract(&longest, spec.start_bit, spec.size, spec.byte_order).is_none() {
             return Err(js_err(
                 "the bit range must be 1 to 64 bits and fit in this ID's frames",
             ));
@@ -820,6 +826,125 @@ mod tests {
         assert!(export_dbc(r#"{ "name": "empty", "messages": [] }"#)
             .unwrap()
             .contains("BU_:\n"));
+    }
+
+    /// A DM1 (PGN 0xFECA) of 14 bytes sent by BAM from SA 0x00, then one from SA 0x17 whose
+    /// packets interleave with a second one from 0x00 that is abandoned.
+    const TP_LOG: &str = "\
+(1.000000) can0 18ECFF00#200E0002FFCAFE00
+(1.050000) can0 18EBFF00#0101020304050607
+(1.100000) can0 18EBFF00#02080A0C0E101214
+(1.200000) can0 18ECFF17#200E0002FFCAFE00
+(1.210000) can0 18ECFF00#200E0002FFCAFE00
+(1.250000) can0 18EBFF17#01AABBCCDDEEFF11
+(1.260000) can0 18EBFF00#0199999999999999
+(1.300000) can0 18EBFF17#0222334455667788
+(1.400000) can0 18ECFF00#200E0002FFCAFE00
+";
+
+    #[test]
+    fn reassembles_j1939_transport_protocol_from_candump_text() {
+        let mut s = Session::new();
+        s.push_chunk(TP_LOG.as_bytes());
+        let info = json(&s.finish());
+        assert_eq!(info["frames"], 11);
+        assert_eq!(info["reassembledFrames"], 2);
+
+        let ids = json(&s.id_summary());
+        let ids = ids.as_array().unwrap();
+        let dm1: Vec<&Value> = ids
+            .iter()
+            .filter(|v| v["flags"].as_u64().unwrap() & u64::from(can_core::flags::REASSEMBLED) != 0)
+            .collect();
+        assert_eq!(dm1.len(), 2);
+        assert_eq!(
+            (
+                &dm1[0]["id"],
+                &dm1[0]["extended"],
+                &dm1[0]["count"],
+                &dm1[0]["maxLen"]
+            ),
+            (&json!(0x18FE_CA00), &json!(true), &json!(1), &json!(14))
+        );
+        assert_eq!(dm1[1]["id"], 0x18FE_CA17);
+        assert_eq!(
+            ids.iter().filter(|v| v["id"] == 0x18EB_FF00).count(),
+            1,
+            "the packets stay in the log"
+        );
+
+        // The reassembled frame decodes with the DBC's message for its PGN.
+        let mut dbc = database(&[(0x98FE_CAFE, "DM1", 8 * 8)]);
+        dbc["messages"][0]["j1939"] = json!(true);
+        set_databases(&mut s, &[(None, dbc)]);
+        assert_eq!(summary_name(&s, 0, 0x18FE_CA00), "DM1");
+        let key = id_key(0, 0x18FE_CA00 | EXT_FLAG) as f64;
+        let info = s.decode_signal(key, "Value").unwrap();
+        assert_eq!(
+            series_values(&s, &info),
+            [10.0],
+            "byte 8 of the first transfer"
+        );
+        let key_17 = id_key(0, 0x18FE_CA17 | EXT_FLAG) as f64;
+        let info = s.decode_signal(key_17, "Value").unwrap();
+        assert_eq!(series_values(&s, &info), [f64::from(0x33)]);
+
+        let rows = s.rows(key, 0, 1);
+        assert_eq!(rows.len(), ROW_STRIDE);
+        assert_eq!(f64::from_le_bytes(rows[0..8].try_into().unwrap()), 0.1);
+        assert_eq!(rows[17], can_core::flags::REASSEMBLED);
+        assert_eq!(rows[18], 14);
+        assert_eq!(
+            rows[32..46],
+            [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20]
+        );
+    }
+
+    #[test]
+    fn rows_cut_reassembled_payloads_at_64_bytes_and_give_the_full_length() {
+        // Two 100-byte transfers of bytes 0..99; the second changes bytes 0 and 70.
+        let mut log = String::new();
+        for (second, change) in [(1, 0), (2, 1)] {
+            log += &format!("({second}.000) can0 18ECFF00#2064000FFFCAFE00\n");
+            for packet in 1..=15u8 {
+                log += &format!("({second}.{packet:03}) can0 18EBFF00#{packet:02X}");
+                for byte in 0..7u8 {
+                    let index = (packet - 1) * 7 + byte;
+                    let changed = index == 0 || index == 70;
+                    log += &format!("{:02X}", index + if changed { change } else { 0 });
+                }
+                log += "\n";
+            }
+        }
+        let mut s = Session::new();
+        s.push_chunk(log.as_bytes());
+        s.finish();
+        let key = id_key(0, 0x18FE_CA00 | EXT_FLAG) as f64;
+        assert_eq!(s.row_count(key), 2);
+        let rows = s.rows(key, 0, 1);
+        assert_eq!(rows[18], 64);
+        assert_eq!(u16::from_le_bytes([rows[20], rows[21]]), 100);
+        assert_eq!(rows[32..96], (0..64).collect::<Vec<u8>>()[..]);
+
+        // Raw decodes reach the whole payload.
+        let info = s
+            .decode_raw(key, &spec(792, 8, "intel", false).to_string())
+            .unwrap();
+        assert_eq!(series_values(&s, &info), [99.0, 99.0]);
+        let info = s
+            .decode_raw(key, &spec(560, 8, "intel", false).to_string())
+            .unwrap();
+        assert_eq!(series_values(&s, &info), [70.0, 71.0]);
+
+        // Find Signal searches the first 64 bytes, so it sees byte 0 change but not byte 70.
+        let rules = json!([{ "behaviour": "changes", "t0": 0.0, "t1": 2.0 }]).to_string();
+        let found = json(&s.find_signal(&rules, &[key], 100).unwrap());
+        let found = found.as_array().unwrap();
+        assert!(!found.is_empty());
+        assert!(found
+            .iter()
+            .all(|c| c["spec"]["startBit"].as_u64().unwrap() < 512));
+        assert_eq!(found[0]["spec"]["startBit"], 0);
     }
 
     #[test]

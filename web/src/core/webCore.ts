@@ -1,4 +1,4 @@
-import type { Candidate, CoreApi, Database, FindRule, IdSummary, LogInfo, Progress, RawSignalSpec, ScopedDatabase, SeriesInfo } from './api';
+import type { ByteLane, Candidate, CoreApi, Database, FindRule, IdSummary, LogInfo, Progress, RawSignalSpec, ScopedDatabase, SeriesInfo } from './api';
 import { RowBatch } from './rows';
 import type { Request } from './worker';
 
@@ -70,6 +70,17 @@ export class WebCore implements CoreApi {
 
   seriesView(handle: number, t0: number, t1: number, buckets: number) {
     return this.call<[Float64Array, Float64Array]>('seriesView', handle, t0, t1, buckets);
+  }
+
+  async byteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]> {
+    const packed = await this.call<Float64Array>('byteLanes', key, first, count, t0, t1, buckets);
+    const lanes: ByteLane[] = [];
+    for (let at = 0; at < packed.length; ) {
+      const n = packed[at];
+      lanes.push({ x: packed.subarray(at + 1, at + 1 + n), y: packed.subarray(at + 1 + n, at + 1 + 2 * n) });
+      at += 1 + 2 * n;
+    }
+    return lanes;
   }
 
   rowAtTime = (key: number, t: number) => this.call<number>('rowAtTime', key, t);

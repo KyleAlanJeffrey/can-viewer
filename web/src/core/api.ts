@@ -124,6 +124,12 @@ export interface Candidate {
   score: number;
 }
 
+/** One byte's decimated points across a window; see `CoreApi.byteLanes`. */
+export interface ByteLane {
+  x: Float64Array;
+  y: Float64Array;
+}
+
 export interface SeriesInfo {
   handle: number;
   name: string;
@@ -151,6 +157,12 @@ export interface CoreApi {
   /** Min/max-decimated points between t0 and t1 seconds, about `2 * buckets` of them. */
   seriesView(handle: number, t0: number, t1: number, buckets: number): Promise<[Float64Array, Float64Array]>;
   dropSeries(handle: number): Promise<void>;
+  /**
+   * Views of payload bytes `first..first + count` of ID `key` between t0 and t1 seconds, each
+   * decimated like `seriesView`, in one round trip and with nothing to drop afterwards. A frame
+   * too short to carry a byte adds no point to it.
+   */
+  byteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]>;
 
   /** Index of the first row of `key` (or ALL_IDS) at or after `t` seconds, clamped to the last row. */
   rowAtTime(key: number, t: number): Promise<number>;

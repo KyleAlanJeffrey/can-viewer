@@ -21,7 +21,20 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [x] CodeRabbit review, with every comment addressed (fixed, or answered on the PR)
 - [ ] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)
 - [ ] After the first deploy, check the demo, reload restore and the CSP on the live site
-- [ ] Update the views to the new mockups when they land (docs/ holds the current ones)
+- [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
+
+## Landing page
+
+A separate static site on `freecanstudio.com`, with the app moving to `app.freecanstudio.com`. Two Cloudflare deployments; the owner sets them up.
+
+- [ ] New `site/` folder for the landing page (a static site tool such as Astro), built and deployed on its own so copy edits don't rebuild Rust and wasm
+- [ ] Main button goes straight into the app; add a demo link (`app.freecanstudio.com/?demo=1`) and make the app open the demo log from it
+- [ ] Content pages for the searches people make: BLF viewer online, MF4 viewer online, DBC viewer, CANalyzer alternative; each with a big "Open a BLF file" style button into the app
+- [ ] No drop zone on the landing page (a dropped file can't be handed to another site); send people to the app to open files
+- [ ] Analytics, newsletter signup or video embeds stay on the landing page only; the app keeps its strict CSP in `web/public/_headers` and loads nothing from third parties
+- [ ] State the privacy claim on the landing page: the app domain loads nothing from anyone else
+- [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `freecan.studio` and `freecan.app` redirecting to it (owner)
+- [ ] Later: downloads, pricing and Pro license pages on the main site
 
 ## Bugs
 
@@ -34,6 +47,8 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Two tabs both save their DBC list to IndexedDB, so an older tab can overwrite the other's edits (PR #1 review)
 
 ## Follow-ups
+
+- [ ] Reverse Engineer: Ignore Baseline sheet (dim bits that change in a quiet period)
 
 - [ ] Database view: show and edit whether a message is J1939
 - [ ] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full

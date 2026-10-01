@@ -452,6 +452,45 @@ impl Session {
         }
     }
 
+    /// Views of payload bytes `first..first + count` of ID `key` between `t0` and `t1` seconds,
+    /// for a row of sparklines at once with no series to hold and drop. For each byte in turn:
+    /// the number of points n, then n times, then n values, laid out as [`Session::series_view`]
+    /// does. A frame too short to carry a byte adds no point to it.
+    pub fn byte_lanes(
+        &self,
+        key: f64,
+        first: u32,
+        count: u32,
+        t0: f64,
+        t1: f64,
+        buckets: u32,
+    ) -> Vec<f64> {
+        let Ok(Some(stats)) = self.filter(key) else {
+            return Vec::new();
+        };
+        if !t0.is_finite() || !t1.is_finite() {
+            return Vec::new();
+        }
+        // The frames in the window plus one neighbour each side, so lines reach the plot edges.
+        let inside = self
+            .store
+            .id_frames_between(stats, self.ns_at(t0), self.ns_at(t1));
+        let frames =
+            &stats.frames[inside.start.saturating_sub(1)..(inside.end + 1).min(stats.frames.len())];
+        let origin = self.origin_ns();
+        let mut out = Vec::new();
+        for byte in first..first.saturating_add(count) {
+            let byte = byte as usize;
+            let series = Series::decode(&self.store, frames, origin, |data| {
+                data.get(byte).map(|&b| f64::from(b))
+            });
+            let view = series.view(t0, t1, buckets as usize);
+            out.push((view.len() / 2) as f64);
+            out.extend_from_slice(&view);
+        }
+        out
+    }
+
     /// Times cross the boundary as seconds from the first frame, as in [`Session::rows`].
     fn origin_ns(&self) -> i64 {
         self.store.first_ts_ns().unwrap_or(0)
@@ -540,6 +579,33 @@ mod tests {
     fn spec(start_bit: u16, size: u16, byte_order: &str, signed: bool) -> Value {
         json!({ "startBit": start_bit, "size": size, "byteOrder": byte_order, "signed": signed,
                 "factor": 1, "offset": 0 })
+    }
+
+    #[test]
+    fn byte_lanes_view_each_byte_of_the_window() {
+        let s = session();
+        // Bytes 0..3 of the three 123 frames, then byte 60, which no frame carries.
+        let out = s.byte_lanes(key_123(), 0, 3, 0.0, 1.0, 100);
+        let mut at = 0;
+        let mut lanes = Vec::new();
+        while at < out.len() {
+            let n = out[at] as usize;
+            lanes.push((
+                out[at + 1..at + 1 + n].to_vec(),
+                out[at + 1 + n..at + 1 + 2 * n].to_vec(),
+            ));
+            at += 1 + 2 * n;
+        }
+        assert_eq!(lanes.len(), 3);
+        assert_eq!(lanes[0].0, vec![0.0, 0.01, 0.06]);
+        assert_eq!(lanes[0].1, vec![1.0, 3.0, 5.0]);
+        assert_eq!(lanes[1].1, vec![2.0, 4.0, 6.0]);
+        assert_eq!(lanes[2].1, vec![255.0, 128.0, 0.0]);
+        assert_eq!(s.byte_lanes(key_123(), 60, 1, 0.0, 1.0, 100), vec![0.0]);
+        // A window after every frame still gets the last frame as its leading neighbour.
+        let late = s.byte_lanes(key_123(), 0, 1, 0.5, 1.0, 100);
+        assert_eq!(late, vec![1.0, 0.06, 5.0]);
+        assert!(s.byte_lanes(-1.0, 0, 1, 0.0, 1.0, 100).is_empty());
     }
 
     #[test]

@@ -37,3 +37,5 @@ Dense table: first column “Message”, then eight equally sized columns B0 B1 
 For 123 Unknown, beneath tiny waveforms show the exact hex bytes “39”, “00”, “2D”, “11”, “AA”, “0B”, “F4”, “00” respectively. B0 sawtooth, B1 flat zero,B2 slow rising step,B3 repeated wrapped changes,B4 flat,B5 stepping,B6 noisy,B7 flat. Other rows mix constant, smooth, sawtooth and stepped illustrative sparklines with variety, no invented decoded units.
 Footer directly under table: selection “123 · Byte 2”, outlined “Pin byte” and outlined “Open in Advanced →”. No big inspector. No bit grid anywhere.
 Clean desktop engineering app, useful compact density with consistent alignment, no enormous headlines. This is an IMAGE mockup not code.
+
+OUTPUT QA REQUIREMENTS: All byte-matrix lines are Graphite, never series colors. Pinned raw Byte 2 reads 45 on a 0–255 scale, so its curve lies near 18% of the plot height above zero. Use explicit Analysis window fields 40.000 s and 70.000 s, with Full log: 30 min 15 s; no misleading full-log slider. The selected byte is already pinned: footer action Unpin byte.

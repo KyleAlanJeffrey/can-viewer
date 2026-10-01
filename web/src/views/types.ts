@@ -53,6 +53,8 @@ export interface ViewContext {
   run(label: string, task: () => Promise<void>): Promise<boolean>;
   setError(message: string | null): void;
   setView(view: ViewId): void;
+  /** Hide the inspector pane for a mode of the view that has none; the shell resets it on a view change. */
+  setInspectorHidden(hidden: boolean): void;
   openLogPicker(): void;
   openDbcPicker(): void;
 }

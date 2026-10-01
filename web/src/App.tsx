@@ -89,6 +89,7 @@ export function App({ core }: { core: CoreApi }) {
   const [query, setQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(() => !narrow());
   const [inspectorOpen, setInspectorOpen] = useState(() => !narrow());
+  const [inspectorHidden, setInspectorHidden] = useState(false);
   const [sidebarSlot, setSidebarSlot] = useState<HTMLElement | null>(null);
   const [inspectorSlot, setInspectorSlot] = useState<HTMLElement | null>(null);
   const [viewState] = useState(() => new ViewStateStore());
@@ -110,7 +111,7 @@ export function App({ core }: { core: CoreApi }) {
   const meta = viewMeta(view);
   // Database works on DBCs alone; every other view needs a log.
   const showView = !!log || (!meta.needsLog && dbcs.length > 0);
-  const showInspector = showView && meta.hasInspector;
+  const showInspector = showView && meta.hasInspector && !inspectorHidden;
 
   const resolved = useMemo(() => {
     const map = new Map<number, Resolved>();
@@ -141,6 +142,7 @@ export function App({ core }: { core: CoreApi }) {
   const setView = useCallback((next: ViewId) => {
     setViewState(next);
     setQuery('');
+    setInspectorHidden(false);
   }, []);
 
   const decodePlot = useCallback(
@@ -527,6 +529,7 @@ export function App({ core }: { core: CoreApi }) {
     setView,
     openLogPicker: () => logInput.current?.click(),
     openDbcPicker: () => dbcInput.current?.click(),
+    setInspectorHidden,
   };
 
   const skipped = log && log.rejected > 0 && !skippedDismissed;

@@ -9,7 +9,8 @@ Start with the [brand sheet: logo, fonts, and colors](freecan-workshop-brand-gui
 | Screen | Image |
 |---|---|
 | Overview | [View mockup](freecan-workshop-overview-v3-mockup.png) |
-| Reverse Engineer | [View mockup](freecan-workshop-reverse-engineer-v3-mockup.png) |
+| Reverse Engineer — Byte Values (default) | [View mockup](freecan-workshop-reverse-engineer-v4-mockup.png) |
+| Reverse Engineer — Advanced | [View mockup](freecan-workshop-reverse-engineer-advanced-v4-mockup.png) |
 | Database | [View mockup](freecan-workshop-database-v2-mockup.png) |
 | Plot | [View mockup](freecan-workshop-plot-v2-mockup.png) |
 | Home website | [View mockup](freecan-workshop-home-v2-mockup.png) |
@@ -47,7 +48,7 @@ Priority:
 | A3 | **Overview** | P0 | The default view after loading. **Stat tiles:** Duration, Frames, IDs, Buses, Error frames. **Charts:** bus load per bus over time. **"Decoding":** "9 of 11 IDs match your DBC", with a button "Reverse engineer the 2 unknown IDs". **ID table:** ID, Name, Bus, Count, Period, Jitter, DLC, Decoded ✓. |
 | A4 | Trace | P0 | The hero mockup. Two toggles: **Chronological** (every frame) and **By ID** (one live-updating row per ID, like cabana or SavvyCAN). |
 | A5 | **Plot** | P0 | **Sidebar:** a signal tree by message, with search and checkboxes. **Content:** 3–6 stacked plots on a shared time axis. Two cursors with Δt and Δvalue readouts, markers you can name, and a time range bar with an overview minimap. |
-| A6 | **Reverse Engineer** | P0 | Main content order: **Pinned references**, **Byte values**, **Bit Activity** with a time-window scrubber, then scrolling **Bit history**. Pin known signals from other messages or buses for synchronized comparison while investigating the selected ID. Drag across bits to define a signal. **Inspector:** live candidate, start bit, length, Intel/Motorola, Signed, factor, offset, name, unit, optional overlay on a compatible pinned reference, and "Add to Database". Content-header actions: "Ignore Baseline…" and "Find Signal…". |
+| A6 | **Reverse Engineer** | P0 | **Byte Values (default):** all messages in a byte-sparkline matrix, with pinned reference signals and pinned raw bytes above it. Shared analysis window and cursor; separate y-scales. Select a byte without hiding other messages, pin it for comparison, or open its message in **Advanced**. **Advanced:** pinned references, selected-message Byte values, Bit Activity, then Bit history. Its New Signal inspector defines start bit, length, Intel/Motorola, Signed, factor, offset, name and unit, with a compatible-unit overlay and Add to Database. Pins and analysis window survive mode changes. |
 | A7 | Find Signal sheet | P1 | A sentence-style rule builder: "Find a signal that [increases ▾] between [12.0 s] and [18.5 s] and [stays constant ▾] between [20 s] and [25 s]". Results are ranked candidates, each with a sparkline, a match score and "Show". |
 | A8 | Ignore Baseline sheet | P1 | "Pick a quiet period (nothing pressed, nothing moving). Bits that change there will be dimmed." It shows a time range picker over the bus load chart. |
 | A9 | **Database** (DBC editor) | P0 | **Content:** a message header (name, ID, DLC, sender, cycle time); a signal table (name, start, length, byte order, signed, factor, offset, min, max, unit); a colour-coded 8×8 layout grid for the message. **Inspector:** the selected signal's properties and value table editor ("0 = Off, 1 = On"). **Toolbar:** "New Message", "Export DBC…". Changes re-decode immediately. |
@@ -111,12 +112,13 @@ Screens not listed reuse these layouts.
 
 The corrected source of truth is [mockup-style.txt](mockup-style.txt), with measured demo data in [mockup-data.json](mockup-data.json). The current design rules override old image references. Attach each screen's earlier mockup for layout only; do not inherit its colors, text, statistics, or supported-format claims.
 
-The eight self-contained generation prompts include the same canonical style block:
+The self-contained generation prompts include the same canonical style block:
 
 | Screen | Prompt |
 |---|---|
 | Overview | [Prompt](freecan-workshop-overview-v2-generation-prompt.txt) |
-| Reverse Engineer | [Prompt](freecan-workshop-reverse-engineer-v3-generation-prompt.txt) |
+| Reverse Engineer — Byte Values | [Prompt](freecan-workshop-reverse-engineer-v4-generation-prompt.txt) |
+| Reverse Engineer — Advanced | [Prompt](freecan-workshop-reverse-engineer-advanced-v4-generation-prompt.txt) |
 | Database | [Prompt](freecan-workshop-database-generation-prompt.txt) |
 | Plot | [Prompt](freecan-workshop-plot-generation-prompt.txt) |
 | Home | [Prompt](freecan-workshop-home-generation-prompt.txt) |
@@ -134,14 +136,18 @@ The eight self-contained generation prompts include the same canonical style blo
 - Plot uses the demo's WheelSpeedFL instead of the nonexistent Brake Pressure signal. DBC identifiers retain their exact names.
 - Both Twisted F terminals stay Amber, matching the current Logo component. This does not declare a new vector master.
 
-### Reverse Engineer reference pinning — planned interaction
+### Reverse Engineer comparison and Advanced modes — planned interaction
 
-The [v3 mockup](freecan-workshop-reverse-engineer-v3-mockup.png) adds reference signals without changing the selected message.
+The [default Byte Values mockup](freecan-workshop-reverse-engineer-v4-mockup.png) and [Advanced mockup](freecan-workshop-reverse-engineer-advanced-v4-mockup.png) replace v3 as the current concept. These are ImageGen mockups, not implemented features.
 
-- **Pin signal…** opens a searchable signal picker across the loaded database and buses. Each result identifies signal name, message ID, bus, and unit. Already pinned signals are marked; pinning does not navigate away from the unknown message.
-- Pinned signals remain visible when selecting another message or changing the time window within the same log. Each row shows its source, unit, current value, trace, and a remove action.
-- References, byte plots, candidate preview, and bit history share the analysis window and cursor. Different-unit references use separate y-scales; values keep their original units.
-- An explicitly enabled **Overlay on VehicleSpeed** control draws the candidate as a dashed Graphite trace on the compatible reference's scale. The candidate and reference retain separate names and values. Offer overlays only for compatible units; do not silently normalize unlike units.
-- **Byte values** sits directly above **Bit Activity**. The reference card precedes both; Bit history follows the activity grid.
-- Pins belong to the loaded log. Changing the selected ID preserves them; opening a different log clears unavailable references. No cross-session persistence is promised by this mockup.
-- The displayed examples pin VehicleSpeed from 3E9 on can0 and EngineSpeed from 0C9 on can0. This is a proposed interaction, not an implemented feature.
+- **Byte Values is the default.** Show one row per bus/message ID, with B0–B7 raw-byte sparklines across each row. All eleven demo IDs remain available together. Selecting a message or byte does not filter out other rows; explicit bus/search filters do. Missing payload bytes render as unavailable, never zero.
+- **Pinned references** sits above the matrix. **Pin signal…** opens a searchable picker across the loaded database and buses, showing signal name, ID, bus and unit. A byte cell also offers **Pin byte**; once pinned, that action becomes **Unpin byte**. The selected raw byte can then be compared in a full-width plot alongside decoded reference signals.
+- All comparison plots, matrix sparklines and Advanced plots share the analysis window and cursor. Each matrix cell repeats that same time window. Hover updates the shared cursor and values; clicking parks it. Raw bytes keep their 0–255 scale and graphite traces. Decoded references retain their own units and y-scales. Do not silently normalize unlike units or overlay raw byte counts on physical-unit scales.
+- The demo window is 40–70 s within the 30 min 15 s log. The cursor is 52.343 s. The default comparison pins VehicleSpeed from 3E9 on can0, EngineSpeed from 0C9 on can0, and Byte 2 of 123 on can0 (decimal 45 / hex 2D). Miniature plots are illustrative; exact readouts must use mockup-data.json and the demo log.
+- **Changing bytes only** is an optional explicit filter for the current window; keep byte indices in place and visibly dim constant cells rather than shifting column positions. All buses is the initial scope.
+- CAN FD messages must expose their complete payload. The 300 RADAR_TRACKS row initially shows B0–B7 of 32, with **View all** expanding additional byte groups B8–B15, B16–B23 and B24–B31 under that message. Never silently truncate to eight bytes.
+- **Advanced** opens the selected message. If there is no selection, request a message selection inline. **Open in Advanced** carries the selected byte into the detailed workspace. Only Advanced shows Bit Activity, Bit history and the New Signal inspector. Byte values remains directly above Bit Activity, with pinned comparisons above both.
+- An explicitly enabled **Overlay on VehicleSpeed** option in Advanced draws the decoded candidate as a dashed Graphite trace on that compatible reference scale. Candidate and reference retain separate names and values; offer overlays only for compatible units.
+- Pins, window, parked cursor and selected byte persist when switching messages or modes within the loaded log. Returning to Byte Values restores the previous matrix scroll position and filters. The Advanced raster focuses on the two decoded references; an additional pinned raw byte must remain available there too, even when the comparison list needs scrolling.
+- Pins belong to the loaded log. Opening another log clears unavailable references. No cross-session persistence is promised.
+- Brand tokens and interaction rules override minor raster color, typography and tiny-label errors. In particular, all raw-byte matrix traces are Graphite; Unknown uses Rust with its label; buttons use neutral borders. The curves are conceptual, not measured renderings of the demo.

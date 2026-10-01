@@ -406,6 +406,30 @@ The number of payload bits that changed, per time bucket, for one ID across `[t0
 const strip = await core.changeActivity(summary.key, 0, log.durationS, 400);
 ```
 
+### byteLanes
+
+```ts
+byteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]>
+```
+
+The raw values of `count` payload bytes from byte `first`, for one ID between `t0` and `t1` seconds: one sparkline per byte, without keeping a series in the worker. Each lane is decimated as by [`seriesView`](#seriesview) and includes one neighbouring frame on each side of the window. Frames too short to carry a byte give that lane no point.
+
+**Parameters**
+
+- **`key`** `number` - An ID key. `ALL_IDS` is not accepted.
+- **`first`** `number` - The first byte index.
+- **`count`** `number` - How many bytes, usually 8.
+- **`t0`** `number` - Start, in seconds.
+- **`t1`** `number` - End, in seconds.
+- **`buckets`** `number` - Target resolution per lane.
+
+**Returns** `count` lanes, each `{ x: Float64Array, y: Float64Array }` with times in seconds and byte values 0 to 255. The array is empty for `ALL_IDS`, an unknown key, or a window that isn't finite.
+
+```ts
+const lanes = await core.byteLanes(summary.key, 0, 8, 40, 70, 80);
+const lastB2 = lanes[2].y.at(-1);
+```
+
 ## Signals and series
 
 ### decodeSignal

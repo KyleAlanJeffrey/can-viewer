@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { IdSummary, MessageDef, RawSignalSpec, SeriesInfo } from '../../core/api';
+import { formatId, type ByteLane, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo } from '../../core/api';
 import { formatCount } from '../../format';
 import { signalBits } from '../../signalBits';
 import { InspectorSlot } from '../slots';
 import type { ViewContext } from '../types';
 import { BitGrid, HeatLegend } from './BitGrid';
 import { BitHistory } from './BitHistory';
-import { ByteLanes } from './ByteLanes';
-import { CandidatePlot } from './CandidatePlot';
+import { ByteStrip } from './ByteStrip';
+import { References, type Candidate } from './References';
 import { SignalForm, initialForm, parseRange, parseScale, useCandidateForms, type FormState } from './SignalForm';
 import { WindowStrip } from './WindowStrip';
 import {
   coveringRange,
+  describeId,
   errorText,
   layoutString,
   rangeBits,
@@ -22,12 +23,16 @@ import {
   type BitRange,
   type ByteOrder,
   type TimeWindow,
+  type Trace,
   type WindowStats,
 } from './bits';
+import type { Pin, Reference } from './pins';
+import { useFrameAt } from './useFrameAt';
 
 /** Points per candidate view. Typical windows come back undecimated, so their changes count exactly. */
 const VIEW_BUCKETS = 20000;
 const LANES = 8;
+const STRIP_BUCKETS = 80;
 const BLANK_FORM = initialForm(null);
 
 interface Props {
@@ -36,6 +41,12 @@ interface Props {
   message: MessageDef | null;
   window: TimeWindow;
   onWindowChange: (w: TimeWindow) => void;
+  references: Reference[];
+  cursor: number | null;
+  onHover: (t: number | null) => void;
+  onPark: (t: number) => void;
+  onUnpin: (pin: Pin) => void;
+  onPinSignal: () => void;
 }
 
 interface Activity {
@@ -54,10 +65,13 @@ interface CandidateView {
   stats: WindowStats;
 }
 
-/** One ID's reverse-engineering workspace. Mounted per ID and log; its bit selection and form are kept per ID. */
-export function Workspace({ ctx, summary, message, window: win, onWindowChange }: Props) {
-  const { core, logVersion } = ctx;
-  const duration = ctx.log?.durationS ?? 0;
+/**
+ * Advanced: one message's bit activity and history with the New Signal inspector. Mounted per
+ * ID and log; its bit selection and form are kept per ID.
+ */
+export function Workspace({ ctx, summary, message, window: win, onWindowChange, references, cursor, onHover, onPark, onUnpin, onPinSignal }: Props) {
+  const { core, logVersion, log } = ctx;
+  const duration = log?.durationS ?? 0;
   const bytes = summary.maxLen;
   const [forms, setForms] = useCandidateForms();
   const form = forms[summary.key] ?? BLANK_FORM;
@@ -141,36 +155,22 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange }
 
   const laneStart = selected.length > 0 ? Math.floor((Math.min(...selected) >> 3) / LANES) * LANES : 0;
   const laneCount = Math.max(0, Math.min(LANES, bytes - laneStart));
-  const [lanes, setLanes] = useState<SeriesInfo[] | null>(null);
+  const [lanes, setLanes] = useState<ByteLane[] | null>(null);
   const [lanesError, setLanesError] = useState<string | null>(null);
   useEffect(() => {
     setLanes(null);
     setLanesError(null);
     if (laneCount === 0) return;
     let stale = false;
-    const held: number[] = [];
-    (async () => {
-      const infos: SeriesInfo[] = [];
-      for (let k = 0; k < laneCount; k++) {
-        const lane = { startBit: (laneStart + k) * 8, size: 8, byteOrder: 'intel', signed: false, factor: 1, offset: 0 } as const;
-        const info = await core.decodeRaw(summary.key, lane);
-        if (stale) {
-          core.dropSeries(info.handle);
-          return null;
-        }
-        held.push(info.handle);
-        infos.push(info);
-      }
-      return infos;
-    })().then(
-      (infos) => !stale && infos && setLanes(infos),
+    core.byteLanes(summary.key, laneStart, laneCount, settled[0], settled[1], STRIP_BUCKETS).then(
+      (got) => !stale && setLanes(got),
       (e) => !stale && setLanesError(errorText(e)),
     );
     return () => {
       stale = true;
-      held.forEach((h) => core.dropSeries(h));
     };
-  }, [core, summary.key, laneStart, laneCount, logVersion]);
+  }, [core, summary.key, laneStart, laneCount, settled, logVersion]);
+  const frame = useFrameAt(core, summary.key, cursor, logVersion);
 
   const owners = useMemo(() => {
     const owner = new Array<string | null>(bytes * 8).fill(null);
@@ -201,12 +201,66 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange }
   const windowFrames = activity && !activity.wholeLog ? activity.frames : (summary.count * (settled[1] - settled[0])) / Math.max(duration, 1e-9);
   const layout = range ? layoutString(range, form.signed) : null;
   const matching = <T extends { key: string }>(x: T | null) => (x && x.key === currentKey ? x : null);
+  const trace: Trace | null = matching(view);
+
+  // The candidate overlays the first pinned signal in its unit, when asked to; otherwise it gets a row of its own.
+  const unit = form.unit.trim();
+  const overlayTarget = unit ? (references.find((r) => r.pin.kind === 'signal' && r.unit.trim().toLowerCase() === unit.toLowerCase()) ?? null) : null;
+  const candidate: Candidate | null = range
+    ? { name: form.name.trim() || `Candidate ${layout}`, unit, trace, overlayOn: form.overlay && overlayTarget ? overlayTarget.id : null }
+    : null;
 
   return (
     <>
       <div className="content-scroll re-scroll">
-        <section className="card re-card" aria-label="Time window">
-          <WindowStrip core={core} idKey={summary.key} logVersion={logVersion} duration={duration} window={win} onChange={onWindowChange} />
+        <div className="re-message-head">
+          <h2 className="content-title re-title">
+            <span className="mono">{formatId(summary.id, summary.extended)}</span>
+            {message ? <span>{message.name}</span> : <span className="status unknown">Unknown</span>}
+          </h2>
+          <p className="content-sub">{describeId(log?.channels ?? [], summary, true)}</p>
+        </div>
+
+        <References
+          core={core}
+          references={references}
+          window={settled}
+          cursor={cursor}
+          candidate={candidate}
+          onHover={onHover}
+          onPark={onPark}
+          onUnpin={onUnpin}
+          onPinSignal={onPinSignal}
+        />
+
+        <section className="card re-card" aria-labelledby="re-bytes-title">
+          <div className="re-card-head">
+            <h3 className="section-title" id="re-bytes-title">
+              Byte values
+            </h3>
+            <span className="re-card-note">
+              {bytes > LANES ? `Bytes ${laneStart} to ${laneStart + laneCount - 1} \u00b7 ` : ''}
+              selected time range {'\u00b7'} raw values 0 to 255 {'\u00b7'} click one to select its bits
+            </span>
+          </div>
+          {bytes === 0 ? (
+            <p className="hint">These frames carry no payload.</p>
+          ) : lanesError ? (
+            <p className="re-quiet">Byte values: {lanesError}</p>
+          ) : (
+            <ByteStrip
+              lanes={lanes}
+              firstByte={laneStart}
+              count={laneCount}
+              window={settled}
+              cursor={cursor}
+              frame={frame}
+              selectedBytes={wholeBytes}
+              onSelectByte={selectByte}
+              onHover={onHover}
+              onPark={onPark}
+            />
+          )}
         </section>
 
         <section className="card re-card" aria-labelledby="re-activity-title">
@@ -237,6 +291,9 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange }
           ) : (
             <p className={activityError ? 're-quiet' : 'hint'}>{activityError ?? 'Counting bit changes\u2026'}</p>
           )}
+          <div className="re-subhead">
+            <WindowStrip compact core={core} idKey={summary.key} logVersion={logVersion} duration={duration} window={win} onChange={onWindowChange} />
+          </div>
         </section>
 
         <section className="card re-card" aria-labelledby="re-history-title">
@@ -247,44 +304,6 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange }
             <span className="re-card-note">Newest frame on the right</span>
           </div>
           <BitHistory core={core} summary={summary} duration={duration} window={settled} logVersion={logVersion} selected={selected} />
-        </section>
-
-        <section className="card re-card" aria-labelledby="re-candidate-title">
-          <div className="re-card-head">
-            <h3 className="section-title" id="re-candidate-title">
-              Candidate
-            </h3>
-            <span className="re-card-note mono">{layout}</span>
-          </div>
-          {!range ? (
-            <p className="hint re-plot-empty">Select bits in the grid to decode them across the window.</p>
-          ) : decodeError ? (
-            <p className="re-quiet re-plot-empty">Decoding: {decodeError}</p>
-          ) : view ? (
-            <CandidatePlot
-              x={view.x}
-              y={view.y}
-              window={settled}
-              unit={form.unit.trim()}
-              label={`Candidate ${layout} decoded from ${settled[0].toFixed(1)} to ${settled[1].toFixed(1)} seconds`}
-            />
-          ) : (
-            <p className="hint re-plot-empty">Decoding&hellip;</p>
-          )}
-
-          <div className="re-card-head re-subhead">
-            <h4 className="re-subtitle">Byte Values</h4>
-            <span className="re-card-note">
-              {bytes > LANES ? `Bytes ${laneStart} to ${laneStart + laneCount - 1}, ` : ''}0 to 255; click one to select it
-            </span>
-          </div>
-          {lanesError ? (
-            <p className="re-quiet">Byte values: {lanesError}</p>
-          ) : lanes ? (
-            <ByteLanes core={core} lanes={lanes} firstByte={laneStart} window={settled} selectedBytes={wholeBytes} onSelectByte={selectByte} />
-          ) : (
-            bytes > 0 && <p className="hint">Decoding bytes&hellip;</p>
-          )}
         </section>
       </div>
 
@@ -301,6 +320,10 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange }
           stats={matching(view)?.stats ?? null}
           statsExact={windowFrames + 2 <= 2 * VIEW_BUCKETS}
           decodeError={decodeError}
+          window={settled}
+          cursor={cursor}
+          trace={trace}
+          overlayTarget={overlayTarget?.name ?? null}
         />
       </InspectorSlot>
     </>

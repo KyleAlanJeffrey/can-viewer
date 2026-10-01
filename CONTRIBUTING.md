@@ -6,8 +6,7 @@ Related: [VERSIONING.md](VERSIONING.md), [COMPATIBILITY.md](COMPATIBILITY.md), [
 
 ## Prerequisites
 
-- Rust stable, installed with `rustup`.
-- The wasm target: `rustup target add wasm32-unknown-unknown`.
+- Rust, installed with `rustup`. `rust-toolchain.toml` pins the version, with rustfmt, clippy and the wasm32-unknown-unknown target; run `rustup toolchain install` in the repository to install it. Bump the pin in its own pull request, since CI fails on any new clippy warning.
 - [wasm-pack](https://github.com/wasm-bindgen/wasm-pack). The Cloudflare build installs 0.15.0.
 - Node 22 or later, and pnpm 10.
 
@@ -27,6 +26,7 @@ pnpm dev     # start the Vite dev server
 - `pnpm demo` runs `crates/sample-gen` to write a 1M-frame candump log to `target/demo/demo.log` and the DBC to `web/public/demo/demo.dbc`, then gzips the log to `web/public/demo/demo.log.gz`. It ships gzipped because the raw log is over Cloudflare's 25 MiB per-asset limit. The generated files are git-ignored.
 - `pnpm dev` serves the app. Open the URL Vite prints and click **Try the Demo**, or drop a candump log and a DBC on the window.
 - `pnpm typecheck` (`tsc -b`) type-checks the UI. `pnpm build` type-checks and builds `web/dist`.
+- `pnpm test` runs the UI tests once with Vitest; `pnpm exec vitest` watches.
 
 For a bigger demo log, run the two demo steps by hand with a frame count:
 
@@ -42,13 +42,16 @@ Run the checks for the areas you touched before opening a pull request. From the
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cd web && npx tsc -b
+pnpm --dir web typecheck
+pnpm --dir web test
 ```
 
-- Fix any clippy warning your change introduces.
-- There are no automated UI tests yet. Check UI changes by hand in `pnpm dev`, including keyboard use and focus.
+- Fix any clippy warning your change introduces. CI fails on warnings.
+- `.github/workflows/ci.yml` runs all of these, plus the wasm and Vite builds, on every pull request.
+- UI tests are Vitest with jsdom and Testing Library. They sit next to the code as `*.test.ts` or `*.test.tsx`; shared fixtures, including a fake `CoreApi`, are in `web/src/test/fixtures.ts`, and `web/src/test/setup.ts` stubs the browser APIs jsdom lacks (canvas, `ResizeObserver`, `matchMedia`, `document.fonts`, modal dialogs). Session tests use `fake-indexeddb`. Test files are type-checked with the app, but the Vite build never imports them.
+- The tests don't draw canvases or check layout, so still check UI changes by hand in `pnpm dev`, including keyboard use and focus.
 - If you change the DBC decoder, cross-check it against cantools (`pip install cantools`, after `pnpm demo`):
 
 ```bash
@@ -154,6 +157,6 @@ Both projects build from the same repository, so each needs build watch paths in
 The app is a static site on Cloudflare Workers static assets, configured in `wrangler.jsonc`: an assets-only Worker named `freecan-studio` serving `web/dist`, with single-page-application fallback.
 
 - Cloudflare Workers Builds runs `npx wrangler deploy`, which first runs the `build.command`: `sh scripts/build-cloudflare.sh`.
-- That script installs Rust stable, the wasm target and wasm-pack 0.15.0 when they are missing, then in `web/` runs `pnpm install --frozen-lockfile` (through `npx` when pnpm isn't installed), then the `wasm`, `demo` and `build` scripts. It is safe to run locally to reproduce a deploy build.
+- That script installs the Rust toolchain from `rust-toolchain.toml`, the wasm target and wasm-pack 0.15.0 when they are missing, then in `web/` runs `pnpm install --frozen-lockfile` (through `npx` when pnpm isn't installed), then the `wasm`, `demo` and `build` scripts. It is safe to run locally to reproduce a deploy build.
 - The install fails if `web/pnpm-lock.yaml` is out of step with `web/package.json`, so commit them together.
 - `web/public/_headers` is copied into `web/dist` and sets the Content-Security-Policy and long-lived caching for `/assets/*`. Every asset must be under Cloudflare's 25 MiB per-file limit.

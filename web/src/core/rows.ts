@@ -6,11 +6,15 @@
  *  12  u32  frame index in the log
  *  16  u8   channel
  *  17  u8   flags
- *  18  u8   payload length
+ *  18  u8   payload length in the row, at most 64
+ *  20  u16  full payload length, above 64 only for reassembled J1939 transfers
  *  24  u64  bit k set when byte k differs from the previous frame of the same ID
  *  32  64B  payload
  */
 export const ROW_STRIDE = 96;
+
+/** Payload bytes a row carries; `CoreApi.frameData` fetches the rest. */
+export const ROW_PAYLOAD = 64;
 
 export class RowBatch {
   private readonly view: DataView;
@@ -51,6 +55,11 @@ export class RowBatch {
 
   len(i: number): number {
     return this.bytes[i * ROW_STRIDE + 18];
+  }
+
+  /** The frame's whole payload length; `CoreApi.frameData` fetches bytes past the 64 in `data(i)`. */
+  fullLength(i: number): number {
+    return this.view.getUint16(i * ROW_STRIDE + 20, true);
   }
 
   changed(i: number, byte: number): boolean {

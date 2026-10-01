@@ -9,26 +9,32 @@ const BAR_PITCH = 3;
 
 type Edge = 'start' | 'end' | 'move';
 
-interface Props {
+/** The bars show the ID's changed bits, or what `bars` gives per bucket across the log. */
+type BarSource = { idKey: number; bars?: undefined } | { idKey?: undefined; bars: (buckets: number) => Promise<ArrayLike<number>> };
+
+type Props = BarSource & {
   core: CoreApi;
-  idKey: number;
   logVersion: number;
   duration: number;
   window: TimeWindow;
   onChange: (w: TimeWindow) => void;
   /** Without the title, for a strip that sits inside another card. */
   compact?: boolean;
-}
+  title?: string;
+  /** What the window is called in its accessible labels. */
+  name?: string;
+  barsLabel?: string;
+};
 
 /**
  * The analysis window over the whole log. Bars show how many payload bits of the ID changed in
  * each slice of the log, so busy stretches are easy to aim at; everything below uses the window.
  */
-export function WindowStrip({ core, idKey, logVersion, duration, window: win, onChange, compact = false }: Props) {
+export function WindowStrip({ core, idKey, logVersion, duration, window: win, onChange, compact = false, title = 'Time Window', name = 'Window', bars, barsLabel = 'payload bits changed' }: Props) {
   const stripRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
-  const [activity, setActivity] = useState<Uint32Array | null>(null);
+  const [activity, setActivity] = useState<ArrayLike<number> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const drag = useRef<{ edge: Edge; x0: number; from: TimeWindow } | null>(null);
   const titleId = useId();
@@ -47,7 +53,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
   useEffect(() => {
     if (buckets < 1 || !(duration > 0)) return;
     let stale = false;
-    core.changeActivity(idKey, 0, duration, buckets).then(
+    (bars ? bars(buckets) : core.changeActivity(idKey, 0, duration, buckets)).then(
       (a) => {
         if (stale) return;
         setActivity(a);
@@ -62,7 +68,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
     return () => {
       stale = true;
     };
-  }, [core, idKey, logVersion, duration, buckets]);
+  }, [core, idKey, logVersion, duration, buckets, bars]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -85,7 +91,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
     if (!activity || activity.length === 0) return;
 
     let peak = 1;
-    for (const v of activity) peak = Math.max(peak, v);
+    for (let i = 0; i < activity.length; i++) peak = Math.max(peak, activity[i]);
     const inside = cssVar('--ochre-control');
     const outside = cssVar('--slate');
     const pitch = width / activity.length;
@@ -163,14 +169,14 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
     <div className="re-window">
       <div className="re-card-head">
         <h3 className={compact ? 're-subtitle' : 'section-title'} id={titleId}>
-          Time Window
+          {title}
         </h3>
         <div className="re-window-fields">
-          <TimeField label="Window start, seconds" value={t0} onCommit={(t) => onChange(resize('start', win, t - t0))} />
+          <TimeField label={`${name} start, seconds`} value={t0} onCommit={(t) => onChange(resize('start', win, t - t0))} />
           <span className="re-dash" aria-hidden="true">
             to
           </span>
-          <TimeField label="Window end, seconds" value={t1} onCommit={(t) => onChange(resize('end', win, t - t1))} />
+          <TimeField label={`${name} end, seconds`} value={t1} onCommit={(t) => onChange(resize('end', win, t - t1))} />
           <span className="re-window-span">{formatDuration(t1 - t0)} of {formatDuration(duration)}</span>
         </div>
       </div>
@@ -189,7 +195,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
           className="re-strip-window"
           role="slider"
           tabIndex={0}
-          aria-label="Window position"
+          aria-label={`${name} position`}
           aria-valuemin={0}
           aria-valuemax={Math.max(0, duration - (t1 - t0))}
           aria-valuenow={t0}
@@ -202,7 +208,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
           className="re-handle start"
           role="slider"
           tabIndex={0}
-          aria-label="Window start"
+          aria-label={`${name} start`}
           aria-valuemin={0}
           aria-valuemax={t1}
           aria-valuenow={t0}
@@ -215,7 +221,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
           className="re-handle end"
           role="slider"
           tabIndex={0}
-          aria-label="Window end"
+          aria-label={`${name} end`}
           aria-valuemin={t0}
           aria-valuemax={duration}
           aria-valuenow={t1}
@@ -227,7 +233,7 @@ export function WindowStrip({ core, idKey, logVersion, duration, window: win, on
       </div>
       <div className="re-strip-axis">
         <span>0 s</span>
-        {error ? <span className="re-quiet">Change activity: {error}</span> : <span>Bars: payload bits changed</span>}
+        {error ? <span className="re-quiet">Bars: {error}</span> : <span>Bars: {barsLabel}</span>}
         <span>{formatDuration(duration)}</span>
       </div>
     </div>
@@ -255,7 +261,12 @@ export function TimeField({ label, value, onCommit }: { label: string; value: nu
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === 'Enter') commit();
-          if (e.key === 'Escape') setDraft(null);
+          // Only the draft is dropped, so Escape doesn't also close a sheet around the field.
+          if (e.key === 'Escape' && draft !== null) {
+            e.preventDefault();
+            e.stopPropagation();
+            setDraft(null);
+          }
         }}
       />
       <span aria-hidden="true">s</span>

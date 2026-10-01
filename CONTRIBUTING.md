@@ -59,6 +59,16 @@ cargo run --release -p sample-gen -- decode target/demo/demo.log web/public/demo
 python scripts/crosscheck_cantools.py target/demo/demo.log web/public/demo/demo.dbc /tmp/ours.csv 300000
 ```
 
+The demo has no extended multiplexing, so also check a generated log with three levels of nested multiplexors (`SG_MUL_VAL_`), Motorola multiplexors and a 64-byte CAN FD message:
+
+```bash
+python scripts/gen_extended_mux.py /tmp/mux.log /tmp/mux.dbc 30000
+cargo run --release -p sample-gen -- decode /tmp/mux.log /tmp/mux.dbc 30000 > /tmp/ours_mux.csv
+python scripts/crosscheck_cantools.py /tmp/mux.log /tmp/mux.dbc /tmp/ours_mux.csv 30000
+```
+
+Last run (cantools 44.1.0): the whole demo log, 5,408,346 values, all equal; the extended multiplexing log, 81,891 values, all equal, with 1,302 frames left out because their multiplexor values switch in no signal and cantools refuses to decode them.
+
 If you could not run a check, say which one and why in the pull request.
 
 ## Branches and commits

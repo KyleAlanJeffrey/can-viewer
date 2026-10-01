@@ -240,7 +240,7 @@ impl Session {
         let origin = self.origin_ns();
         let total = self.row_count(key) as usize;
         let start = (start as usize).min(total);
-        let end = (start + count as usize).min(total);
+        let end = start.saturating_add(count as usize).min(total);
         let mut out = Vec::with_capacity((end - start) * ROW_STRIDE);
         for row in start..end {
             let (index, prev) = match filter {
@@ -1084,6 +1084,14 @@ mod tests {
             .iter()
             .all(|c| c["spec"]["startBit"].as_u64().unwrap() < 512));
         assert_eq!(found[0]["spec"]["startBit"], 0);
+    }
+
+    #[test]
+    fn rows_clamp_any_start_and_count() {
+        let s = session();
+        assert_eq!(s.rows(-1.0, 3, u32::MAX).len(), 3 * ROW_STRIDE);
+        assert!(s.rows(-1.0, u32::MAX, u32::MAX).is_empty());
+        assert!(s.rows(-1.0, 0, 0).is_empty());
     }
 
     #[test]

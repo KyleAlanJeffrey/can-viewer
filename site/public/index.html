@@ -107,7 +107,7 @@
           <h2 id="privacy-title">Files never leave your computer</h2>
           <p class="privacy-claim"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Files are processed on your computer and never uploaded.</p>
           <p>FreeCAN Studio is a set of static files. Its Rust core is compiled to WebAssembly and runs in a Web Worker inside your browser tab, so logs and DBC files are read and decoded on your machine. There is no server that receives them.</p>
-          <p>The app domain, <span class="mono">app.freecanstudio.com</span>, loads nothing from any third party: no analytics, no trackers, and no fonts or scripts from a CDN. Its Content-Security-Policy tells your browser to refuse anything from another origin, so the browser enforces this, not just this page.</p>
+          <p>The app domain, <span class="mono">app.freecanstudio.com</span>, loads nothing from any third party: no analytics, no trackers, and no fonts or scripts from a CDN. Its Content-Security-Policy tells your browser to refuse anything from another origin, so the browser enforces this, not just this page. This site, <span class="mono">freecanstudio.com</span>, counts visits with Cloudflare Web Analytics, which sets no cookies; the app does not.</p>
           <p>To keep your work across a reload, the app stores the open log and DBCs in your browser&rsquo;s own storage. They stay on your computer.</p>
         </div>
         <div class="check">

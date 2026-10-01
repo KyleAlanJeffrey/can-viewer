@@ -16,11 +16,13 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [x] Build installs with pnpm (the repo has `pnpm-lock.yaml`, not `package-lock.json`)
 - [x] Repo docs: CONTRIBUTING.md, VERSIONING.md, VERSION, COMPATIBILITY.md, API.md
 - [x] Check the Database view by hand: Move and its focus, New DBC, New Message, Remove with its confirmation and focus
-- [ ] Check Export DBC... in a browser (the exported text is covered by Rust tests)
+- [x] Check Export DBC... in a browser (the exported text is covered by Rust tests). Checked on the live app with the save picker: a cancelled save keeps the unexported-edits mark, and a save writes the edited text. The download fallback for browsers without `showSaveFilePicker` was not checked
 - [x] Commit to `main`, push, and open the first PR from a feature branch: https://github.com/KyleAlanJeffrey/can-viewer/pull/1
 - [x] CodeRabbit review, with every comment addressed (fixed, or answered on the PR)
-- [ ] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)
-- [ ] After the first deploy, check the demo, reload restore and the CSP on the live site
+- [x] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)
+- [x] After the first deploy, check the demo, reload restore and the CSP on the live site
+- [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
+- [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
 
 ## Landing page
@@ -33,7 +35,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] No drop zone on the landing page (a dropped file can't be handed to another site); send people to the app to open files
 - [x] Analytics, newsletter signup or video embeds stay on the landing page only; the app keeps its strict CSP in `web/public/_headers` and loads nothing from third parties
 - [x] State the privacy claim on the landing page: the app domain loads nothing from anyone else
-- [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `freecan.studio` and `freecan.app` redirecting to it, and build watch paths so a push to `site/` only rebuilds the site (owner)
+- [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `www.freecanstudio.com`, `freecan.studio` and `freecan.app` redirecting to it (none of the three answer yet), and build watch paths so a push to `site/` only rebuilds the site (owner)
 - [ ] Later: downloads, pricing and Pro license pages on the main site (a `pro/` page describing the planned app is in)
 - [ ] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land, and the CSP quoted on the home page if `web/public/_headers` changes
 
@@ -66,7 +68,9 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
 - [ ] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
 - [x] Automated UI tests: Vitest setup, with Byte Values and Pin signal covered
-- [ ] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`
+- [x] UI tests for Trace, Plot, Overview and Database, and for the worker restart after a wasm trap in `web/src/core/webCore.ts`
+- [ ] Trace: the canvas rows are not in the accessibility tree. The `grid` has `aria-rowcount` but no rows, so a screen reader hears none of the frames, and the UI tests can only check which rows are fetched and what a click pins
+- [ ] Plot: the cursor rail, drag to zoom and the minimap need layout jsdom lacks, so no UI test covers them; check them by hand
 - [x] Database view: show when a DBC was last exported
 - [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
 - [x] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)

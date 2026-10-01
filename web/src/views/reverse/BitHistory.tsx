@@ -94,9 +94,12 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
       const from = Math.max(i0, i1 - columns);
       const batch = await core.rows(summary.key, from, i1 - from + 1);
       // The row found for t1 is the first at or after it, so it may lie just past the window.
+      // Both rows are clamped to the last one, which is before a window that starts after it.
       let end = batch.length;
       while (end > 0 && batch.time(end - 1) > t1) end--;
-      const first = Math.max(0, end - columns);
+      let start = 0;
+      while (start < end && batch.time(start) < t0) start++;
+      const first = Math.max(start, end - columns);
       let long: LongBytes | null = null;
       if (longCount > 0 && end > first) {
         const values = await core.rowBytes(summary.key, batch.start + first, end - first, longFirst, longCount);
@@ -236,7 +239,7 @@ export function BitHistory({ core, summary, duration, window: win, logVersion, s
         ) : (
           <>
             <span className="mono">{firstTime !== null ? formatSeconds(firstTime) : ''}</span>
-            <span>{frames ? (shown > 0 ? `Last ${formatCount(shown)} frames of the window` : 'No frames in this window') : 'Loading frames\u2026'}</span>
+            <span>{frames ? (shown > 0 ? shown === 1 ? 'Last frame of the window' : `Last ${formatCount(shown)} frames of the window` : 'No frames in this window') : 'Loading frames\u2026'}</span>
             <span className="mono">{lastTime !== null ? formatSeconds(lastTime) : ''}</span>
           </>
         )}

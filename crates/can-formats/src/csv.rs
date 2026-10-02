@@ -11,7 +11,8 @@
 //! The time unit is the one named in the time column's header (`Time (ms)`, `time_us`).
 //! Otherwise the first row with a time other than a whole zero decides it for the whole
 //! file: a decimal point or exponent means seconds, a whole number of 17 or more digits
-//! nanoseconds (Unix time in seconds has 10), and any other whole number microseconds.
+//! nanoseconds (Unix time in seconds has 10), a whole number that reads as a date from 2000
+//! to 2100 in Unix milliseconds means milliseconds, and any other whole number microseconds.
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
@@ -417,9 +418,16 @@ fn is_whole_zero(value: &[u8]) -> bool {
     !digits.is_empty() && digits.iter().all(|&b| b == b'0')
 }
 
+/// Unix milliseconds from 2000-01-01 up to 2100-01-01.
+const UNIX_MS_RANGE: std::ops::Range<i64> = 946_684_800_000..4_102_444_800_000;
+
 /// The time unit a row's value implies, if the value is a number: seconds for a
 /// decimal point or exponent (python-can's `1e-05`), nanoseconds for a whole number too large
-/// to be microseconds of Unix time, microseconds for any other.
+/// to be microseconds of Unix time, milliseconds for a whole number that is a date in Unix
+/// milliseconds, microseconds for any other.
+///
+/// Whole Unix seconds are not told apart: they look like 16 to 68 minutes of a microsecond
+/// counter, which SavvyCAN's hardware timestamps often are.
 fn unit_by_shape(value: &[u8]) -> Option<u32> {
     let digits = value.strip_prefix(b"-").unwrap_or(value);
     if !digits.first()?.is_ascii_digit()
@@ -433,6 +441,8 @@ fn unit_by_shape(value: &[u8]) -> Option<u32> {
         9
     } else if digits.len() >= 17 {
         0
+    } else if parse_decimal(digits).is_some_and(|n| UNIX_MS_RANGE.contains(&n)) {
+        6
     } else {
         3
     })
@@ -727,6 +737,62 @@ mod tests {
             [0, 500_000, 1_500],
             "the first time other than zero decides"
         );
+    }
+
+    #[test]
+    fn whole_number_times_without_a_unit_by_magnitude() {
+        let times = |column: &[&str]| {
+            let mut input = String::from("time,id,data\n");
+            for time in column {
+                input += &format!("{time},1,00\n");
+            }
+            let (sink, stats) = parse(&input);
+            assert_eq!(stats.rejected, 0, "{input:?}: {:?}", stats.first_rejection);
+            sink.frames.iter().map(|frame| frame.0).collect::<Vec<_>>()
+        };
+        assert_eq!(times(&["0", "1500", "123456"]), [0, 1_500_000, 123_456_000]);
+        assert_eq!(
+            times(&["1727800000000", "1727800000125"]),
+            [1_727_800_000_000_000_000, 1_727_800_000_125_000_000],
+            "Unix milliseconds"
+        );
+        assert_eq!(times(&["946684800000"]), [946_684_800_000_000_000]);
+        assert_eq!(
+            times(&["946684799999"]),
+            [946_684_799_999_000],
+            "before 2000 is a microsecond counter"
+        );
+        assert_eq!(times(&["4102444799999"]), [4_102_444_799_999_000_000]);
+        assert_eq!(
+            times(&["4102444800000"]),
+            [4_102_444_800_000_000],
+            "from 2100 is a microsecond counter"
+        );
+        assert_eq!(times(&["1727800000000000"]), [1_727_800_000_000_000_000]);
+        assert_eq!(times(&["1727800000000000000"]), [1_727_800_000_000_000_000]);
+        assert_eq!(
+            times(&["1727800000"]),
+            [1_727_800_000_000],
+            "whole Unix seconds look like a microsecond counter, so stay microseconds"
+        );
+        assert_eq!(
+            times(&["0", "1727800000000", "1727800000001"]),
+            [0, 1_727_800_000_000_000_000, 1_727_800_000_001_000_000],
+            "a zero leaves the unit to the next row"
+        );
+        assert_eq!(
+            times(&["1500", "1727800000000"]),
+            [1_500_000, 1_727_800_000_000_000],
+            "only the first time other than zero decides"
+        );
+
+        let (sink, _) = parse("time_us,id,data\n1727800000000,1,00\n");
+        assert_eq!(
+            sink.frames[0].0, 1_727_800_000_000_000,
+            "the header's unit wins"
+        );
+        let (sink, _) = parse("time_ms,id,data\n1500,1,00\n");
+        assert_eq!(sink.frames[0].0, 1_500_000_000);
     }
 
     #[test]

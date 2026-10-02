@@ -1,3 +1,4 @@
+use std::collections::TryReserveError;
 use std::ops::Range;
 
 use rustc_hash::FxHashMap;
@@ -19,7 +20,7 @@ pub struct IdStats {
     pub id: u32,
     /// Union of the flags of every frame seen.
     pub flags: u8,
-    /// Store indices of every frame with this ID, in ingest order.
+    /// Store indices of every frame with this ID, in store order.
     pub frames: Vec<u32>,
     pub first_ts_ns: i64,
     pub last_ts_ns: i64,
@@ -479,11 +480,25 @@ impl FrameStore {
         if !self.out_of_order {
             return;
         }
-        self.out_of_order = false;
+        // Freed first to make room, and rebuilt whether or not the sort goes ahead: a log too
+        // big to sort still loads, in the order it came.
         self.index = IdIndex::default();
-        let mut order: Vec<u32> = (0..self.len() as u32)
-            .filter(|&i| self.flags[i as usize] & flags::REASSEMBLED == 0)
-            .collect();
+        let _ = self.sort_columns_by_time();
+        let mut index = IdIndex::default();
+        for i in 0..self.len() {
+            index.observe(i as u32, &self.frame(i));
+        }
+        self.index = index;
+    }
+
+    /// The largest allocations are tried first and leave the store as it was if they fail;
+    /// the columns rebuilt after them need less than the data they free.
+    fn sort_columns_by_time(&mut self) -> Result<(), TryReserveError> {
+        let mut order: Vec<u32> = Vec::new();
+        order.try_reserve_exact(self.len())?;
+        order.extend(
+            (0..self.len() as u32).filter(|&i| self.flags[i as usize] & flags::REASSEMBLED == 0),
+        );
         order.sort_unstable_by_key(|&i| (self.ts_ns[i as usize], i));
 
         let mut reassembler = tp::Reassembler::default();
@@ -493,8 +508,6 @@ impl FrameStore {
                 transfers.push((position, transfer));
             }
         }
-        self.reassembler = reassembler;
-        self.reassembled_frames = transfers.len();
         let rows = order.len() + transfers.len();
 
         let mut data_len = 0;
@@ -504,8 +517,13 @@ impl FrameStore {
                 Row::Reassembled(_, transfer) => transfer.data.len(),
             }
         });
-        let mut data = Vec::with_capacity(data_len);
-        let mut data_start = Vec::with_capacity(rows);
+        let mut data = Vec::new();
+        data.try_reserve_exact(data_len)?;
+        let mut data_start = Vec::new();
+        data_start.try_reserve_exact(rows)?;
+        self.out_of_order = false;
+        self.reassembler = reassembler;
+        self.reassembled_frames = transfers.len();
         for_each_row(&order, &transfers, |row| {
             data_start.push(data.len());
             match row {
@@ -522,13 +540,7 @@ impl FrameStore {
         self.id = reorder(&self.id, &order, &transfers, |_, transfer| transfer.id);
         self.channel = reorder(&self.channel, &order, &transfers, |channel, _| channel);
         self.flags = reorder(&self.flags, &order, &transfers, |_, _| flags::REASSEMBLED);
-        drop((order, transfers));
-
-        let mut index = IdIndex::default();
-        for i in 0..self.len() {
-            index.observe(i as u32, &self.frame(i));
-        }
-        self.index = index;
+        Ok(())
     }
 }
 

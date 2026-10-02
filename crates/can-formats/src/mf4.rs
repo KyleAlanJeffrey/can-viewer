@@ -231,6 +231,9 @@ struct Walk {
     /// The blocks whose links are in `starts`, so that a block read again adds none.
     linked: HashSet<u64>,
     links_left: usize,
+    /// Data lists read and the block links they list, charged each time a list is read,
+    /// since data groups may all link the same list.
+    listed_left: usize,
 }
 
 impl Walk {
@@ -244,6 +247,7 @@ impl Walk {
             starts: Vec::new(),
             linked: HashSet::new(),
             links_left: file_len / 8,
+            listed_left: file_len / 8,
         }
     }
 
@@ -260,6 +264,14 @@ impl Walk {
                 .map(|index| block.link(index))
                 .filter(|&at| at != 0),
         );
+        Ok(())
+    }
+
+    fn take_listed(&mut self, count: usize) -> Result<(), &'static str> {
+        self.listed_left = self
+            .listed_left
+            .checked_sub(count)
+            .ok_or("more data block links than the file's size allows")?;
         Ok(())
     }
 
@@ -1391,15 +1403,15 @@ fn data_blocks(file: &[u8], at: u64, walk: &mut Walk) -> Result<Vec<u64>, &'stat
         let list = Block::typed(file, list_at, b"##DL").ok_or("bad data list block")?;
         walk.found_links(&list)?;
         let next_list = list.link(0);
+        let links = list.link_count().saturating_sub(1);
         if next_list == 0 && walk.repairs.last_data_list {
+            walk.take_listed(1 + links)?;
             // Its count and links may not have been updated, so it lists the blocks up to the
             // first link that leads to no data block.
             blocks.extend(
-                (1..list.link_count())
-                    .map(|index| list.link(index))
-                    .take_while(|&at| {
-                        block_id(file, at).is_some_and(|id| DATA_BLOCKS.contains(&id))
-                    }),
+                (1..=links).map(|index| list.link(index)).take_while(|&at| {
+                    block_id(file, at).is_some_and(|id| DATA_BLOCKS.contains(&id))
+                }),
             );
         } else {
             let count = list
@@ -1407,7 +1419,8 @@ fn data_blocks(file: &[u8], at: u64, walk: &mut Walk) -> Result<Vec<u64>, &'stat
                 .get(4..8)
                 .map(|bytes| u32_at(bytes, 0) as usize)
                 .ok_or("bad data list block")?;
-            let listed = count.min(list.link_count().saturating_sub(1));
+            let listed = count.min(links);
+            walk.take_listed(1 + listed)?;
             blocks.extend(
                 (1..=listed)
                     .map(|index| list.link(index))
@@ -2407,6 +2420,51 @@ mod tests {
         let read = sink.frames.len() as u64 * RECORD_LEN as u64;
         assert!(read <= b.bytes.len() as u64 * MAX_DATA_PER_FILE_BYTE);
         assert!(sink.frames.len() < 200 * 1000);
+    }
+
+    #[test]
+    fn data_groups_that_share_a_data_list_stop_at_the_links_budget() {
+        const LINKS: usize = 1 << 15;
+        const DATA_GROUPS: usize = 600;
+        let (mut b, group) = file_of_one_group(1);
+        let dl = b.data_list(&[group.dt; LINKS]);
+        b.set_link(group.dg, 2, dl);
+        let channels = b.link(group.cg, 1);
+        let mut previous = group.dg;
+        for _ in 1..DATA_GROUPS {
+            let cg = b.channel_group(0, 0, DATA_RECORD_LEN, channels, 0);
+            let dg = b.data_group(0, cg, dl);
+            b.set_link(previous, 0, dg);
+            previous = dg;
+        }
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(
+            stats.first_rejection.map(|(_, reason)| reason),
+            Some("more data block links than the file's size allows")
+        );
+        // Each data group read gives a frame per link.
+        let groups_read = sink.frames.len() / LINKS;
+        assert!(groups_read >= 1);
+        assert!(groups_read * LINKS <= b.bytes.len() / 8);
+        assert_eq!(stats.rejected, (DATA_GROUPS - groups_read) as u64);
+
+        // Data groups that each list their own blocks fit the budget however many there are.
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let mut previous = hd;
+        for index in 0..DATA_GROUPS as u32 {
+            let group = one_group(&mut b, 1, index * 2, 2);
+            let half = DATA_RECORD_LEN as usize;
+            let first = b.data_block(&group.records[..half]);
+            let second = b.data_block(&group.records[half..]);
+            let dl = b.data_list(&[first, second]);
+            b.set_link(group.dg, 2, dl);
+            b.set_link(previous, 0, group.dg);
+            previous = group.dg;
+        }
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(sink.frames.len(), 2 * DATA_GROUPS);
     }
 
     fn unfinalize(b: &mut Builder, flags: u16, custom_flags: u16) {

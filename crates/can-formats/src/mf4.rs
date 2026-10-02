@@ -11,7 +11,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashSet};
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
@@ -49,8 +49,11 @@ const VLSD_GROUP: u16 = 0x1;
 const FINALIZED: &[u8; 8] = b"MDF     ";
 const UNFINALIZED: &[u8; 8] = b"UnFinMF ";
 /// Unfinalized flags for what this reader does not use: the cycle counters of CG, CA and SR
-/// blocks, and the data byte counts of VLSD channel groups.
-const UNFINALIZED_UNUSED: u16 = 0x01 | 0x02 | 0x20;
+/// blocks, the length of the last RD block, and the data byte counts of VLSD channel groups.
+const UNFINALIZED_UNUSED: u16 = 0x01 | 0x02 | 0x08 | 0x20;
+const UNFINALIZED_LAST_DT: u16 = 0x04;
+const UNFINALIZED_LAST_DL: u16 = 0x10;
+const UNFINALIZED_VLSD_OFFSETS: u16 = 0x40;
 
 const DATA_FRAME: &str = "can_dataframe";
 const REMOTE_FRAME: &str = "can_remoteframe";
@@ -141,14 +144,21 @@ struct Block<'a> {
 
 impl<'a> Block<'a> {
     fn at(file: &'a [u8], at: u64) -> Option<Self> {
+        let start = usize::try_from(at).ok()?;
+        let header = file.get(start..start.checked_add(BLOCK_HEADER)?)?;
+        let length = usize::try_from(u64_at(header, 8)).ok()?;
+        Self::ending_at(file, at, start.checked_add(length)?)
+    }
+
+    /// The block at `at` as though its length field said it ends at `end`.
+    fn ending_at(file: &'a [u8], at: u64, end: usize) -> Option<Self> {
         let at = usize::try_from(at).ok()?;
         let header = file.get(at..at.checked_add(BLOCK_HEADER)?)?;
         if &header[..2] != b"##" {
             return None;
         }
-        let length = usize::try_from(u64_at(header, 8)).ok()?;
         let links_len = usize::try_from(u64_at(header, 16)).ok()?.checked_mul(8)?;
-        let body = file.get(at + BLOCK_HEADER..at.checked_add(length)?)?;
+        let body = file.get(at + BLOCK_HEADER..end)?;
         if body.len() < links_len {
             return None;
         }
@@ -174,23 +184,58 @@ impl<'a> Block<'a> {
     }
 }
 
+/// The ID of the block whose header is at `at`, whether or not its length fits the file.
+fn block_id(file: &[u8], at: u64) -> Option<[u8; 4]> {
+    let at = usize::try_from(at).ok()?;
+    let header = file.get(at..at.checked_add(BLOCK_HEADER)?)?;
+    if &header[..2] != b"##" {
+        return None;
+    }
+    header[..4].try_into().ok()
+}
+
+/// What the writer of an unfinalized file left for a finalizer to fix, which the reader
+/// works around instead.
+#[derive(Clone, Copy, Default)]
+struct Repairs {
+    /// The length of the last DT block of each data group was not updated (flag 0x04).
+    last_data_block: bool,
+    /// The last DL block of each list may have a count or links not updated (flag 0x10).
+    last_data_list: bool,
+    /// The offsets of VLSD values in frame records were not written (flag 0x40).
+    vlsd_offsets: bool,
+}
+
 /// What reading a file may still cost, so that links which loop or fan out end with an
-/// error rather than a hang.
+/// error rather than a hang, and what an unfinalized file needs repaired.
 struct Walk {
     /// Data group and channel group blocks read so far.
     seen: HashSet<u64>,
     channels_left: usize,
     data_left: u64,
     frames_left: usize,
+    repairs: Repairs,
+    /// Where the blocks linked from the blocks read start, kept only to find where a last
+    /// data block whose length was not updated ends.
+    starts: BTreeSet<u64>,
 }
 
 impl Walk {
-    fn new(file_len: usize) -> Self {
+    fn new(file_len: usize, repairs: Repairs) -> Self {
         Walk {
             seen: HashSet::new(),
             channels_left: file_len / FILE_BYTES_PER_CHANNEL,
             data_left: (file_len as u64).saturating_mul(MAX_DATA_PER_FILE_BYTE),
             frames_left: file_len / FILE_BYTES_PER_FRAME,
+            repairs,
+            starts: BTreeSet::new(),
+        }
+    }
+
+    fn found_links(&mut self, block: &Block<'_>) {
+        if self.repairs.last_data_block {
+            self.starts
+                .extend((0..block.link_count()).map(|index| block.link(index)));
         }
     }
 
@@ -232,16 +277,17 @@ fn read_file<S: FrameSink>(
     stats: &mut ParseStats,
     sink: &mut S,
 ) -> Result<(), &'static str> {
-    check_identification(file)?;
+    let repairs = check_identification(file)?;
     let header = Block::typed(file, 64, b"##HD").ok_or("MF4 header block missing")?;
     let start_ns = header
         .data
         .get(..8)
         .and_then(|bytes| i64::try_from(u64_at(bytes, 0)).ok())
         .ok_or("start time out of range")?;
-    let mut walk = Walk::new(file.len());
+    let mut walk = Walk::new(file.len(), repairs);
     // The variable length data pass reads the same blocks again, so it has a budget of its own.
-    let mut variable_walk = Walk::new(file.len());
+    let mut variable_walk = Walk::new(file.len(), repairs);
+    walk.found_links(&header);
     let mut sources = Vec::new();
     let mut dg_at = header.link(0);
     while dg_at != 0 {
@@ -256,7 +302,7 @@ fn read_file<S: FrameSink>(
                 break;
             }
         };
-        match read_data_group(file, &group, &mut walk, &mut variable_walk) {
+        match read_data_group(file, &group, &mut walk) {
             Ok(Some(source)) => sources.push(source),
             Ok(None) => {}
             Err(reason) => {
@@ -269,12 +315,27 @@ fn read_file<S: FrameSink>(
     if sources.is_empty() {
         return Err("no CAN frame channel groups in the file");
     }
+    // Where an unfinished data block ends depends on every block linked, so this waits for
+    // all the data groups.
+    for source in &mut sources {
+        if repairs.last_data_block {
+            source.records.run_on_last_block(&walk.starts);
+        }
+        if source.record_id_size != 0 {
+            source.variable = variable_data(
+                &source.records,
+                source.record_id_size,
+                &source.groups,
+                &mut variable_walk,
+            );
+        }
+    }
     share_reorder_window(&mut sources);
     merge(sources, start_ns, &mut walk, stats, sink);
     Ok(())
 }
 
-fn check_identification(file: &[u8]) -> Result<(), &'static str> {
+fn check_identification(file: &[u8]) -> Result<Repairs, &'static str> {
     let finalized = file.starts_with(FINALIZED);
     if file.len() < 64 || !(finalized || file.starts_with(UNFINALIZED)) {
         return Err("not an MF4 file (no MDF signature)");
@@ -282,12 +343,20 @@ fn check_identification(file: &[u8]) -> Result<(), &'static str> {
     if file[8] != b'4' {
         return Err("MDF file version is not 4.x");
     }
-    let unfinalized_flags = u16_at(file, 60) & !UNFINALIZED_UNUSED;
-    let custom_unfinalized_flags = u16_at(file, 62);
-    if !finalized && (unfinalized_flags != 0 || custom_unfinalized_flags != 0) {
+    if finalized {
+        return Ok(Repairs::default());
+    }
+    // The custom flags (bytes 62 and 63) are the writer's own, so the file is read as it is.
+    let flags = u16_at(file, 60);
+    let repaired = UNFINALIZED_LAST_DT | UNFINALIZED_LAST_DL | UNFINALIZED_VLSD_OFFSETS;
+    if flags & !(UNFINALIZED_UNUSED | repaired) != 0 {
         return Err("unfinalized MF4 file; finalize it with the logger's tool");
     }
-    Ok(())
+    Ok(Repairs {
+        last_data_block: flags & UNFINALIZED_LAST_DT != 0,
+        last_data_list: flags & UNFINALIZED_LAST_DL != 0,
+        vlsd_offsets: flags & UNFINALIZED_VLSD_OFFSETS != 0,
+    })
 }
 
 /// Splits the reorder window between the data groups that need one, since data groups may
@@ -413,9 +482,8 @@ struct Source<'a> {
     groups: Vec<Group<'a>>,
     record_id_size: usize,
     records: BlockReader<'a>,
-    /// The variable length data of the VLSD channel groups that frames point into, by the
-    /// channel group's block offset.
-    variable: Vec<(u64, Vec<u8>)>,
+    /// The variable length data of the VLSD channel groups that frames point into.
+    variable: Vec<VariableGroup>,
     /// Records read so far in each channel group, for virtual time channels.
     indexes: Vec<usize>,
     /// Frames read and not yet delivered, earliest first, ties in record order: their time,
@@ -431,6 +499,16 @@ struct Source<'a> {
     ended: bool,
 }
 
+/// The values of a VLSD channel group, each after its length as in an SD block.
+struct VariableGroup {
+    /// The channel group's block offset.
+    at: u64,
+    data: Vec<u8>,
+    /// Where the next frame record's value starts, for records whose offsets were never
+    /// written (unfinalized flag 0x40): values are written in the order of their records.
+    next: usize,
+}
+
 struct Frame {
     ts_ns: i64,
     bus: u32,
@@ -444,17 +522,18 @@ fn read_data_group<'a>(
     file: &'a [u8],
     group: &Block<'a>,
     walk: &mut Walk,
-    variable_walk: &mut Walk,
 ) -> Result<Option<Source<'a>>, &'static str> {
     let record_id_size = usize::from(*group.data.first().ok_or("bad data group block")?);
     if !matches!(record_id_size, 0 | 1 | 2 | 4 | 8) {
         return Err("bad record ID size");
     }
+    walk.found_links(group);
     let mut groups = Vec::new();
     let mut cg_at = group.link(1);
     while cg_at != 0 {
         walk.visit(cg_at)?;
         let block = Block::typed(file, cg_at, b"##CG").ok_or("bad channel group block")?;
+        walk.found_links(&block);
         groups.push(read_channel_group(file, cg_at, &block, walk)?);
         cg_at = block.link(0);
     }
@@ -475,12 +554,7 @@ fn read_data_group<'a>(
         return Err("CAN frame records too long");
     }
     let frame_groups = groups.iter().filter(|g| g.bus.is_some() && !g.vlsd).count();
-    let blocks = data_blocks(file, group.link(2))?;
-    let variable = if record_id_size == 0 {
-        Vec::new()
-    } else {
-        variable_data(file, &blocks, record_id_size, &groups, variable_walk)
-    };
+    let blocks = data_blocks(file, group.link(2), walk)?;
     Ok(Some(Source {
         indexes: vec![0; groups.len()],
         window: BinaryHeap::new(),
@@ -491,7 +565,7 @@ fn read_data_group<'a>(
         groups,
         record_id_size,
         records: BlockReader::new(file, blocks),
-        variable,
+        variable: Vec::new(),
         ended: false,
     }))
 }
@@ -500,13 +574,12 @@ fn read_data_group<'a>(
 /// in records of its own, interleaved with the frames, so it is gathered in a pass of its
 /// own before them. Errors are left for the frames' pass to report.
 fn variable_data(
-    file: &[u8],
-    blocks: &[u64],
+    records: &BlockReader<'_>,
     record_id_size: usize,
     groups: &[Group<'_>],
     walk: &mut Walk,
-) -> Vec<(u64, Vec<u8>)> {
-    let mut values: Vec<(u64, Vec<u8>)> = Vec::new();
+) -> Vec<VariableGroup> {
+    let mut values: Vec<VariableGroup> = Vec::new();
     for group in groups {
         if let Some(BusGroup {
             data_bytes:
@@ -517,33 +590,37 @@ fn variable_data(
             ..
         }) = &group.bus
         {
-            if !values.iter().any(|(known, _)| known == at) {
-                values.push((*at, Vec::new()));
+            if !values.iter().any(|known| known.at == *at) {
+                values.push(VariableGroup {
+                    at: *at,
+                    data: Vec::new(),
+                    next: 0,
+                });
             }
         }
     }
     if values.is_empty() {
         return values;
     }
-    let pointed_at: Vec<u64> = values.iter().map(|(at, _)| *at).collect();
+    let pointed_at: Vec<u64> = values.iter().map(|group| group.at).collect();
     let wanted = |index: usize| groups[index].vlsd && pointed_at.contains(&groups[index].block_at);
     // A group stops gathering at its first value that does not fit, so that the offsets
     // of the values it holds stay right.
     let mut full = vec![false; values.len()];
-    let mut records = BlockReader::new(file, blocks.to_vec());
+    let mut records = records.unread_copy();
     while let Ok(Some((index, value))) =
         next_record(&mut records, groups, record_id_size, walk, wanted)
     {
         let Some(slot) = values
             .iter()
-            .position(|(at, _)| *at == groups[index].block_at)
+            .position(|group| group.at == groups[index].block_at)
         else {
             continue;
         };
         if full[slot] {
             continue;
         }
-        let data = &mut values[slot].1;
+        let data = &mut values[slot].data;
         if data.len() + 4 + value.len() > MAX_STREAM {
             full[slot] = true;
             if full.iter().all(|&f| f) {
@@ -609,7 +686,15 @@ impl Source<'_> {
         }
         let record_index = self.indexes[group_index];
         self.indexes[group_index] += 1;
-        match frame_of(bus, record, record_index, &self.variable, start_ns) {
+        let offsets_unwritten = walk.repairs.vlsd_offsets;
+        match frame_of(
+            bus,
+            record,
+            record_index,
+            &self.variable,
+            offsets_unwritten,
+            start_ns,
+        ) {
             Ok((ts_ns, bus, id, frame_flags, data)) => {
                 stats.frames += 1;
                 let mut frame = Frame {
@@ -636,6 +721,19 @@ impl Source<'_> {
             }
             Err(reason) => stats.reject(reason),
         }
+        if offsets_unwritten {
+            if let Some(DataBytes::Variable {
+                store: VariableStore::Group(at),
+                ..
+            }) = &bus.data_bytes
+            {
+                if let Some(group) = self.variable.iter_mut().find(|g| g.at == *at) {
+                    if let Some(value) = variable_value(&group.data, group.next as u64) {
+                        group.next += 4 + value.len();
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -649,6 +747,7 @@ fn next_record<'r>(
     walk: &mut Walk,
     wanted: impl Fn(usize) -> bool,
 ) -> Result<Option<(usize, &'r [u8])>, &'static str> {
+    let ends_open = records.ends_open();
     loop {
         let group_index = if record_id_size == 0 {
             0
@@ -666,8 +765,11 @@ fn next_record<'r>(
         };
         let group = &groups[group_index];
         let len = if group.vlsd {
-            let len_bytes = records.read(4, walk)?.ok_or(CUT_SHORT)?;
-            u32_at(len_bytes, 0) as usize
+            match records.read(4, walk)? {
+                Some(len_bytes) => u32_at(len_bytes, 0) as usize,
+                None if ends_open => return Ok(None),
+                None => return Err(CUT_SHORT),
+            }
         } else {
             group.record_len
         };
@@ -677,7 +779,7 @@ fn next_record<'r>(
         }
         return match records.read(len, walk)? {
             Some(record) => Ok(Some((group_index, record))),
-            None if record_id_size == 0 => Ok(None),
+            None if record_id_size == 0 || ends_open => Ok(None),
             None => Err(CUT_SHORT),
         };
     }
@@ -691,6 +793,10 @@ struct BlockReader<'a> {
     pos: usize,
     /// A record that continues from one block into the next, put back together.
     joined: Vec<u8>,
+    /// Where the last block ends when it is a DT block whose length was not updated
+    /// (unfinalized flag 0x04). A record cut short there ends the data quietly, as the
+    /// writer was stopped while writing it.
+    open_end: Option<usize>,
 }
 
 impl<'a> BlockReader<'a> {
@@ -701,15 +807,69 @@ impl<'a> BlockReader<'a> {
             block: Cow::Borrowed(&[]),
             pos: 0,
             joined: Vec::new(),
+            open_end: None,
         }
+    }
+
+    /// A reader of the same blocks from the start, for a reader that has not read yet.
+    fn unread_copy(&self) -> Self {
+        BlockReader {
+            file: self.file,
+            blocks: self.blocks.clone(),
+            block: Cow::Borrowed(&[]),
+            pos: 0,
+            joined: Vec::new(),
+            open_end: self.open_end,
+        }
+    }
+
+    /// Has a last DT block run on to the next block in `starts`, or to the end of the
+    /// file, rather than end where its length field says.
+    fn run_on_last_block(&mut self, starts: &BTreeSet<u64>) {
+        let Some(&at) = self.blocks.as_slice().last() else {
+            return;
+        };
+        if block_id(self.file, at) != Some(*b"##DT") {
+            return;
+        }
+        let Ok(start) = usize::try_from(at) else {
+            return;
+        };
+        let limit = starts
+            .range(at + 1..)
+            .next()
+            .and_then(|&next| usize::try_from(next).ok())
+            .map_or(self.file.len(), |next| next.min(self.file.len()));
+        let stated_end = usize::try_from(u64_at(self.file, start + 8))
+            .ok()
+            .and_then(|length| start.checked_add(length));
+        // A length that reaches the next block, but for padding, or that ends where another
+        // block starts was updated after all.
+        let stated_is_right = stated_end.is_some_and(|end| {
+            let aligned = end.next_multiple_of(8);
+            end <= limit && (aligned >= limit || block_id(self.file, aligned as u64).is_some())
+        });
+        self.open_end = Some(match stated_end {
+            Some(end) if stated_is_right => end,
+            _ => limit,
+        });
+    }
+
+    fn ends_open(&self) -> bool {
+        self.open_end.is_some()
     }
 
     /// Moves to the next block that is not empty, if there is one.
     fn next_block(&mut self, walk: &mut Walk) -> Result<bool, &'static str> {
         self.block = Cow::Borrowed(&[]);
         self.pos = 0;
-        for at in self.blocks.by_ref() {
-            let block = block_payload(self.file, at, walk)?;
+        while let Some(at) = self.blocks.next() {
+            let block = match self.open_end {
+                Some(end) if self.blocks.as_slice().is_empty() => {
+                    open_block_payload(self.file, at, end, walk)?
+                }
+                _ => block_payload(self.file, at, walk)?,
+            };
             if !block.is_empty() {
                 self.block = block;
                 return Ok(true);
@@ -737,7 +897,11 @@ impl<'a> BlockReader<'a> {
         self.joined.clear();
         while self.joined.len() < len {
             if self.pos == self.block.len() && !self.next_block(walk)? {
-                return Err(CUT_SHORT);
+                return if self.ends_open() {
+                    Ok(None)
+                } else {
+                    Err(CUT_SHORT)
+                };
             }
             let take = (len - self.joined.len()).min(self.block.len() - self.pos);
             self.joined
@@ -751,7 +915,11 @@ impl<'a> BlockReader<'a> {
         let mut left = len;
         while left > 0 {
             if self.pos == self.block.len() && !self.next_block(walk)? {
-                return Err(CUT_SHORT);
+                return if self.ends_open() {
+                    Ok(())
+                } else {
+                    Err(CUT_SHORT)
+                };
             }
             let take = left.min(self.block.len() - self.pos);
             self.pos += take;
@@ -808,6 +976,7 @@ fn read_channels(
         if block.data.len() < 16 {
             return Err("bad channel block");
         }
+        walk.found_links(&block);
         let name = Block::typed(file, block.link(2), b"##TX")
             .map(|text| block_text(&text))
             .unwrap_or_default();
@@ -953,7 +1122,8 @@ fn frame_of<'r>(
     bus: &'r BusGroup<'_>,
     record: &'r [u8],
     index: usize,
-    variable_groups: &'r [(u64, Vec<u8>)],
+    variable_groups: &'r [VariableGroup],
+    offsets_unwritten: bool,
     start_ns: i64,
 ) -> Result<(i64, u32, u32, u8, &'r [u8]), &'static str> {
     let seconds = match &bus.time {
@@ -1014,13 +1184,19 @@ fn frame_of<'r>(
                 ..*field
             };
             let offset = field_bits(record, &offset_field).ok_or("bad data offset")?;
-            let store: &[u8] = match store {
-                VariableStore::Block(block) => block,
-                VariableStore::Group(at) => variable_groups
-                    .iter()
-                    .find(|(group_at, _)| group_at == at)
-                    .map(|(_, data)| data.as_slice())
-                    .ok_or("data bytes refer to a missing group")?,
+            let (store, offset): (&[u8], u64) = match store {
+                VariableStore::Block(block) => (block, offset),
+                VariableStore::Group(at) => {
+                    let group = variable_groups
+                        .iter()
+                        .find(|group| group.at == *at)
+                        .ok_or("data bytes refer to a missing group")?;
+                    if offsets_unwritten {
+                        (&group.data, group.next as u64)
+                    } else {
+                        (&group.data, offset)
+                    }
+                }
             };
             variable_value(store, offset).ok_or("data offset outside the data")?
         }
@@ -1142,13 +1318,17 @@ fn field_bytes<'r>(record: &'r [u8], field: &Field) -> Option<&'r [u8]> {
 
 /// The data blocks a data link leads to, in order: the block itself, or the blocks of a
 /// list (or of the list a header list leads to).
-fn data_blocks(file: &[u8], at: u64) -> Result<Vec<u64>, &'static str> {
+fn data_blocks(file: &[u8], at: u64, walk: &mut Walk) -> Result<Vec<u64>, &'static str> {
     if at == 0 {
         return Ok(Vec::new());
     }
-    let block = Block::at(file, at).ok_or("bad data block")?;
-    let mut list_at = match &block.id {
-        b"##HL" => block.link(0),
+    // Only the header is checked here: the length of an unfinished last DT block may not fit.
+    let mut list_at = match &block_id(file, at).ok_or("bad data block")? {
+        b"##HL" => {
+            let header_list = Block::at(file, at).ok_or("bad data block")?;
+            walk.found_links(&header_list);
+            header_list.link(0)
+        }
         b"##DL" => at,
         _ => return Ok(vec![at]),
     };
@@ -1159,18 +1339,30 @@ fn data_blocks(file: &[u8], at: u64) -> Result<Vec<u64>, &'static str> {
             return Err(LINK_REPEATS);
         }
         let list = Block::typed(file, list_at, b"##DL").ok_or("bad data list block")?;
-        let count = list
-            .data
-            .get(4..8)
-            .map(|bytes| u32_at(bytes, 0) as usize)
-            .ok_or("bad data list block")?;
-        let listed = count.min(list.link_count().saturating_sub(1));
-        blocks.extend(
-            (1..=listed)
-                .map(|index| list.link(index))
-                .filter(|&at| at != 0),
-        );
-        list_at = list.link(0);
+        walk.found_links(&list);
+        let next_list = list.link(0);
+        if next_list == 0 && walk.repairs.last_data_list {
+            // Its count and links may not have been updated, so it lists the blocks up to the
+            // first link that leads nowhere.
+            blocks.extend(
+                (1..list.link_count())
+                    .map(|index| list.link(index))
+                    .take_while(|&at| block_id(file, at).is_some()),
+            );
+        } else {
+            let count = list
+                .data
+                .get(4..8)
+                .map(|bytes| u32_at(bytes, 0) as usize)
+                .ok_or("bad data list block")?;
+            let listed = count.min(list.link_count().saturating_sub(1));
+            blocks.extend(
+                (1..=listed)
+                    .map(|index| list.link(index))
+                    .filter(|&at| at != 0),
+            );
+        }
+        list_at = next_list;
     }
     Ok(blocks)
 }
@@ -1193,6 +1385,18 @@ fn block_payload<'a>(
     }
 }
 
+/// The bytes of a DT block that runs to `end`, whatever its length field says.
+fn open_block_payload<'a>(
+    file: &'a [u8],
+    at: u64,
+    end: usize,
+    walk: &mut Walk,
+) -> Result<Cow<'a, [u8]>, &'static str> {
+    let block = Block::ending_at(file, at, end).ok_or("bad data block")?;
+    walk.take_data(block.data.len())?;
+    Ok(Cow::Borrowed(block.data))
+}
+
 /// The bytes a data link leads to, joined into one, for variable length data whose offsets
 /// count from the start of the first block.
 fn joined_data<'a>(
@@ -1200,7 +1404,7 @@ fn joined_data<'a>(
     at: u64,
     walk: &mut Walk,
 ) -> Result<Cow<'a, [u8]>, &'static str> {
-    let blocks = data_blocks(file, at)?;
+    let blocks = data_blocks(file, at, walk)?;
     if let [only] = blocks[..] {
         return block_payload(file, only, walk);
     }
@@ -1882,9 +2086,9 @@ mod tests {
         let dg = b.data_group(1, data_cg, dt);
         b.set_link(hd, 0, dg);
 
-        let mut walk = Walk::new(b.bytes.len());
+        let mut walk = walk_of(&b);
         let group = Block::typed(&b.bytes, dg, b"##DG").unwrap();
-        let mut source = read_data_group(&b.bytes, &group, &mut walk, &mut walk_of(&b))
+        let mut source = read_data_group(&b.bytes, &group, &mut walk)
             .unwrap()
             .unwrap();
         let mut stats = ParseStats::default();
@@ -1902,7 +2106,7 @@ mod tests {
     }
 
     fn walk_of(b: &Builder) -> Walk {
-        Walk::new(b.bytes.len())
+        Walk::new(b.bytes.len(), Repairs::default())
     }
 
     #[test]
@@ -1938,12 +2142,11 @@ mod tests {
         b.set_link(hd, 0, next_dg);
 
         let mut walk = walk_of(&b);
-        let mut variable_walk = walk_of(&b);
         let mut sources: Vec<Source<'_>> = groups
             .iter()
             .map(|&dg| {
                 let group = Block::typed(&b.bytes, dg, b"##DG").unwrap();
-                read_data_group(&b.bytes, &group, &mut walk, &mut variable_walk)
+                read_data_group(&b.bytes, &group, &mut walk)
                     .unwrap()
                     .unwrap()
             })
@@ -2154,16 +2357,38 @@ mod tests {
         assert!(sink.frames.len() < 200 * 1000);
     }
 
-    #[test]
-    fn unfinalized_files_are_read_when_the_data_is_usable() {
-        let (mut b, _) = file_of_one_group(2);
+    fn unfinalize(b: &mut Builder, flags: u16, custom_flags: u16) {
         b.bytes[..8].copy_from_slice(UNFINALIZED);
-        b.bytes[60..62].copy_from_slice(&0x0001u16.to_le_bytes());
-        let (sink, stats) = parse(&b.bytes);
-        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
-        assert_eq!(times(&sink), [0, 1]);
+        b.bytes[60..62].copy_from_slice(&flags.to_le_bytes());
+        b.bytes[62..64].copy_from_slice(&custom_flags.to_le_bytes());
+    }
 
-        b.bytes[60..62].copy_from_slice(&0x0004u16.to_le_bytes());
+    fn set_length(b: &mut Builder, block_at: u64, length: u64) {
+        let at = block_at as usize + 8;
+        b.bytes[at..at + 8].copy_from_slice(&length.to_le_bytes());
+    }
+
+    fn set_count(b: &mut Builder, list_at: u64, links: usize, count: u32) {
+        let at = list_at as usize + 24 + links * 8 + 4;
+        b.bytes[at..at + 4].copy_from_slice(&count.to_le_bytes());
+    }
+
+    #[test]
+    fn unfinalized_files_are_read_unless_a_flag_is_unknown() {
+        let (mut b, _) = file_of_one_group(2);
+        for (flags, custom_flags) in [
+            (0, 0),
+            (0x01 | 0x02 | 0x08 | 0x20, 0),
+            (0x04 | 0x10 | 0x40, 0),
+            (0, 0xFFFF),
+        ] {
+            unfinalize(&mut b, flags, custom_flags);
+            let (sink, stats) = parse(&b.bytes);
+            assert_eq!(stats.rejected, 0, "{flags:#x} {:?}", stats.first_rejection);
+            assert_eq!(times(&sink), [0, 1], "{flags:#x} {custom_flags:#x}");
+        }
+
+        unfinalize(&mut b, 0x80, 0);
         let (sink, stats) = parse(&b.bytes);
         assert!(sink.frames.is_empty());
         assert_eq!(
@@ -2173,6 +2398,146 @@ mod tests {
                 "unfinalized MF4 file; finalize it with the logger's tool"
             ))
         );
+
+        b.bytes[..8].copy_from_slice(FINALIZED);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "a finalized file's flags mean nothing");
+        assert_eq!(times(&sink), [0, 1]);
+    }
+
+    #[test]
+    fn an_unfinished_last_data_block_runs_to_the_next_block() {
+        let (mut b, group) = file_of_one_group(3);
+        set_length(&mut b, group.dt, 24);
+        unfinalize(&mut b, 0, 0);
+        let (sink, _) = parse(&b.bytes);
+        assert!(
+            sink.frames.is_empty(),
+            "the length field is used without 0x04"
+        );
+
+        unfinalize(&mut b, 0x04, 0);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2]);
+
+        set_length(&mut b, group.dt, 24 + u64::from(DATA_RECORD_LEN) + 5);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2]);
+
+        // The last block of a list, followed by the list itself, holding a record the writer
+        // was stopped in the middle of.
+        let (first, rest) = group.records.split_at(DATA_RECORD_LEN as usize);
+        let first = b.data_block(first);
+        let mut unfinished = rest.to_vec();
+        unfinished.extend_from_slice(&group.records[..3]);
+        let last = b.data_block(&unfinished);
+        set_length(&mut b, last, 24);
+        let dl = b.data_list(&[first, last]);
+        b.set_link(group.dg, 2, dl);
+        unfinalize(&mut b, 0, 0);
+        let (sink, _) = parse(&b.bytes);
+        assert_eq!(times(&sink), [0]);
+        unfinalize(&mut b, 0x04, 0);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2]);
+    }
+
+    #[test]
+    fn an_unfinished_data_block_at_the_end_of_the_file_runs_to_it() {
+        let (mut b, group) = file_of_one_group(3);
+        let mut records = group.records.clone();
+        records.extend_from_slice(&group.records[..10]);
+        let dt = b.data_block(&records);
+        b.set_link(group.dg, 2, dt);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(times(&sink), [0, 1, 2]);
+        assert_eq!(stats.first_rejection, Some((4, CUT_SHORT)));
+
+        unfinalize(&mut b, 0x04, 0);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2]);
+
+        set_length(&mut b, dt, u64::MAX);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2]);
+    }
+
+    #[test]
+    fn the_last_data_list_of_an_unfinalized_file_reads_the_links_it_has() {
+        let (mut b, group) = file_of_one_group(4);
+        let (first, second) = group.records.split_at(2 * DATA_RECORD_LEN as usize);
+        let first = b.data_block(first);
+        let second = b.data_block(second);
+        // The count was not updated after the first block, and a link is left for a block
+        // not yet written.
+        let dl = b.data_list(&[first, second, 0]);
+        set_count(&mut b, dl, 4, 1);
+        b.set_link(group.dg, 2, dl);
+        unfinalize(&mut b, 0, 0);
+        let (sink, _) = parse(&b.bytes);
+        assert_eq!(times(&sink), [0, 1]);
+        unfinalize(&mut b, 0x10, 0);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2, 3]);
+
+        // A count past the links written, which end at one past the end of the file.
+        let dl = b.data_list(&[first, second, 1 << 40, first]);
+        b.set_link(group.dg, 2, dl);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2, 3]);
+
+        // A list before the last keeps to its count.
+        let last = b.data_list(&[second, 0]);
+        set_count(&mut b, last, 3, 0);
+        let earlier = b.data_list(&[first, first]);
+        set_count(&mut b, earlier, 3, 1);
+        b.set_link(earlier, 0, last);
+        b.set_link(group.dg, 2, earlier);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(times(&sink), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn unwritten_vlsd_offsets_follow_the_order_of_the_values() {
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let vlsd_cg = b.channel_group(9, VLSD_GROUP, 0, 0, 0);
+        let structure = b.structure("CAN_DataFrame", &data_frame_members(vlsd_cg));
+        let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+        let data_cg = b.channel_group(1, 0, DATA_RECORD_LEN, time, vlsd_cg);
+        let values: [&[u8]; 3] = [&[1, 2, 3], &[4, 5], &[6]];
+        let mut records = Vec::new();
+        for (index, value) in values.iter().enumerate() {
+            records.push(9);
+            records.extend(variable_records(&[value]));
+            records.push(1);
+            let len = value.len() as u8;
+            let t = index as f64 / 1000.0;
+            records.extend(data_record(t, 1, 0x100, false, (len, len), 0, [false; 4]));
+        }
+        let dt = b.data_block(&records);
+        let dg = b.data_group(1, data_cg, dt);
+        b.set_link(hd, 0, dg);
+        let data = |sink: &VecSink| -> Vec<Vec<u8>> {
+            sink.frames.iter().map(|frame| frame.4.clone()).collect()
+        };
+
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(data(&sink), [vec![1, 2, 3], vec![1, 2], vec![1]]);
+
+        unfinalize(&mut b, 0x40, 0);
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(data(&sink), [vec![1, 2, 3], vec![4, 5], vec![6]]);
     }
 
     #[test]

@@ -71,7 +71,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] J1939 transport protocol (TP.CM / TP.DT) reassembly, so multi-packet messages such as DM1 decode in full
 - [x] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
 - [ ] Check BLF and MF4 import against files from real loggers and tools (the tests use synthetic files; BLF matches python-can on its own files) (owner, with your own logs)
-- [ ] MF4: repair unfinalized files (UnFinMF) whose last DT block or DL list was never updated; today the tail may be lost, and flags other than 0x01, 0x02 and 0x20 are rejected. Next up (started, then paused; nothing written yet). Plan: 0x04 runs the last DT block to the end of the file, cut to whole records; 0x10 reads only the valid links of the last DL; don't rely on cycle counters or VLSD byte counts; read files with custom flags as best we can; keep the visited sets and budgets
+- [x] MF4: repair unfinalized files (UnFinMF) whose last DT block or DL list was never updated; today the tail may be lost, and flags other than 0x01, 0x02 and 0x20 are rejected
 - [ ] MF4: an unsorted data group with records more than 65,536 frames out of order (a window shared by all such data groups) keeps the file's order (after the unfinalized repair, as both change `mf4.rs`)
 - [ ] BLF: CAN_FD_ERROR_64 error frames drop the corrupted frame's original ID, direction and extended data; the error-frame representation has nowhere to keep the ID
 - [ ] CSV: a 13-digit whole-number time (Unix milliseconds) is read as microseconds

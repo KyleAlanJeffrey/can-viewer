@@ -25,7 +25,8 @@ pub mod flags {
     pub const ERROR: u8 = 1 << 4;
     pub const TX: u8 = 1 << 5;
     /// Not from the log: one J1939 parameter group reassembled from its transport protocol
-    /// packets ([`crate::tp`]), which stay in the log too.
+    /// packets ([`crate::tp`]), which stay in the log too. Only the store sets it; a frame
+    /// pushed with it is dropped when the store is sorted by time.
     pub const REASSEMBLED: u8 = 1 << 6;
 }
 

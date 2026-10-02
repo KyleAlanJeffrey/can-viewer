@@ -44,7 +44,7 @@ fn main() -> ExitCode {
             Err(_) => Err(format!("bad frame count {n:?}")),
         },
         ["convert", input, output] => {
-            load_store(input).and_then(|(store, _, _)| export::convert(&store, output))
+            load_store(input, true).and_then(|(store, _, _)| export::convert(&store, output))
         }
         _ => Err(
             "usage: sample-gen generate <out.log> <out.dbc> [frames] | bench <file> | \
@@ -61,7 +61,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn load_store(path: &str) -> Result<(FrameStore, AnyParser, f64), String> {
+/// `sort` puts the frames in time order, as the app does; without it they stay in log order.
+fn load_store(path: &str, sort: bool) -> Result<(FrameStore, AnyParser, f64), String> {
     let mut file = File::open(path).map_err(|e| format!("{path}: {e}"))?;
     let size = file.metadata().map_err(|e| e.to_string())?.len();
     let mut store = FrameStore::new();
@@ -81,11 +82,14 @@ fn load_store(path: &str) -> Result<(FrameStore, AnyParser, f64), String> {
     }
     let mut parser = parser.unwrap_or_else(|| AnyParser::new(Format::detect(path, &[])));
     parser.finish(&mut store);
+    if sort {
+        store.sort_by_time();
+    }
     Ok((store, parser, started.elapsed().as_secs_f64()))
 }
 
 fn bench(path: &str) -> Result<(), String> {
-    let (store, parser, secs) = load_store(path)?;
+    let (store, parser, secs) = load_store(path, true)?;
     let stats = parser.stats();
     let mb = stats.bytes as f64 / 1e6;
     println!(
@@ -105,7 +109,7 @@ fn bench(path: &str) -> Result<(), String> {
 fn decode(log: &str, dbc: &str, limit: usize) -> Result<(), String> {
     let db = Database::from_dbc_bytes(&fs::read(dbc).map_err(|e| format!("{dbc}: {e}"))?)
         .map_err(|e| e.to_string())?;
-    let (store, _, _) = load_store(log)?;
+    let (store, _, _) = load_store(log, false)?;
     let mut out = BufWriter::new(io::stdout().lock());
     let write_err = |e: io::Error| e.to_string();
     writeln!(out, "frame,message,signal,value").map_err(write_err)?;
@@ -444,11 +448,11 @@ mod tests {
             std::env::temp_dir().join(format!("sample-gen-{}-{extension}", std::process::id()));
         let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
         generate(&path("demo.log"), &path("demo.dbc"), 20_000).unwrap();
-        let (original, _, _) = load_store(&path("demo.log")).unwrap();
+        let (original, _, _) = load_store(&path("demo.log"), true).unwrap();
         let converted = path(&format!("demo.{extension}"));
         export::convert(&original, &converted).unwrap();
 
-        let (copy, parser, _) = load_store(&converted).unwrap();
+        let (copy, parser, _) = load_store(&converted, true).unwrap();
         assert_eq!(parser.format().name(), extension);
         let stats = parser.stats();
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
@@ -484,5 +488,27 @@ mod tests {
     #[test]
     fn mf4_round_trips_the_demo() {
         round_trip("mf4", ["can1", "can2"]);
+    }
+
+    #[test]
+    fn only_a_sorted_load_puts_frames_in_time_order() {
+        // decode numbers frames by log line for the cantools cross-check, so it must not sort.
+        let path =
+            std::env::temp_dir().join(format!("sample-gen-{}-order.log", std::process::id()));
+        fs::write(
+            &path,
+            "(2.0) can0 0C9#00\n(1.0) can0 1F5#00\n(3.0) can0 2A0#00\n",
+        )
+        .unwrap();
+        let path = path.to_str().unwrap();
+        let ids = |sort| {
+            let (store, _, _) = load_store(path, sort).unwrap();
+            (0..store.len())
+                .map(|i| store.frame(i).id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(false), [0x0C9, 0x1F5, 0x2A0]);
+        assert_eq!(ids(true), [0x1F5, 0x0C9, 0x2A0]);
+        fs::remove_file(path).unwrap();
     }
 }

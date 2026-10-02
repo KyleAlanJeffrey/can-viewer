@@ -41,7 +41,7 @@ const MAX_BUS_RECORD: usize = 1 << 16;
 /// have a few dozen.
 const MAX_KEPT_CHANNELS: usize = 1 << 16;
 /// Frames read ahead of their turn, shared by the data groups with several CAN frame
-/// channel groups.
+/// channel groups. Frames further out of order reach the sink out of order, for it to sort.
 const REORDER_WINDOW: usize = 1 << 16;
 
 const VLSD_GROUP: u16 = 0x1;
@@ -2227,6 +2227,57 @@ mod tests {
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(sink.frames.len(), 4 * count as usize);
         assert!(sink.frames.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    }
+
+    #[test]
+    fn records_further_out_of_order_than_the_window_are_left_for_the_store_to_sort() {
+        // Data frames from 1 ms, then a remote frame at 0 (the first of its virtual master).
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let ms = b.linear(0.0, 0.001);
+        let sd = b.variable_data(&[&[1, 2]]);
+        let count = REORDER_WINDOW as u32 + 10;
+        let mut records = Vec::new();
+        for i in 0..count {
+            records.push(1);
+            let t = f64::from(i + 1) / 1000.0;
+            records.extend(data_record(t, 1, 0x100, false, (2, 2), 0, [false; 4]));
+        }
+        records.push(2);
+        records.extend_from_slice(&0x7FFu16.to_le_bytes());
+        let data_structure = b.structure("CAN_DataFrame", &data_frame_members(sd));
+        let data_time = b.channel(&master("t", FLOAT, 0, 64), data_structure, 0);
+        let remote_members = [member("CAN_RemoteFrame.ID", UNSIGNED, 0, 16)];
+        let remote_structure = b.structure("CAN_RemoteFrame", &remote_members);
+        let remote_time = b.channel(
+            &Member {
+                cn_type: 3,
+                conversion: ms,
+                ..member("t", UNSIGNED, 0, 0)
+            },
+            remote_structure,
+            0,
+        );
+        let remote_cg = b.channel_group(2, 0, 2, remote_time, 0);
+        let data_cg = b.channel_group(1, 0, DATA_RECORD_LEN, data_time, remote_cg);
+        let dt = b.data_block(&records);
+        let dg = b.data_group(1, data_cg, dt);
+        b.set_link(hd, 0, dg);
+
+        let (sink, stats) = parse(&b.bytes);
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        assert_eq!(sink.frames.len(), count as usize + 1);
+        let remote = sink.frames.iter().position(|frame| frame.0 == 0).unwrap();
+        assert!(remote > 0, "frames were delivered before it was read");
+
+        let mut store = can_core::FrameStore::new();
+        let mut parser = Mf4Parser::new();
+        parser.push(&b.bytes, &mut store);
+        parser.finish(&mut store);
+        store.sort_by_time();
+        assert_eq!(store.len(), count as usize + 1);
+        assert_eq!((store.frame(0).id, store.frame(0).ts_ns), (0x7FF, 0));
+        assert!((1..store.len()).all(|i| store.frame(i - 1).ts_ns <= store.frame(i).ts_ns));
     }
 
     #[test]

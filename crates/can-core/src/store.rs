@@ -1,3 +1,4 @@
+use std::collections::TryReserveError;
 use std::ops::Range;
 
 use rustc_hash::FxHashMap;
@@ -19,7 +20,7 @@ pub struct IdStats {
     pub id: u32,
     /// Union of the flags of every frame seen.
     pub flags: u8,
-    /// Store indices of every frame with this ID, in ingest order.
+    /// Store indices of every frame with this ID, in store order.
     pub frames: Vec<u32>,
     pub first_ts_ns: i64,
     pub last_ts_ns: i64,
@@ -156,12 +157,85 @@ pub struct FrameStore {
     data_start: Vec<usize>,
     data: Vec<u8>,
     channels: Vec<String>,
-    by_key: FxHashMap<IdKey, usize>,
-    ids: Vec<IdStats>,
-    last_lookup: Option<(IdKey, usize)>,
+    index: IdIndex,
     error_frames: usize,
     reassembler: tp::Reassembler,
     reassembled_frames: usize,
+    /// A frame came earlier than one before it, so [`FrameStore::sort_by_time`] has work.
+    out_of_order: bool,
+}
+
+/// The [`IdStats`] of every ID, in order of first appearance.
+#[derive(Debug, Default)]
+struct IdIndex {
+    by_key: FxHashMap<IdKey, usize>,
+    ids: Vec<IdStats>,
+    last_lookup: Option<(IdKey, usize)>,
+}
+
+impl IdIndex {
+    fn observe(&mut self, index: u32, frame: &FrameRef<'_>) {
+        let stats = self.stats_index(id_key(frame.channel, frame.id), frame);
+        self.ids[stats].observe(index, frame);
+    }
+
+    fn stats_index(&mut self, key: IdKey, frame: &FrameRef<'_>) -> usize {
+        if let Some((last_key, i)) = self.last_lookup {
+            if last_key == key {
+                return i;
+            }
+        }
+        let next = self.ids.len();
+        let i = *self.by_key.entry(key).or_insert(next);
+        if i == next {
+            self.ids
+                .push(IdStats::new(frame.channel, frame.id, frame.ts_ns));
+        }
+        self.last_lookup = Some((key, i));
+        i
+    }
+}
+
+/// A frame of the store as [`FrameStore::sort_by_time`] reorders it.
+enum Row<'a> {
+    /// The frame at this index before the sort.
+    Logged(usize),
+    /// A transfer completed by the logged frame at this index.
+    Reassembled(usize, &'a tp::Transfer),
+}
+
+/// Calls `visit` for each frame in time order: the logged frames as `order` lists them, each
+/// followed by the transfer it completed, if any, as [`FrameSink::push`] stores them.
+fn for_each_row(
+    order: &[u32],
+    transfers: &[(usize, tp::Transfer)],
+    mut visit: impl FnMut(Row<'_>),
+) {
+    let mut transfers = transfers.iter().peekable();
+    for (position, &index) in order.iter().enumerate() {
+        visit(Row::Logged(index as usize));
+        if let Some((_, transfer)) = transfers.next_if(|(at, _)| *at == position) {
+            visit(Row::Reassembled(index as usize, transfer));
+        }
+    }
+}
+
+/// `column` in the order [`for_each_row`] visits, a transfer taking `reassembled` of the value
+/// of the frame that completed it.
+fn reorder<T: Copy>(
+    column: &[T],
+    order: &[u32],
+    transfers: &[(usize, tp::Transfer)],
+    reassembled: impl Fn(T, &tp::Transfer) -> T,
+) -> Vec<T> {
+    let mut reordered = Vec::with_capacity(order.len() + transfers.len());
+    for_each_row(order, transfers, |row| {
+        reordered.push(match row {
+            Row::Logged(i) => column[i],
+            Row::Reassembled(i, transfer) => reassembled(column[i], transfer),
+        });
+    });
+    reordered
 }
 
 impl FrameStore {
@@ -244,12 +318,12 @@ impl FrameStore {
     /// Every distinct ID, in order of first appearance.
     #[must_use]
     pub fn ids(&self) -> &[IdStats] {
-        &self.ids
+        &self.index.ids
     }
 
     #[must_use]
     pub fn id_stats(&self, key: IdKey) -> Option<&IdStats> {
-        self.by_key.get(&key).map(|&i| &self.ids[i])
+        self.index.by_key.get(&key).map(|&i| &self.index.ids[i])
     }
 
     /// Index of the previous frame with the same channel and ID as frame `index`.
@@ -262,8 +336,8 @@ impl FrameStore {
 
     /// Index of the first frame at or after `ts_ns`, or `len()` if there is none.
     ///
-    /// Time lookups binary-search on the assumption that frames are in time order, as loggers
-    /// write them. Slightly out-of-order timestamps only shift the answer by those frames.
+    /// Time lookups binary-search, so they need the frames in time order: call
+    /// [`FrameStore::sort_by_time`] once the log is read.
     #[must_use]
     pub fn first_at_or_after(&self, ts_ns: i64) -> usize {
         self.ts_ns.partition_point(|&t| t < ts_ns)
@@ -385,6 +459,7 @@ impl FrameStore {
             + self.data_start.capacity() * size_of::<usize>()
             + self.data.capacity()
             + self
+                .index
                 .ids
                 .iter()
                 .map(|s| {
@@ -394,20 +469,78 @@ impl FrameStore {
                 .sum::<usize>()
     }
 
-    fn stats_index(&mut self, key: IdKey, frame: &FrameRef<'_>) -> usize {
-        if let Some((last_key, i)) = self.last_lookup {
-            if last_key == key {
-                return i;
+    /// Puts the frames in time order if any came earlier than a frame before them, keeping
+    /// the order of frames with the same time, and redoes what was worked out in the order
+    /// they came: the per-ID statistics and the J1939 transfers. Call it once the log is read.
+    ///
+    /// The columns are rebuilt in turn, so beyond the store this needs 4 bytes per frame, the
+    /// J1939 transfers, and the data with its offsets or one other column at a time. A store
+    /// already in order costs nothing.
+    pub fn sort_by_time(&mut self) {
+        if !self.out_of_order {
+            return;
+        }
+        // Freed first to make room, and rebuilt whether or not the sort goes ahead: a log too
+        // big to sort still loads, in the order it came.
+        self.index = IdIndex::default();
+        let _ = self.sort_columns_by_time();
+        let mut index = IdIndex::default();
+        for i in 0..self.len() {
+            index.observe(i as u32, &self.frame(i));
+        }
+        self.index = index;
+    }
+
+    /// The largest allocations are tried first and leave the store as it was if they fail;
+    /// the columns rebuilt after them need less than the data they free.
+    fn sort_columns_by_time(&mut self) -> Result<(), TryReserveError> {
+        let mut order: Vec<u32> = Vec::new();
+        order.try_reserve_exact(self.len())?;
+        order.extend(
+            (0..self.len() as u32).filter(|&i| self.flags[i as usize] & flags::REASSEMBLED == 0),
+        );
+        order.sort_unstable_by_key(|&i| (self.ts_ns[i as usize], i));
+
+        let mut reassembler = tp::Reassembler::default();
+        let mut transfers = Vec::new();
+        for (position, &i) in order.iter().enumerate() {
+            if let Some(transfer) = reassembler.push(&self.frame(i as usize)) {
+                transfers.push((position, transfer));
             }
         }
-        let next = self.ids.len();
-        let i = *self.by_key.entry(key).or_insert(next);
-        if i == next {
-            self.ids
-                .push(IdStats::new(frame.channel, frame.id, frame.ts_ns));
-        }
-        self.last_lookup = Some((key, i));
-        i
+        let rows = order.len() + transfers.len();
+
+        let mut data_len = 0;
+        for_each_row(&order, &transfers, |row| {
+            data_len += match row {
+                Row::Logged(i) => self.data_range(i).len(),
+                Row::Reassembled(_, transfer) => transfer.data.len(),
+            }
+        });
+        let mut data = Vec::new();
+        data.try_reserve_exact(data_len)?;
+        let mut data_start = Vec::new();
+        data_start.try_reserve_exact(rows)?;
+        self.out_of_order = false;
+        self.reassembler = reassembler;
+        self.reassembled_frames = transfers.len();
+        for_each_row(&order, &transfers, |row| {
+            data_start.push(data.len());
+            match row {
+                Row::Logged(i) => data.extend_from_slice(&self.data[self.data_range(i)]),
+                Row::Reassembled(_, transfer) => data.extend_from_slice(&transfer.data),
+            }
+        });
+        self.data = data;
+        self.data_start = data_start;
+
+        self.ts_ns = reorder(&self.ts_ns, &order, &transfers, |_, transfer| {
+            transfer.ts_ns
+        });
+        self.id = reorder(&self.id, &order, &transfers, |_, transfer| transfer.id);
+        self.channel = reorder(&self.channel, &order, &transfers, |channel, _| channel);
+        self.flags = reorder(&self.flags, &order, &transfers, |_, _| flags::REASSEMBLED);
+        Ok(())
     }
 }
 
@@ -441,9 +574,10 @@ impl FrameSink for FrameStore {
 
 impl FrameStore {
     fn store(&mut self, frame: &FrameRef<'_>) {
-        let index = self.ts_ns.len() as u32;
-        let stats = self.stats_index(id_key(frame.channel, frame.id), frame);
-        self.ids[stats].observe(index, frame);
+        if self.ts_ns.last().is_some_and(|&last| frame.ts_ns < last) {
+            self.out_of_order = true;
+        }
+        self.index.observe(self.ts_ns.len() as u32, frame);
         if frame.flags & flags::ERROR != 0 {
             self.error_frames += 1;
         }
@@ -755,6 +889,115 @@ mod tests {
             s.bus_load(0, 0, 10 * MS, 1, 1_000_000.0),
             vec![393.0 / 10_000.0]
         );
+    }
+
+    fn frames_of(s: &FrameStore) -> Vec<(i64, u32, Vec<u8>)> {
+        (0..s.len())
+            .map(|i| s.frame(i))
+            .map(|f| (f.ts_ns, f.id, f.data.to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn sorting_by_time_keeps_ties_in_order_and_redoes_the_statistics() {
+        let mut s = FrameStore::new();
+        push(&mut s, 30, 0x100, &[0x03]);
+        push(&mut s, 10, 0x200, &[0xAA, 0xBB]);
+        push(&mut s, 20, 0x100, &[0x01]);
+        push_on(&mut s, 10, 1, 0x80 | ERR_FLAG, flags::ERROR, &[]);
+        push(&mut s, 0, 0x100, &[0x00]);
+        s.sort_by_time();
+        assert_eq!(
+            frames_of(&s),
+            [
+                (0, 0x100, vec![0x00]),
+                (10, 0x200, vec![0xAA, 0xBB]),
+                (10, 0x80 | ERR_FLAG, vec![]),
+                (20, 0x100, vec![0x01]),
+                (30, 0x100, vec![0x03]),
+            ]
+        );
+        assert_eq!(s.frame(2).channel, 1);
+        assert_eq!(s.frame(2).flags, flags::ERROR);
+        assert_eq!((s.first_ts_ns(), s.last_ts_ns()), (Some(0), Some(30)));
+        assert_eq!(s.error_frames(), 1);
+        assert_eq!(s.first_at_or_after(15), 3);
+
+        let keys: Vec<IdKey> = s.ids().iter().map(IdStats::key).collect();
+        assert_eq!(
+            keys,
+            [
+                id_key(0, 0x100),
+                id_key(0, 0x200),
+                id_key(1, 0x80 | ERR_FLAG)
+            ]
+        );
+        let stats = s.id_stats(id_key(0, 0x100)).unwrap();
+        assert_eq!(stats.frames, [0, 3, 4]);
+        assert_eq!((stats.first_ts_ns, stats.last_ts_ns), (0, 30));
+        assert_eq!(stats.mean_period_ns(), Some(15.0));
+        assert_eq!(stats.jitter_ns(), Some(5.0));
+        // 0x00 to 0x01 to 0x03: one flip each of bits 0 and 1.
+        assert_eq!(stats.bit_flips[..2], [1, 1]);
+        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 2);
+        assert_eq!(s.previous_of_same_id(3), Some(0));
+    }
+
+    #[test]
+    fn a_store_in_time_order_is_left_as_it_is() {
+        let mut s = FrameStore::new();
+        s.reserve(100, 800);
+        push(&mut s, 10, 0x100, &[1]);
+        push(&mut s, 10, 0x200, &[2]);
+        push(&mut s, 20, 0x100, &[3]);
+        let (frames, heap) = (frames_of(&s), s.heap_bytes());
+        s.sort_by_time();
+        assert_eq!(frames_of(&s), frames);
+        assert_eq!(s.heap_bytes(), heap, "no column was rebuilt");
+    }
+
+    #[test]
+    fn sorting_by_time_reassembles_transfers_in_time_order() {
+        let mut logged = FrameStore::new();
+        let payload: Vec<u8> = (0..20).collect();
+        push_bam(&mut logged, 0, 10, 0x00, &payload);
+        let packets: Vec<(i64, u32, Vec<u8>)> = frames_of(&logged)
+            .into_iter()
+            .filter(|(_, id, _)| id & 0x00FF_0000 != 0x00FE_0000)
+            .collect();
+        assert_eq!(packets.len(), 4);
+
+        // Backwards, the packets come before their announcement and are ignored.
+        let mut s = FrameStore::new();
+        push(&mut s, 50, 0x100, &[]);
+        for (ts_ns, id, data) in packets.iter().rev() {
+            push_on(&mut s, *ts_ns, 0, *id, 0, data);
+        }
+        push(&mut s, 0, 0x100, &[]);
+        assert_eq!(s.reassembled_frames(), 0);
+        s.sort_by_time();
+        assert_eq!(s.reassembled_frames(), 1);
+        assert_eq!(s.len(), 7);
+        let frame = s.frame(5);
+        assert_eq!(frame.flags, flags::REASSEMBLED);
+        assert_eq!(frame.ts_ns, 13, "right after its last packet");
+        assert_eq!(frame.data, &payload[..]);
+        assert_eq!(s.frame(6).ts_ns, 50);
+        let stats = s.id_stats(id_key(0, 0x18FE_CA00 | EXT_FLAG)).unwrap();
+        assert_eq!(stats.frames, [5]);
+        assert_eq!(stats.flags, flags::REASSEMBLED);
+
+        // A transfer completed as the frames came is not stored twice.
+        let mut s = FrameStore::new();
+        push_bam(&mut s, 0, 10, 0x00, &payload);
+        push(&mut s, 0, 0x100, &[]);
+        assert_eq!(s.reassembled_frames(), 1);
+        s.sort_by_time();
+        assert_eq!(s.reassembled_frames(), 1);
+        assert_eq!(s.len(), 6);
+        assert_eq!(s.frame(0).id, 0x100);
+        assert_eq!(s.frame(5).flags, flags::REASSEMBLED);
+        assert_eq!(s.frame(5).data, &payload[..]);
     }
 
     #[test]

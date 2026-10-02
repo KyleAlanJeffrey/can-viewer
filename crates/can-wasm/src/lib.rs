@@ -105,6 +105,7 @@ impl LogInput {
         if let Some(parser) = &mut self.parser {
             parser.finish(store);
         }
+        store.sort_by_time();
     }
 
     fn reserve(&self, format: Format, store: &mut FrameStore) {
@@ -857,6 +858,25 @@ mod tests {
         assert_eq!(s.row_at_time(key_123(), 99.0), 2);
         assert_eq!(s.row_at_time(id_key(3, 0x123) as f64, 0.0), 0);
         assert_eq!(Session::new().row_at_time(-1.0, 0.0), 0);
+    }
+
+    #[test]
+    fn a_log_out_of_time_order_reads_as_if_it_were_in_order() {
+        let backwards: String = LOG.lines().rev().map(|line| format!("{line}\n")).collect();
+        let mut s = Session::new();
+        s.push_chunk(backwards.as_bytes());
+        let mut info = json(&s.finish());
+        let sorted = session();
+        let mut sorted_info = json(&sorted.log_info());
+        // The rebuilt columns hold no spare capacity.
+        info["heapBytes"] = Value::Null;
+        sorted_info["heapBytes"] = Value::Null;
+        assert_eq!(info, sorted_info);
+        assert!((info["durationS"].as_f64().unwrap() - 0.06).abs() < 1e-9);
+        assert_eq!(s.rows(-1.0, 0, 6), sorted.rows(-1.0, 0, 6));
+        assert_eq!(s.id_summary(), sorted.id_summary());
+        assert_eq!(s.row_at_time(-1.0, 0.02), 2);
+        assert_eq!(s.row_count_between(key_123(), 0.0, 0.06), 3);
     }
 
     #[test]

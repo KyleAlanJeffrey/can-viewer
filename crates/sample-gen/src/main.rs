@@ -81,6 +81,7 @@ fn load_store(path: &str) -> Result<(FrameStore, AnyParser, f64), String> {
     }
     let mut parser = parser.unwrap_or_else(|| AnyParser::new(Format::detect(path, &[])));
     parser.finish(&mut store);
+    store.sort_by_time();
     Ok((store, parser, started.elapsed().as_secs_f64()))
 }
 

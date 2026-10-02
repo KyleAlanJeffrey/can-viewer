@@ -435,7 +435,7 @@ if (b97OfRow2 !== NO_BYTE) console.log(b97OfRow2);
 rowAtTime(key: number, t: number): Promise<number>
 ```
 
-The index of the first row of `key` (or `ALL_IDS`) at or after `t` seconds, clamped to the last row. It uses a binary search that assumes frames are in time order.
+The index of the first row of `key` (or `ALL_IDS`) at or after `t` seconds, clamped to the last row. It uses a binary search, since rows are in time order (a log out of order is sorted when it opens).
 
 **Parameters**
 

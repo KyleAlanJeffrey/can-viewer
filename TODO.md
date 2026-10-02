@@ -72,7 +72,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Log formats beyond candump: ASC, BLF, TRC, MF4, CSV
 - [ ] Check BLF and MF4 import against files from real loggers and tools (the tests use synthetic files; BLF matches python-can on its own files) (owner, with your own logs)
 - [x] MF4: repair unfinalized files (UnFinMF) whose last DT block or DL list was never updated; today the tail may be lost, and flags other than 0x01, 0x02 and 0x20 are rejected
-- [ ] MF4: an unsorted data group with records more than 65,536 frames out of order (a window shared by all such data groups) keeps the file's order (after the unfinalized repair, as both change `mf4.rs`)
+- [x] MF4: an unsorted data group with records more than 65,536 frames out of order (a window shared by all such data groups) keeps the file's order (after the unfinalized repair, as both change `mf4.rs`). Fixed in the store: a log whose times go backwards is sorted once read (`FrameStore::sort_by_time`), for every format
 - [ ] MF4: data groups that all link the same large DL list each build their own list of its blocks (`data_blocks` in `mf4.rs`) before the data budget applies, so memory grows with the number of data groups times the list's links: a 628 KB file of 600 data groups over one 32,768-link DL reached 200 MB. Charge the links listed to a budget of the file's size, or share the block lists of a DL read before
 - [x] BLF: CAN_FD_ERROR_64 error frames drop the corrupted frame's original ID, direction and extended data. Won't do: error frames are grouped by error class in the ID field, as candump's are, so the original ID is not kept by design
 - [x] CSV: a 13-digit whole-number time (Unix milliseconds) is read as microseconds

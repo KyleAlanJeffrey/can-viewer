@@ -38,7 +38,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `www.freecanstudio.com`, `freecan.studio` and `freecan.app` redirecting to it (none of the three answer yet), and build watch paths so a push to `site/` only rebuilds the site (owner)
 - [ ] Later: downloads, pricing and Pro license pages on the main site (a `pro/` page describing the planned app is in)
 - [x] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land
-- [ ] Recheck the CSP quoted on the home page if `web/public/_headers` changes
+- [x] Recheck the CSP quoted on the home page if `web/public/_headers` changes (CI now runs `scripts/check-csp-quote.sh`)
 
 ## Bugs
 

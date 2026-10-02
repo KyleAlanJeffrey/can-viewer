@@ -41,6 +41,7 @@ node scripts/gzip.mjs ../target/demo/demo.log public/demo/demo.log.gz
 Run the checks for the areas you touched before opening a pull request. From the repository root:
 
 ```bash
+sh scripts/check-csp-quote.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

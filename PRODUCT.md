@@ -40,7 +40,7 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
   - candump parsing;
   - a columnar frame store with per-ID stats, bit-flip counts, jitter, bus load and error-frame counts;
   - DBC decode (Intel/Motorola, signed, float, simple multiplexing), with several DBCs per log, each for every bus or one bus, and J1939 messages matched by PGN;
-  - five views: Overview, Trace, Plot, Reverse Engineer (drag-to-define signals, Find Signal and Suggested signals) and Database (DBC editing and export);
+  - six views: Overview, Trace, Plot, Reverse Engineer (drag-to-define signals, Find Signal and Suggested signals), Compare (what differs between two logs, such as idle and one action) and Database (DBC editing and export);
   - a virtualized canvas trace table, a bit heatmap, and uPlot plots with decimation;
   - trace filters by bus, ID or name, data rules, frame kind and time range, run in the core;
   - the open log, DBCs and view state kept across reloads;

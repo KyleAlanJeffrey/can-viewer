@@ -98,7 +98,7 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
   const seek = (t: number, followCursor: boolean) => {
     const media = mediaRef.current;
     if (!media || !loaded) return;
-    const to = clamp(t, 0, end ?? media.currentTime);
+    const to = clamp(t, 0, end ?? Infinity);
     media.currentTime = to;
     setCurrent(to);
     if (followCursor) follow(to);

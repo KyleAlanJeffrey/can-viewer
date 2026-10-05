@@ -5,6 +5,7 @@
 
 mod checksum;
 mod clock;
+mod compare;
 mod discover;
 mod export;
 mod find;
@@ -54,6 +55,9 @@ fn reserved_frames(format: Format, total_bytes: f64) -> usize {
     ((total_bytes / bytes_per_frame(format)) as usize).min(MAX_RESERVED_FRAMES)
 }
 
+/// Bytes a frame takes in the store, its ID's frame list and the time index, rounded up.
+const STORED_BYTES_PER_FRAME: f64 = 40.0;
+
 /// Bytes of a log held back until there are enough to tell its format from its content.
 const SNIFF_BYTES: usize = 4096;
 
@@ -72,6 +76,8 @@ pub struct Session {
     input: LogInput,
     databases: Vec<ScopedDatabase>,
     series: Vec<Option<Series>>,
+    /// A second log, to compare the open log with.
+    log_b: Option<compare::LogB>,
     /// Store indices of the frames the trace filter matched, in time order.
     filtered: Option<Vec<u32>>,
     /// The chunks of the last `export_log` not yet taken by `export_chunk`.
@@ -132,10 +138,17 @@ struct LogInput {
     total_bytes: f64,
     head: Vec<u8>,
     parser: Option<AnyParser>,
+    /// Bytes the store may take, for a log read beside another; None for no limit.
+    limit: Option<usize>,
+    /// The log would not fit in `limit`, so it is not read.
+    refused: bool,
 }
 
 impl LogInput {
     fn push(&mut self, chunk: &[u8], store: &mut FrameStore) {
+        if self.refused {
+            return;
+        }
         match &mut self.parser {
             Some(parser) => parser.push(chunk, store),
             None => {
@@ -149,6 +162,11 @@ impl LogInput {
 
     fn choose_parser(&mut self, store: &mut FrameStore) {
         let format = self.format();
+        if self.over_limit(format) {
+            self.refused = true;
+            self.head = Vec::new();
+            return;
+        }
         // An MF4 file is buffered whole before its frames are read, so its store is sized
         // in `finish`, once the buffer has stopped growing.
         if format != Format::Mf4 {
@@ -163,8 +181,11 @@ impl LogInput {
     }
 
     fn finish(&mut self, store: &mut FrameStore) {
-        if self.parser.is_none() {
+        if self.parser.is_none() && !self.refused {
             self.choose_parser(store);
+        }
+        if self.refused {
+            return;
         }
         if self.format() == Format::Mf4 && self.total_bytes <= mf4::MAX_FILE as f64 {
             self.reserve(Format::Mf4, store);
@@ -175,9 +196,28 @@ impl LogInput {
         store.sort_by_time();
     }
 
-    fn reserve(&self, format: Format, store: &mut FrameStore) {
+    fn reserve(&mut self, format: Format, store: &mut FrameStore) {
         let frames = reserved_frames(format, self.total_bytes);
-        store.reserve(frames, frames * 8);
+        if self.limit.is_none() {
+            store.reserve(frames, frames * 8);
+        } else if store.try_reserve(frames, frames * 8).is_err() {
+            self.refused = true;
+        }
+    }
+
+    /// Whether a log of this size likely needs more than `limit`: its frames as the store
+    /// holds them, and an MF4 file itself, which is held whole while it is read.
+    fn over_limit(&self, format: Format) -> bool {
+        let Some(limit) = self.limit else {
+            return false;
+        };
+        let frames = self.total_bytes / bytes_per_frame(format);
+        let file = if format == Format::Mf4 {
+            self.total_bytes
+        } else {
+            0.0
+        };
+        frames * STORED_BYTES_PER_FRAME + file > limit as f64
     }
 
     fn format(&self) -> Format {
@@ -334,6 +374,73 @@ pub fn export_dbc(json_db: &str) -> Result<String, JsError> {
     Ok(db.to_dbc())
 }
 
+/// The JSON `LogInfo` of a log read into `store` through `input`.
+fn log_info_json(store: &FrameStore, input: &LogInput) -> String {
+    let stats = input.stats();
+    let duration_s = match (store.first_ts_ns(), store.last_ts_ns()) {
+        (Some(a), Some(b)) => (b - a) as f64 / 1e9,
+        _ => 0.0,
+    };
+    to_json(&LogInfo {
+        format: input.format().name(),
+        frames: store.len(),
+        bytes: stats.bytes,
+        lines: stats.lines,
+        rejected: stats.rejected,
+        first_rejection: stats.first_rejection,
+        duration_s,
+        channels: store.channels(),
+        heap_bytes: store.heap_bytes(),
+        error_frames: store.error_frames(),
+        reassembled_frames: store.reassembled_frames(),
+    })
+}
+
+/// Times cross the boundary as seconds from the first frame of the log, as in [`Session::rows`].
+fn origin_in(store: &FrameStore) -> i64 {
+    store.first_ts_ns().unwrap_or(0)
+}
+
+fn ns_in(store: &FrameStore, t: f64) -> i64 {
+    // About 30 years either way, so differences of these times can't overflow an i64.
+    const LIMIT_S: f64 = 1e9;
+    origin_in(store).saturating_add((t.clamp(-LIMIT_S, LIMIT_S) * 1e9).round() as i64)
+}
+
+/// [`Session::byte_lanes`] of a log read into `store`.
+fn byte_lanes_in(
+    store: &FrameStore,
+    key: f64,
+    first: u32,
+    count: u32,
+    t0: f64,
+    t1: f64,
+    buckets: u32,
+) -> Vec<f64> {
+    let Some(stats) = (key >= 0.0).then(|| store.id_stats(key as IdKey)).flatten() else {
+        return Vec::new();
+    };
+    if !t0.is_finite() || !t1.is_finite() {
+        return Vec::new();
+    }
+    // The frames in the window plus one neighbour each side, so lines reach the plot edges.
+    let inside = store.id_frames_between(stats, ns_in(store, t0), ns_in(store, t1));
+    let frames =
+        &stats.frames[inside.start.saturating_sub(1)..(inside.end + 1).min(stats.frames.len())];
+    let origin = origin_in(store);
+    let mut out = Vec::new();
+    for byte in first..first.saturating_add(count) {
+        let byte = byte as usize;
+        let series = Series::decode(store, frames, origin, |data| {
+            data.get(byte).map(|&b| f64::from(b))
+        });
+        let view = series.view(t0, t1, buckets as usize);
+        out.push((view.len() / 2) as f64);
+        out.extend_from_slice(&view);
+    }
+    out
+}
+
 /// Stores `series` and returns its JSON `SeriesInfo`.
 fn add_series(slots: &mut Vec<Option<Series>>, series: Series, name: &str, unit: &str) -> String {
     let info = to_json(&SeriesInfo {
@@ -379,24 +486,7 @@ impl Session {
     }
 
     pub fn log_info(&self) -> String {
-        let stats = self.input.stats();
-        let duration_s = match (self.store.first_ts_ns(), self.store.last_ts_ns()) {
-            (Some(a), Some(b)) => (b - a) as f64 / 1e9,
-            _ => 0.0,
-        };
-        to_json(&LogInfo {
-            format: self.input.format().name(),
-            frames: self.store.len(),
-            bytes: stats.bytes,
-            lines: stats.lines,
-            rejected: stats.rejected,
-            first_rejection: stats.first_rejection,
-            duration_s,
-            channels: self.store.channels(),
-            heap_bytes: self.store.heap_bytes(),
-            error_frames: self.store.error_frames(),
-            reassembled_frames: self.store.reassembled_frames(),
-        })
+        log_info_json(&self.store, &self.input)
     }
 
     /// JSON array of `IdSummary`, one per channel/ID pair.
@@ -776,30 +866,7 @@ impl Session {
         t1: f64,
         buckets: u32,
     ) -> Vec<f64> {
-        let Ok(Some(stats)) = self.filter(key) else {
-            return Vec::new();
-        };
-        if !t0.is_finite() || !t1.is_finite() {
-            return Vec::new();
-        }
-        // The frames in the window plus one neighbour each side, so lines reach the plot edges.
-        let inside = self
-            .store
-            .id_frames_between(stats, self.ns_at(t0), self.ns_at(t1));
-        let frames =
-            &stats.frames[inside.start.saturating_sub(1)..(inside.end + 1).min(stats.frames.len())];
-        let origin = self.origin_ns();
-        let mut out = Vec::new();
-        for byte in first..first.saturating_add(count) {
-            let byte = byte as usize;
-            let series = Series::decode(&self.store, frames, origin, |data| {
-                data.get(byte).map(|&b| f64::from(b))
-            });
-            let view = series.view(t0, t1, buckets as usize);
-            out.push((view.len() / 2) as f64);
-            out.extend_from_slice(&view);
-        }
-        out
+        byte_lanes_in(&self.store, key, first, count, t0, t1, buckets)
     }
 
     /// Drops the chunks of an earlier export first, to make room.
@@ -812,14 +879,11 @@ impl Session {
 
     /// Times cross the boundary as seconds from the first frame, as in [`Session::rows`].
     fn origin_ns(&self) -> i64 {
-        self.store.first_ts_ns().unwrap_or(0)
+        origin_in(&self.store)
     }
 
     fn ns_at(&self, t: f64) -> i64 {
-        // About 30 years either way, so differences of these times can't overflow an i64.
-        const LIMIT_S: f64 = 1e9;
-        self.origin_ns()
-            .saturating_add((t.clamp(-LIMIT_S, LIMIT_S) * 1e9).round() as i64)
+        ns_in(&self.store, t)
     }
 
     /// The definition of `id` (DBC convention) on bus `channel`, by the rule in
@@ -834,7 +898,11 @@ impl Session {
         if id & ERR_FLAG != 0 {
             return None;
         }
-        let bus = self.store.channels().get(usize::from(channel));
+        self.resolve_on(self.store.channels().get(usize::from(channel)), id)
+    }
+
+    /// Like [`Session::resolve`], for a bus by name.
+    fn resolve_on(&self, bus: Option<&String>, id: u32) -> Option<(usize, &MessageDef)> {
         let applicable = || {
             self.databases
                 .iter()

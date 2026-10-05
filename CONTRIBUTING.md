@@ -77,7 +77,7 @@ If you could not run a check, say which one and why in the pull request.
 - Branch names never contain `/`. Use `-` instead: `feat-asc-parser`, `fix-trace-scroll`.
 - Commit messages follow [Conventional Commits 1.0](https://www.conventionalcommits.org/en/v1.0.0/#specification): `<type>(<optional scope>): <description>`.
   - Types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `style`, `chore`.
-  - Useful scopes are crate or view names: `core`, `formats`, `dbc`, `wasm`, `sample-gen`, `web`, `overview`, `trace`, `plot`, `reverse`, `database`.
+  - Useful scopes are crate or view names: `core`, `formats`, `dbc`, `wasm`, `sample-gen`, `web`, `overview`, `trace`, `plot`, `reverse`, `compare`, `database`.
   - Mark breaking changes with `!` after the type or scope, or a `BREAKING CHANGE:` footer. Any change to the CoreApi is breaking (see [COMPATIBILITY.md](COMPATIBILITY.md#coreapi)).
   - Examples: `fix(trace): keep the selected row after filtering`, `feat(core)!: count rejected lines per bus in LogInfo`.
 - Keep each change small and focused: one concern per pull request, no drive-by rewrites.
@@ -128,10 +128,10 @@ LC_ALL=C grep -n '[^[:print:][:space:]]' <files>
 | `web/src/offline/` | The service worker, its registration and the build plugin that writes its precache list |
 | `web/src/styles.css` | Design tokens and shared styles |
 
-Views live in `web/src/views/<view>/` with their own CSS file and class prefix: `overview/overview.css` uses `ov-`, `plot/plot.css` uses `pv-`, `reverse/reverse.css` uses `re-` and `database/database.css` uses `db-`. To add a view:
+Views live in `web/src/views/<view>/` with their own CSS file and class prefix: `overview/overview.css` uses `ov-`, `plot/plot.css` uses `pv-`, `reverse/reverse.css` uses `re-`, `compare/compare.css` uses `cmp-` and `database/database.css` uses `db-`. To add a view:
 
 1. Create `web/src/views/<view>/` with its component and stylesheet, using a new class prefix.
-2. Register it in `VIEWS` in `web/src/views/index.ts`.
+2. Register it in `VIEWS` in `web/src/views/index.ts`. A view most sessions never open can load on first use with `lazyView` (`web/src/views/lazyView.tsx`), as Compare and Database do, which keeps the main bundle under Vite's 500 kB warning; `ChunkBoundary` offers a reload if its chunk fails to load.
 3. Read and change app state through `ViewContext` (`web/src/views/types.ts`), and render sidebar and inspector content through `SidebarSlot` and `InspectorSlot` (`web/src/views/slots.tsx`).
 
 ## Product rules

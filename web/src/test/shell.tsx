@@ -29,6 +29,8 @@ export interface ShellOptions {
   selected?: number;
   plots?: PlotSpec[];
   pinnedTime?: number | null;
+  openLog?: ViewContext['openLog'];
+  swapCompareLog?: ViewContext['swapCompareLog'];
 }
 
 const PLOT_COLORS = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'];
@@ -136,6 +138,8 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
     setError,
     setView,
     setInspectorHidden: () => {},
+    openLog: options.openLog ?? (() => Promise.resolve(true)),
+    swapCompareLog: options.swapCompareLog ?? (() => Promise.resolve(true)),
     openLogPicker: () => {},
     openDbcPicker: () => {},
   };

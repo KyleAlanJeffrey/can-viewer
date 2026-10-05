@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatFirstRejection, formatSkipped, noFramesMessage } from './format';
+import { formatDuration, formatFirstRejection, formatSkipped, noFramesMessage } from './format';
 import { logInfo } from './test/fixtures';
 
 describe('noFramesMessage', () => {
@@ -28,5 +28,14 @@ describe('formatSkipped and formatFirstRejection', () => {
     expect(formatSkipped(binary)).toBe("1,200 records weren't CAN frames and were skipped.");
     expect(formatFirstRejection(binary)).toBe('First at record 1,234: bad object header');
     expect(formatFirstRejection(logInfo())).toBeNull();
+  });
+});
+
+describe('formatDuration', () => {
+  it('rounds before splitting into minutes and seconds', () => {
+    expect(formatDuration(1199.6)).toBe('20 min 0 s');
+    expect(formatDuration(1815.2)).toBe('30 min 15 s');
+    expect(formatDuration(7199.7)).toBe('2 h 0 min');
+    expect(formatDuration(12.34)).toBe('12.3 s');
   });
 });

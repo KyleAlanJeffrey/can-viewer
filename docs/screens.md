@@ -151,3 +151,22 @@ The [default Byte Values mockup](freecan-workshop-reverse-engineer-v4-mockup.png
 - Pins, window, parked cursor and selected byte persist when switching messages or modes within the loaded log. Returning to Byte Values restores the previous matrix scroll position and filters. The Advanced raster focuses on the two decoded references; an additional pinned raw byte must remain available there too, even when the comparison list needs scrolling.
 - Pins belong to the loaded log. Opening another log clears unavailable references. No cross-session persistence is promised.
 - Brand tokens and interaction rules override minor raster color, typography and tiny-label errors. In particular, all raw-byte matrix traces are Graphite; Unknown uses Rust with its label; buttons use neutral borders. The curves are conceptual, not measured renderings of the demo.
+
+## Medium-feature mockup sheets - 2026-10-05
+
+Built-in ImageGen concepts from `docs/mockup-prompts.md` in the `docs-mockup-prompts` checkout. Each sheet includes the Workshop logo, font names, palette, main view and requested companion states. These illustrate proposed behavior; they do not establish shipped functionality.
+
+| Feature | Mockup | Generation and revision prompts | States |
+|---|---|---|---|
+| Trace filters | [Image](freecan-workshop-trace-filters-mockup.png) | [Prompts](freecan-workshop-trace-filters-generation-prompt.txt) | Editing, applied results, no matches |
+| Video sync | [Image](freecan-workshop-video-sync-mockup.png) | [Prompts](freecan-workshop-video-sync-generation-prompt.txt) | No video, alignment, synced playback |
+| Compare two logs | [Image](freecan-workshop-compare-logs-mockup.png) | [Prompts](freecan-workshop-compare-logs-generation-prompt.txt) | Choose second log, differences, no differences |
+| Suggested signals | [Image](freecan-workshop-signal-discovery-mockup.png) | [Prompts](freecan-workshop-signal-discovery-generation-prompt.txt) | Scanning, suggestions, nothing found, naming and acceptance |
+
+### Interaction and data notes
+
+- Trace: removable filters combine bus, multiple IDs/names, byte/bit conditions, frame kind and a time range. The 12.000-18.500 s selection is shown in a zoomed 10-20 s strip. Keyboard users can type range endpoints, tab through rules and dismiss the sheet with Escape. The no-results example uses a different byte rule (FF). The brief's 2,481 result count and sample table rows are illustrative; use the actual filter engine for results.
+- Video: log time 52.340 s corresponds to video time 49.140 s, with video starting 3.2 s after the log. Seeking either view updates the other; nudges change alignment in 0.1 s steps. The dashboard video is generated imagery. WheelSpeedFL is the shipped DBC name used for the brief's front-left wheel-speed reference.
+- Compare: idle.log and door-lock.log are illustrative 30 s and 28 s fixtures. Compare rates per second to avoid confusing duration with behavior. Scores, ranks and the lock event are examples, not computed findings. No differences means no differences under the current ignore rules.
+- Discovery: suggestions belong in Advanced. Show synchronized focus between candidate rows and outlined bit ranges; keyboard arrows move through bits, and Enter selects. Accept opens naming in the existing Add to Database flow. Confidence expresses a hypothesis, not a verified decode. Checksum recognition remains unconfirmed in this example. The requested 37 suggestions across nine unknown messages is an illustrative scan scenario; the shipped demo has only two unknown IDs.
+- Exact signal identifiers, bit ranges, values and design tokens in the prompts and DESIGN.md override tiny-label or color inaccuracies in the raster sheets. UI focus and keyboard hints communicate intended interactions; static PNGs cannot validate keyboard accessibility.

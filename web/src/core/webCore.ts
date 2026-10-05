@@ -6,6 +6,7 @@ import type {
   DiscoveryHints,
   FindRule,
   IdSummary,
+  LogFormat,
   LogInfo,
   MessageSuggestions,
   Progress,
@@ -140,6 +141,7 @@ export class WebCore implements CoreApi {
   bitFlipsBetween = (key: number, t0: number, t1: number) => this.call<Uint32Array>('bitFlipsBetween', key, t0, t1);
   decodeRaw = (key: number, spec: RawSignalSpec) => this.call<SeriesInfo>('decodeRaw', key, spec);
   exportDbc = (db: Database) => this.call<string>('exportDbc', db);
+  exportLog = (format: LogFormat) => this.call<Blob>('exportLog', format);
 
   setDatabases(dbs: ScopedDatabase[]) {
     this.databases = dbs;

@@ -28,6 +28,8 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] PRODUCT.md lists automated signal discovery as a Pro feature that must not ship in the web bundle, but Suggested signals is in the free web app; decide which it is (owner)
 - [ ] Suggested signals: float32 values are left out on purpose, multiplexed messages get a guess per page mixed together, and a value whose top bits never change in the log comes out narrower than its real field (VEHICLE_STATE in the demo)
 - [ ] Suggested signals: a 64-byte CAN FD message takes about 120 ms to suggest for, and Cancel only lands between messages; move the scan off the main request queue or split the work if logs with many large unknown IDs make it drag
+- [x] Export log as other formats (Export Log...: candump, ASC, BLF, TRC, MF4, CSV)
+- [x] Works offline and installable: a web app manifest with icons, and a service worker that precaches the app shell, keeps the demo after its first run and offers Reload when a new version is ready
 
 ## Landing page
 

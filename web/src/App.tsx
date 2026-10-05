@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, FileText, Lock, PanelLeft, PanelRight, Search, X } from 'lucide-react';
+import { AlertTriangle, FileDown, FileText, Lock, PanelLeft, PanelRight, Search, X } from 'lucide-react';
 import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
+import { ExportLogSheet } from './components/ExportLogSheet';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
+import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
@@ -100,6 +102,8 @@ export function App({ core }: { core: CoreApi }) {
   const [dbcsChangedElsewhere, setDbcsChangedElsewhere] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportEnded, setExportEnded] = useState(false);
   const [query, setQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(() => !narrow());
   const [inspectorOpen, setInspectorOpen] = useState(() => !narrow());
@@ -109,6 +113,7 @@ export function App({ core }: { core: CoreApi }) {
   const [viewState] = useState(() => new ViewStateStore());
   const logInput = useRef<HTMLInputElement>(null);
   const dbcInput = useRef<HTMLInputElement>(null);
+  const exportButton = useRef<HTMLButtonElement>(null);
 
   // Async tasks read these rather than a render's closure, so queued DBC edits never undo each other.
   const dbcsRef = useRef<LoadedDbc[]>([]);
@@ -152,6 +157,17 @@ export function App({ core }: { core: CoreApi }) {
       setBusy(null);
     }
   }, []);
+
+  // The Export Log button is disabled while the export runs, so focus fell to the page (or was
+  // left in the closed sheet); give it back once the button is enabled again, unless the user
+  // has moved on.
+  useEffect(() => {
+    if (!exportEnded || busy) return;
+    setExportEnded(false);
+    const focused = document.activeElement;
+    const lost = !focused || focused === document.body || focused.closest('dialog:not([open])') !== null;
+    if (lost || focused === exportButton.current) exportButton.current?.focus();
+  }, [exportEnded, busy]);
 
   const setView = useCallback((next: ViewId) => {
     setViewState(next);
@@ -667,6 +683,10 @@ export function App({ core }: { core: CoreApi }) {
               <FileText size={16} strokeWidth={1.5} />
               <span className="label">Open DBC&hellip;</span>
             </button>
+            <button ref={exportButton} className="toolbar-button" onClick={() => setExportOpen(true)} disabled={!!busy || !log}>
+              <FileDown size={16} strokeWidth={1.5} />
+              <span className="label">Export Log&hellip;</span>
+            </button>
             <button
               className={showView && meta.hasPrimary ? 'button' : 'primary'}
               onClick={() => logInput.current?.click()}
@@ -717,6 +737,7 @@ export function App({ core }: { core: CoreApi }) {
 
         <div className={`body${showInspector && inspectorOpen ? '' : ' inspector-hidden'}`}>
           <section className={`content view-${view}`} aria-label={showView ? meta.label : 'Welcome'}>
+            <UpdateBanner />
             {error && (
               <div className="banner" role="alert">
                 <AlertTriangle size={16} strokeWidth={1.75} />
@@ -808,6 +829,16 @@ export function App({ core }: { core: CoreApi }) {
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
       {dragOver && <div className="drop-overlay">Drop a log or DBC files to open them</div>}
+      {log && (
+        <ExportLogSheet
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+          core={core}
+          log={log}
+          run={run}
+          onDone={() => setExportEnded(true)}
+        />
+      )}
     </div>
   );
 }

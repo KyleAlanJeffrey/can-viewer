@@ -1,5 +1,7 @@
 //! Picks the frames of a [`FrameStore`] that match a [`FrameFilter`], for a filtered trace.
 
+use std::collections::TryReserveError;
+
 use crate::{flags, FrameStore, IdKey, IdStats};
 
 /// What kind of frame a stored frame is. Every frame is exactly one kind.
@@ -34,8 +36,9 @@ pub enum DataRule {
     ByteEquals { byte: usize, value: u8 },
     /// Bit `bit` (0 is the least significant) of byte `byte` is `set`.
     Bit { byte: usize, bit: u8, set: bool },
-    /// Some byte differs from the previous frame of the same ID, over the bytes both have.
-    /// An ID's first frame has nothing to differ from.
+    /// Some byte differs from the previous frame of the same ID and kind, over the bytes both
+    /// have, so a remote frame between two data frames is skipped. A longer or shorter payload
+    /// alone is no change. An ID's first frame of a kind has nothing to differ from.
     Changes,
 }
 
@@ -115,17 +118,21 @@ impl FrameFilter {
 }
 
 impl FrameStore {
-    /// Indices of the frames that match `filter`, in store (time) order.
-    #[must_use]
-    pub fn filter(&self, filter: &FrameFilter) -> Vec<u32> {
+    /// Indices of the frames that match `filter`, in store (time) order, or an error if there
+    /// is no memory for them.
+    pub fn filter(&self, filter: &FrameFilter) -> Result<Vec<u32>, TryReserveError> {
         // A bit per frame, so the matches of each ID merge back into time order without a sort.
-        let mut matched = vec![0u64; self.len().div_ceil(64)];
+        let words = self.len().div_ceil(64);
+        let mut matched = Vec::new();
+        matched.try_reserve_exact(words)?;
+        matched.resize(words, 0u64);
         let mut count = 0;
         self.visit_matches(filter, |index| {
             matched[index / 64] |= 1 << (index % 64);
             count += 1;
         });
-        let mut out = Vec::with_capacity(count);
+        let mut out = Vec::new();
+        out.try_reserve_exact(count)?;
         for (word_index, &word) in matched.iter().enumerate() {
             let mut bits = word;
             while bits != 0 {
@@ -133,7 +140,7 @@ impl FrameStore {
                 bits &= bits - 1;
             }
         }
-        out
+        Ok(out)
     }
 
     /// How many frames match `filter`, without keeping them.
@@ -158,6 +165,7 @@ impl FrameStore {
             }
             None => self.ids().iter().collect(),
         };
+        let wants_previous = filter.rules.contains(&DataRule::Changes);
         for stats in ids {
             if !filter.keeps_id(stats) {
                 continue;
@@ -168,10 +176,10 @@ impl FrameStore {
                 if !filter.keeps_kind(frame.flags) {
                     continue;
                 }
-                let previous = (!filter.rules.is_empty())
-                    .then(|| pos.checked_sub(1))
+                let previous = wants_previous
+                    .then(|| self.previous_of_same_kind_at(stats, pos))
                     .flatten()
-                    .map(|p| self.frame(stats.frames[p] as usize).data);
+                    .map(|p| self.frame(p).data);
                 if filter.keeps_payload(frame.data, previous) {
                     visit(index);
                 }
@@ -225,7 +233,7 @@ mod tests {
     }
 
     fn check(s: &FrameStore, filter: &FrameFilter, expected: &[u32]) {
-        assert_eq!(s.filter(filter), expected, "{filter:?}");
+        assert_eq!(s.filter(filter).unwrap(), expected, "{filter:?}");
         assert_eq!(s.count_matches(filter), expected.len(), "{filter:?}");
     }
 
@@ -395,5 +403,24 @@ mod tests {
             ..changes
         };
         check(&s, &after, &[]);
+    }
+
+    #[test]
+    fn changes_skip_the_remote_frames_of_a_polled_id() {
+        let mut s = FrameStore::new();
+        for (t, data) in [(0, [1, 2]), (2, [3, 4]), (4, [5, 6])] {
+            push(&mut s, t, 0, 0x100, flags::RTR, &[]);
+            push(&mut s, t + 1, 0, 0x100, 0, &data);
+        }
+        let changes = FrameFilter {
+            rules: vec![DataRule::Changes],
+            ..FrameFilter::default()
+        };
+        check(&s, &changes, &[3, 5]);
+        let late = FrameFilter {
+            t0_ns: 3,
+            ..changes
+        };
+        check(&s, &late, &[3, 5]);
     }
 }

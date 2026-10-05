@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use rustc_hash::FxHashMap;
 
-use crate::{flags, tp, FrameRef, FrameSink, EXT_FLAG};
+use crate::{flags, tp, FrameKind, FrameRef, FrameSink, EXT_FLAG};
 
 /// Identifies one arbitration ID on one channel: `(channel << 32) | id`.
 pub type IdKey = u64;
@@ -326,12 +326,25 @@ impl FrameStore {
         self.index.by_key.get(&key).map(|&i| &self.index.ids[i])
     }
 
-    /// Index of the previous frame with the same channel and ID as frame `index`.
+    /// Index of the frame that frame `index`'s payload is compared with: the previous frame
+    /// with the same channel, ID and [`FrameKind`], so a polled ID's remote frames don't hide
+    /// the changes between its data frames.
     #[must_use]
-    pub fn previous_of_same_id(&self, index: usize) -> Option<usize> {
+    pub fn previous_of_same_kind(&self, index: usize) -> Option<usize> {
         let stats = self.id_stats(id_key(self.channel[index], self.id[index]))?;
         let pos = stats.frames.partition_point(|&f| (f as usize) < index);
-        pos.checked_sub(1).map(|p| stats.frames[p] as usize)
+        self.previous_of_same_kind_at(stats, pos)
+    }
+
+    /// [`FrameStore::previous_of_same_kind`] for the frame at `pos` in `stats.frames`.
+    #[must_use]
+    pub fn previous_of_same_kind_at(&self, stats: &IdStats, pos: usize) -> Option<usize> {
+        let kind = FrameKind::of(self.flags[stats.frames[pos] as usize]);
+        stats.frames[..pos]
+            .iter()
+            .rev()
+            .map(|&f| f as usize)
+            .find(|&f| FrameKind::of(self.flags[f]) == kind)
     }
 
     /// Index of the first frame at or after `ts_ns`, or `len()` if there is none.
@@ -643,9 +656,33 @@ mod tests {
         push(&mut s, 0, 0x100, &[0]);
         push(&mut s, 1, 0x200, &[0]);
         push(&mut s, 2, 0x100, &[1]);
-        assert_eq!(s.previous_of_same_id(0), None);
-        assert_eq!(s.previous_of_same_id(1), None);
-        assert_eq!(s.previous_of_same_id(2), Some(0));
+        assert_eq!(s.previous_of_same_kind(0), None);
+        assert_eq!(s.previous_of_same_kind(1), None);
+        assert_eq!(s.previous_of_same_kind(2), Some(0));
+    }
+
+    #[test]
+    fn compares_a_frame_with_the_previous_one_of_its_kind() {
+        let mut s = FrameStore::new();
+        push(&mut s, 0, 0x100, &[1]);
+        s.push(FrameRef {
+            ts_ns: 1,
+            channel: 0,
+            id: 0x100,
+            flags: flags::RTR,
+            data: &[],
+        });
+        push(&mut s, 2, 0x100, &[2]);
+        s.push(FrameRef {
+            ts_ns: 3,
+            channel: 0,
+            id: 0x100,
+            flags: flags::RTR,
+            data: &[],
+        });
+        assert_eq!(s.previous_of_same_kind(1), None);
+        assert_eq!(s.previous_of_same_kind(2), Some(0));
+        assert_eq!(s.previous_of_same_kind(3), Some(1));
     }
 
     #[test]
@@ -940,7 +977,7 @@ mod tests {
         // 0x00 to 0x01 to 0x03: one flip each of bits 0 and 1.
         assert_eq!(stats.bit_flips[..2], [1, 1]);
         assert_eq!(stats.bit_flips.iter().sum::<u32>(), 2);
-        assert_eq!(s.previous_of_same_id(3), Some(0));
+        assert_eq!(s.previous_of_same_kind(3), Some(0));
     }
 
     #[test]

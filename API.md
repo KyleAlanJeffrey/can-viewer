@@ -259,7 +259,7 @@ One condition on a frame's payload, told apart by `type`. Bytes count from 0, ov
 
 - **`{ type: 'byteEquals', byte: number, value: number }`** - Byte `byte` holds `value` (0 to 255).
 - **`{ type: 'bit', byte: number, bit: number, set: boolean }`** - Bit `bit` (0 to 7) of byte `byte` is set (`set: true`) or clear (`set: false`).
-- **`{ type: 'changes' }`** - Some byte differs from the previous frame of the same ID in the log, over the bytes both frames have, as `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) reports. The previous frame may be outside the filter's time window. An ID's first frame never matches.
+- **`{ type: 'changes' }`** - Some byte differs from the previous frame of the same ID and kind in the log (so a remote frame between two data frames is skipped), over the bytes both frames have; a payload that only grows or shrinks is no change. It matches when `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) is true for some byte. The previous frame may be outside the filter's time window. An ID's first frame of a kind never matches.
 
 ### The SeriesInfo object
 
@@ -290,7 +290,7 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 - **`flags(i)`** `number` - Frame flags.
 - **`len(i)`** `number` - Bytes of payload in the row, at most 64.
 - **`fullLength(i)`** `number` - The frame's whole payload length in bytes. It equals `len(i)` except for a reassembled J1939 transfer longer than 64 bytes, up to 1785.
-- **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID. Always false for an ID's first frame.
+- **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID and kind (data, remote, error or reassembled), so a polled ID's remote frames are skipped. Always false for an ID's first frame of a kind.
 - **`data(i)`** `Uint8Array` - The payload, as a view into the batch.
 
 A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, [`frameData`](#framedata) fetches the whole payload, and [`rowBytes`](#rowbytes) fetches a range of bytes of many rows. `decodeRaw` and `decodeSignal` work on the whole payload.
@@ -416,7 +416,7 @@ const total = await core.rowCount(ALL_IDS);
 rows(key: number, start: number, count: number): Promise<RowBatch>
 ```
 
-Rows `start` to `start + count - 1` of the trace, clamped to the rows that exist. Row numbers count within the key: with an ID key, row 0 is that ID's first frame, and with `FILTERED_ROWS`, the first frame the trace filter kept. `changed(i, byte)` always compares with the previous frame of the same ID in the log, whichever key the rows are for.
+Rows `start` to `start + count - 1` of the trace, clamped to the rows that exist. Row numbers count within the key: with an ID key, row 0 is that ID's first frame, and with `FILTERED_ROWS`, the first frame the trace filter kept. `changed(i, byte)` always compares with the previous frame of the same ID and kind in the log, whichever key the rows are for.
 
 **Parameters**
 
@@ -535,7 +535,7 @@ Picks the frames that match `filter` and keeps them, in time order, as the rows 
 
 **Returns** the number of rows kept: what `rowCount(FILTERED_ROWS)` now gives. It is 0 for null.
 
-**Errors** Rejects with a JSON error if `filter` does not have the shape of `FrameFilter`, for example a byte value above 255, and with `a bit must be 0 to 7` for a bit rule outside a byte. The filtered rows are dropped.
+**Errors** Rejects with a JSON error if `filter` does not have the shape of `FrameFilter`, for example a byte value above 255, with `a bit must be 0 to 7` for a bit rule outside a byte, and with `not enough memory to filter this log` when the engine can't hold the matches. In every case the filtered rows of the call before are dropped, so `rowCount(FILTERED_ROWS)` is 0.
 
 ```ts
 const matches = await core.setTraceFilter({
@@ -565,7 +565,7 @@ How many frames match `filter`, without keeping them or changing the rows of `FI
 
 **Returns** the number of matching frames, or null when a later count replaced this one before it ran.
 
-**Errors** As for [`setTraceFilter`](#settracefilter).
+**Errors** Rejects for a malformed `filter` as [`setTraceFilter`](#settracefilter) does. A count never changes the rows of `FILTERED_ROWS`, even when it fails.
 
 ```ts
 const count = await core.countFilterMatches(draft);

@@ -101,11 +101,11 @@ impl Trace<'_> {
         }
     }
 
-    /// The previous frame of the same ID as row `row`.
-    fn previous_of_same_id(self, store: &FrameStore, row: usize) -> Option<usize> {
+    /// The frame row `row`'s payload is compared with; see [`FrameStore::previous_of_same_kind`].
+    fn previous_of_same_kind(self, store: &FrameStore, row: usize) -> Option<usize> {
         match self {
-            Self::Id(stats) => row.checked_sub(1).map(|p| stats.frames[p] as usize),
-            Self::All | Self::Filtered(_) => store.previous_of_same_id(self.index(row)),
+            Self::Id(stats) => store.previous_of_same_kind_at(stats, row),
+            Self::All | Self::Filtered(_) => store.previous_of_same_kind(self.index(row)),
         }
     }
 
@@ -436,7 +436,10 @@ impl Session {
         let Some(filter) = self.parse_filter(json).map_err(js_err)? else {
             return Ok(0);
         };
-        let rows = self.store.filter(&filter);
+        let rows = self
+            .store
+            .filter(&filter)
+            .map_err(|_| js_err("not enough memory to filter this log"))?;
         let count = rows.len() as u32;
         self.filtered = Some(rows);
         Ok(count)
@@ -465,7 +468,7 @@ impl Session {
         let mut out = Vec::with_capacity((end - start) * ROW_STRIDE);
         for row in start..end {
             let index = trace.index(row);
-            let prev = trace.previous_of_same_id(&self.store, row);
+            let prev = trace.previous_of_same_kind(&self.store, row);
             let frame = self.store.frame(index);
             let changed = prev.map_or(0u64, |p| {
                 let before = self.store.frame(p).data;
@@ -1597,6 +1600,29 @@ mod tests {
         assert_eq!(s.set_trace_filter("null").unwrap(), 0);
         assert_eq!(s.row_count(FILTERED), 0);
         assert_eq!(s.row_count(ALL_IDS), 6, "the other keys are untouched");
+    }
+
+    #[test]
+    fn changed_bytes_skip_the_remote_frames_of_a_polled_id() {
+        let mut s = Session::new();
+        s.push_chunk(
+            b"(0.0) can0 100#R\n(0.1) can0 100#0102\n(0.2) can0 100#R\n(0.3) can0 100#0302\n",
+        );
+        s.finish();
+        let changed = |s: &Session, key: f64, row: u32| {
+            let rows = s.rows(key, row, 1);
+            u64::from_le_bytes(rows[24..32].try_into().unwrap())
+        };
+        assert_eq!(changed(&s, ALL_IDS, 3), 0b01);
+        assert_eq!(changed(&s, id_key(0, 0x100) as f64, 3), 0b01);
+        assert_eq!(
+            changed(&s, ALL_IDS, 2),
+            0,
+            "a remote frame has no bytes to change"
+        );
+        let filter = filter_json(json!({ "rules": [{ "type": "changes" }] }));
+        assert_eq!(s.set_trace_filter(&filter).unwrap(), 1);
+        assert_eq!(changed(&s, FILTERED, 0), 0b01);
     }
 
     #[test]

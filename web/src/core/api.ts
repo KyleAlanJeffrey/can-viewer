@@ -214,7 +214,7 @@ export type FrameKind = 'data' | 'remote' | 'error' | 'reassembled';
 export type DataRule =
   | { type: 'byteEquals'; byte: number; value: number }
   | { type: 'bit'; byte: number; bit: number; set: boolean }
-  /** Some byte differs from the previous frame of the same ID, over the bytes both have. */
+  /** Some byte differs from the previous frame of the same ID and kind, over the bytes both have. */
   | { type: 'changes' };
 
 /**

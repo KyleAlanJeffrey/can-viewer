@@ -817,6 +817,10 @@ impl Session {
             None => return Err("no capture is running"),
         };
         let (started_at_ns, channel) = (capture.started_at_ns, capture.channel);
+        // A long capture can fill the memory; then this batch fails rather than the core.
+        self.store
+            .try_reserve(packed.len() / CAPTURE_RECORD_HEADER, packed.len())
+            .map_err(|_| "there is no memory left for more frames")?;
         while !packed.is_empty() {
             let header = packed
                 .get(..CAPTURE_RECORD_HEADER)

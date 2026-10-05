@@ -25,7 +25,7 @@ Priority:
 
 ## Navigation model (applies to every app screen)
 
-- **Five views.** After a log loads, a segmented control in the centre of the toolbar switches between **Overview · Trace · Plot · Reverse Engineer · Database**. The same views are in the View menu with ⌘1–⌘5.
+- **Six views.** After a log loads, a segmented control in the centre of the toolbar switches between **Overview / Trace / Plot / Reverse Engineer / Compare / Database**. The same views are in the View menu with Cmd+1 to Cmd+6.
 - **The sidebar is always the source list,** and its content depends on the view:
 
   | View | Sidebar shows |
@@ -58,6 +58,7 @@ Priority:
 | A13 | Settings sheet | P1 | **Appearance:** System, Light or Dark. **Time:** absolute or relative to the start. **ID format:** `0x0C9` or `0C9`. **Numbers:** decimal separator. **Plots:** line width. A **Keyboard Shortcuts** tab. |
 | A14 | Connect adapter (Web Serial) | P1 | A taste of live capture. The sheet reads "Connect a CAN Adapter": adapter (CANable / SLCAN), bitrate, and a Chromium-only note. Then a live trace with a red "Recording" pill, frames/s, bus load and Stop. |
 | A15 | Pro feature sheet | P1 | Shown only when someone clicks a Pro-only action, such as "Auto-label counters and checksums". It has one sentence, a small image, "Learn About FreeCAN Studio Pro" and "Not Now". Rules: never a timed nag, never blocking a free feature, and never calling Pro "free". |
+| A16 | **Compare** | P1 | Built. The open log is A; open or drop a second log as B. IDs are grouped In both - different bytes / Only in B / Only in A / In both - no significant differences, with frames per second for each log, a 0-100% difference score and a reason. The selected ID shows A and B bit grids with the differing bits outlined, the selected byte over time and each byte at the cursor, with Open in Reverse Engineer and Export findings... beside it. Ignore rules leave out counters and checksums, or IDs that also change within A alone. Swap and Replace... for each log; "These logs look the same" when nothing differs. |
 | A16 | Errors | P0 | **Inline banner** for skipped lines (see the design brief). **Unsupported file:** "This looks like a PDF, not a CAN log. FreeCAN Studio opens candump, ASC, BLF, TRC, MF4, CSV." **DBC mismatch:** "None of the 42 messages in this DBC appear in the log. Check the bus or ID format." **Browser too old:** needs WebAssembly and module workers. **File too big for the browser:** says honestly what the limit is, and mentions Pro. |
 | A17 | Small screen | P2 | Phone width: "FreeCAN Studio needs a desktop browser". Phones are out of scope, so there is no phone layout behind it. |
 | A18 | About | P2 | Version, build, credits, and a link to third-party licences. |

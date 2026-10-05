@@ -24,6 +24,9 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
 - [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
+- [x] Video sync: play a local video beside the Plot view, synced to cursor A by one matched moment, with offset nudges, a corner view and Space to play
+- [ ] Video sync: check by hand in Firefox and Safari (codecs, Space, the corner view and the resize handle); only Chromium was checked
+- [ ] Video sync: decide whether it stays in the free web app; PRODUCT.md and docs/screens.md (P6) still list it as a Pro feature (owner)
 
 ## Landing page
 

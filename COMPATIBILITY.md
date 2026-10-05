@@ -17,6 +17,7 @@ The app relies on these platform features:
 | `crypto.randomUUID` | IDs for loaded DBCs |
 | Native `<dialog>` with `showModal()` | Sheets (`web/src/components/Sheet.tsx`) |
 | `BroadcastChannel` | Telling other tabs of this app that the saved DBCs changed (`web/src/session.ts`) |
+| `<video>` playing an object URL (`URL.createObjectURL`) | Video sync in the Plot view (`web/src/views/plot/video/`) |
 
 Of these, the most recent addition in Firefox is module workers (Firefox 114), and in Safari it is `DecompressionStream` (Safari 16.4).
 
@@ -30,7 +31,8 @@ Notes:
 
 - `crypto.randomUUID` exists only in secure contexts, so the app must be served over HTTPS or from `localhost`. A dev server opened over plain HTTP on a LAN address cannot load DBCs.
 - When IndexedDB is unavailable (private windows, blocked site data) or full, the app still works but cannot restore the session after a reload. It tells the user when a log could not be kept.
-- The production Content-Security-Policy (`web/public/_headers`) allows scripts only from the app's origin plus `'wasm-unsafe-eval'`, which wasm compilation needs.
+- The production Content-Security-Policy (`web/public/_headers`) allows scripts only from the app's origin plus `'wasm-unsafe-eval'`, which wasm compilation needs. `media-src blob:` lets the video sync panel play the local file the user chose through its object URL; no other media source is allowed.
+- Video sync plays whatever the browser can decode; the app converts nothing. MP4 with H.264 video plays in every supported browser. WebM (VP8, VP9, AV1) plays in Chrome, Edge and Firefox, and in Safari on recent macOS. HEVC (H.265), which phones often record, plays in Safari and in Chrome or Edge only where the system has a decoder. MKV and AVI files often do not play. A file that does not play shows an error in the panel saying so. Only Chromium was checked by hand.
 - The core runs on wasm32, so its memory is capped at 4 GiB, and a browser may allow less. In the spike, a 552 MB, 10M-frame candump log used about 654 MB of wasm memory (see [README.md](README.md)). An MF4 file is held whole while it is read, on top of its frames, in a buffer sized from the file's size: a 112 MB, 10M-frame MF4 from `sample-gen convert` uses about 610 MB, a 178 MB, 16M-frame one about 920 MB, and an uncompressed one near the 1 GiB limit (1.07 GB, 12.9M frames) about 1.7 GB. The frame store is pre-sized from the file size, for at most 20M frames (about 520 MB); a log with more grows it as it is read.
 
 ## Platforms
@@ -215,5 +217,7 @@ The last session is kept in the browser's IndexedDB:
   - `dbcs`: `{ revision, dbcs }`: the loaded DBCs (`LoadedDbc[]`, including each full `Database`, whether it has unexported edits and when it was last exported) under a revision number. A tab writes the key only if the store still holds the revision it last read or wrote, checked in the same transaction, so two tabs cannot overwrite each other's edits; the losing tab keeps its changes in memory and asks for a reload. Each successful write is announced on the `freecan-studio` `BroadcastChannel` as `{ type: 'dbcs', revision }`. A bare array, as the first builds wrote, reads as revision 0.
   - `ui`: the open view, selection, pinned time and plots.
   - `views`: per-view state.
+
+A video added for video sync is held only as an object URL in the open tab: it is never written to IndexedDB, and a reload, closing the log or opening another drops it. The offset found by a sync is kept in `localStorage` under `freecan-studio.video-offsets`, as `[key, offset]` pairs where the key is the log's file name, a newline and the video's file name, for the 50 most recent pairs, so adding the same video to the same log again restores the sync.
 
 Users will have values written by earlier versions. When the shape of a stored value changes, keep reading the old shape, or bump the IndexedDB version and migrate in `web/src/session.ts`. New `Database` fields should be optional, as `SignalDef.receivers` is: `receivers?` in TypeScript and `#[serde(default)]` in Rust. A `MessageDef` saved without `j1939` is restored with it set for 29-bit messages, as the core treated them before the flag existed.

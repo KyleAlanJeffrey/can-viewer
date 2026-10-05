@@ -165,7 +165,13 @@ export class WebCore implements CoreApi {
 
   suggestSignals = (key: number, hints: DiscoveryHints = {}) => this.call<MessageSuggestions>('suggestSignals', key, hints);
 
-  scanSignals(keys: number[], hints: DiscoveryHints, onProgress: (done: number, total: number, latest: MessageSuggestions) => void, signal?: AbortSignal) {
-    return scanEach(this.suggestSignals, keys, hints, onProgress, signal);
+  scanSignals(
+    keys: number[],
+    hints: DiscoveryHints,
+    onProgress: (done: number, total: number, latest: MessageSuggestions) => void,
+    signal?: AbortSignal,
+    skip?: (key: number) => boolean,
+  ) {
+    return scanEach(this.suggestSignals, keys, hints, onProgress, signal, skip);
   }
 }

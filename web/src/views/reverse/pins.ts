@@ -20,7 +20,8 @@ export function pinId(p: Pin): string {
     case 'byte':
       return `${p.key}:b:${p.byte}`;
     case 'range':
-      return `${p.key}:r:${layoutString(p.spec, p.spec.signed)}`;
+      // The scale too, so a suggestion plotted with a fitted scale is a pin of its own.
+      return `${p.key}:r:${layoutString(p.spec, p.spec.signed)}:${p.spec.factor}:${p.spec.offset}`;
   }
 }
 

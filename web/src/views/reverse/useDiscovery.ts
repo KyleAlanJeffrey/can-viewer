@@ -59,7 +59,10 @@ export interface Discovery {
   dismissed: Set<string>;
   accepted: Record<string, Accepted>;
   hintsFor: (key: number) => MessageHints;
-  /** Suggest for `key` when nothing has yet; an unknown ID starts the scan of all of them. */
+  /**
+   * Suggest for `key` when nothing has yet. An unknown ID starts the scan of all of them, or
+   * during a scan goes ahead of the messages still to come.
+   */
   ensure: (key: number) => void;
   /** Scan the unknown messages not scanned yet, `first` first. */
   scanAll: (first?: number) => void;
@@ -97,6 +100,10 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
   const cancelledByUser = useRef(false);
   const latest = useRef({ saved, unknown, logVersion: ctx.logVersion });
   latest.current = { saved, unknown, logVersion: ctx.logVersion };
+
+  const inFlight = useRef(new Set<number>());
+  // The key the scan has in hand.
+  const scanning = useRef<number | null>(null);
 
   // Leaving the view, or opening another log, stops the scan; it picks up again where it left off.
   useEffect(
@@ -151,6 +158,12 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
             setProgress({ done, total });
           },
           abort.signal,
+          // Passes over a message suggested for out of turn, as when opened during the scan.
+          (k) => {
+            const skip = !!latest.current.saved.results[k] || inFlight.current.has(k);
+            if (!skip) scanning.current = k;
+            return skip;
+          },
         )
         .then(
           () => logVersion === latest.current.logVersion && setSaved((s) => ({ ...s, scan: 'done' })),
@@ -163,13 +176,13 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
         .finally(() => {
           if (controller.current !== abort) return;
           controller.current = null;
+          scanning.current = null;
           setProgress(null);
         });
     },
     [core, setSaved, store],
   );
 
-  const inFlight = useRef(new Set<number>());
   const rescan = useCallback(
     (key: number, hints?: MessageHints) => {
       const use = hints ?? latest.current.saved.hints[key] ?? NO_HINTS;
@@ -195,12 +208,10 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
     (key: number) => {
       const { saved: now, unknown: keys } = latest.current;
       if (now.results[key] || inFlight.current.has(key)) return;
-      if (!keys.includes(key)) rescan(key);
-      // A running scan reaches every unknown ID it started without.
-      else if (!controller.current) {
-        if (now.scan === 'none') scanAll(key);
-        else rescan(key);
-      }
+      if (controller.current && scanning.current === key) return;
+      if (keys.includes(key) && !controller.current && now.scan === 'none') scanAll(key);
+      // During a scan this goes ahead of the messages still to come, which then skip it.
+      else rescan(key);
     },
     [scanAll, rescan],
   );

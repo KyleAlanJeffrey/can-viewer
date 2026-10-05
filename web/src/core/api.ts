@@ -375,13 +375,16 @@ export interface CoreApi {
   /**
    * `suggestSignals` for each of `keys` in turn, calling `onProgress` with each message's
    * suggestions as they arrive. Aborting `signal` rejects with an `AbortError` once the message
-   * in hand is done; the messages already passed to `onProgress` stay valid.
+   * in hand is done; the messages already passed to `onProgress` stay valid. A key for which
+   * `skip` returns true when its turn comes, such as one suggested for meanwhile, is passed over
+   * but counts as done.
    */
   scanSignals(
     keys: number[],
     hints: DiscoveryHints,
     onProgress: (done: number, total: number, latest: MessageSuggestions) => void,
     signal?: AbortSignal,
+    skip?: (key: number) => boolean,
   ): Promise<MessageSuggestions[]>;
   /**
    * Replace the loaded databases. A message is looked up in order, in the first database whose

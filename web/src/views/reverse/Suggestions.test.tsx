@@ -38,6 +38,7 @@ function discoveryCore(overrides: Partial<CoreApi> = {}) {
     keys: [] as number[],
     signal: undefined as AbortSignal | undefined,
     progress: (() => {}) as Progress,
+    skip: undefined as ((key: number) => boolean) | undefined,
     finish: () => {},
     fail: (_e: unknown) => {},
   };
@@ -52,9 +53,9 @@ function discoveryCore(overrides: Partial<CoreApi> = {}) {
     changeActivity: async () => new Uint32Array(0),
     decodeRaw: async () => seriesInfo(1, 'raw'),
     seriesView: async () => [Float64Array.of(40, 70), Float64Array.of(0, 1)],
-    scanSignals: (keys, _hints, onProgress, signal) =>
+    scanSignals: (keys, _hints, onProgress, signal, skip) =>
       new Promise((resolve, reject) => {
-        Object.assign(scan, { keys, signal, progress: onProgress, finish: () => resolve([]), fail: reject });
+        Object.assign(scan, { keys, signal, skip, progress: onProgress, finish: () => resolve([]), fail: reject });
       }),
     suggestSignals: vi.fn(async (key: number) => found(key, [])),
     ...overrides,
@@ -100,11 +101,26 @@ describe('Suggested signals', () => {
       scan.finish();
     });
     await waitFor(() => expect(within(panel()).queryByRole('progressbar')).toBeNull());
-    expect(within(panel()).getByText('3 suggestions across 2 unknown messages')).toBeTruthy();
+    expect(within(panel()).getByText('3 suggestions across 2 messages')).toBeTruthy();
 
     await user.click(within(panel()).getByRole('button', { name: 'Most promising: 200' }));
     expect(state.selected).toBe(first.key);
     expect(await within(panel()).findByText('Continuous value')).toBeTruthy();
+  });
+
+  it('suggests for a message opened during the scan at once, which the scan then passes over', async () => {
+    const { core, scan } = discoveryCore({ suggestSignals: vi.fn(async (key: number) => found(key, [speed])) });
+    const { user } = await openAdvanced(core);
+    expect(scan.keys).toEqual([first.key, second.key]);
+
+    await user.click(screen.getByRole('tab', { name: 'Byte Values' }));
+    const head = screen.getAllByRole('rowheader').find((h) => h.textContent?.includes('201'))!;
+    await user.click(within(head).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(await within(panel()).findByText('Continuous value')).toBeTruthy();
+    expect(core.suggestSignals).toHaveBeenCalledWith(second.key, { markers: [], reference: null });
+    expect(scan.skip?.(second.key)).toBe(true);
+    expect(within(panel()).getByRole('progressbar', { name: 'Scan progress' })).toBeTruthy();
   });
 
   it('stops the scan on Cancel and offers to scan the rest', async () => {
@@ -117,7 +133,7 @@ describe('Suggested signals', () => {
     act(() => scan.fail(new DOMException('The scan was cancelled.', 'AbortError')));
 
     expect(await within(panel()).findByRole('button', { name: 'Scan the rest' })).toBeTruthy();
-    expect(within(panel()).getByText(/1 not scanned/)).toBeTruthy();
+    expect(within(panel()).getByText(/1 unknown not scanned/)).toBeTruthy();
     expect(within(row(1)).getByText('Counter')).toBeTruthy();
   });
 
@@ -163,7 +179,12 @@ describe('Suggested signals', () => {
   it('accepts a suggestion through the New Signal form, and undoes it', async () => {
     const { core, scan } = discoveryCore();
     const { user, state } = await openAdvanced(core);
-    act(() => scan.progress(1, 2, found(first.key, [counter, speed])));
+    act(() => {
+      scan.progress(1, 2, found(first.key, [counter, speed]));
+      scan.progress(2, 2, found(second.key, []));
+      scan.finish();
+    });
+    await waitFor(() => expect(within(panel()).queryByRole('progressbar')).toBeNull());
 
     await user.click(within(row(2)).getByRole('button', { name: 'Accept suggestion 2' }));
     const inspector = screen.getByRole('complementary', { name: 'Inspector' });
@@ -179,12 +200,14 @@ describe('Suggested signals', () => {
     await user.click(within(inspector).getByRole('button', { name: 'Add to Database' }));
     await waitFor(() => expect(within(row(2)).getByRole('status').textContent).toBe('Accepted \u00b7 VehicleSpeed'));
     expect(state.dbcs[0].db.messages.find((m) => m.id === 0x200)?.signals.map((s) => s.name)).toEqual(['VehicleSpeed']);
+    // The message is no longer unknown, but its suggestions still count.
+    expect(within(panel()).getByText('2 suggestions across 1 message')).toBeTruthy();
 
     await user.click(within(row(2)).getByRole('button', { name: 'Review in Database' }));
     expect(state.view).toBe('database');
 
     await user.click(within(row(2)).getByRole('button', { name: 'Undo VehicleSpeed' }));
-    await waitFor(() => expect(within(row(2)).getByRole('button', { name: 'Accept suggestion 2' })).toBeTruthy());
+    await waitFor(() => expect(document.activeElement).toBe(within(row(2)).getByRole('button', { name: 'Accept suggestion 2' })));
     expect(state.dbcs[0].db.messages.map((m) => m.id)).toEqual([0x100]);
   });
 
@@ -272,6 +295,8 @@ describe('Suggested signals', () => {
     expect(parseMarker('12')).toBe(12);
     expect(parseMarker('12.5 s')).toBe(12.5);
     expect(parseMarker('I pressed the brake at 7 s')).toBe(7);
+    expect(parseMarker('brake 2 at 12 s')).toBe(12);
+    expect(parseMarker('pedal 3: 45.5 sec')).toBe(45.5);
     expect(parseMarker('soon')).toBeNull();
   });
 });

@@ -170,4 +170,19 @@ describe('WebCore', () => {
     await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
     expect(worker.requests).toHaveLength(1);
   });
+
+  it('passes over messages a scan finds already suggested for when their turn comes', async () => {
+    const core = new WebCore();
+    const worker = FakeWorker.all[0];
+    const found = (key: number): MessageSuggestions => ({ key, frames: 10, sampledFrames: 10, suggestions: [] });
+    const known = new Set([2]);
+    const progress = vi.fn();
+    const scan = core.scanSignals([1, 2, 3], {}, progress, undefined, (key) => known.has(key));
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(1));
+    known.add(3);
+    worker.reply('suggestSignals', { result: found(1) });
+    await expect(scan).resolves.toEqual([found(1)]);
+    expect(worker.requests.map((r) => r.args[0])).toEqual([1]);
+    expect(progress.mock.calls).toEqual([[1, 3, found(1)]]);
+  });
 });

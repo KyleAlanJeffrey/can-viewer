@@ -11,13 +11,19 @@ export async function scanEach(
   hints: DiscoveryHints,
   onProgress: (done: number, total: number, latest: MessageSuggestions) => void,
   signal?: AbortSignal,
+  skip?: (key: number) => boolean,
 ): Promise<MessageSuggestions[]> {
   const found: MessageSuggestions[] = [];
+  let done = 0;
   for (const key of keys) {
     if (signal?.aborted) throw cancelled();
+    if (skip?.(key)) {
+      done++;
+      continue;
+    }
     const latest = await suggest(key, hints);
     found.push(latest);
-    onProgress(found.length, keys.length, latest);
+    onProgress(++done, keys.length, latest);
   }
   if (signal?.aborted) throw cancelled();
   return found;

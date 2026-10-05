@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, X } from 'lucide-react';
 import { formatId, type IdSummary, type MessageDef, type Suggestion } from '../../core/api';
 import { formatCount } from '../../format';
@@ -51,27 +51,50 @@ function suggestedName(s: ShownSuggestion, message: MessageDef | null): string {
   return name;
 }
 
-/** Takes an accepted suggestion's signal out of its DBC again, and the message or DBC the add created once empty. */
+/** The bits a suggestion id names; see `suggestionId`. */
+function suggestionBits(id: string): { startBit: number; size: number; byteOrder: string } {
+  const [, startBit, size, byteOrder] = id.split(':');
+  return { startBit: Number(startBit), size: Number(size), byteOrder };
+}
+
+/**
+ * Takes an accepted suggestion's signal out of its DBC again, and the message or DBC the add
+ * created once empty. The signal is found by its name, or by its bits once renamed.
+ */
 function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndone: () => void) {
   const accepted = discovery.accepted[id];
   if (!accepted) return;
+  const bits = suggestionBits(id);
   void ctx.run(`Removing ${accepted.signal}\u2026`, async () => {
     const loaded = ctx.dbcs.find((d) => d.id === accepted.dbc);
+    const signals = loaded?.db.messages.find((m) => m.id === accepted.messageId)?.signals ?? [];
+    const target =
+      signals.find((x) => x.name === accepted.signal) ??
+      signals.find((x) => x.startBit === bits.startBit && x.size === bits.size && x.byteOrder === bits.byteOrder);
+    discovery.markAccepted(id, null);
+    if (!loaded || !target) {
+      ctx.setError(`Couldn't undo ${accepted.signal}: it's no longer in ${loaded ? loaded.db.name : 'the database it went into'}.`);
+      onUndone();
+      return;
+    }
     const without = (messages: MessageDef[]) =>
       messages
-        .map((m) => (m.id === accepted.messageId ? { ...m, signals: m.signals.filter((x) => x.name !== accepted.signal) } : m))
+        .map((m) => (m.id === accepted.messageId ? { ...m, signals: m.signals.filter((x) => x.name !== target.name) } : m))
         .filter((m) => !(m.id === accepted.messageId && accepted.createdMessage && m.signals.length === 0));
-    if (loaded && accepted.createdDbc && without(loaded.db.messages).length === 0) await ctx.removeDbc(loaded.id);
-    else if (loaded) await ctx.updateDbc(loaded.id, ({ db }) => ({ db: { ...db, messages: without(db.messages) } }));
-    discovery.markAccepted(id, null);
+    if (accepted.createdDbc && without(loaded.db.messages).length === 0) await ctx.removeDbc(loaded.id);
+    else await ctx.updateDbc(loaded.id, ({ db }) => ({ db: { ...db, messages: without(db.messages) } }));
     onUndone();
   });
 }
 
-/** The first number in `text`, as seconds: "12", "12.5 s" or "I pressed the brake at 12 s". */
+/**
+ * The time of an event in `text`, in seconds: the number after "at" or before "s", else the
+ * first number, so "12", "12.5 s" and "brake 2 at 12 s" give 12, 12.5 and 12.
+ */
 export function parseMarker(text: string): number | null {
-  const match = /-?\d+(?:\.\d+)?/.exec(text);
-  return match ? Number(match[0]) : null;
+  const labelled = /\bat\s+(-?\d+(?:\.\d+)?)|(-?\d+(?:\.\d+)?)\s*(?:s|secs?|seconds?)\b/i.exec(text);
+  const number = labelled ? (labelled[1] ?? labelled[2]) : /-?\d+(?:\.\d+)?/.exec(text)?.[0];
+  return number === undefined ? null : Number(number);
 }
 
 interface Props {
@@ -118,14 +141,17 @@ export function Suggestions(props: Props) {
   const ids = useId();
 
   const unknownKeys = useMemo(() => new Set(unknown.map((s) => s.key)), [unknown]);
+  // Over every message scanned, which includes one that stopped being unknown on an Accept.
   let total = 0;
   let messages = 0;
-  for (const s of unknown) {
-    const n = (discovery.results[s.key]?.suggestions ?? []).filter((x) => !discovery.dismissed.has(suggestionId(s.key, x))).length;
+  for (const found of Object.values(discovery.results)) {
+    const n = found.suggestions.filter((x) => !discovery.dismissed.has(suggestionId(found.key, x))).length;
     total += n;
     if (n > 0) messages++;
   }
-  const scanned = unknown.filter((s) => discovery.results[s.key]).length;
+  const scanned = Object.keys(discovery.results).length;
+  const notScanned = unknown.filter((s) => !discovery.results[s.key]).length;
+  const [refocus, setRefocus] = useState<string | null>(null);
   const next = mostPromising(discovery, unknown, key);
   const openHints = () => {
     setHintsOpen(true);
@@ -179,19 +205,18 @@ export function Suggestions(props: Props) {
               {scanned === 0 ? (
                 `${formatCount(unknown.length)} unknown ${unknown.length === 1 ? 'message' : 'messages'} not scanned yet.`
               ) : total === 0 ? (
-                `Nothing suggested for the ${formatCount(scanned)} unknown ${scanned === 1 ? 'message' : 'messages'} scanned.`
+                `Nothing suggested for the ${formatCount(scanned)} ${scanned === 1 ? 'message' : 'messages'} scanned.`
               ) : (
                 <>
                   <strong>
-                    {formatCount(total)} {total === 1 ? 'suggestion' : 'suggestions'} across {formatCount(messages)} unknown{' '}
-                    {messages === 1 ? 'message' : 'messages'}
+                    {formatCount(total)} {total === 1 ? 'suggestion' : 'suggestions'} across {formatCount(messages)} {messages === 1 ? 'message' : 'messages'}
                   </strong>
-                  {scanned < unknown.length && ` \u00b7 ${formatCount(unknown.length - scanned)} not scanned`}
+                  {notScanned > 0 && ` \u00b7 ${formatCount(notScanned)} unknown not scanned`}
                 </>
               )}
-              {scanned < unknown.length && (
+              {notScanned > 0 && (
                 <button type="button" className="text-button" onClick={() => discovery.scanAll(unknownKeys.has(key) ? key : undefined)}>
-                  {scanned === 0 ? 'Scan them' : 'Scan the rest'}
+                  {notScanned === unknown.length ? 'Scan them' : 'Scan the rest'}
                 </button>
               )}
               {next && (
@@ -262,7 +287,14 @@ export function Suggestions(props: Props) {
                 onActive={onActive}
                 onSelect={onSelect}
                 onAccept={(s) => onAccept(s, suggestedName(s, message))}
-                onUndo={(s) => undoAccepted(ctx, discovery, s.id, onUndone)}
+                onUndo={(s) =>
+                  undoAccepted(ctx, discovery, s.id, () => {
+                    onUndone();
+                    setRefocus(s.id);
+                  })
+                }
+                focusAccept={refocus === s.id}
+                onFocused={() => setRefocus(null)}
                 onPlot={onPlot}
               />
             ))}
@@ -311,12 +343,22 @@ interface RowProps {
   onSelect: (s: ShownSuggestion) => void;
   onAccept: (s: ShownSuggestion) => void;
   onUndo: (s: ShownSuggestion) => void;
+  /** Move focus to Accept, as after an Undo took away the button that had it. */
+  focusAccept: boolean;
+  onFocused: () => void;
   onPlot: (s: ShownSuggestion) => void;
 }
 
-function SuggestionRow({ ctx, item, discovery, active, selected, plotted, onActive, onSelect, onAccept, onUndo, onPlot }: RowProps) {
+function SuggestionRow(props: RowProps) {
+  const { ctx, item, discovery, active, selected, plotted, onActive, onSelect, onAccept, onUndo, focusAccept, onFocused, onPlot } = props;
   const { id, number, suggestion: s } = item;
   const accepted = discovery.accepted[id] ?? null;
+  const acceptRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!focusAccept || !acceptRef.current) return;
+    acceptRef.current.focus();
+    onFocused();
+  }, [focusAccept, accepted, onFocused]);
   const dismissed = discovery.dismissed.has(id);
   const kind = KIND_LABELS[s.kind];
   const t = s.sparkline.t;
@@ -382,7 +424,7 @@ function SuggestionRow({ ctx, item, discovery, active, selected, plotted, onActi
         </div>
       ) : (
         <div className="re-sug-actions">
-          <button type="button" className="button" aria-label={`Accept suggestion ${number}`} onClick={() => onAccept(item)}>
+          <button ref={acceptRef} type="button" className="button" aria-label={`Accept suggestion ${number}`} onClick={() => onAccept(item)}>
             Accept
           </button>
           <button

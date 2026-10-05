@@ -31,7 +31,7 @@ Notes:
 - `crypto.randomUUID` exists only in secure contexts, so the app must be served over HTTPS or from `localhost`. A dev server opened over plain HTTP on a LAN address cannot load DBCs.
 - When IndexedDB is unavailable (private windows, blocked site data) or full, the app still works but cannot restore the session after a reload. It tells the user when a log could not be kept.
 - The production Content-Security-Policy (`web/public/_headers`) allows scripts only from the app's origin plus `'wasm-unsafe-eval'`, which wasm compilation needs.
-- The core runs on wasm32, so its memory is capped at 4 GiB, and a browser may allow less. In the spike, a 552 MB, 10M-frame candump log used about 654 MB of wasm memory (see [README.md](README.md)). An MF4 file is held whole while it is read, on top of its frames, in a buffer sized from the file's size: a 112 MB, 10M-frame MF4 from `sample-gen convert` uses about 610 MB, a 178 MB, 16M-frame one about 920 MB, and an uncompressed one near the 1 GiB limit (1.07 GB, 12.9M frames) about 1.7 GB. The frame store is pre-sized from the file size, for at most 20M frames (about 520 MB); a log with more grows it as it is read.
+- The core runs on wasm32, so its memory is capped at 4 GiB, and a browser may allow less. In the spike, a 552 MB, 10M-frame candump log used about 654 MB of wasm memory (see [README.md](README.md)). An MF4 file is held whole while it is read, on top of its frames, in a buffer sized from the file's size: a 112 MB, 10M-frame MF4 from `sample-gen convert` uses about 610 MB, a 178 MB, 16M-frame one about 920 MB, and an uncompressed one near the 1 GiB limit (1.07 GB, 12.9M frames) about 1.7 GB. The frame store is pre-sized from the file size, for at most 20M frames (about 520 MB); a log with more grows it as it is read. In the Compare view the second log has its own frame store in the same wasm memory, so two large logs need about the memory of both.
 
 ## Platforms
 
@@ -212,6 +212,7 @@ The last session is kept in the browser's IndexedDB:
 - Database `freecan-studio`, version 1, object store `session`.
 - Keys:
   - `log`: the log file as a Blob, with its name.
+  - `compare`: the Compare view's second log (log B), as a Blob with its name, like `log`. Opening or closing the main log drops it; Swap exchanges it with `log`.
   - `dbcs`: `{ revision, dbcs }`: the loaded DBCs (`LoadedDbc[]`, including each full `Database`, whether it has unexported edits and when it was last exported) under a revision number. A tab writes the key only if the store still holds the revision it last read or wrote, checked in the same transaction, so two tabs cannot overwrite each other's edits; the losing tab keeps its changes in memory and asks for a reload. Each successful write is announced on the `freecan-studio` `BroadcastChannel` as `{ type: 'dbcs', revision }`. A bare array, as the first builds wrote, reads as revision 0.
   - `ui`: the open view, selection, pinned time and plots.
   - `views`: per-view state.

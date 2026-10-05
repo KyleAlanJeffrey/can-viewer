@@ -24,6 +24,10 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
 - [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
+- [x] Compare view: open a second log (B) and rank IDs and bytes by how differently they behave, with ignore rules for counters, checksums and changes within A, Swap, and Open in Reverse Engineer
+- [ ] Compare: check the counter and checksum detection, and the scores, against real before-and-after logs (the tests and the smoke test use the generated demo) (owner, with your own logs)
+- [ ] Compare: Open in Reverse Engineer selects the ID and byte, but the Advanced window stays where it was; move it to where the byte differs (the first frame of a value log A never shows, say)
+- [ ] Compare: log B is read whole into wasm memory beside log A; warn before reading a B that would not fit, rather than failing the read
 
 ## Landing page
 

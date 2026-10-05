@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CoreApi } from './core/api';
 import { fakeCore, logInfo } from './test/fixtures';
 
 /** session.ts caches its open database, so each test loads a fresh copy of the app's modules. */
@@ -39,6 +40,30 @@ describe('App', () => {
     const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
     await userEvent.upload(input, new File(['MDF'], 'x.mf4'));
     expect((await screen.findByRole('alert')).textContent).toContain('No CAN frames in x.mf4 (MF4): data larger than 1 GiB.');
+  });
+
+  it('offers Export Log once a log is open, and shows why an export failed', async () => {
+    const App = await freshApp();
+    const exportLog = vi.fn<CoreApi['exportLog']>(() => Promise.reject(new Error("There isn't enough memory to build the exported file.")));
+    const core = fakeCore({
+      openLog: () => Promise.resolve(logInfo({ name: 'x.blf', format: 'blf' })),
+      idSummary: () => Promise.resolve([]),
+      exportLog,
+    });
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    const exportButton = screen.getByRole('button', { name: 'Export Log\u2026' }) as HTMLButtonElement;
+    expect(exportButton.disabled).toBe(true);
+
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
+    await userEvent.upload(input, new File(['LOGG'], 'x.blf'));
+    await screen.findByText(/^BLF/);
+    expect(exportButton.disabled).toBe(false);
+    await userEvent.click(exportButton);
+    expect(screen.getByRole('dialog', { name: 'Export Log' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }));
+    expect(exportLog).toHaveBeenCalledWith('candump');
+    expect((await screen.findByRole('alert')).textContent).toContain("There isn't enough memory to build the exported file.");
   });
 
   it('shows the format of an open log next to its frame count', async () => {

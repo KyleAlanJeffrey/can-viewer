@@ -1292,6 +1292,65 @@ input[type='checkbox'] {
   border-top: 1px solid var(--hairline);
 }
 
+/* Export Log: one row per format, its note under the name. */
+.export-formats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.export-format {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.export-format:hover {
+  background: var(--hover-wash);
+}
+
+.export-format:has(input:checked) {
+  background: var(--selected-row);
+  border-color: var(--hairline);
+}
+
+.export-format input {
+  margin: 1px 0 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ochre-control);
+}
+
+.export-format-name {
+  font-weight: 500;
+}
+
+.export-format-extension {
+  margin-left: 4px;
+  color: var(--slate);
+  font-weight: 400;
+}
+
+.export-format-note {
+  grid-column: 2;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.export-note {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
 /* Narrow windows: the side panes float over the content instead of squeezing it. */
 .scrim {
   display: none;

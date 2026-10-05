@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, FileText, Lock, PanelLeft, PanelRight, Search, X } from 'lucide-react';
+import { AlertTriangle, FileDown, FileText, Lock, PanelLeft, PanelRight, Search, X } from 'lucide-react';
 import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
+import { ExportLogSheet } from './components/ExportLogSheet';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
@@ -100,6 +101,7 @@ export function App({ core }: { core: CoreApi }) {
   const [dbcsChangedElsewhere, setDbcsChangedElsewhere] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(() => !narrow());
   const [inspectorOpen, setInspectorOpen] = useState(() => !narrow());
@@ -667,6 +669,10 @@ export function App({ core }: { core: CoreApi }) {
               <FileText size={16} strokeWidth={1.5} />
               <span className="label">Open DBC&hellip;</span>
             </button>
+            <button className="toolbar-button" onClick={() => setExportOpen(true)} disabled={!!busy || !log}>
+              <FileDown size={16} strokeWidth={1.5} />
+              <span className="label">Export Log&hellip;</span>
+            </button>
             <button
               className={showView && meta.hasPrimary ? 'button' : 'primary'}
               onClick={() => logInput.current?.click()}
@@ -808,6 +814,7 @@ export function App({ core }: { core: CoreApi }) {
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
       {dragOver && <div className="drop-overlay">Drop a log or DBC files to open them</div>}
+      {log && <ExportLogSheet open={exportOpen} onClose={() => setExportOpen(false)} core={core} log={log} run={run} />}
     </div>
   );
 }

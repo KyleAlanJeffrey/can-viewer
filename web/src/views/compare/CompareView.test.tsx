@@ -274,6 +274,12 @@ describe('results', () => {
     expect(await screen.findByText('Buses matched by order: can0 = vcan0')).toBeTruthy();
   });
 
+  it('says how buses were paired on logs that look the same', async () => {
+    renderInShell(CompareView, { core: compareCore([{ ...steady, busB: 'vcan0' }]) });
+    expect(await screen.findByRole('heading', { name: 'These logs look the same' })).toBeTruthy();
+    expect(screen.getByText('Buses matched by order: can0 = vcan0')).toBeTruthy();
+  });
+
   it('swaps the logs through the shell', async () => {
     const swapCompareLog = vi.fn(async () => true);
     const { user } = renderInShell(CompareView, { core: compareCore(), swapCompareLog });

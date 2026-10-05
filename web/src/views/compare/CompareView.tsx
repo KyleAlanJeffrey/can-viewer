@@ -204,6 +204,7 @@ export function CompareView({ ctx }: ViewProps) {
                 These logs look the same
               </h2>
               <p className="hint">No differences found with the current ignore rules.</p>
+              {matchedBuses && <p className="hint">Buses matched by order: {matchedBuses}</p>}
               <p className="cmp-same-count">
                 0 changed IDs &middot; {formatCount(results.length)} compared
               </p>

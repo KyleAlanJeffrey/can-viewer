@@ -137,6 +137,8 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     scanSignals: notInFake('scanSignals'),
     setDatabases: () => Promise.resolve(),
     exportDbc: notInFake('exportDbc'),
+    setTraceFilter: notInFake('setTraceFilter'),
+    countFilterMatches: notInFake('countFilterMatches'),
     exportLog: notInFake('exportLog'),
     ...overrides,
   };

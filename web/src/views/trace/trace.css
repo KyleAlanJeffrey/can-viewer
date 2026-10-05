@@ -1,0 +1,90 @@
+/* Trace view: the filter bar over the table and its empty state. The sheet's styles load with it. */
+.tv-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  min-height: 48px;
+  padding: 8px 16px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.tv-chips,
+.tv-picked {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 2px 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.tv-chip .mono {
+  font-size: 12px;
+}
+
+.tv-chip-lead,
+.tv-chip-name {
+  color: var(--slate);
+}
+
+.tv-count {
+  margin-left: auto;
+  color: var(--slate);
+  white-space: nowrap;
+}
+
+.tv-empty {
+  flex: 1;
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  padding: 32px 24px;
+  background: var(--paper);
+}
+
+.tv-empty-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 440px;
+  text-align: center;
+}
+
+.tv-empty-inner > svg {
+  color: var(--slate);
+}
+
+.tv-empty-title {
+  font-size: 17px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.tv-empty-lede {
+  color: var(--slate);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.tv-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}

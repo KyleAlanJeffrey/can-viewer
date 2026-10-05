@@ -25,6 +25,7 @@ interface Props {
 /** Logs A and B side by side, with Replace... for each and Swap between them. */
 export function LogCards({ logA, logB, reading, notKept, onReplaceA, onPickB, onDropB, onSwap }: Props) {
   const [dragging, setDragging] = useState(false);
+  const capture = logA.format === 'capture';
 
   // The shell opens anything dropped elsewhere as log A; a drop here is log B.
   const onDragOver = (e: DragEvent) => {
@@ -44,7 +45,14 @@ export function LogCards({ logA, logB, reading, notKept, onReplaceA, onPickB, on
   return (
     <header className="content-header cmp-files">
       <LogCard letter="A" log={logA} action={<button type="button" className="button" onClick={onReplaceA} disabled={!!reading} aria-label={'Replace log A\u2026'}>Replace&hellip;</button>} />
-      <button type="button" className="cmp-swap" onClick={onSwap} disabled={!logB || !!reading} aria-label="Swap logs A and B">
+      <button
+        type="button"
+        className="cmp-swap"
+        onClick={onSwap}
+        disabled={!logB || !!reading || capture}
+        aria-label="Swap logs A and B"
+        title={capture ? "A capture can't be swapped. Save it, then open the saved file to swap it." : undefined}
+      >
         <ArrowLeftRight size={18} strokeWidth={1.5} aria-hidden="true" />
         <span aria-hidden="true">Swap</span>
       </button>

@@ -25,7 +25,9 @@ Used when present, with a fallback otherwise:
 
 | Feature | Used for |
 |---|---|
-| `showSaveFilePicker` (File System Access API, Chromium only) | Export DBC... saves through the browser's save dialog, and the DBC counts as exported only once the file is written; a cancelled dialog leaves it edited. Elsewhere the export is a download, which gives no completion signal, so the DBC counts as exported once the download starts. Export Log... works the same way: with the save dialog the log is converted only once a file is chosen, and its button reads Export...; elsewhere it reads Download and the converted file is downloaded. |
+| `showSaveFilePicker` (File System Access API, Chromium only) | Export DBC... and Save Capture... save through the browser's save dialog, and the DBC counts as exported (the capture as saved) only once the file is written; a cancelled dialog leaves it as it was. Elsewhere they are downloads, which give no completion signal, so they count as done once the download starts. Export Log... works the same way: with the save dialog the log is converted only once a file is chosen, and its button reads Export...; elsewhere it reads Download and the converted file is downloaded. |
+| Web Serial (`navigator.serial`, Chromium desktop only) | Live capture from slcan adapters (see "Live capture" below). Without it, Capture... explains that live capture needs Chrome or Edge on a desktop computer. |
+| WebUSB (`navigator.usb`, Chromium only) | Live capture from gs_usb (candleLight) adapters. |
 | Service workers and Cache Storage | Opening the app with no network (see "Offline and install" below). Without them the app works online only. |
 
 ### Offline and install
@@ -44,7 +46,7 @@ Notes:
 
 - `crypto.randomUUID` exists only in secure contexts, so the app must be served over HTTPS or from `localhost`. A dev server opened over plain HTTP on a LAN address cannot load DBCs.
 - When IndexedDB is unavailable (private windows, blocked site data) or full, the app still works but cannot restore the session after a reload. It tells the user when a log could not be kept.
-- The production Content-Security-Policy (`web/public/_headers`) allows scripts only from the app's origin plus `'wasm-unsafe-eval'`, which wasm compilation needs. `media-src blob:` lets the video sync panel play the local file the user chose through its object URL; no other media source is allowed.
+- The production Content-Security-Policy (`web/public/_headers`) allows scripts only from the app's origin plus `'wasm-unsafe-eval'`, which wasm compilation needs. `media-src blob:` lets the video sync panel play the local file the user chose through its object URL; no other media source is allowed. Live capture needs no other origin. The Permissions-Policy header there names `serial=(self)` and `usb=(self)`, so only the app's own origin may reach serial and USB devices.
 - Video sync plays whatever the browser can decode; the app converts nothing. MP4 with H.264 video plays in every supported browser. WebM (VP8, VP9, AV1) plays in Chrome, Edge and Firefox, and in Safari on recent macOS. HEVC (H.265), which phones often record, plays in Safari and in Chrome or Edge only where the system has a decoder. MKV and AVI files often do not play. A file that does not play shows an error in the panel saying so. Only Chromium was checked by hand.
 - The core runs on wasm32, so its memory is capped at 4 GiB, and a browser may allow less. In the spike, a 552 MB, 10M-frame candump log used about 654 MB of wasm memory (see [README.md](README.md)). An MF4 file is held whole while it is read, on top of its frames, in a buffer sized from the file's size: a 112 MB, 10M-frame MF4 from `sample-gen convert` uses about 610 MB, a 178 MB, 16M-frame one about 920 MB, and an uncompressed one near the 1 GiB limit (1.07 GB, 12.9M frames) about 1.7 GB. The frame store is pre-sized from the file size, for at most 20M frames (about 520 MB); a log with more grows it as it is read. In the Compare view the second log has its own frame store in the same wasm memory, so two large logs need about the memory of both. Log B gets what is left of a 2 GiB budget once log A's memory is counted: a log B that its size and format suggest would need more (about 40 bytes per frame it likely holds, plus the file itself for MF4) is refused with a message before any frame is stored, and log B's frame store is reserved in a way that can fail without harm, so log A stays open. A log B with far more frames than its size suggests can still run the engine out of memory, which restarts it and loses both logs.
 
@@ -174,6 +176,51 @@ File sizes from the 1M-frame demo (55 MB as candump), in bytes per frame: candum
 
 Memory: the core builds the whole file in its own memory, in 8 MiB chunks, before handing it to the worker a chunk at a time, freeing each as it goes; the worker adds each chunk to the file (a Blob) as it arrives, so only one chunk is held twice at a time. So an export needs memory for the file on top of the log, and the browser keeps its own copy of the file until it is saved. For the 10M-frame demo (about 654 MB of wasm memory), a TRC export adds about 850 MB and an MF4 one about 120 MB. Wasm memory does not shrink, so the engine memory shown in the toolbar stays at its peak until the page is reloaded. The BLF and MF4 writers allocate their buffers (under 1 MB and about 3 MB) before writing, and the file's chunks are allocated as they fill, all in a way that can fail without harm: when memory runs out, the export fails with "There isn't enough memory to build the exported file." and the log stays open.
 
+## Live capture
+
+Capture... records frames from a CAN adapter plugged into the computer, in the browser. Nothing is uploaded: frames go from the adapter to the tab's own engine.
+
+Browsers: Chrome or Edge on a desktop computer (Windows, macOS, Linux, ChromeOS), over HTTPS or from `localhost`. Live capture uses Web Serial (Chrome and Edge 89 and later) and WebUSB (61 and later); the app looks for the APIs rather than the browser, so another Chromium browser that has them works too. Firefox and Safari have neither: Capture... then explains what is needed, and the rest of the app works as before.
+
+Adapters:
+
+| Kind | Examples | Browser API | Notes |
+|---|---|---|---|
+| slcan (Lawicel) | CANable and CANable 2 with slcan firmware, USBtin, Lawicel CANUSB, other slcan adapters | Web Serial | Classic CAN, plus CAN FD frames (`d`, `D`, `b`, `B`) from adapters that send them |
+| gs_usb | candleLight, CANable with candleLight firmware, other adapters the Linux `gs_usb` driver binds (USB IDs 1D50:606F, 1209:2323, 1CD2:606F, 16D0:10B8) | WebUSB | Classic CAN only; the first channel only |
+
+slcan (`web/src/capture/slcan.ts`):
+
+- The serial port is opened at 115200 baud. USB adapters that show up as a virtual serial port (CDC-ACM) ignore the baud rate; an adapter behind a UART at another baud rate is not supported yet.
+- Start: `C` (close, in case the channel was left open; its answer is not checked), then `V` (version), only to learn whether the adapter answers commands at all, then `S0` to `S8` for 10, 20, 50, 100, 125, 250, 500, 800 kbit/s or 1 Mbit/s, then `O` to open. A CR (or a reply line such as `V1013`) means OK and BEL an error. An adapter that answers nothing is fine: CANable's slcan firmware never answers, so, as `slcand` and python-can do, no answer counts as success, waiting 100 ms for a BEL rather than a second for an answer. Only a BEL or a failed write fails the start. Stop sends `C` and closes the port; leaving the page sends `C` without waiting.
+- Listen only: an adapter that answers is sent `L`; if it refuses, `M1` (CANable's silent mode), then `O`. Listen-only counts as confirmed only when an answering adapter accepts `L` or `M1`. Otherwise, including every adapter that answers nothing, the Capture sheet says the adapter can't confirm listen-only mode and may acknowledge frames on the bus, and asks "Start anyway?"; the adapter is not opened until the user agrees. A silent adapter is then sent `M1` before `O`, which a CANable takes as silent mode, but the status line never says "listen only" for it.
+- Frames read: `t`/`T` (classic), `r`/`R` (remote), `d`/`D` (CAN FD) and `b`/`B` (CAN FD with bit rate switch), with FD lengths from DLC codes 9 to F. A 4-digit timestamp after the data (`Z1` mode) is skipped. A line that is not a frame, or a BEL from the adapter, is counted as a problem and the capture goes on.
+- Bitrates other than the nine `S` codes (`s` with bit timing registers) are not offered.
+- CAN FD: frames sent by an FD adapter are read, but the FD data bitrate is not set. Adapters that support it (CANable 2 firmware with its `Y` command, for example) keep their own default data bitrate, so an FD bus at another data rate is not received correctly. Setting it is on the list in TODO.md.
+- Remote frames are stored without their DLC, as every log format's frames are, so Save Capture... writes `123#R` rather than `123#R8`.
+
+gs_usb (`web/src/capture/gsUsb.ts`):
+
+- The protocol of the Linux `gs_usb` driver: host format, then the device's bit timing limits (`BT_CONST`), then bit timing for the chosen bitrate at the sample point CiA 301 recommends, as near as the limits allow (87.5% up to 800 kbit/s, 75% above; at most 4,096 prescalers are tried), then `MODE` start, listen only when the device's features include it. A device without listen-only mode is not started until the user agrees in the Capture sheet, as for slcan. Stop resets the device, and leaving the page sends the reset without waiting.
+- Only frames of channel 0 are kept; frames another channel reports are skipped.
+- An overflow flag from the device is counted as a problem ("frames were lost").
+- Linux: the kernel's `gs_usb` driver claims the adapter, so the browser cannot open it until the driver is unbound from it (for example `echo -n <bus-port>:1.0 | sudo tee /sys/bus/usb/drivers/gs_usb/unbind`), and the user needs write access to the USB device (a udev rule). Web Serial on Linux likewise needs access to the serial device, usually through the `dialout` group.
+- Windows: candleLight firmware asks Windows for the WinUSB driver itself; an adapter given another driver cannot be opened from the browser.
+
+Timestamps: frames are timed with the computer's monotonic clock (`performance.now()`) when their bytes reach the page, counted from the wall-clock time the capture started. The adapter's own timestamps (slcan `Z1`, gs_usb hardware timestamps) are not used: slcan's wrap every minute and need no setup to skip, and one clock for every adapter keeps captures comparable. Frames that arrive in the same USB transfer share a time, and USB polling and the browser add jitter of about a millisecond or more, so the times suit trends, plots and ordering, not microsecond timing analysis.
+
+Limits:
+
+- Frames are kept in the tab's memory, like an opened log, at about 65 bytes a frame (see "Browsers" above for the wasm memory cap). A busy 500 kbit/s bus (about 4,000 frames/s) fills about 1 GB an hour.
+- Against a budget of 2 GB, so the views and saving have room: at about 16.5 million frames (half the budget) the app says to stop and save soon, and at about 24.7 million (three quarters) it stops the capture by itself, keeping the frames. If the engine still can't grow its frame store, the batch is refused, the capture stops with a message, and the frames before it are kept.
+- Frames reach the engine in batches about every 100 ms, or at once when 5,000 are waiting, so a capture keeps up in a background tab whose timers the browser slows down. The status line updates twice a second. The views go over every frame when they refresh, so they refresh every 500 ms plus 1 ms per 2,000 frames (about every 1.5 s at 2 million frames, every 5.5 s at 10 million), keeping their cost about level; plots of decoded signals refresh every fourth time.
+- Trace filters are off while recording, since the filtered rows are found once and new frames would not join them; they work on the capture once it is stopped. Video can't be added to a capture until it is stopped either.
+- The Compare view waits for a capture to stop, and starting a capture drops its log B. A stopped capture can be log A, but Swap is disabled for it, since the engine keeps a capture apart from a file it read; save it and open the saved file to swap it.
+- One adapter, one bus (stored as `can0`) and one capture at a time. The app never sends a frame; an adapter not in listen-only mode still acknowledges the frames it receives, as any active node does.
+- A capture is not kept across a reload until it is saved (see "Saved sessions" below); the app asks before closing the tab, replacing or closing an unsaved capture.
+- Save Capture... writes the capture as a candump log (see "Log export" above), with absolute times from the computer's clock at the start of the capture. Once the capture is stopped, Export Log... saves it in any other format too; it is disabled while recording.
+- Live capture is experimental: real adapters have not been tested yet, and the protocol handling is tested against simulated devices only (including a silent, CANable-like slcan adapter).
+
 ## DBC files
 
 Import (`crates/can-dbc-model`) reads:
@@ -235,6 +282,7 @@ Parameter groups longer than 8 bytes (DM1 with several trouble codes is the comm
 - Changing a parameter, its order, its units or its meaning.
 - Changing the fields, nullability, units or meaning of a type in `api.ts`.
 - Changing the packed row layout (`ROW_STRIDE` and the offsets in `web/src/core/rows.ts` and `Session::rows` in `crates/can-wasm/src/lib.rs`).
+- Changing the packed capture frame layout (`web/src/core/captureFrames.ts` and `Session::push_frames`).
 
 When the contract changes:
 
@@ -251,8 +299,8 @@ The last session is kept in the browser's IndexedDB:
 
 - Database `freecan-studio`, version 1, object store `session`.
 - Keys:
-  - `log`: the log file as a Blob, with its name.
-  - `compare`: the Compare view's second log (log B), as a Blob with its name, like `log`. Opening or closing the main log drops it; Swap exchanges it with `log`.
+  - `log`: the log file as a Blob, with its name. A live capture is written here only when it is saved (as the candump file saved), so an unsaved capture is not restored after a reload.
+  - `compare`: the Compare view's second log (log B), as a Blob with its name, like `log`. Opening or closing the main log, or starting a live capture, drops it; Swap exchanges it with `log`.
   - `dbcs`: `{ revision, dbcs }`: the loaded DBCs (`LoadedDbc[]`, including each full `Database`, whether it has unexported edits and when it was last exported) under a revision number. A tab writes the key only if the store still holds the revision it last read or wrote, checked in the same transaction, so two tabs cannot overwrite each other's edits; the losing tab keeps its changes in memory and asks for a reload. Each successful write is announced on the `freecan-studio` `BroadcastChannel` as `{ type: 'dbcs', revision }`. A bare array, as the first builds wrote, reads as revision 0.
   - `ui`: the open view, selection, pinned time and plots.
   - `views`: per-view state.

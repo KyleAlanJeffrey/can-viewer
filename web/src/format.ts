@@ -7,6 +7,11 @@ export function formatCount(n: number): string {
   return count.format(n);
 }
 
+/** `1 frame`, `2,000 frames`. */
+export function formatCountOf(n: number, one: string, many: string): string {
+  return `${formatCount(n)} ${n === 1 ? one : many}`;
+}
+
 export function formatBytes(n: number): string {
   if (n < 1e3) return `${n} B`;
   if (n < 1e6) return `${(n / 1e3).toFixed(0)} kB`;
@@ -39,6 +44,7 @@ const LOG_FORMAT_NAMES: Record<LogFormat, string> = {
   csv: 'CSV',
   blf: 'BLF',
   mf4: 'MF4',
+  capture: 'Capture',
 };
 
 export function logFormatName(format: LogFormat): string {

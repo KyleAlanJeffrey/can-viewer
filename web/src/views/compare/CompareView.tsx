@@ -32,6 +32,19 @@ const ONLY_IN_B = 'Only in log B: swap the logs to open it in Reverse Engineer.'
 
 /** Compares the open log (A) with a second log (B): which IDs and bytes behave differently. */
 export function CompareView({ ctx }: ViewProps) {
+  if (ctx.capturing) {
+    return (
+      <div className="cmp">
+        <div className="cmp-intro">
+          <p className="lede">A capture can be compared once it stops. Stop it, then open a second log here to compare it with.</p>
+        </div>
+      </div>
+    );
+  }
+  return <CompareLogs ctx={ctx} />;
+}
+
+function CompareLogs({ ctx }: ViewProps) {
   const { core, log, logVersion, query, dbcs } = ctx;
   const [logB, setLogB] = useState<LogInfo | null | undefined>(undefined);
   const [reading, setReading] = useState<Reading | null>(null);

@@ -10,14 +10,16 @@ class FakeWorker {
   onerror: ((e: ErrorEvent) => void) | null = null;
   onmessageerror: (() => void) | null = null;
   readonly requests: Request[] = [];
+  readonly transfers: Transferable[][] = [];
   terminated = false;
 
   constructor() {
     FakeWorker.all.push(this);
   }
 
-  postMessage(request: Request) {
+  postMessage(request: Request, transfer: Transferable[] = []) {
     this.requests.push(request);
+    this.transfers.push(transfer);
   }
 
   terminate() {
@@ -142,6 +144,24 @@ describe('WebCore', () => {
     await expect(core.rowCount(1)).rejects.toThrow('Failed to fetch the wasm module');
     expect(FakeWorker.all).toHaveLength(1);
     expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('passes a capture its name, and its frames packed and transferred', async () => {
+    const core = new WebCore();
+    const [worker] = FakeWorker.all;
+    const info = { format: 'capture', frames: 0 };
+
+    const started = core.startCapture('capture.log', 'can0', 1000);
+    expect(worker.requests[0]).toEqual(expect.objectContaining({ method: 'startCapture', args: ['capture.log', 'can0', 1000] }));
+    worker.reply('startCapture', { result: info });
+    expect(await started).toEqual(info);
+
+    const appended = core.appendFrames([{ timeNs: 5, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(9) }]);
+    const [packed] = worker.requests[1].args as [Uint8Array];
+    expect(packed.length).toBe(15);
+    expect(worker.transfers[1]).toEqual([packed.buffer]);
+    worker.reply('appendFrames', { result: { ...info, frames: 1 } });
+    expect(await appended).toEqual({ ...info, frames: 1 });
   });
 
   it('passes the compare calls through and unpacks log B byte lanes', async () => {

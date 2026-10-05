@@ -34,7 +34,9 @@ let results = 0;
 /** Every frame (or one ID's, or the filtered ones) over the plot card, with the selected ID in the inspector. */
 export function TraceView({ ctx }: ViewProps) {
   const { core, log, ids, selected, plots, pinnedTime, setPinnedTime, setError, logVersion } = ctx;
-  const [filters, setFilters] = useViewState<TraceFilters | null>('trace.filters', null, 'log');
+  const [storedFilters, setFilters] = useViewState<TraceFilters | null>('trace.filters', null, 'log');
+  // The filtered rows are found once, so a capture's new frames would never join them.
+  const filters = ctx.capturing ? null : storedFilters;
   const [sheetOpen, setSheetOpen] = useState(false);
   // A new key per opening, so the sheet's draft starts from the applied filters.
   const [sheetKey, setSheetKey] = useState(0);
@@ -139,6 +141,7 @@ export function TraceView({ ctx }: ViewProps) {
         onEdit={openSheet}
         onRemove={(chip) => apply(chip.without)}
         onClear={() => apply(null)}
+        disabledReason={ctx.capturing ? 'Filters apply once the capture stops.' : undefined}
       />
       {sheetOpen && (
         <ChunkBoundary key={sheetKey} message="Couldn't load the filters.">
@@ -179,6 +182,7 @@ export function TraceView({ ctx }: ViewProps) {
           filterKey={result ? FILTERED_ROWS : selected}
           rowCount={result ? result.count : total}
           logVersion={logVersion}
+          follow={ctx.capturing}
           channels={log.channels}
           nameOf={nameOf}
           pinnedTime={pinnedTime}

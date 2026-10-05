@@ -15,8 +15,10 @@ export const EXT_FLAG = 0x8000_0000;
 /** What `CoreApi.rowBytes` gives for a byte past the end of a frame. */
 export const NO_BYTE = 0xffff;
 
-/** A log file format the engine reads. */
-export type LogFormat = 'candump' | 'asc' | 'trc' | 'csv' | 'blf' | 'mf4';
+/** A log file format the engine reads, or `capture` for frames recorded live (`startCapture`). */
+export type LogFormat = 'candump' | 'asc' | 'trc' | 'csv' | 'blf' | 'mf4' | 'capture';
+/** A format `exportLog` writes: every file format, not `capture`. */
+export type ExportFormat = Exclude<LogFormat, 'capture'>;
 
 export interface LogInfo {
   name: string;
@@ -39,6 +41,19 @@ export interface LogInfo {
    * counted in `frames` as well.
    */
   reassembledFrames: number;
+}
+
+/** One frame received by a live capture adapter. See `CoreApi.appendFrames`. */
+export interface CaptureFrame {
+  /** Nanoseconds since the capture started (`startedAtMs` of `startCapture`). */
+  timeNs: number;
+  /** The ID without flags: 11 or 29 bits. For an error frame, its error class. */
+  id: number;
+  extended: boolean;
+  /** `FLAG_FD`, `FLAG_BRS`, `FLAG_RTR` and `FLAG_ERROR`, as received. */
+  flags: number;
+  /** The payload, at most 64 bytes; empty for a remote frame. */
+  data: Uint8Array;
 }
 
 export interface Progress {
@@ -330,6 +345,20 @@ export interface ByteComparison {
  */
 export interface CoreApi {
   openLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>;
+  /**
+   * Start a live capture of one bus, named `channel`, in place of the log, as `openLog` replaces
+   * it: series are freed and the databases kept. `startedAtMs` is the wall-clock time (ms since
+   * the Unix epoch) that frame times count from. Returns the empty capture's `LogInfo`, with
+   * `format` 'capture' and `name` set to `name`.
+   */
+  startCapture(name: string, channel: string, startedAtMs: number): Promise<LogInfo>;
+  /**
+   * Add frames to the running capture, in the order received. Every other call sees them once
+   * this resolves. Returns the capture so far. Rejects when no capture is running.
+   */
+  appendFrames(frames: CaptureFrame[]): Promise<LogInfo>;
+  /** End the running capture, putting its frames in time order if they are not. Returns it. */
+  endCapture(): Promise<LogInfo>;
   idSummary(): Promise<IdSummary[]>;
   rowCount(key: number): Promise<number>;
   rows(key: number, start: number, count: number): Promise<RowBatch>;
@@ -432,7 +461,7 @@ export interface CoreApi {
    * it over, so a log needs about the file's size on top of itself; a log too large for that
    * rejects, and stays open.
    */
-  exportLog(format: LogFormat): Promise<Blob>;
+  exportLog(format: ExportFormat): Promise<Blob>;
   /**
    * Called after the engine stopped and was started again: the log and every series are gone,
    * calls in flight were rejected, and the databases were set again. Returns an unsubscribe.

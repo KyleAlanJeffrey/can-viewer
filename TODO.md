@@ -48,6 +48,23 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land
 - [x] Recheck the CSP quoted on the home page if `web/public/_headers` changes (CI now runs `scripts/check-csp-quote.sh`)
 
+## Live capture
+
+- [x] Live capture in the web app: slcan adapters over Web Serial and gs_usb (candleLight) adapters over WebUSB, frames batched into the core about every 100 ms, live Trace, Overview and Plot, Stop, and Save Capture... as a candump log. Tested against simulated devices only
+- [ ] Try live capture with real adapters (owner): a CANable with slcan firmware and one with candleLight firmware at least, a USBtin or Lawicel CANUSB if at hand; Chrome or Edge on macOS, Windows and Linux (Linux needs the `gs_usb` driver unbound and udev access, see COMPATIBILITY.md). Check each bitrate used in practice, listen only (`L` on a USBtin; `M1` and the "Start anyway?" question on a CANable, whose slcan firmware answers no command; that a CANable in `M1` really sends no ACK), the frame count against `candump` on the same bus, unplugging mid-capture, Stop, Save Capture... and reopening the file, and a long capture on a busy bus
+- [x] Site copy: the CANalyzer alternative page said the app works on recorded logs only and can't connect to CAN hardware or capture; it and the home page now mention live capture in Chrome and Edge
+- [ ] Trace filters while recording: extend the filtered rows as frames are appended, rather than turning filters off until Stop
+- [ ] Use the adapter's own timestamps when it has them (slcan `Z1`, unwrapping its 60 s counter; gs_usb hardware timestamps) for sub-millisecond timing; today frames get the host clock when their bytes arrive
+- [ ] gs_usb: CAN FD (data bitrate through `BT_CONST_EXT` and `DATA_BITTIMING`) and a choice of channel on multi-channel adapters; today classic CAN on the first channel
+- [ ] slcan: a serial speed setting for adapters behind a UART at a baud rate other than 115200, and custom bit timing (`s`) for bitrates outside `S0` to `S8`
+- [ ] Name the capture's bus (always `can0` today), so a DBC scoped to another bus applies to it
+- [ ] Overview bus load assumes 500 kbit/s for every log; use the capture's bitrate, and let the user set it for opened logs
+- [x] Warn before a long capture reaches the wasm memory cap (about 65 bytes a frame), and stop it by itself before it does
+- [ ] Offer a rolling capture that keeps the last N minutes
+- [ ] Keep a remote frame's DLC (slcan `r1238`, gs_usb `can_dlc`), so candump export writes `123#R8`; the frame store has no field for it, so every format's reader drops it today
+- [ ] slcan CAN FD: set the data bitrate (the `Y` command of CANable 2 firmware) for FD buses
+- [ ] Decide whether an unsaved capture should survive a reload (writing it to IndexedDB in chunks as it runs); today only a saved one comes back
+
 ## Bugs
 
 - [x] DBCs saved in the browser before J1939 support have no `j1939` flag, so they only match by exact ID until they are opened again

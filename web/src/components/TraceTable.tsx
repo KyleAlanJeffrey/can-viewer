@@ -61,6 +61,8 @@ interface Props {
   rowCount: number;
   /** Changes whenever a new log is loaded. */
   logVersion: number;
+  /** Keep the newest rows in view as they arrive, unless the table is scrolled away from the end. */
+  follow?: boolean;
   channels: string[];
   /** Message name of an ID (DBC convention, bit 31 for extended) on a bus, if a DBC names it. */
   nameOf: (channel: number, id: number) => string | undefined;
@@ -76,7 +78,7 @@ interface Props {
  * Canvas trace view with a logical scrollbar: only the visible rows are ever fetched, so it
  * scrolls tens of millions of frames without hitting the browser's maximum element height.
  */
-export function TraceTable({ core, filterKey, rowCount, logVersion, channels, nameOf, pinnedTime, onPin, matchedBytes }: Props) {
+export function TraceTable({ core, filterKey, rowCount, logVersion, follow = false, channels, nameOf, pinnedTime, onPin, matchedBytes }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -90,6 +92,8 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
   // The pin and filter the selection already matches, so a pin made by clicking a row isn't searched for.
   const matchedPin = useRef<{ time: number; key: number } | null>(null);
   const wheelRemainder = useRef(0);
+  /** Whether the last rows were in view, so new rows scroll in when following. */
+  const atEnd = useRef(true);
   const fontsReady = useFontsReady();
   const rowIdPrefix = useId();
 
@@ -111,14 +115,20 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, channels, na
   }, []);
 
   useEffect(() => {
-    setTop(0);
+    atEnd.current = true;
+    setTop(follow ? maxTop : 0);
     setCursor(0);
+    // Only a new filter or log starts over; `follow` and `maxTop` are read as they are then.
   }, [filterKey, logVersion]);
   useEffect(() => {
     setSelectedFrame(null);
     matchedPin.current = null;
   }, [logVersion]);
-  useEffect(() => setTop((t) => Math.min(t, maxTop)), [maxTop]);
+  useEffect(() => setTop((t) => (follow && atEnd.current ? maxTop : Math.min(t, maxTop))), [maxTop, follow]);
+  useEffect(() => {
+    atEnd.current = top >= maxTop;
+    // Judged when the user (or a pin) moves the rows, not when more rows arrive.
+  }, [top]);
 
   useEffect(() => {
     if (pinnedTime === null || rowCount === 0) return;

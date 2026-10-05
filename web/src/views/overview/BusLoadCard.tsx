@@ -41,9 +41,14 @@ interface Props {
 export function BusLoadCard({ core, log, logVersion }: Props) {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const { channels, durationS } = log;
+  // A live capture redraws as it grows without going back to loading in between.
+  const shownLog = useRef(logVersion);
 
   useEffect(() => {
-    setState({ status: 'loading' });
+    if (shownLog.current !== logVersion) {
+      shownLog.current = logVersion;
+      setState({ status: 'loading' });
+    }
     if (durationS <= 0 || channels.length === 0) {
       setState({ status: 'ready', x: new Float64Array(0), loads: [] });
       return;

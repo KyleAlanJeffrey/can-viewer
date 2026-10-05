@@ -1,7 +1,7 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { CompareOptions, Database, FindRule, FrameFilter, LogFormat, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
+import type { CompareOptions, Database, ExportFormat, FindRule, FrameFilter, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 
 const CHUNK_BYTES = 8 << 20;
@@ -90,6 +90,16 @@ const handlers = {
       throw err;
     }
   },
+  startCapture(name: string, channel: string, startedAtMs: number) {
+    session.free();
+    session = freshSession();
+    compareMeta = null;
+    logMeta = { name, parseMs: 0 };
+    session.start_capture(channel, startedAtMs);
+    return withMemory(session.log_info(), logMeta);
+  },
+  appendFrames: (packed: Uint8Array) => withMemory(session.push_frames(packed), logMeta),
+  endCapture: () => withMemory(session.finish_capture(), logMeta),
   idSummary: () => JSON.parse(session.id_summary()),
   rowCount: (key: number) => session.row_count(key),
   rows: (key: number, start: number, count: number) => transfer(session.rows(key, start, count)),
@@ -159,7 +169,7 @@ const handlers = {
   compareFrameAt: (key: number, t: number) => transfer(session.compare_frame_at(key, t)),
   setTraceFilter: (filter: FrameFilter | null) => session.set_trace_filter(JSON.stringify(filter)),
   countFilterMatches: (filter: FrameFilter) => session.count_filter_matches(JSON.stringify(filter)),
-  exportLog(format: LogFormat) {
+  exportLog(format: ExportFormat) {
     session.export_log(format);
     // Taken a chunk at a time, so the core frees each as it is copied out, and added to the
     // Blob at once, so each copy can be collected rather than all being held to the end. A

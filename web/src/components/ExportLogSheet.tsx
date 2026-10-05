@@ -1,11 +1,11 @@
 import { useId, useState } from 'react';
-import type { CoreApi, LogFormat, LogInfo } from '../core/api';
+import type { CoreApi, ExportFormat, LogInfo } from '../core/api';
 import { formatCount } from '../format';
 import { chooseBlobFile, hasSaveDialog, type FileKind } from '../views/shared/saveFile';
 import { Sheet } from './Sheet';
 
-interface ExportFormat {
-  format: LogFormat;
+interface ExportOption {
+  format: ExportFormat;
   label: string;
   /** What the file keeps and loses, in one line. */
   note: string;
@@ -14,7 +14,7 @@ interface ExportFormat {
 
 const NUMBERED_BUSES = 'Buses are numbered, not named.';
 
-export const EXPORT_FORMATS: ExportFormat[] = [
+export const EXPORT_FORMATS: ExportOption[] = [
   {
     format: 'candump',
     label: 'candump',
@@ -70,11 +70,13 @@ interface Props {
   run: (label: string, task: () => Promise<void>) => Promise<boolean>;
   /** Called once the export has ended, been cancelled or failed. */
   onDone?: () => void;
+  /** Called with the file once it is saved. */
+  onSaved?: (format: ExportFormat, file: Blob) => void;
 }
 
 /** Pick a format to save the open log in. The file is made in the browser and never uploaded. */
-export function ExportLogSheet({ open, onClose, core, log, run, onDone }: Props) {
-  const [format, setFormat] = useState<LogFormat>(() => (log.format === 'candump' ? 'asc' : 'candump'));
+export function ExportLogSheet({ open, onClose, core, log, run, onDone, onSaved }: Props) {
+  const [format, setFormat] = useState<ExportFormat>(() => (log.format === 'candump' ? 'asc' : 'candump'));
   const id = useId();
   const saveDialog = hasSaveDialog();
 
@@ -88,7 +90,13 @@ export function ExportLogSheet({ open, onClose, core, log, run, onDone }: Props)
     void chosen
       .then(
         async (save) => {
-          if (save) await run(label, async () => save(await core.exportLog(target.format)));
+          if (!save) return;
+          const exported: { file?: Blob } = {};
+          const saved = await run(label, async () => {
+            exported.file = await core.exportLog(target.format);
+            await save(exported.file);
+          });
+          if (saved && exported.file) onSaved?.(target.format, exported.file);
         },
         // A save dialog that failed to open is shown as the export's error.
         (error: unknown) => run(label, () => Promise.reject(error)),

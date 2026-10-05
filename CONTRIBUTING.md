@@ -125,6 +125,7 @@ LC_ALL=C grep -n '[^[:print:][:space:]]' <files>
 | `web/src/views/<view>/` | One folder per view, each with its own stylesheet and class prefix |
 | `web/src/views/shared/` | Helpers shared by views |
 | `web/src/components/` | Shared components, such as `Sheet` and `Segmented` |
+| `web/src/capture/` | Live capture: the adapter interface, slcan and gs_usb adapters, frame batching and the Capture sheet. Tests drive a simulated serial port (`web/src/test/fakeSerial.ts`) |
 | `web/src/offline/` | The service worker, its registration and the build plugin that writes its precache list |
 | `web/src/styles.css` | Design tokens and shared styles |
 

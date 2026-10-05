@@ -254,12 +254,16 @@ impl FrameStore {
         self.data.reserve(payload_bytes);
     }
 
-    /// Like [`FrameStore::reserve`], but reports running out of memory instead of aborting.
+    /// [`FrameStore::reserve`], but failing rather than aborting when memory runs out. The
+    /// per-ID index still grows as frames are pushed.
+    ///
+    /// # Errors
+    /// When a column can't grow; the frames already stored are untouched.
     pub fn try_reserve(
         &mut self,
         frames: usize,
         payload_bytes: usize,
-    ) -> Result<(), std::collections::TryReserveError> {
+    ) -> Result<(), TryReserveError> {
         self.ts_ns.try_reserve(frames)?;
         self.id.try_reserve(frames)?;
         self.channel.try_reserve(frames)?;
@@ -635,6 +639,16 @@ mod tests {
             flags,
             data,
         });
+    }
+
+    #[test]
+    fn a_reservation_too_big_fails_and_keeps_the_frames() {
+        let mut s = FrameStore::new();
+        push(&mut s, 10, 0x100, &[1]);
+        assert!(s.try_reserve(usize::MAX, 0).is_err());
+        assert!(s.try_reserve(16, 128).is_ok());
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.frame(0).data, &[1]);
     }
 
     #[test]

@@ -1,8 +1,10 @@
 //! Frame types and the columnar in-memory frame store shared by the web and desktop builds.
 
+pub mod filter;
 mod store;
 pub mod tp;
 
+pub use filter::{Combine, DataRule, FrameFilter, FrameKind};
 pub use store::{frame_bits, id_key, FrameStore, IdKey, IdStats};
 
 /// Largest payload of any frame a log can hold (CAN FD). Frames reassembled from J1939

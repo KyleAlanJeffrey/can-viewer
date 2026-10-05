@@ -45,11 +45,14 @@ export function useReferences(ctx: ViewContext, pins: Pin[]): Reference[] {
   const entries = useRef(new Map<string, Entry>());
   const [, bump] = useState(0);
 
+  // A live capture's frame count grows, so its pins are decoded again as it does.
+  const frames = log?.frames ?? 0;
   const wanted = pins.map((pin) => {
     const message = messageOf(pin.key);
     const def = pin.kind === 'signal' ? (message?.signals.find((s) => s.name === pin.signal) ?? null) : null;
+    const version = `${logVersion}:${frames}`;
     const decodeKey =
-      pin.kind === 'signal' ? `${logVersion}:${pin.key}:s:${pin.signal}:${def ? JSON.stringify(def) : 'missing'}` : `${logVersion}:${pin.key}:b:${pin.byte}`;
+      pin.kind === 'signal' ? `${version}:${pin.key}:s:${pin.signal}:${def ? JSON.stringify(def) : 'missing'}` : `${version}:${pin.key}:b:${pin.byte}`;
     return { pin, def, decodeKey };
   });
   const wantedKeys = wanted.map((w) => w.decodeKey).join('\n');

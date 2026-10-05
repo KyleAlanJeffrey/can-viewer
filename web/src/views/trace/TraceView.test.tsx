@@ -112,6 +112,13 @@ describe('Trace', () => {
     expect(trace().getAttribute('aria-rowcount')).toBe(String(FRAMES + 1));
   });
 
+  it('starts at the newest frames while capturing, for every ID picked', async () => {
+    const { user, rows } = renderTrace({ capturing: true });
+    await waitFor(() => expect(rows).toHaveBeenLastCalledWith(ALL_IDS, FRAMES - VISIBLE, VISIBLE + 1));
+    await user.click(within(screen.getByRole('navigation', { name: 'Messages' })).getByRole('button', { name: /^100/ }));
+    await waitFor(() => expect(rows).toHaveBeenLastCalledWith(engine.key, engine.count - VISIBLE, VISIBLE + 1));
+  });
+
   it('puts the rows in view in the accessibility tree', async () => {
     const { rows } = renderTrace();
     await rowsShown(rows);

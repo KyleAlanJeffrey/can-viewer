@@ -1331,6 +1331,29 @@ input[type='checkbox'] {
   }
 }
 
+/* The capture buttons go icon-only before Open DBC, Save Capture first, so the log name keeps its room. */
+@media (max-width: 1599px) {
+  .toolbar-button.hide-label-below-1600 .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 1439px) {
+  .toolbar-button.hide-label-below-1440 .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 /* The view switcher needs the toolbar's middle, so Open DBC goes icon-only well before phone widths. */
 @media (max-width: 1279px) {
   .toolbar-button {

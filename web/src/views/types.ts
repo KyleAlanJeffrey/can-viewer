@@ -9,8 +9,13 @@ export interface ViewContext {
   core: CoreApi;
   /** Null until a log is open. */
   log: LogInfo | null;
-  /** Bumps whenever a log is opened; reset per-log view state on it. */
+  /** Bumps whenever a log is opened or a capture started; reset per-log view state on it. */
   logVersion: number;
+  /**
+   * True while a live capture records. `log` and `ids` then grow every half second or so, and
+   * views keep the newest frames in sight.
+   */
+  capturing: boolean;
   /** One summary per bus/ID pair in the log. */
   ids: IdSummary[];
   /** Loaded DBCs in lookup order: for each ID, the first one that applies and defines it wins. */

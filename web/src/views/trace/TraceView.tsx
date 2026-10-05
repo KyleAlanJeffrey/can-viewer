@@ -33,6 +33,7 @@ export function TraceView({ ctx }: ViewProps) {
         filterKey={selected}
         rowCount={rowCount}
         logVersion={ctx.logVersion}
+        follow={ctx.capturing}
         channels={log.channels}
         nameOf={nameOf}
         pinnedTime={pinnedTime}

@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, FileText, Lock, PanelLeft, PanelRight, Search, X } from 'lucide-react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Cable, FileText, Lock, PanelLeft, PanelRight, Save, Search, Square, X } from 'lucide-react';
+import { errorText, formatBitrate, type CaptureAdapter, type CaptureSettings } from './capture/adapter';
+import { CaptureRecorder, captureName, type CaptureStatus } from './capture/recorder';
+import './capture/capture.css';
 import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
+import { Sheet } from './components/Sheet';
 import { cssVar, formatBytes, formatCount, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
+import { startFileSave } from './views/shared/saveFile';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
 import type { LoadedDbc, ViewContext, ViewId } from './views/types';
@@ -36,6 +41,22 @@ interface Resolved {
   message: MessageDef;
   dbc: LoadedDbc;
 }
+
+/** A capture that is recording. */
+interface LiveCapture {
+  recorder: CaptureRecorder;
+  adapter: string;
+  bitrate: number;
+  listenOnly: boolean;
+}
+
+/** How often a live capture's frames reach the views, and its status line updates. */
+const LIVE_REFRESH_MS = 500;
+/** Plotted signals are decoded again every this many refreshes while capturing. */
+const LIVE_PLOT_REFRESHES = 4;
+const CANDUMP_FILE = { description: 'candump log', mime: 'text/plain', extension: '.log' };
+/** Loaded apart from the app, with the adapters behind it, as most visits never capture. */
+const CaptureSheet = lazy(() => import('./capture/CaptureSheet').then((m) => ({ default: m.CaptureSheet })));
 
 const narrow = () => window.matchMedia('(max-width: 900px)').matches;
 
@@ -100,6 +121,15 @@ export function App({ core }: { core: CoreApi }) {
   const [dbcsChangedElsewhere, setDbcsChangedElsewhere] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const [live, setLive] = useState<LiveCapture | null>(null);
+  const [liveStatus, setLiveStatus] = useState<CaptureStatus | null>(null);
+  const [stopping, setStopping] = useState(false);
+  /** The open log is a capture not yet saved to a file, which a reload would lose. */
+  const [unsavedCapture, setUnsavedCapture] = useState(false);
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
+  /** What to do once the user agrees to discard an unsaved capture. */
+  const [discardThen, setDiscardThen] = useState<(() => void) | null>(null);
   const [query, setQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(() => !narrow());
   const [inspectorOpen, setInspectorOpen] = useState(() => !narrow());
@@ -119,6 +149,10 @@ export function App({ core }: { core: CoreApi }) {
   logRef.current = log;
   const plotsRef = useRef(plots);
   plotsRef.current = plots;
+  const unsavedRef = useRef(unsavedCapture);
+  unsavedRef.current = unsavedCapture;
+  // Set by hand rather than each render, so a refresh in flight sees a capture stop at once.
+  const liveRef = useRef<LiveCapture | null>(null);
   /** The signal definition each plot was decoded with, to skip decoding again when it hasn't changed. */
   const plotSignals = useRef(new Map<string, SignalDef>());
 
@@ -239,6 +273,8 @@ export function App({ core }: { core: CoreApi }) {
     setSelected(ALL_IDS);
     setPinnedTime(null);
     setNotKept(null);
+    setUnsavedCapture(false);
+    setCaptureNotice(null);
     setLogVersion((v) => v + 1);
     viewState.clearScope('log');
   }, [viewState]);
@@ -282,6 +318,8 @@ export function App({ core }: { core: CoreApi }) {
           setPlots([]);
           setSelected(ALL_IDS);
           setNotKept(null);
+          setUnsavedCapture(false);
+          setCaptureNotice(null);
           setLog(info);
           setLogVersion((v) => v + 1);
           setDbcs(dbcsRef.current);
@@ -343,6 +381,124 @@ export function App({ core }: { core: CoreApi }) {
         if (dbcsRef.current.length > 0) setView('database');
       }),
     );
+
+  /** Decode every plotted signal again, as a live capture adds frames. Run it inside `serially`. */
+  const redecodePlots = useCallback(async () => {
+    for (const plot of plotsRef.current) {
+      const [key, signal] = splitPlotId(plot.id);
+      const info = await core.decodeSignal(key, signal).catch(() => null);
+      if (!info) continue;
+      const unchanged = (p: PlotSpec) => p.id === plot.id && p.info.handle === plot.info.handle;
+      // Removed or decoded again while this ran: the new series isn't wanted.
+      if (!plotsRef.current.some(unchanged)) {
+        void core.dropSeries(info.handle);
+        continue;
+      }
+      void core.dropSeries(plot.info.handle);
+      plotsRef.current = plotsRef.current.map((p) => (unchanged(p) ? { ...p, info } : p));
+      setPlots((current) => current.map((p) => (unchanged(p) ? { ...p, info } : p)));
+    }
+  }, [core]);
+
+  /** Stop the live capture. `endedBecause` says why, when it ended without being asked to. */
+  const stopCapture = useCallback(
+    async (endedBecause?: string) => {
+      const capture = liveRef.current;
+      if (!capture) return;
+      liveRef.current = null;
+      setStopping(true);
+      try {
+        await serially(async () => {
+          let info: LogInfo;
+          try {
+            info = await capture.recorder.stop();
+          } finally {
+            setLive(null);
+            setLiveStatus(null);
+          }
+          const status = capture.recorder.status();
+          if (info.frames === 0) {
+            showNoLog();
+            setError(endedBecause ?? 'No frames came from the adapter. Check the bitrate, and that the adapter is connected to a running bus.');
+            return;
+          }
+          const nextIds = await core.idSummary();
+          setLog(info);
+          setIds(nextIds);
+          await redecodePlots();
+          if (endedBecause) setError(`${endedBecause} The frames captured until then are kept.`);
+          if (status.problems > 0) {
+            const count = `${formatCount(status.problems)} ${status.problems === 1 ? 'problem' : 'problems'}`;
+            setCaptureNotice(`${count} during the capture. The last: ${status.lastProblem}`);
+          }
+        });
+      } catch (e) {
+        showNoLog();
+        setError(`The capture couldn't be finished: ${errorText(e)}`);
+      } finally {
+        setStopping(false);
+      }
+    },
+    [core, serially, showNoLog, redecodePlots],
+  );
+
+  /** Start capturing from `adapter`. Rejects, leaving the open log as it was, if it can't start. */
+  const startCapture = useCallback(
+    (adapter: CaptureAdapter, settings: CaptureSettings) =>
+      serially(async () => {
+        const recorder = new CaptureRecorder(core, adapter, captureName(new Date()));
+        const { info, listenOnly } = await recorder.start(settings);
+        const capture: LiveCapture = { recorder, adapter: adapter.label, bitrate: settings.bitrate, listenOnly };
+        liveRef.current = capture;
+        recorder.onEnd = (message) => void stopCapture(message);
+        // The capture replaced the log and its series in the core, as opening a log does.
+        plotSignals.current.clear();
+        setPlots([]);
+        setSelected(ALL_IDS);
+        setPinnedTime(null);
+        setNotKept(null);
+        setSkippedDismissed(false);
+        setError(null);
+        setCaptureNotice(
+          settings.listenOnly && !listenOnly ? "This adapter can't listen only, so it was opened normally: it acknowledges the frames it receives." : null,
+        );
+        setLog(info);
+        setLogVersion((v) => v + 1);
+        setDbcs(dbcsRef.current);
+        setIds([]);
+        setLive(capture);
+        setLiveStatus(recorder.status());
+        setUnsavedCapture(true);
+        viewState.clearScope('log');
+        setView('trace');
+        // Only a saved capture comes back after a reload.
+        void forget('log');
+      }),
+    [core, serially, stopCapture, viewState, setView],
+  );
+
+  const saveCapture = () => {
+    if (!log) return;
+    const name = log.name;
+    // Opens the save dialog now, while the click still counts as the user's.
+    const write = startFileSave(name, CANDUMP_FILE);
+    void run('Saving the capture\u2026', async () => {
+      const blob = new Blob([(await core.exportCandump()) as BlobPart], { type: 'text/plain' });
+      if (!(await write(blob))) return;
+      setUnsavedCapture(false);
+      // Kept like an opened log, so a reload reopens it.
+      if (!(await save('log', { name, blob } satisfies SavedLog))) {
+        setNotKept(name);
+        void forget('log');
+      }
+    });
+  };
+
+  /** Runs `action`, first asking to discard the open capture if it was never saved. */
+  const unlessUnsavedCapture = (action: () => void) => {
+    if (unsavedRef.current) setDiscardThen(() => action);
+    else action();
+  };
 
   const loadDemo = () =>
     run('Downloading the demo\u2026', async () => {
@@ -430,11 +586,57 @@ export function App({ core }: { core: CoreApi }) {
   useEffect(
     () =>
       core.onReset?.(() => {
+        const capture = liveRef.current;
+        liveRef.current = null;
+        if (capture) {
+          void capture.recorder.stop().catch(() => undefined);
+          setLive(null);
+          setLiveStatus(null);
+        }
         showNoLog();
-        setError('The CAN core stopped and was restarted. Open the log again.');
+        setError(capture ? 'The CAN core stopped and was restarted, so the capture was lost.' : 'The CAN core stopped and was restarted. Open the log again.');
       }),
     [core, showNoLog],
   );
+
+  // While capturing, the views get the new frames and the status line its numbers.
+  useEffect(() => {
+    if (!live) return;
+    let refreshes = 0;
+    let refreshing = false;
+    const refresh = () => {
+      setLiveStatus(live.recorder.status());
+      if (refreshing) return;
+      refreshing = true;
+      const decodePlotsToo = ++refreshes % LIVE_PLOT_REFRESHES === 0;
+      serially(async () => {
+        if (liveRef.current !== live || live.recorder.info?.frames === logRef.current?.frames) return;
+        const nextIds = await core.idSummary();
+        const info = live.recorder.info;
+        if (liveRef.current !== live || !info) return;
+        setLog(info);
+        setIds(nextIds);
+        if (decodePlotsToo) await redecodePlots();
+      })
+        .catch(() => undefined)
+        .finally(() => {
+          refreshing = false;
+        });
+    };
+    const timer = setInterval(refresh, LIVE_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [live, core, serially, redecodePlots]);
+
+  // Leaving the page would end the capture, or lose one that wasn't saved.
+  useEffect(() => {
+    if (!live && !unsavedCapture) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [live, unsavedCapture]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -470,7 +672,14 @@ export function App({ core }: { core: CoreApi }) {
         setError(`Wait for "${busyRef.current.label}" to finish, then drop the files again.`);
         return;
       }
-      openFiles(e.dataTransfer.files);
+      const files = [...e.dataTransfer.files];
+      const opensLog = files.some((f) => !f.name.toLowerCase().endsWith('.dbc'));
+      if (opensLog && liveRef.current) {
+        setError('Stop the capture before opening a log.');
+        return;
+      }
+      if (opensLog) unlessUnsavedCapture(() => openFiles(files));
+      else openFiles(files);
     };
     window.addEventListener('dragover', over);
     window.addEventListener('dragleave', leave);
@@ -560,6 +769,7 @@ export function App({ core }: { core: CoreApi }) {
     core,
     log,
     logVersion,
+    capturing: live !== null,
     ids,
     dbcs,
     messageOf,
@@ -633,22 +843,40 @@ export function App({ core }: { core: CoreApi }) {
               <PanelLeft size={18} strokeWidth={1.5} />
             </button>
             <span className="toolbar-divider" />
-            <div className="doc" title={log ? parseStats(log) : undefined}>
+            <div className="doc" title={log && log.format !== 'capture' ? parseStats(log) : undefined}>
               <h1 className="doc-title">{log?.name ?? (dbcs.length > 0 ? dbcSummary : 'No log open')}</h1>
-              <p className="doc-sub" role="status" title={dbcs.map((d) => d.db.name).join(', ') || undefined}>
-                {busy
-                  ? busy.label
-                  : restoring
-                    ? 'Restoring your last session\u2026'
-                    : log
-                      ? `${logFormatName(log.format)} \u00b7 ${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
-                      : dbcs.length > 0
-                        ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
-                        : 'Open a CAN log to begin'}
-              </p>
+              {live && liveStatus ? (
+                // Not a live region: it changes twice a second. The status below says when recording starts.
+                <p className="doc-sub" title={liveStatus.lastProblem ?? live.adapter}>
+                  <span className="cap-recording">Recording</span> &middot; {liveSummary(live, liveStatus)}
+                </p>
+              ) : (
+                <p className="doc-sub" role="status" title={dbcs.map((d) => d.db.name).join(', ') || undefined}>
+                  {busy
+                    ? busy.label
+                    : stopping
+                      ? 'Stopping the capture\u2026'
+                      : restoring
+                        ? 'Restoring your last session\u2026'
+                        : log
+                          ? `${logFormatName(log.format)} \u00b7 ${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}${unsavedCapture ? ' \u00b7 Not saved' : ''}`
+                          : dbcs.length > 0
+                            ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
+                            : 'Open a CAN log to begin'}
+                </p>
+              )}
+              <span className="sr-only" role="status">
+                {live ? `Recording from ${live.adapter}` : ''}
+              </span>
             </div>
-            {log && (
-              <button className="icon-button small" onClick={closeLog} disabled={!!busy} aria-label={`Close ${log.name}`} title="Close log">
+            {log && !live && (
+              <button
+                className="icon-button small"
+                onClick={() => unlessUnsavedCapture(closeLog)}
+                disabled={!!busy || stopping}
+                aria-label={`Close ${log.name}`}
+                title="Close log"
+              >
                 <X size={14} strokeWidth={1.75} />
               </button>
             )}
@@ -667,10 +895,34 @@ export function App({ core }: { core: CoreApi }) {
               <FileText size={16} strokeWidth={1.5} />
               <span className="label">Open DBC&hellip;</span>
             </button>
+            {live ? (
+              <button className={showView && meta.hasPrimary ? 'button' : 'primary'} onClick={() => void stopCapture()} disabled={stopping}>
+                <Square size={14} strokeWidth={2} aria-hidden="true" />
+                Stop Capture
+              </button>
+            ) : (
+              <>
+                {log?.format === 'capture' && (
+                  <button className="toolbar-button hide-label-below-1600" onClick={saveCapture} disabled={!!busy || stopping} title={'Save Capture\u2026'}>
+                    <Save size={16} strokeWidth={1.5} />
+                    <span className="label">Save Capture&hellip;</span>
+                  </button>
+                )}
+                <button
+                  className="toolbar-button hide-label-below-1440"
+                  onClick={() => unlessUnsavedCapture(() => setCaptureOpen(true))}
+                  disabled={!!busy || stopping}
+                  title={'Capture\u2026'}
+                >
+                  <Cable size={16} strokeWidth={1.5} />
+                  <span className="label">Capture&hellip;</span>
+                </button>
+              </>
+            )}
             <button
-              className={showView && meta.hasPrimary ? 'button' : 'primary'}
+              className={live || (showView && meta.hasPrimary) ? 'button' : 'primary'}
               onClick={() => logInput.current?.click()}
-              disabled={!!busy}
+              disabled={!!busy || !!live || stopping}
             >
               Open Log&hellip;
             </button>
@@ -691,7 +943,7 @@ export function App({ core }: { core: CoreApi }) {
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = '';
-              if (file) openLog(file, file.name);
+              if (file) unlessUnsavedCapture(() => void openLog(file, file.name));
             }}
           />
           <input
@@ -734,6 +986,15 @@ export function App({ core }: { core: CoreApi }) {
                   {log.firstRejection && <span className="detail"> {formatFirstRejection(log)}</span>}
                 </p>
                 <button className="icon-button small" onClick={() => setSkippedDismissed(true)} aria-label="Dismiss">
+                  <X size={14} strokeWidth={1.75} />
+                </button>
+              </div>
+            )}
+            {captureNotice && (
+              <div className="banner">
+                <AlertTriangle size={16} strokeWidth={1.75} />
+                <p>{captureNotice}</p>
+                <button className="icon-button small" onClick={() => setCaptureNotice(null)} aria-label="Dismiss">
                   <X size={14} strokeWidth={1.75} />
                 </button>
               </div>
@@ -808,8 +1069,48 @@ export function App({ core }: { core: CoreApi }) {
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
       {dragOver && <div className="drop-overlay">Drop a log or DBC files to open them</div>}
+      <Suspense fallback={null}>
+        <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
+      </Suspense>
+      <Sheet
+        open={discardThen !== null}
+        onClose={() => setDiscardThen(null)}
+        title="Discard the capture?"
+        footer={
+          <>
+            <button type="button" className="button" onClick={() => setDiscardThen(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                const then = discardThen;
+                setDiscardThen(null);
+                then?.();
+              }}
+            >
+              Discard Capture
+            </button>
+          </>
+        }
+      >
+        <p>{log?.name} hasn&rsquo;t been saved. Save Capture&hellip; keeps it in a candump log file.</p>
+      </Sheet>
     </div>
   );
+}
+
+/** The recording status: frames, rate, time, bitrate and any problems. */
+function liveSummary(live: LiveCapture, status: CaptureStatus): string {
+  const parts = [
+    `${formatCount(status.frames)} frames`,
+    status.rate === null ? null : `${formatCount(Math.round(status.rate))} frames/s`,
+    formatDuration(status.elapsedS),
+    status.problems > 0 ? `${formatCount(status.problems)} ${status.problems === 1 ? 'error' : 'errors'}` : null,
+    `${formatBitrate(live.bitrate)}${live.listenOnly ? ', listen only' : ''}`,
+  ];
+  return parts.filter((p) => p !== null).join(' \u00b7 ');
 }
 
 /** The demo log ships gzipped. A server may already have decoded it, so check for the gzip magic first. */

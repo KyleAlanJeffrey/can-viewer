@@ -44,6 +44,7 @@ function Shell({ core, ids }: { core: CoreApi; ids: IdSummary[] }) {
     core,
     log: logInfo({ durationS: 100, channels: ['can0'] }),
     logVersion: 1,
+    capturing: false,
     ids,
     dbcs: [dbc],
     messageOf: (key) => messages.get(key) ?? null,

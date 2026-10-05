@@ -18,7 +18,7 @@ describe('lazyView', () => {
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
     const View = lazyView(() => Promise.reject(new Error('Failed to fetch dynamically imported module')));
     render(<View ctx={ctx} />);
-    expect((await screen.findByRole('alert')).textContent).toBe('Couldn’t load this view.Reload');
+    expect((await screen.findByRole('alert')).textContent).toBe('Couldn\u2019t load this view.Reload');
     expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy();
     quiet.mockRestore();
   });

@@ -10,7 +10,6 @@ It is plain static HTML with one shared stylesheet. There is no build step and n
 |---|---|
 | `public/index.html` | Home |
 | `public/blf-viewer-online/`, `public/mf4-viewer-online/`, `public/dbc-viewer-online/`, `public/canalyzer-alternative/` | Content pages, one shared template: H1, button into the app, 3 steps, FAQ, links to the other pages |
-| `public/pro/` | The planned Pro desktop app. No price and no sign-up until those are decided |
 | `public/404.html` | Served for unknown paths (`not_found_handling: "404-page"`) |
 | `public/site.css` | Every style. The tokens are copied from `web/src/styles.css`; keep them in step with [DESIGN.md](../DESIGN.md) |
 | `public/fonts/` | IBM Plex Sans 400/500/600 and Mono 400/600, Latin subset, copied from `web/node_modules/@fontsource`, with their OFL licences |

@@ -36,7 +36,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Analytics, newsletter signup or video embeds stay on the landing page only; the app keeps its strict CSP in `web/public/_headers` and loads nothing from third parties
 - [x] State the privacy claim on the landing page: the app domain loads nothing from anyone else
 - [ ] Cloudflare: keep `wrangler.jsonc` as the app project with custom domain `app.freecanstudio.com`; second project for the site on the main domain, with `www.freecanstudio.com`, `freecan.studio` and `freecan.app` redirecting to it (none of the three answer yet), and build watch paths so a push to `site/` only rebuilds the site (owner)
-- [ ] Later: downloads, pricing and Pro license pages on the main site (a `pro/` page describing the planned app is in). Waiting on Studio Pro: no download, price or license terms exist yet (owner)
+- [ ] Later: downloads, pricing and Pro license pages on the main site. Paid features are hidden for now: the `pro/` page and every Pro link were taken off the site (restore them from git history, `site/public/pro/index.html`, when Pro is back on the table) (owner)
 - [x] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land
 - [x] Recheck the CSP quoted on the home page if `web/public/_headers` changes (CI now runs `scripts/check-csp-quote.sh`)
 

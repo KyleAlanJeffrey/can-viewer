@@ -938,18 +938,6 @@ h3 {
   background: var(--heat-6);
 }
 
-.pro-teaser {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px 24px;
-  padding: 24px 32px;
-}
-
-.pro-teaser p {
-  margin-right: auto;
-}
-
 /* Content pages */
 
 .page-hero {
@@ -1242,7 +1230,6 @@ h3 {
     padding: 40px 0;
   }
 
-  .pro-teaser,
   .closing,
   .steps li,
   .format-card {

@@ -3,8 +3,11 @@
 //!
 //! Bulk data crosses the boundary as typed arrays; small structured results as JSON strings.
 
+mod checksum;
+mod discover;
 mod find;
 mod series;
+mod suggest;
 
 use can_core::{tp::MAX_TRANSFER, FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};

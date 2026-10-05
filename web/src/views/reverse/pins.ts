@@ -1,14 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
-import { formatId, type SeriesInfo } from '../../core/api';
+import { formatId, type RawSignalSpec, type SeriesInfo } from '../../core/api';
 import { cssVar } from '../../format';
 import type { ViewContext } from '../types';
-import { errorText } from './bits';
+import { errorText, layoutString } from './bits';
 
-/** A reference kept in view while working on an ID: a decoded signal, or one raw byte of a message. */
-export type Pin = { kind: 'signal'; key: number; signal: string } | { kind: 'byte'; key: number; byte: number };
+/**
+ * A reference kept in view while working on an ID: a decoded signal, one raw byte of a message, or
+ * a bit range no database describes, such as a suggested signal, with its own label and unit.
+ */
+export type Pin =
+  | { kind: 'signal'; key: number; signal: string }
+  | { kind: 'byte'; key: number; byte: number }
+  | { kind: 'range'; key: number; spec: RawSignalSpec; label: string; unit: string };
 
 export function pinId(p: Pin): string {
-  return p.kind === 'signal' ? `${p.key}:s:${p.signal}` : `${p.key}:b:${p.byte}`;
+  switch (p.kind) {
+    case 'signal':
+      return `${p.key}:s:${p.signal}`;
+    case 'byte':
+      return `${p.key}:b:${p.byte}`;
+    case 'range':
+      return `${p.key}:r:${layoutString(p.spec, p.spec.signed)}`;
+  }
 }
 
 /** A pinned reference with its decoded series, or why it has none yet. */
@@ -38,7 +51,7 @@ const SERIES_SLOTS = 6;
 /**
  * Decodes every pin into a series the plots can view, and drops a series once its pin is gone or
  * its signal definition changed. Signals keep the colour they have in the Plot view; otherwise
- * each takes the first series colour no other pin uses. Raw bytes are graphite.
+ * each takes the first series colour no other pin uses. Raw bytes and bit ranges are graphite.
  */
 export function useReferences(ctx: ViewContext, pins: Pin[]): Reference[] {
   const { core, logVersion, messageOf, log, ids, plots } = ctx;
@@ -48,8 +61,7 @@ export function useReferences(ctx: ViewContext, pins: Pin[]): Reference[] {
   const wanted = pins.map((pin) => {
     const message = messageOf(pin.key);
     const def = pin.kind === 'signal' ? (message?.signals.find((s) => s.name === pin.signal) ?? null) : null;
-    const decodeKey =
-      pin.kind === 'signal' ? `${logVersion}:${pin.key}:s:${pin.signal}:${def ? JSON.stringify(def) : 'missing'}` : `${logVersion}:${pin.key}:b:${pin.byte}`;
+    const decodeKey = pin.kind === 'signal' ? `${logVersion}:${pinId(pin)}:${def ? JSON.stringify(def) : 'missing'}` : `${logVersion}:${pinId(pin)}`;
     return { pin, def, decodeKey };
   });
   const wantedKeys = wanted.map((w) => w.decodeKey).join('\n');
@@ -71,7 +83,10 @@ export function useReferences(ctx: ViewContext, pins: Pin[]): Reference[] {
           ? def
             ? core.decodeSignal(pin.key, pin.signal)
             : Promise.reject(new Error('Not in the loaded DBCs any more'))
-          : core.decodeRaw(pin.key, { startBit: pin.byte * 8, size: 8, byteOrder: 'intel', signed: false, factor: 1, offset: 0 });
+          : core.decodeRaw(
+              pin.key,
+              pin.kind === 'byte' ? { startBit: pin.byte * 8, size: 8, byteOrder: 'intel', signed: false, factor: 1, offset: 0 } : pin.spec,
+            );
       decode.then(
         (info) => {
           if (entries.current.get(decodeKey) !== entry) {
@@ -117,6 +132,19 @@ export function useReferences(ctx: ViewContext, pins: Pin[]): Reference[] {
         unit: '',
         color: graphite,
         range: [0, 255],
+        info: entry?.info ?? null,
+        error: entry?.error ?? null,
+      };
+    }
+    if (pin.kind === 'range') {
+      return {
+        pin,
+        id: pinId(pin),
+        name: `${idText} \u00b7 ${pin.label}`,
+        source: `${layoutString(pin.spec, pin.spec.signed)} \u00b7 ${bus}`,
+        unit: pin.unit,
+        color: graphite,
+        range: null,
         info: entry?.info ?? null,
         error: entry?.error ?? null,
       };

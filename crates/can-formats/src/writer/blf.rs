@@ -164,9 +164,13 @@ fn frame_object(out: &mut Vec<u8>, frame: &FrameRef<'_>, channel: u8, timestamp:
     out.extend_from_slice(&[0; 4]);
     out.extend_from_slice(&timestamp.to_le_bytes());
     out.extend_from_slice(&body);
-    while !out.len().is_multiple_of(4) {
-        out.push(0);
-    }
+    out.resize(out.len() + padding(object_size), 0);
+}
+
+/// The zero bytes after an object: its size mod 4, as CANoe and binlog write them, rather
+/// than what would align the next object.
+fn padding(object_size: u32) -> usize {
+    object_size as usize % 4
 }
 
 fn write_container(out: &mut impl Write, objects: &[u8]) -> io::Result<()> {
@@ -184,6 +188,67 @@ fn write_container(out: &mut impl Write, objects: &[u8]) -> io::Result<()> {
     out.write_all(&(objects.len() as u32).to_le_bytes())?;
     out.write_all(&[0; 4])?;
     out.write_all(&compressed)?;
-    let padding = (4 - object_size as usize % 4) % 4;
-    out.write_all(&[0; 3][..padding])
+    out.write_all(&[0; 3][..padding(object_size)])
+}
+
+#[cfg(test)]
+mod tests {
+    use can_core::FrameSink;
+
+    use super::*;
+
+    const T0: i64 = 1_759_190_400_000_000_000;
+
+    /// The objects in `bytes` from `at`, checking that each is followed by its size mod 4 in
+    /// zero bytes. Returns each object's type and padding.
+    fn walk(bytes: &[u8], mut at: usize) -> Vec<(u32, usize)> {
+        let mut objects = Vec::new();
+        while at < bytes.len() {
+            assert_eq!(&bytes[at..at + 4], b"LOBJ", "object at {at}");
+            let size = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap());
+            let kind = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().unwrap());
+            let end = at + size as usize;
+            let pad = size as usize % 4;
+            assert!(bytes[end..end + pad].iter().all(|&b| b == 0));
+            objects.push((kind, pad));
+            at = end + pad;
+        }
+        assert_eq!(at, bytes.len());
+        objects
+    }
+
+    #[test]
+    fn objects_are_padded_by_their_size_mod_4() {
+        let mut container_pads = Vec::new();
+        for extra in 0..16u8 {
+            let mut store = FrameStore::new();
+            let channel = store.channel_index(b"can1");
+            // CAN FD lengths a DLC does not give make objects of 81, 82 and 83 bytes.
+            for (i, len) in [9, 10, 11, 8].into_iter().enumerate() {
+                let data: Vec<u8> = (0..len as u8).map(|b| b.wrapping_mul(extra)).collect();
+                store.push(FrameRef {
+                    ts_ns: T0 + i as i64,
+                    channel,
+                    id: 0x100 + u32::from(extra),
+                    flags: flags::FD,
+                    data: &data,
+                });
+            }
+            let mut out = io::Cursor::new(Vec::new());
+            write_blf(&store, &mut out).unwrap();
+            let file = out.into_inner();
+            let containers = walk(&file, 144);
+            assert_eq!(containers.len(), 1);
+            container_pads.push(containers[0].1);
+
+            let objects = miniz_oxide::inflate::decompress_to_vec_zlib(&file[144 + 32..]).unwrap();
+            let pads: Vec<usize> = walk(&objects, 0).iter().map(|&(_, pad)| pad).collect();
+            assert_eq!(pads, [1, 2, 3, 0]);
+        }
+        // Sizes of 1 and 3 mod 4 tell this padding from what would align the next object.
+        assert!(
+            container_pads.iter().any(|&pad| pad % 2 == 1),
+            "{container_pads:?}"
+        );
+    }
 }

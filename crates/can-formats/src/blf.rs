@@ -24,7 +24,8 @@ const TIMESTAMPED_HEADER: usize = 32;
 /// Containers are written at around 128 KiB; this bounds what is buffered for one object.
 const MAX_OBJECT: usize = 32 << 20;
 const MAX_UNCOMPRESSED: usize = 64 << 20;
-/// Objects start on 4-byte boundaries; a gap this small after an object is padding.
+/// An object is followed by up to 3 bytes of padding: its size mod 4 as CANoe writes it, or
+/// what aligns the next object to 4 bytes as some other writers do.
 const MAX_PADDING: usize = 3;
 
 const LOG_CONTAINER: u32 = 10;

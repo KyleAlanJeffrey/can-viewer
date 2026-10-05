@@ -246,7 +246,7 @@ Warm neutrals, one amber accent with its ochre inks, and two separately validate
 - **Workshop Amber** (`workshop-amber`): fills the single primary button of each view or sheet, with Graphite text (8.9:1). It is also the front strand and both terminals of the Twisted F, and, at 22% alpha, the drag-to-zoom selection band in plots. Never text, never a thin line on white (1.8:1).
 - **Amber Hover / Amber Pressed** (`amber-hover`, `amber-pressed`): the primary button's hover and active fills. Text stays Graphite.
 - **Deep Ochre** (`deep-ochre`): amber's ink. Secondary-button text and text buttons such as Reset Zoom and Clear (6.0:1 on white).
-- **Ochre Control** (`ochre-control`): the focus ring, checked checkbox accent, the selected sidebar row's icon, the search field's focus border, the text caret, the drop-zone border and the load progress bar.
+- **Ochre Control** (`ochre-control`): the focus ring, checked checkbox accent, the selected sidebar row's icon, the search field's focus border, the text caret, the drop-zone border, the load progress bar, the active option of a keyboard-driven list (in place of the focus ring its field keeps) and the outline of a payload byte a trace filter matched.
 
 ### Selection tints
 - **Selected Sidebar** (`selected-sidebar`): the selected ID row, with Graphite text. Also the text-selection highlight.

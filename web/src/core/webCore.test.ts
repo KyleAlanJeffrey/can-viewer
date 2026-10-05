@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ScopedDatabase } from './api';
+import type { FrameFilter, ScopedDatabase } from './api';
 import { WebCore } from './webCore';
 import type { Request } from './worker';
 
@@ -99,6 +99,36 @@ describe('WebCore', () => {
     FakeWorker.all[0].fail('Uncaught RuntimeError: unreachable');
     expect(FakeWorker.all).toHaveLength(2);
     expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('passes trace filters to the worker and resolves to its counts', async () => {
+    const core = new WebCore();
+    const [worker] = FakeWorker.all;
+    const filter: FrameFilter = {
+      channels: [0],
+      keys: null,
+      kinds: ['data'],
+      rules: [{ type: 'byteEquals', byte: 2, value: 0x1f }],
+      combine: 'all',
+      t0: 12,
+      t1: null,
+    };
+
+    const preview = core.countFilterMatches(filter);
+    const applied = core.setTraceFilter(filter);
+    const cleared = core.setTraceFilter(null);
+    expect(worker.requests.map((r) => [r.method, r.args])).toEqual([
+      ['countFilterMatches', [filter]],
+      ['setTraceFilter', [filter]],
+      ['setTraceFilter', [null]],
+    ]);
+    const answer = (i: number, result: unknown) => worker.onmessage?.({ data: { id: worker.requests[i].id, result } } as MessageEvent);
+    answer(0, 2481);
+    answer(1, 2481);
+    answer(2, 0);
+    await expect(preview).resolves.toBe(2481);
+    await expect(applied).resolves.toBe(2481);
+    await expect(cleared).resolves.toBe(0);
   });
 
   it('gives up on a worker that fails before answering anything', async () => {

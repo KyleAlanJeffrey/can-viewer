@@ -13,6 +13,9 @@ use std::borrow::Cow;
 use std::io::{self, Seek, Write};
 
 use can_core::{flags, FrameRef, FrameStore};
+use miniz_oxide::deflate::core::{
+    compress, create_comp_flags_from_zip_params, CompressorOxide, TDEFLFlush, TDEFLStatus,
+};
 
 use crate::Format;
 
@@ -30,6 +33,61 @@ pub fn write_log<W: Write + Seek>(
         Format::Csv => text::write_csv(store, out),
         Format::Blf => blf::write_blf(store, out),
         Format::Mf4 => mf4::write_mf4(store, out),
+    }
+}
+
+/// The error a writer gives when a buffer it needs cannot be allocated. Writers allocate their
+/// buffers fallibly before they write, so running out of memory is this error rather than an
+/// abort.
+pub fn out_of_memory() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        "There isn't enough memory to build the exported file.",
+    )
+}
+
+/// An empty buffer with room for `len` items.
+fn buffer<T>(len: usize) -> io::Result<Vec<T>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len).map_err(|_| out_of_memory())?;
+    Ok(buffer)
+}
+
+/// A zlib compressor with its output buffer, for inputs up to a size set when it is made.
+struct Deflater {
+    compressor: Box<CompressorOxide>,
+    output: Vec<u8>,
+}
+
+impl Deflater {
+    fn new(max_input: usize) -> io::Result<Self> {
+        // More than the compressor's tables, which it allocates infallibly.
+        const COMPRESSOR_BYTES: usize = 1 << 20;
+        drop(buffer::<u8>(COMPRESSOR_BYTES)?);
+        // miniz's bound on deflate's output.
+        let bound = (max_input + max_input / 10).max(max_input + 5 * (max_input / 31_744 + 1));
+        let mut output = buffer(bound + 128)?;
+        output.resize(output.capacity(), 0);
+        // A positive window_bits asks for the zlib wrapper.
+        let flags = create_comp_flags_from_zip_params(6, 1, 0);
+        Ok(Self {
+            compressor: Box::new(CompressorOxide::new(flags)),
+            output,
+        })
+    }
+
+    fn compress(&mut self, input: &[u8]) -> io::Result<&[u8]> {
+        self.compressor.reset();
+        let (status, _, written) = compress(
+            &mut self.compressor,
+            input,
+            &mut self.output,
+            TDEFLFlush::Finish,
+        );
+        if status != TDEFLStatus::Done {
+            return Err(io::Error::other("compression failed"));
+        }
+        Ok(&self.output[..written])
     }
 }
 
@@ -377,6 +435,25 @@ mod tests {
             lines[7],
             "(1759190400.123526) can0 20000080#0000080000000000"
         );
+    }
+
+    #[test]
+    fn deflater_output_holds_incompressible_input_of_the_largest_size() {
+        let mut input = vec![0u8; 100_003];
+        let mut x = 0x2545_F491_u32;
+        for byte in &mut input {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *byte = x as u8;
+        }
+        let mut deflater = Deflater::new(input.len()).unwrap();
+        for _ in 0..2 {
+            let compressed = deflater.compress(&input).unwrap().to_vec();
+            assert!(compressed.len() > input.len());
+            let inflated = miniz_oxide::inflate::decompress_to_vec_zlib(&compressed).unwrap();
+            assert_eq!(inflated, input);
+        }
     }
 
     #[test]

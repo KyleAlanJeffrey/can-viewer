@@ -4,14 +4,21 @@ use std::io::{self, Seek, SeekFrom, Write};
 
 use can_core::{flags, FrameRef, FrameStore, EXT_FLAG};
 
-use super::{bus_numbers, civil_from_days, is_fd, len_to_dlc, log_frames, start_ns};
+use super::{
+    buffer, bus_numbers, civil_from_days, is_fd, len_to_dlc, log_frames, start_ns, Deflater,
+};
+
+/// Objects are gathered up to this size, then compressed into a log container.
+const CONTAINER_BYTES: usize = 128 << 10;
+/// The largest padded frame object: a CAN_FD_MESSAGE_64 with 64 data bytes.
+const MAX_FRAME_OBJECT: usize = 32 + 40 + 64 + 3;
 
 /// Objects with version 1 headers and nanosecond timestamps from the second of the first
 /// frame, packed into zlib log containers of about 128 KiB. Classic frames go in CAN_MESSAGE
 /// objects, CAN FD frames in CAN_FD_MESSAGE_64 and error frames in CAN_ERROR_EXT. The file
-/// header is written again at the end with the sizes and object count.
+/// header is written again at the end with the sizes and object count. The buffers are all
+/// allocated before the first frame is written.
 pub(super) fn write_blf<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io::Result<()> {
-    const CONTAINER_BYTES: usize = 128 << 10;
     let start_s = start_ns(store).div_euclid(1_000_000_000);
     let end_s = log_frames(store)
         .map(|f| f.ts_ns)
@@ -19,9 +26,10 @@ pub(super) fn write_blf<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
         .unwrap_or(0)
         .div_euclid(1_000_000_000);
     let channels = bus_numbers(store);
+    let mut objects = buffer(CONTAINER_BYTES + MAX_FRAME_OBJECT)?;
+    let mut deflater = Deflater::new(CONTAINER_BYTES + MAX_FRAME_OBJECT)?;
     let header_at = out.stream_position()?;
     out.write_all(&blf_file_header(start_s, end_s, 0, 0, 0))?;
-    let mut objects = Vec::with_capacity(CONTAINER_BYTES + 256);
     let mut uncompressed_bytes = 0u64;
     let mut object_count = 0u32;
     for frame in log_frames(store) {
@@ -35,13 +43,13 @@ pub(super) fn write_blf<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
         object_count = object_count.saturating_add(1);
         if objects.len() >= CONTAINER_BYTES {
             uncompressed_bytes += objects.len() as u64;
-            write_container(out, &objects)?;
+            write_container(out, &objects, &mut deflater)?;
             objects.clear();
         }
     }
     if !objects.is_empty() {
         uncompressed_bytes += objects.len() as u64;
-        write_container(out, &objects)?;
+        write_container(out, &objects, &mut deflater)?;
     }
     let end_at = out.stream_position()?;
     out.seek(SeekFrom::Start(header_at))?;
@@ -96,6 +104,7 @@ fn system_time(epoch_s: i64) -> [u8; 16] {
     out
 }
 
+/// Appends the object for `frame`, padded, to `out`. It adds at most [`MAX_FRAME_OBJECT`] bytes.
 fn frame_object(out: &mut Vec<u8>, frame: &FrameRef<'_>, channel: u8, timestamp: u64) {
     const CAN_MESSAGE: u32 = 1;
     const CAN_ERROR_EXT: u32 = 73;
@@ -108,53 +117,16 @@ fn frame_object(out: &mut Vec<u8>, frame: &FrameRef<'_>, channel: u8, timestamp:
         frame.id
     };
     let transmitted = frame.flags & flags::TX != 0;
-    let mut body = Vec::with_capacity(104);
-    let kind = if frame.flags & flags::ERROR != 0 {
-        body.extend_from_slice(&u16::from(channel).to_le_bytes());
-        body.extend_from_slice(&[0; 8]);
-        body.push(frame.data.len().min(8) as u8);
-        body.extend_from_slice(&[0; 13]);
-        body.extend_from_slice(&frame.data[..frame.data.len().min(8)]);
-        body.resize(32, 0);
-        CAN_ERROR_EXT
-    } else if is_fd(frame) {
-        let mut fd_flags = 0x1000u32;
-        if frame.flags & flags::BRS != 0 {
-            fd_flags |= 0x2000;
-        }
-        if frame.flags & flags::ESI != 0 {
-            fd_flags |= 0x4000;
-        }
-        body.push(channel);
-        body.push(len_to_dlc(frame.data.len()));
-        body.push(frame.data.len() as u8);
-        body.push(0);
-        body.extend_from_slice(&id.to_le_bytes());
-        body.extend_from_slice(&0u32.to_le_bytes());
-        body.extend_from_slice(&fd_flags.to_le_bytes());
-        body.extend_from_slice(&[0; 18]);
-        body.push(u8::from(transmitted));
-        body.push(0);
-        body.extend_from_slice(&0u32.to_le_bytes());
-        body.extend_from_slice(frame.data);
-        CAN_FD_MESSAGE_64
+    let fd = is_fd(frame);
+    let (kind, body_size) = if frame.flags & flags::ERROR != 0 {
+        (CAN_ERROR_EXT, 32)
+    } else if fd {
+        (CAN_FD_MESSAGE_64, 40 + frame.data.len())
     } else {
-        let mut message_flags = 0u8;
-        if transmitted {
-            message_flags |= 0x01;
-        }
-        if frame.flags & flags::RTR != 0 {
-            message_flags |= 0x80;
-        }
-        body.extend_from_slice(&u16::from(channel).to_le_bytes());
-        body.push(message_flags);
-        body.push(frame.data.len() as u8);
-        body.extend_from_slice(&id.to_le_bytes());
-        body.extend_from_slice(frame.data);
-        body.resize(16, 0);
-        CAN_MESSAGE
+        (CAN_MESSAGE, 16)
     };
-    let object_size = (32 + body.len()) as u32;
+    let object_size = (32 + body_size) as u32;
+    let start = out.len();
     out.extend_from_slice(b"LOBJ");
     out.extend_from_slice(&32u16.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes());
@@ -163,8 +135,48 @@ fn frame_object(out: &mut Vec<u8>, frame: &FrameRef<'_>, channel: u8, timestamp:
     out.extend_from_slice(&NANOSECONDS.to_le_bytes());
     out.extend_from_slice(&[0; 4]);
     out.extend_from_slice(&timestamp.to_le_bytes());
-    out.extend_from_slice(&body);
-    out.resize(out.len() + padding(object_size), 0);
+    if kind == CAN_ERROR_EXT {
+        out.extend_from_slice(&u16::from(channel).to_le_bytes());
+        out.extend_from_slice(&[0; 8]);
+        out.push(frame.data.len().min(8) as u8);
+        out.extend_from_slice(&[0; 13]);
+        out.extend_from_slice(&frame.data[..frame.data.len().min(8)]);
+    } else if fd {
+        let mut fd_flags = 0x1000u32;
+        if frame.flags & flags::BRS != 0 {
+            fd_flags |= 0x2000;
+        }
+        if frame.flags & flags::ESI != 0 {
+            fd_flags |= 0x4000;
+        }
+        out.push(channel);
+        out.push(len_to_dlc(frame.data.len()));
+        out.push(frame.data.len() as u8);
+        out.push(0);
+        out.extend_from_slice(&id.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&fd_flags.to_le_bytes());
+        out.extend_from_slice(&[0; 18]);
+        out.push(u8::from(transmitted));
+        out.push(0);
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(frame.data);
+    } else {
+        let mut message_flags = 0u8;
+        if transmitted {
+            message_flags |= 0x01;
+        }
+        if frame.flags & flags::RTR != 0 {
+            message_flags |= 0x80;
+        }
+        out.extend_from_slice(&u16::from(channel).to_le_bytes());
+        out.push(message_flags);
+        out.push(frame.data.len() as u8);
+        out.extend_from_slice(&id.to_le_bytes());
+        out.extend_from_slice(frame.data);
+    }
+    // Zeros fill out the fixed-size bodies, then pad the object.
+    out.resize(start + object_size as usize + padding(object_size), 0);
 }
 
 /// The zero bytes after an object: its size mod 4, as CANoe and binlog write them, rather
@@ -173,10 +185,14 @@ fn padding(object_size: u32) -> usize {
     object_size as usize % 4
 }
 
-fn write_container(out: &mut impl Write, objects: &[u8]) -> io::Result<()> {
+fn write_container(
+    out: &mut impl Write,
+    objects: &[u8],
+    deflater: &mut Deflater,
+) -> io::Result<()> {
     const LOG_CONTAINER: u32 = 10;
     const ZLIB: u16 = 2;
-    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(objects, 6);
+    let compressed = deflater.compress(objects)?;
     let object_size = (32 + compressed.len()) as u32;
     out.write_all(b"LOBJ")?;
     out.write_all(&16u16.to_le_bytes())?;
@@ -187,7 +203,7 @@ fn write_container(out: &mut impl Write, objects: &[u8]) -> io::Result<()> {
     out.write_all(&[0; 6])?;
     out.write_all(&(objects.len() as u32).to_le_bytes())?;
     out.write_all(&[0; 4])?;
-    out.write_all(&compressed)?;
+    out.write_all(compressed)?;
     out.write_all(&[0; 3][..padding(object_size)])
 }
 

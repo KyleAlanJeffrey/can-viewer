@@ -3,13 +3,16 @@
 use std::collections::VecDeque;
 use std::io::{self, Seek, SeekFrom, Write};
 
+use can_formats::writer;
+
 /// Bytes per chunk.
 pub const CHUNK_BYTES: usize = 8 << 20;
 
 /// A file built in fixed-size chunks, so that a large export never needs one huge allocation
-/// or the spare capacity of a growing `Vec`. Each chunk is allocated fallibly, so running out
-/// of memory is an error rather than a trap that would lose the open log. Seeking past the end
-/// is not supported; the writers only seek back to fill in headers.
+/// or the spare capacity of a growing `Vec`. Each chunk is allocated fallibly, as the writers
+/// allocate their own buffers, so running out of memory is an error rather than a trap that
+/// would lose the open log. Seeking past the end is not supported; the writers only seek back
+/// to fill in headers.
 #[derive(Debug, Default)]
 pub struct ChunkedFile {
     chunks: VecDeque<Vec<u8>>,
@@ -32,12 +35,12 @@ impl Write for ChunkedFile {
         let offset = (self.position % CHUNK_BYTES as u64) as usize;
         if index == self.chunks.len() {
             let mut chunk = Vec::new();
-            chunk.try_reserve_exact(CHUNK_BYTES).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::OutOfMemory,
-                    "There isn't enough memory to build the exported file.",
-                )
-            })?;
+            chunk
+                .try_reserve_exact(CHUNK_BYTES)
+                .map_err(|_| writer::out_of_memory())?;
+            self.chunks
+                .try_reserve(1)
+                .map_err(|_| writer::out_of_memory())?;
             self.chunks.push_back(chunk);
         }
         let chunk = &mut self.chunks[index];

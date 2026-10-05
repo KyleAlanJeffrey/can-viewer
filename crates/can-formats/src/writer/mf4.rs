@@ -4,24 +4,34 @@ use std::io::{self, Seek, SeekFrom, Write};
 
 use can_core::{flags, FrameRef, FrameStore, EXT_FLAG};
 
-use super::{bus_numbers, is_fd, len_to_dlc, log_frames, start_ns};
+use super::{
+    buffer, bus_numbers, is_fd, len_to_dlc, log_frames, out_of_memory, start_ns, Deflater,
+};
 
 /// Bytes per record: t f64, BusChannel u8, ID u32 (bit 31 for 29-bit IDs), DLC u8, DataLength
 /// u8, DataBytes [u8; 64], Dir u8, EDL u8, BRS u8, ESI u8.
 const RECORD: usize = 83;
 /// Records per DZ block, about 1 MB before compression.
 const BLOCK_RECORDS: usize = 12_000;
+const BLOCK_BYTES: usize = BLOCK_RECORDS * RECORD;
 
 /// One sorted data group each for data, remote and error frames, whose records hold a float64
 /// time in seconds from the first frame's second and the `CAN_DataFrame` members with a fixed
 /// 64-byte `DataBytes`. The records are written as transposed, deflated DZ blocks in a DL
 /// list, a block at a time, and the header's links are filled in last. The channel groups are
 /// marked as plain CAN bus events with one shared bus source, as ASAM's bus logging standard
-/// asks, and an empty log gets an empty data frame group.
+/// asks, and an empty log gets an empty data frame group. The buffers for a block are all
+/// allocated before the first block is written.
 pub(super) fn write_mf4<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io::Result<()> {
     const BUS_EVENT: u16 = 0x02;
     const PLAIN_BUS_EVENT: u16 = 0x04;
     let start_s = start_ns(store).div_euclid(1_000_000_000);
+    let buses = bus_numbers(store);
+    let mut scratch = Scratch {
+        records: buffer(BLOCK_BYTES)?,
+        transposed: buffer(BLOCK_BYTES)?,
+        deflater: Deflater::new(BLOCK_BYTES)?,
+    };
     let mut file = Mf4Out {
         base: out.stream_position()?,
         at: 0,
@@ -41,7 +51,6 @@ pub(super) fn write_mf4<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
 
     let can = file.text("CAN")?;
     let source = file.bus_source(can)?;
-    let buses = bus_numbers(store);
     let kinds = [
         ("CAN_DataFrame", flags::RTR | flags::ERROR, 0),
         ("CAN_RemoteFrame", flags::RTR | flags::ERROR, flags::RTR),
@@ -50,7 +59,7 @@ pub(super) fn write_mf4<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
     let mut next_group = 0;
     for (name, mask, wanted) in kinds.into_iter().rev() {
         let frames = log_frames(store).filter(|frame| frame.flags & mask == wanted);
-        let (data, records) = match file.records(frames, &buses, start_s)? {
+        let (data, records) = match file.records(&mut scratch, frames, &buses, start_s)? {
             Some(found) => found,
             None if name == "CAN_DataFrame" && next_group == 0 => (0, 0),
             None => continue,
@@ -114,10 +123,16 @@ impl<W: Write + Seek> Mf4Out<'_, W> {
     }
 
     fn block(&mut self, id: &[u8; 4], links: &[u64], data: &[u8]) -> io::Result<u64> {
+        self.block_in_parts(id, links, &[data])
+    }
+
+    /// A block whose data is `parts` one after another.
+    fn block_in_parts(&mut self, id: &[u8; 4], links: &[u64], parts: &[&[u8]]) -> io::Result<u64> {
         let padding = (8 - self.at % 8) % 8;
         self.write(&[0; 8][..padding as usize])?;
         let at = self.at;
-        let length = 24 + links.len() * 8 + data.len();
+        let data_len: usize = parts.iter().map(|part| part.len()).sum();
+        let length = 24 + links.len() * 8 + data_len;
         self.write(id)?;
         self.write(&[0; 4])?;
         self.write(&(length as u64).to_le_bytes())?;
@@ -125,7 +140,9 @@ impl<W: Write + Seek> Mf4Out<'_, W> {
         for link in links {
             self.write(&link.to_le_bytes())?;
         }
-        self.write(data)?;
+        for part in parts {
+            self.write(part)?;
+        }
         Ok(at)
     }
 
@@ -224,68 +241,85 @@ impl<W: Write + Seek> Mf4Out<'_, W> {
     /// block's offset and the record count, or None when there are no frames.
     fn records<'s>(
         &mut self,
+        scratch: &mut Scratch,
         frames: impl Iterator<Item = FrameRef<'s>>,
         buses: &[u8],
         start_s: i64,
     ) -> io::Result<Option<(u64, u64)>> {
-        let mut records = Vec::with_capacity(BLOCK_RECORDS * RECORD);
         let mut blocks = Vec::new();
         let mut count = 0u64;
+        scratch.records.clear();
         for frame in frames {
             record(
-                &mut records,
+                &mut scratch.records,
                 &frame,
                 buses[usize::from(frame.channel)],
                 start_s,
             );
             count += 1;
-            if records.len() == BLOCK_RECORDS * RECORD {
-                blocks.push(self.data_block(&records)?);
-                records.clear();
+            if scratch.records.len() == BLOCK_BYTES {
+                blocks.try_reserve(1).map_err(|_| out_of_memory())?;
+                blocks.push(self.data_block(scratch)?);
+                scratch.records.clear();
             }
         }
-        if !records.is_empty() {
-            blocks.push(self.data_block(&records)?);
+        if !scratch.records.is_empty() {
+            blocks.try_reserve(1).map_err(|_| out_of_memory())?;
+            blocks.push(self.data_block(scratch)?);
         }
         if blocks.is_empty() {
             return Ok(None);
         }
-        let mut links = vec![0u64];
+        let mut links = buffer(1 + blocks.len())?;
+        links.push(0u64);
         links.extend_from_slice(&blocks);
-        let mut data = vec![0u8; 4];
+        let mut data = buffer(8 + 8 * blocks.len())?;
+        data.extend_from_slice(&[0; 4]);
         data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
         for index in 0..blocks.len() {
-            let offset = (index * BLOCK_RECORDS * RECORD) as u64;
+            let offset = (index * BLOCK_BYTES) as u64;
             data.extend_from_slice(&offset.to_le_bytes());
         }
         Ok(Some((self.block(b"##DL", &links, &data)?, count)))
     }
 
-    fn data_block(&mut self, records: &[u8]) -> io::Result<u64> {
-        let transposed = transpose(records, RECORD);
-        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&transposed, 6);
-        let mut data = b"DT".to_vec();
-        data.push(1);
-        data.push(0);
-        data.extend_from_slice(&(RECORD as u32).to_le_bytes());
-        data.extend_from_slice(&(records.len() as u64).to_le_bytes());
-        data.extend_from_slice(&(compressed.len() as u64).to_le_bytes());
-        data.extend_from_slice(&compressed);
-        self.block(b"##DZ", &[], &data)
+    /// A DZ block of the records in `scratch`.
+    fn data_block(&mut self, scratch: &mut Scratch) -> io::Result<u64> {
+        let Scratch {
+            records,
+            transposed,
+            deflater,
+        } = scratch;
+        transpose(records, RECORD, transposed);
+        let compressed = deflater.compress(transposed)?;
+        let mut header = [0u8; 24];
+        header[..4].copy_from_slice(&[b'D', b'T', 1, 0]);
+        header[4..8].copy_from_slice(&(RECORD as u32).to_le_bytes());
+        header[8..16].copy_from_slice(&(records.len() as u64).to_le_bytes());
+        header[16..].copy_from_slice(&(compressed.len() as u64).to_le_bytes());
+        self.block_in_parts(b"##DZ", &[], &[&header, compressed])
     }
 }
 
+/// The buffers for writing a DZ block, allocated once.
+struct Scratch {
+    /// The records of the block being gathered, [`BLOCK_BYTES`] at most.
+    records: Vec<u8>,
+    transposed: Vec<u8>,
+    deflater: Deflater,
+}
+
 /// The bytes of `columns`-byte rows regrouped column by column, as a transposing DZ block
-/// stores them.
-fn transpose(data: &[u8], columns: usize) -> Vec<u8> {
+/// stores them. `out` must have room for `data`.
+fn transpose(data: &[u8], columns: usize, out: &mut Vec<u8>) {
     let rows = data.len() / columns;
-    let mut out = data.to_vec();
+    out.clear();
+    out.resize(data.len(), 0);
     for row in 0..rows {
         for column in 0..columns {
             out[column * rows + row] = data[row * columns + column];
         }
     }
-    out
 }
 
 #[cfg(test)]

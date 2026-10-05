@@ -317,7 +317,7 @@ The engine builds the whole file in its memory, in chunks of at most 8 MiB, then
 
 **Returns** the file as a `Blob` with no type.
 
-**Errors** Rejects with `There isn't enough memory to build the exported file.` when the file does not fit in the engine's memory; the log stays open. Rejects if `format` is not one of the names above.
+**Errors** Rejects with `There isn't enough memory to build the exported file.` when the file, or the few MB of buffers a BLF or MF4 writer needs, does not fit in the engine's memory; the log stays open. Rejects if `format` is not one of the names above.
 
 ```ts
 const file = await core.exportLog('blf');

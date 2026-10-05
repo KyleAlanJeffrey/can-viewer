@@ -336,6 +336,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_logs_read_back_with_no_frames() {
+        for format in [
+            Format::Candump,
+            Format::Asc,
+            Format::Trc,
+            Format::Csv,
+            Format::Blf,
+            Format::Mf4,
+        ] {
+            assert_eq!(read(format, &write(format, &FrameStore::new())).len(), 0);
+        }
+    }
+
+    #[test]
     fn reassembled_transfers_are_not_written() {
         let store = sample_log(["can0", "can1"]);
         let text = String::from_utf8(write(Format::Candump, &store)).unwrap();

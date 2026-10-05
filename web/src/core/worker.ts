@@ -1,7 +1,7 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { Database, FindRule, RawSignalSpec, ScopedDatabase } from './api';
+import type { Database, FindRule, FrameFilter, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 
 const CHUNK_BYTES = 8 << 20;
@@ -103,6 +103,8 @@ const handlers = {
     databasesJson = json;
   },
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
+  setTraceFilter: (filter: FrameFilter | null) => session.set_trace_filter(JSON.stringify(filter)),
+  countFilterMatches: (filter: FrameFilter) => session.count_filter_matches(JSON.stringify(filter)),
 };
 
 const withTransfer = new Set(['rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
@@ -119,11 +121,19 @@ let queue: Promise<void> = ready.then(
   },
 );
 
+/** The newest count request; older ones still queued behind work are answered null unrun. */
+let latestCount = 0;
+
 port.onmessage = (e) => {
   const { id, method, args } = e.data;
+  if (method === 'countFilterMatches') latestCount = id;
   queue = queue.then(async () => {
     try {
       if (initError) throw initError;
+      if (method === 'countFilterMatches' && id !== latestCount) {
+        port.postMessage({ id, result: null });
+        return;
+      }
       const handler = handlers[method] as (...a: unknown[]) => unknown;
       const out = await handler(...args);
       if (withTransfer.has(method)) {

@@ -1,4 +1,4 @@
-//! Streaming parsers for CAN log file formats.
+//! Streaming parsers for CAN log file formats, and writers for the same formats.
 //!
 //! Parsers take the file in arbitrary chunks, so the browser can stream a `File` through a
 //! worker without ever holding the whole log in memory.
@@ -14,6 +14,7 @@ pub mod mf4;
 mod testing;
 mod text;
 pub mod trc;
+pub mod writer;
 
 pub use asc::AscParser;
 pub use blf::BlfParser;

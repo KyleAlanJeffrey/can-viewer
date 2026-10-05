@@ -3,6 +3,7 @@ import { cssVar, formatCount, useFontsReady } from '../../format';
 import { heatStep } from './bits';
 
 const LABEL_W = 56;
+const NO_REGIONS: GridRegion[] = [];
 const GAP = 6;
 /** Room around the cells for the selection outline and its halo. */
 const PAD = 4;
@@ -28,13 +29,31 @@ interface Props {
   /** Select the range covering the rectangle from `anchor` to `focus`. */
   onSelect: (anchor: number, focus: number) => void;
   onClear: () => void;
+  /** Numbered outlines over the bits, such as suggested signals. Their bits must not overlap. */
+  regions?: GridRegion[];
+  /** The region drawn heavier, as when its suggestion is hovered elsewhere. */
+  activeRegion?: string | null;
+  /** The pointer or keyboard focus entered a region, or left them all (null). */
+  onRegionHover?: (id: string | null) => void;
+  /** Enter on a bit of a region. */
+  onRegionActivate?: (id: string) => void;
+}
+
+export interface GridRegion {
+  id: string;
+  number: number;
+  /** Read out with the bit, such as "Suggestion 2, Counter". */
+  label: string;
+  bits: number[];
 }
 
 /**
  * How often each payload bit changed in the window, one row per byte with bit 7 on the left.
  * Drag, or use Shift with the arrow keys, to select a bit range.
  */
-export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, dimmed = null, onSelect, onClear }: Props) {
+export function BitGrid(props: Props) {
+  const { flips, bytes, transitions, seconds, selected, owners, dimmed = null, onSelect, onClear } = props;
+  const { regions = NO_REGIONS, activeRegion = null, onRegionHover, onRegionActivate } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -61,6 +80,18 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
   const width = LABEL_W + pitch * 8 + PAD;
   const height = PAD * 2 + rowPitch * bytes;
   const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const regionOf = useMemo(() => {
+    const of = new Map<number, GridRegion>();
+    for (const r of regions) for (const b of r.bits) of.set(b, r);
+    return of;
+  }, [regions]);
+  const reportedRegion = useRef<string | null>(null);
+  const reportRegion = (bit: number | null) => {
+    const id = bit === null ? null : (regionOf.get(bit)?.id ?? null);
+    if (id === reportedRegion.current) return;
+    reportedRegion.current = id;
+    onRegionHover?.(id);
+  };
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -105,6 +136,40 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
       }
     }
 
+    // Solid slate outlines with a number, under the dashed selection; the active one is heavier.
+    for (const region of regions) {
+      const set = new Set(region.bits.filter((b) => b < bytes * 8));
+      if (set.size === 0) continue;
+      const active = region.id === activeRegion;
+      traceOutline(g, set, bytes, pitch, rowPitch);
+      g.lineJoin = 'miter';
+      g.strokeStyle = cssVar('--paper');
+      g.lineWidth = active ? 7 : 5;
+      g.stroke();
+      g.strokeStyle = cssVar(active ? '--graphite' : '--slate');
+      g.lineWidth = active ? 3 : 1.5;
+      g.stroke();
+    }
+    g.font = `600 11px ${cssVar('--font-ui')}`;
+    g.textAlign = 'center';
+    for (const region of regions) {
+      const first = firstCell(region.bits.filter((b) => b < bytes * 8));
+      if (first === null) continue;
+      const cell = cellRect(first >> 3, 7 - (first & 7), pitch, rowPitch);
+      const active = region.id === activeRegion;
+      const text = String(region.number);
+      const w = Math.max(14, g.measureText(text).width + 6);
+      g.beginPath();
+      g.roundRect(cell.x - 1, cell.y - 1, w, 14, 3);
+      g.fillStyle = cssVar(active ? '--graphite' : '--paper');
+      g.fill();
+      g.strokeStyle = cssVar('--graphite');
+      g.lineWidth = 1;
+      g.stroke();
+      g.fillStyle = cssVar(active ? '--paper' : '--graphite');
+      g.fillText(text, cell.x - 1 + w / 2, cell.y + 6);
+    }
+
     // The outline runs along the gutters, on a paper halo so it reads against dark cells.
     if (selectedSet.size > 0) {
       traceOutline(g, selectedSet, bytes, pitch, rowPitch);
@@ -129,7 +194,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
       g.strokeStyle = cssVar('--ochre-control');
       g.strokeRect(cell.x + 1, cell.y + 1, cell.w - 2, cell.h - 2);
     }
-  }, [flips, dimmed, bytes, transitions, selectedSet, width, height, pitch, rowPitch, available, focusBit, showFocus, fontsReady]);
+  }, [flips, dimmed, bytes, transitions, selectedSet, regions, activeRegion, width, height, pitch, rowPitch, available, focusBit, showFocus, fontsReady]);
 
   /** The cell under the pointer, with the pointer's position in the wrapper for the tooltip. */
   const cellAt = (e: PointerEvent<HTMLCanvasElement>, clamp: boolean) => {
@@ -162,7 +227,9 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
   };
 
   const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
-    setHover(cellAt(e, false));
+    const over = cellAt(e, false);
+    setHover(over);
+    reportRegion(over?.bit ?? null);
     if (!dragging || anchor.current === null) return;
     const hit = cellAt(e, true);
     if (hit && hit.bit !== focusBit) {
@@ -174,9 +241,12 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
   const describe = (bit: number) => {
     const count = flips[bit] ?? 0;
     const owner = owners[bit];
+    const region = regionOf.get(bit);
     return `Byte ${bit >> 3}, bit ${bit & 7}. ${
       count === 0 ? 'Never changes' : `Changed ${times(count)}, ${percent(count, transitions)} of frames`
-    }.${dimmed && (dimmed[bit] ?? 0) > 0 ? ' Also changes in the baseline.' : ''}${owner ? ` In ${owner}.` : ''}${selectedSet.has(bit) ? ' Selected.' : ''}`;
+    }.${dimmed && (dimmed[bit] ?? 0) > 0 ? ' Also changes in the baseline.' : ''}${owner ? ` In ${owner}.` : ''}${
+      region ? ` ${region.label}; Enter selects it.` : ''
+    }${selectedSet.has(bit) ? ' Selected.' : ''}`;
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -202,7 +272,13 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
         anchor.current = next;
       }
       setAnnouncement(describe(next));
+      reportRegion(next);
       keepRowVisible(byte);
+    } else if (e.key === 'Enter' && onRegionActivate && regionOf.has(current)) {
+      e.preventDefault();
+      setFocusBit(current);
+      setShowFocus(true);
+      onRegionActivate(regionOf.get(current)!.id);
     } else if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault();
       anchor.current = current;
@@ -228,6 +304,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
     bit: hover.bit & 7,
     flips: flips[hover.bit] ?? 0,
     owner: owners[hover.bit] ?? null,
+    region: regionOf.get(hover.bit) ?? null,
     baseline: !!dimmed && (dimmed[hover.bit] ?? 0) > 0,
   };
 
@@ -243,13 +320,20 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
       onKeyDown={onKeyDown}
       onFocus={(e) => {
         if (focusBit === null) setFocusBit(selected[0] ?? 7);
-        if (e.currentTarget.matches(':focus-visible')) setShowFocus(true);
+        if (e.currentTarget.matches(':focus-visible')) {
+          setShowFocus(true);
+          reportRegion(focusBit ?? selected[0] ?? 7);
+        }
       }}
-      onBlur={() => setShowFocus(false)}
+      onBlur={() => {
+        setShowFocus(false);
+        reportRegion(null);
+      }}
     >
       <p id={helpId} className="sr-only">
         Each cell is one payload bit, bit 7 on the left. Darker cells change more often. Arrow keys move between bits, Shift with an arrow key
         selects a range, Space selects one bit and Escape clears the selection.
+        {regions.length > 0 && ' Numbered outlines are suggested signals; Enter on one of their bits selects that suggestion.'}
       </p>
       <div className="re-grid-head" aria-hidden="true" style={{ width }}>
         <span className="re-grid-corner" style={{ width: LABEL_W }}>
@@ -274,7 +358,10 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
           onPointerMove={onPointerMove}
           onPointerUp={() => setDragging(false)}
           onPointerCancel={() => setDragging(false)}
-          onPointerLeave={() => setHover(null)}
+          onPointerLeave={() => {
+            setHover(null);
+            reportRegion(null);
+          }}
         />
       </div>
       {hovered && hover && (
@@ -292,6 +379,7 @@ export function BitGrid({ flips, bytes, transitions, seconds, selected, owners, 
           </div>
           {hovered.baseline && <div className="muted">Also changes in the baseline</div>}
           {hovered.owner && <div className="muted">In {hovered.owner}</div>}
+          {hovered.region && <div className="muted">{hovered.region.label}</div>}
         </div>
       )}
       <p className="sr-only" aria-live="polite">
@@ -340,6 +428,13 @@ function cellRect(byte: number, col: number, pitch: number, rowPitch: number) {
     w: pitch - GAP,
     h: rowPitch - GAP,
   };
+}
+
+/** The top-left bit of a set, where its number goes: the first row, then bit 7 first. */
+function firstCell(bits: number[]): number | null {
+  let first: number | null = null;
+  for (const b of bits) if (first === null || b >> 3 < first >> 3 || (b >> 3 === first >> 3 && (b & 7) > (first & 7))) first = b;
+  return first;
 }
 
 /**

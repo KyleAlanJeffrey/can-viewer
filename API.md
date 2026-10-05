@@ -309,7 +309,7 @@ exportLog(format: LogFormat): Promise<Blob>
 
 Writes the current log as a file in `format`, so it can be saved in another format. The frames are written in time order, leaving out the J1939 transfers the engine reassembled (`FLAG_REASSEMBLED`): their packets are written, and opening the file reassembles them again. It neither reads nor changes anything else; the log stays open. What each format keeps and loses is under "Log export" in [COMPATIBILITY.md](COMPATIBILITY.md#log-export).
 
-The engine builds the whole file in its memory, in chunks of at most 8 MiB, then hands the chunks over one at a time, freeing each, and they are joined into the Blob without one large copy. So the call needs memory for the file on top of the log; COMPATIBILITY.md gives sizes. With no log open, the file holds only the format's header (nothing, for candump).
+The engine builds the whole file in its memory, in chunks of at most 8 MiB, then hands the chunks over one at a time, freeing each, and each is added to the Blob as it is handed over, without one large copy. So the call needs memory for the file on top of the log; COMPATIBILITY.md gives sizes. With no log open, the file holds only the format's header (nothing, for candump; an empty data frame group, for MF4).
 
 **Parameters**
 

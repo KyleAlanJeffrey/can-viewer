@@ -103,6 +103,7 @@ export function App({ core }: { core: CoreApi }) {
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [exportEnded, setExportEnded] = useState(false);
   const [query, setQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(() => !narrow());
   const [inspectorOpen, setInspectorOpen] = useState(() => !narrow());
@@ -112,6 +113,7 @@ export function App({ core }: { core: CoreApi }) {
   const [viewState] = useState(() => new ViewStateStore());
   const logInput = useRef<HTMLInputElement>(null);
   const dbcInput = useRef<HTMLInputElement>(null);
+  const exportButton = useRef<HTMLButtonElement>(null);
 
   // Async tasks read these rather than a render's closure, so queued DBC edits never undo each other.
   const dbcsRef = useRef<LoadedDbc[]>([]);
@@ -155,6 +157,17 @@ export function App({ core }: { core: CoreApi }) {
       setBusy(null);
     }
   }, []);
+
+  // The Export Log button is disabled while the export runs, so focus fell to the page (or was
+  // left in the closed sheet); give it back once the button is enabled again, unless the user
+  // has moved on.
+  useEffect(() => {
+    if (!exportEnded || busy) return;
+    setExportEnded(false);
+    const focused = document.activeElement;
+    const lost = !focused || focused === document.body || focused.closest('dialog:not([open])') !== null;
+    if (lost || focused === exportButton.current) exportButton.current?.focus();
+  }, [exportEnded, busy]);
 
   const setView = useCallback((next: ViewId) => {
     setViewState(next);
@@ -670,7 +683,7 @@ export function App({ core }: { core: CoreApi }) {
               <FileText size={16} strokeWidth={1.5} />
               <span className="label">Open DBC&hellip;</span>
             </button>
-            <button className="toolbar-button" onClick={() => setExportOpen(true)} disabled={!!busy || !log}>
+            <button ref={exportButton} className="toolbar-button" onClick={() => setExportOpen(true)} disabled={!!busy || !log}>
               <FileDown size={16} strokeWidth={1.5} />
               <span className="label">Export Log&hellip;</span>
             </button>
@@ -816,7 +829,16 @@ export function App({ core }: { core: CoreApi }) {
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
       {dragOver && <div className="drop-overlay">Drop a log or DBC files to open them</div>}
-      {log && <ExportLogSheet open={exportOpen} onClose={() => setExportOpen(false)} core={core} log={log} run={run} />}
+      {log && (
+        <ExportLogSheet
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+          core={core}
+          log={log}
+          run={run}
+          onDone={() => setExportEnded(true)}
+        />
+      )}
     </div>
   );
 }

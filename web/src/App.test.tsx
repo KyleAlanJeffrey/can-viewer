@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -64,6 +64,9 @@ describe('App', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Download' }));
     expect(exportLog).toHaveBeenCalledWith('candump');
     expect((await screen.findByRole('alert')).textContent).toContain("There isn't enough memory to build the exported file.");
+    // Disabled while the export ran, the button gets focus back once enabled.
+    await waitFor(() => expect(document.activeElement).toBe(exportButton));
+    expect(exportButton.disabled).toBe(false);
   });
 
   it('shows the format of an open log next to its frame count', async () => {

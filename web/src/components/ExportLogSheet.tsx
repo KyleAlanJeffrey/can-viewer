@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import type { CoreApi, LogFormat, LogInfo } from '../core/api';
 import { formatCount } from '../format';
-import { hasSaveDialog, startBlobSave, type FileKind } from '../views/shared/saveFile';
+import { chooseBlobFile, hasSaveDialog, type FileKind } from '../views/shared/saveFile';
 import { Sheet } from './Sheet';
 
 interface ExportFormat {
@@ -68,22 +68,32 @@ interface Props {
   log: LogInfo;
   /** Runs the export as the app's busy task, which shows its label and any error. */
   run: (label: string, task: () => Promise<void>) => Promise<boolean>;
+  /** Called once the export has ended, been cancelled or failed. */
+  onDone?: () => void;
 }
 
 /** Pick a format to save the open log in. The file is made in the browser and never uploaded. */
-export function ExportLogSheet({ open, onClose, core, log, run }: Props) {
+export function ExportLogSheet({ open, onClose, core, log, run, onDone }: Props) {
   const [format, setFormat] = useState<LogFormat>(() => (log.format === 'candump' ? 'asc' : 'candump'));
   const id = useId();
   const saveDialog = hasSaveDialog();
 
   const exportLog = () => {
     const target = EXPORT_FORMATS.find((f) => f.format === format) ?? EXPORT_FORMATS[0];
-    // The save dialog must open straight from the click.
-    const save = startBlobSave(exportFileName(log.name, target.kind.extension), target.kind);
+    const label = `Exporting ${log.name} as ${target.label}\u2026`;
+    // The save dialog must open straight from the click. The export shows as busy only once a
+    // file is chosen.
+    const chosen = chooseBlobFile(exportFileName(log.name, target.kind.extension), target.kind);
     onClose();
-    void run(`Exporting ${log.name} as ${target.label}\u2026`, async () => {
-      await save(() => core.exportLog(target.format));
-    });
+    void chosen
+      .then(
+        async (save) => {
+          if (save) await run(label, async () => save(await core.exportLog(target.format)));
+        },
+        // A save dialog that failed to open is shown as the export's error.
+        (error: unknown) => run(label, () => Promise.reject(error)),
+      )
+      .finally(() => onDone?.());
   };
 
   return (

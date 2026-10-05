@@ -105,12 +105,15 @@ const handlers = {
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
   exportLog(format: LogFormat) {
     session.export_log(format);
-    // Taken a chunk at a time, so the core frees each as it is copied out. Posting the Blob to
-    // the page shares its data rather than copying it.
-    const parts: Uint8Array<ArrayBuffer>[] = [];
-    // wasm-bindgen copies each chunk into an ArrayBuffer of its own, never a shared one.
-    for (let part = session.export_chunk(); part; part = session.export_chunk()) parts.push(part as Uint8Array<ArrayBuffer>);
-    return new Blob(parts);
+    // Taken a chunk at a time, so the core frees each as it is copied out, and added to the
+    // Blob at once, so each copy can be collected rather than all being held to the end. A
+    // Blob made from a Blob shares its data, and so does posting the result to the page.
+    let file = new Blob([]);
+    for (let part = session.export_chunk(); part; part = session.export_chunk()) {
+      // wasm-bindgen copies each chunk into an ArrayBuffer of its own, never a shared one.
+      file = new Blob([file, part as Uint8Array<ArrayBuffer>]);
+    }
+    return file;
   },
 };
 

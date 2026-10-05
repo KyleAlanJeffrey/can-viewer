@@ -61,21 +61,15 @@ export function startTextSave(name: string, kind: FileKind): (text: string) => P
 }
 
 /**
- * Like `startTextSave`, for a file that takes a while to make: the returned function calls
- * `make` only once a file was chosen, so a cancelled dialog costs nothing.
+ * Starts saving a file that takes a while to make. Like `startTextSave`, call it straight from
+ * the click. It resolves once a file is chosen, to a function that writes the file there, or to
+ * null if the dialog was cancelled, so nothing is made for a cancelled dialog. Without a save
+ * dialog it resolves at once, to a function that downloads the file.
  */
-export function startBlobSave(name: string, kind: FileKind): (make: () => Promise<Blob>) => Promise<boolean> {
+export async function chooseBlobFile(name: string, kind: FileKind): Promise<((data: Blob) => Promise<void>) | null> {
   const handle = pickFile(name, kind);
-  if (!handle) {
-    return async (make) => {
-      downloadBlob(name, await make());
-      return true;
-    };
-  }
-  return async (make) => {
-    const file = await handle;
-    if (!file) return false;
-    await writeFile(file, await make());
-    return true;
-  };
+  if (!handle) return async (data) => downloadBlob(name, data);
+  const file = await handle;
+  if (!file) return null;
+  return (data) => writeFile(file, data);
 }

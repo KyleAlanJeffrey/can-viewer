@@ -8,10 +8,11 @@ import { EXPORT_FORMATS, ExportLogSheet, exportFileName } from './ExportLogSheet
 const FILE = new Blob(['(1.000000) can0 123#00\n']);
 
 /** A save dialog that resolves to a file collecting what is written, or fails with `error`. */
-function stubPicker(error?: DOMException) {
+function stubPicker(error?: DOMException, chosen: Promise<void> = Promise.resolve()) {
   const written: unknown[] = [];
   const close = vi.fn(async () => undefined);
   const picker = vi.fn(async () => {
+    await chosen;
     if (error) throw error;
     return {
       createWritable: async () => ({
@@ -39,8 +40,9 @@ function renderSheet(core: CoreApi, log: LogInfo = logInfo({ name: 'drive.mf4', 
     }
   });
   const onClose = vi.fn();
-  render(<ExportLogSheet open onClose={onClose} core={core} log={log} run={run} />);
-  return { run, errors, onClose, user: userEvent.setup() };
+  const onDone = vi.fn();
+  render(<ExportLogSheet open onClose={onClose} core={core} log={log} run={run} onDone={onDone} />);
+  return { run, errors, onClose, onDone, user: userEvent.setup() };
 }
 
 afterEach(() => {
@@ -78,19 +80,43 @@ describe('Export Log sheet', () => {
       expect.objectContaining({ suggestedName: 'drive.blf', types: [{ description: 'Vector BLF log', accept: { 'application/octet-stream': ['.blf'] } }] }),
     );
     expect(onClose).toHaveBeenCalled();
-    expect(run).toHaveBeenCalledWith('Exporting drive.mf4 as Vector BLF\u2026', expect.any(Function));
     await waitFor(() => expect(close).toHaveBeenCalled());
+    expect(run).toHaveBeenCalledWith('Exporting drive.mf4 as Vector BLF\u2026', expect.any(Function));
     expect(exportLog).toHaveBeenCalledWith('blf');
     expect(written).toEqual([FILE]);
+  });
+
+  it('shows the export as busy only once a file is chosen', async () => {
+    let choose = () => {};
+    const { close } = stubPicker(undefined, new Promise<void>((resolve) => (choose = resolve)));
+    const { run, onDone, user } = renderSheet(fakeCore({ exportLog: async () => FILE }));
+
+    await user.click(screen.getByRole('button', { name: 'Export\u2026' }));
+    await Promise.resolve();
+    expect(run).not.toHaveBeenCalled();
+    choose();
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalled();
+  });
+
+  it('shows why the save dialog failed to open', async () => {
+    stubPicker(new DOMException('Not allowed.', 'SecurityError'));
+    const { errors, onDone, user } = renderSheet(fakeCore({ exportLog: async () => FILE }));
+
+    await user.click(screen.getByRole('button', { name: 'Export\u2026' }));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(errors).toEqual(['Not allowed.']);
   });
 
   it('exports nothing when the save dialog is cancelled', async () => {
     const { written } = stubPicker(new DOMException('The user aborted a request.', 'AbortError'));
     const exportLog = vi.fn<CoreApi['exportLog']>(async () => FILE);
-    const { run, errors, user } = renderSheet(fakeCore({ exportLog }));
+    const { run, errors, onDone, user } = renderSheet(fakeCore({ exportLog }));
 
     await user.click(screen.getByRole('button', { name: 'Export\u2026' }));
-    await waitFor(() => expect(run).toHaveResolvedWith(true));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(run).not.toHaveBeenCalled();
     expect(exportLog).not.toHaveBeenCalled();
     expect(written).toEqual([]);
     expect(errors).toEqual([]);

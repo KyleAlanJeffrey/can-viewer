@@ -1,4 +1,19 @@
-import type { ByteLane, Candidate, CoreApi, Database, FindRule, IdSummary, LogInfo, Progress, RawSignalSpec, ScopedDatabase, SeriesInfo } from './api';
+import type {
+  ByteLane,
+  Candidate,
+  CoreApi,
+  Database,
+  DiscoveryHints,
+  FindRule,
+  IdSummary,
+  LogInfo,
+  MessageSuggestions,
+  Progress,
+  RawSignalSpec,
+  ScopedDatabase,
+  SeriesInfo,
+} from './api';
+import { scanEach } from './discovery';
 import { RowBatch } from './rows';
 import type { Request } from './worker';
 
@@ -141,5 +156,11 @@ export class WebCore implements CoreApi {
 
   findSignal(rules: FindRule[], keys: number[], limit: number) {
     return this.call<Candidate[]>('findSignal', rules, keys, limit);
+  }
+
+  suggestSignals = (key: number, hints: DiscoveryHints = {}) => this.call<MessageSuggestions>('suggestSignals', key, hints);
+
+  scanSignals(keys: number[], hints: DiscoveryHints, onProgress: (done: number, total: number, latest: MessageSuggestions) => void, signal?: AbortSignal) {
+    return scanEach(this.suggestSignals, keys, hints, onProgress, signal);
   }
 }

@@ -205,6 +205,55 @@ export interface Candidate {
   score: number;
 }
 
+/** What a suggested signal looks like it is. */
+export type SuggestionKind = 'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed';
+
+/** Optional help for `suggestSignals` and `scanSignals`. */
+export interface DiscoveryHints {
+  /** Times, in seconds, when something happened, such as a press of the brake pedal. */
+  markers?: { t: number }[];
+  /** A decoded signal (a `decodeSignal` pair) to compare value candidates with and fit a scale to. */
+  reference?: { key: number; signal: string } | null;
+}
+
+/** A scale fitted from a reference signal: `reference = raw * factor + offset`. */
+export interface SignalFit {
+  /** The reference signal's name and unit. */
+  reference: string;
+  unit: string;
+  /** Pearson correlation of the raw value with the reference, at least 0.8 in size. */
+  r: number;
+  factor: number;
+  offset: number;
+}
+
+/** A likely signal in one message: a guess from how its bits change, to check before use. */
+export interface Suggestion {
+  kind: SuggestionKind;
+  /** The bit range, with `factor` and `offset` from `fit` when there is one, else 1 and 0. */
+  spec: RawSignalSpec;
+  /** 0..1, how sure the guess is. */
+  confidence: number;
+  /** `confidence` in words: high from 0.85, medium from 0.6. */
+  level: 'high' | 'medium' | 'low';
+  /** One line on why, such as "Increments by 1 each frame; wraps at 255". */
+  reason: string;
+  /** A checksum whose rule held on only most frames, or that matched no known rule. */
+  unconfirmed: boolean;
+  /** About 64 evenly spaced values across the whole log, scaled by `spec`; times in seconds. */
+  sparkline: { t: number[]; v: number[] };
+  fit: SignalFit | null;
+}
+
+export interface MessageSuggestions {
+  key: number;
+  /** Frames of the ID in the log, and how many of them were read. */
+  frames: number;
+  sampledFrames: number;
+  /** Best first; their bit ranges never overlap. */
+  suggestions: Suggestion[];
+}
+
 /** One byte's decimated points across a window; see `CoreApi.byteLanes`. */
 export interface ByteLane {
   x: Float64Array;
@@ -285,6 +334,24 @@ export interface CoreApi {
    * is the product over rules; see `find_signal` in crates/can-wasm/src/find.rs.
    */
   findSignal(rules: FindRule[], keys: number[], limit: number): Promise<Candidate[]>;
+  /**
+   * Suggested signals for one ID: likely counters, checksums, flags, enums and values, judged
+   * from how its bits change over a sample of at most 20,000 frames. Guesses to check, not
+   * decodes. Rejects for an unknown key, or a reference no loaded DBC decodes. See `suggest` in
+   * crates/can-wasm/src/discover.rs.
+   */
+  suggestSignals(key: number, hints?: DiscoveryHints): Promise<MessageSuggestions>;
+  /**
+   * `suggestSignals` for each of `keys` in turn, calling `onProgress` with each message's
+   * suggestions as they arrive. Aborting `signal` rejects with an `AbortError` once the message
+   * in hand is done; the messages already passed to `onProgress` stay valid.
+   */
+  scanSignals(
+    keys: number[],
+    hints: DiscoveryHints,
+    onProgress: (done: number, total: number, latest: MessageSuggestions) => void,
+    signal?: AbortSignal,
+  ): Promise<MessageSuggestions[]>;
   /**
    * Replace the loaded databases. A message is looked up in order, in the first database whose
    * `channel` is null or names its bus. Series handles stay valid; series decoded under the old

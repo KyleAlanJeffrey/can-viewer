@@ -484,6 +484,11 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* An update is news, not a warning. */
+.update-banner > svg:first-child {
+  color: var(--slate);
+}
+
 .banner .button {
   flex: none;
   height: 28px;

@@ -12,6 +12,8 @@ It opens candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV logs, and Expor
 
 Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker, and a React/TypeScript UI. The desktop build will run the same crates natively under Tauri, behind the same `CoreApi` interface ([web/src/core/api.ts](web/src/core/api.ts)).
 
+It works offline and can be installed as an app. After one visit, a service worker keeps the app itself, so it opens with no network (a laptop in a garage); the demo log is kept too once it has been opened. Chrome and Edge offer **Install** in the address bar, and Safari has **File > Add to Dock**. A new version downloads in the background and the app offers **Reload** when it is ready. See [COMPATIBILITY.md](COMPATIBILITY.md#offline-and-install).
+
 ## Layout
 
 | Path | What |

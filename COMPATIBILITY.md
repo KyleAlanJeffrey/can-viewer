@@ -190,13 +190,17 @@ Adapters:
 slcan (`web/src/capture/slcan.ts`):
 
 - The serial port is opened at 115200 baud. USB adapters that show up as a virtual serial port (CDC-ACM) ignore the baud rate; an adapter behind a UART at another baud rate is not supported yet.
-- Start: `C` (close, in case the channel was left open; its answer is not checked), then `S0` to `S8` for 10, 20, 50, 100, 125, 250, 500, 800 kbit/s or 1 Mbit/s, then `L` (listen only) or `O`. An adapter that refuses `L` is opened with `O` and the user is told, since it then acknowledges frames. A CR answer means OK and BEL an error; a command unanswered within a second fails the start. Stop sends `C` and closes the port.
+- Start: `C` (close, in case the channel was left open; its answer is not checked), then `V` (version), only to learn whether the adapter answers commands at all, then `S0` to `S8` for 10, 20, 50, 100, 125, 250, 500, 800 kbit/s or 1 Mbit/s, then `O` to open. A CR (or a reply line such as `V1013`) means OK and BEL an error. An adapter that answers nothing is fine: CANable's slcan firmware never answers, so, as `slcand` and python-can do, no answer counts as success, waiting 100 ms for a BEL rather than a second for an answer. Only a BEL or a failed write fails the start. Stop sends `C` and closes the port; leaving the page sends `C` without waiting.
+- Listen only: an adapter that answers is sent `L`; if it refuses, `M1` (CANable's silent mode), then `O`. Listen-only counts as confirmed only when an answering adapter accepts `L` or `M1`. Otherwise, including every adapter that answers nothing, the Capture sheet says the adapter can't confirm listen-only mode and may acknowledge frames on the bus, and asks "Start anyway?"; the adapter is not opened until the user agrees. A silent adapter is then sent `M1` before `O`, which a CANable takes as silent mode, but the status line never says "listen only" for it.
 - Frames read: `t`/`T` (classic), `r`/`R` (remote), `d`/`D` (CAN FD) and `b`/`B` (CAN FD with bit rate switch), with FD lengths from DLC codes 9 to F. A 4-digit timestamp after the data (`Z1` mode) is skipped. A line that is not a frame, or a BEL from the adapter, is counted as a problem and the capture goes on.
 - Bitrates other than the nine `S` codes (`s` with bit timing registers) are not offered.
+- CAN FD: frames sent by an FD adapter are read, but the FD data bitrate is not set. Adapters that support it (CANable 2 firmware with its `Y` command, for example) keep their own default data bitrate, so an FD bus at another data rate is not received correctly. Setting it is on the list in TODO.md.
+- Remote frames are stored without their DLC, as every log format's frames are, so Save Capture... writes `123#R` rather than `123#R8`.
 
 gs_usb (`web/src/capture/gsUsb.ts`):
 
-- The protocol of the Linux `gs_usb` driver: host format, then the device's bit timing limits (`BT_CONST`), then bit timing for the chosen bitrate at a sample point as near 87.5% as the limits allow, then `MODE` start, listen only when the device's features include it (otherwise opened normally, and the user is told). Stop resets the device.
+- The protocol of the Linux `gs_usb` driver: host format, then the device's bit timing limits (`BT_CONST`), then bit timing for the chosen bitrate at the sample point CiA 301 recommends, as near as the limits allow (87.5% up to 800 kbit/s, 75% above; at most 4,096 prescalers are tried), then `MODE` start, listen only when the device's features include it. A device without listen-only mode is not started until the user agrees in the Capture sheet, as for slcan. Stop resets the device, and leaving the page sends the reset without waiting.
+- Only frames of channel 0 are kept; frames another channel reports are skipped.
 - An overflow flag from the device is counted as a problem ("frames were lost").
 - Linux: the kernel's `gs_usb` driver claims the adapter, so the browser cannot open it until the driver is unbound from it (for example `echo -n <bus-port>:1.0 | sudo tee /sys/bus/usb/drivers/gs_usb/unbind`), and the user needs write access to the USB device (a udev rule). Web Serial on Linux likewise needs access to the serial device, usually through the `dialout` group.
 - Windows: candleLight firmware asks Windows for the WinUSB driver itself; an adapter given another driver cannot be opened from the browser.
@@ -206,11 +210,12 @@ Timestamps: frames are timed with the computer's monotonic clock (`performance.n
 Limits:
 
 - Frames are kept in the tab's memory, like an opened log, at about 65 bytes a frame (see "Browsers" above for the wasm memory cap). A busy 500 kbit/s bus (about 4,000 frames/s) fills about 1 GB an hour.
-- Frames reach the engine in batches about every 100 ms, or at once when 5,000 are waiting, so a capture keeps up in a background tab whose timers the browser slows down. Views refresh about twice a second; plots of decoded signals about every 2 seconds.
-- One adapter, one bus (stored as `can0`) and one capture at a time. The app never transmits a frame.
+- Against a budget of 2 GB, so the views and saving have room: at about 16.5 million frames (half the budget) the app says to stop and save soon, and at about 24.7 million (three quarters) it stops the capture by itself, keeping the frames. If the engine still can't grow its frame store, the batch is refused, the capture stops with a message, and the frames before it are kept.
+- Frames reach the engine in batches about every 100 ms, or at once when 5,000 are waiting, so a capture keeps up in a background tab whose timers the browser slows down. The status line updates twice a second. The views go over every frame when they refresh, so they refresh every 500 ms plus 1 ms per 2,000 frames (about every 1.5 s at 2 million frames, every 5.5 s at 10 million), keeping their cost about level; plots of decoded signals refresh every fourth time.
+- One adapter, one bus (stored as `can0`) and one capture at a time. The app never sends a frame; an adapter not in listen-only mode still acknowledges the frames it receives, as any active node does.
 - A capture is not kept across a reload until it is saved (see "Saved sessions" below); the app asks before closing the tab, replacing or closing an unsaved capture.
 - Save Capture... writes the capture as a candump log (see "Log export" above), with absolute times from the computer's clock at the start of the capture. Once the capture is stopped, Export Log... saves it in any other format too; it is disabled while recording.
-- Real adapters have not been tested yet; the protocol handling is tested against simulated devices only.
+- Live capture is experimental: real adapters have not been tested yet, and the protocol handling is tested against simulated devices only (including a silent, CANable-like slcan adapter).
 
 ## DBC files
 

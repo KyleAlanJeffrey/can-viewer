@@ -49,6 +49,9 @@ fn reserved_frames(format: Format, total_bytes: f64) -> usize {
     ((total_bytes / bytes_per_frame(format)) as usize).min(MAX_RESERVED_FRAMES)
 }
 
+/// Bytes a frame takes in the store, its ID's frame list and the time index, rounded up.
+const STORED_BYTES_PER_FRAME: f64 = 40.0;
+
 /// Bytes of a log held back until there are enough to tell its format from its content.
 const SNIFF_BYTES: usize = 4096;
 
@@ -76,10 +79,17 @@ struct LogInput {
     total_bytes: f64,
     head: Vec<u8>,
     parser: Option<AnyParser>,
+    /// Bytes the store may take, for a log read beside another; None for no limit.
+    limit: Option<usize>,
+    /// The log would not fit in `limit`, so it is not read.
+    refused: bool,
 }
 
 impl LogInput {
     fn push(&mut self, chunk: &[u8], store: &mut FrameStore) {
+        if self.refused {
+            return;
+        }
         match &mut self.parser {
             Some(parser) => parser.push(chunk, store),
             None => {
@@ -93,6 +103,11 @@ impl LogInput {
 
     fn choose_parser(&mut self, store: &mut FrameStore) {
         let format = self.format();
+        if self.over_limit(format) {
+            self.refused = true;
+            self.head = Vec::new();
+            return;
+        }
         // An MF4 file is buffered whole before its frames are read, so its store is sized
         // in `finish`, once the buffer has stopped growing.
         if format != Format::Mf4 {
@@ -107,8 +122,11 @@ impl LogInput {
     }
 
     fn finish(&mut self, store: &mut FrameStore) {
-        if self.parser.is_none() {
+        if self.parser.is_none() && !self.refused {
             self.choose_parser(store);
+        }
+        if self.refused {
+            return;
         }
         if self.format() == Format::Mf4 && self.total_bytes <= mf4::MAX_FILE as f64 {
             self.reserve(Format::Mf4, store);
@@ -119,9 +137,28 @@ impl LogInput {
         store.sort_by_time();
     }
 
-    fn reserve(&self, format: Format, store: &mut FrameStore) {
+    fn reserve(&mut self, format: Format, store: &mut FrameStore) {
         let frames = reserved_frames(format, self.total_bytes);
-        store.reserve(frames, frames * 8);
+        if self.limit.is_none() {
+            store.reserve(frames, frames * 8);
+        } else if store.try_reserve(frames, frames * 8).is_err() {
+            self.refused = true;
+        }
+    }
+
+    /// Whether a log of this size likely needs more than `limit`: its frames as the store
+    /// holds them, and an MF4 file itself, which is held whole while it is read.
+    fn over_limit(&self, format: Format) -> bool {
+        let Some(limit) = self.limit else {
+            return false;
+        };
+        let frames = self.total_bytes / bytes_per_frame(format);
+        let file = if format == Format::Mf4 {
+            self.total_bytes
+        } else {
+            0.0
+        };
+        frames * STORED_BYTES_PER_FRAME + file > limit as f64
     }
 
     fn format(&self) -> Format {

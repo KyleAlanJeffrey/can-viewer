@@ -149,11 +149,11 @@ There are two Cloudflare Workers static-assets projects, deployed separately:
 | Project | Config | Serves | Domain |
 |---|---|---|---|
 | `freecan-studio` (the app) | `wrangler.jsonc` at the repository root | `web/dist`, built by `scripts/build-cloudflare.sh` | `app.freecanstudio.com` |
-| `freecan-site` (the landing site) | `site/wrangler.jsonc` | `site/public`, plain files with no build | `freecanstudio.com` |
+| `freecan-studio-landing` (the landing site) | `site/wrangler.jsonc` | `site/public`, plain files with no build | `freecanstudio.com` |
 
 `freecan.studio` and `freecan.app` redirect to `freecanstudio.com` through Cloudflare redirect rules, which the owner configures in the dashboard. The site links into the app; it never opens files itself. The landing site is described in [site/README.md](site/README.md).
 
-Both projects build from the same repository, so each needs build watch paths in its Cloudflare build settings, or every push rebuilds both: `freecan-studio` excludes `site/*`, and `freecan-site` includes only `site/*`.
+Both projects build from the same repository, so each needs build watch paths in its Cloudflare build settings, or every push rebuilds both: `freecan-studio` excludes `site/*`, and `freecan-studio-landing` includes only `site/*`.
 
 The app is a static site on Cloudflare Workers static assets, configured in `wrangler.jsonc`: an assets-only Worker named `freecan-studio` serving `web/dist`, with single-page-application fallback.
 

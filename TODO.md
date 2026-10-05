@@ -22,7 +22,8 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [x] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)
 - [x] After the first deploy, check the demo, reload restore and the CSP on the live site
 - [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
-- [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
+- [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner). The landing site's `site/wrangler.jsonc` named the Worker `freecan-site` while the dashboard project is `freecan-studio-landing`; now fixed, so recheck the landing site's branch builds
+- [ ] Turn on the build cache (Settings, Builds, Cache) for both Workers Builds projects (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
 
 ## Landing page

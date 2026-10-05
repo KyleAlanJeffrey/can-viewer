@@ -492,6 +492,14 @@ describe('Video panel details', () => {
     expect(mediaState().currentTime).toBe(42);
   });
 
+  it('steps forward when the video states no end yet', async () => {
+    const { user } = await renderWorkspace();
+    stateOf(videoEl()).seekableEnd = null;
+    loadMetadata(Infinity);
+    await user.click(screen.getByRole('button', { name: 'Forward 0.1 s' }));
+    expect(mediaState().currentTime).toBeCloseTo(0.1);
+  });
+
   it('labels the resize handle with the panel width, Home narrowest and End widest', async () => {
     const { user } = await renderWorkspace();
     const handle = screen.getByRole('separator', { name: 'Resize video panel' });

@@ -7,6 +7,7 @@ import { Segmented } from './components/Segmented';
 import { cssVar, formatBytes, formatCount, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
+import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
 import type { LoadedDbc, ViewContext, ViewId } from './views/types';
@@ -241,6 +242,7 @@ export function App({ core }: { core: CoreApi }) {
     setNotKept(null);
     setLogVersion((v) => v + 1);
     viewState.clearScope('log');
+    videoSession.close();
   }, [viewState]);
 
   const restoreUi = useCallback(
@@ -291,6 +293,7 @@ export function App({ core }: { core: CoreApi }) {
             return;
           }
           viewState.clearScope('log');
+          videoSession.close();
           setView('overview');
           // Kept so a reload reopens it. A copy this browser can't store just isn't restored.
           void save('log', { name, blob: file } satisfies SavedLog).then((kept) => {
@@ -324,11 +327,22 @@ export function App({ core }: { core: CoreApi }) {
     async (files: FileList | File[]) => {
       const list = [...files];
       const dbcFiles = list.filter((f) => f.name.toLowerCase().endsWith('.dbc'));
-      const logFile = list.find((f) => !dbcFiles.includes(f));
+      const videoFile = list.find(isVideoFile);
+      const logFile = list.find((f) => !dbcFiles.includes(f) && f !== videoFile);
       for (const f of dbcFiles) await openDbc(f, f.name);
-      if (logFile) await openLog(logFile, logFile.name);
+      const logOpened = logFile ? await openLog(logFile, logFile.name) : false;
       // DBCs on their own are opened for editing.
-      else if (dbcFiles.length > 0 && !logRef.current) setView('database');
+      if (!logFile && dbcFiles.length > 0 && !logRef.current) setView('database');
+      if (videoFile) {
+        // logRef only catches up with a log opened just now on the next render.
+        const logName = logFile ? (logOpened ? logFile.name : null) : logRef.current?.name;
+        if (logName) {
+          videoSession.open(videoFile, logName);
+          setView('plot');
+        } else if (!logFile) {
+          setError('Open a log first, then add the video to line it up with it.');
+        }
+      }
     },
     [openDbc, openLog, setView],
   );
@@ -807,7 +821,7 @@ export function App({ core }: { core: CoreApi }) {
         </div>
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
-      {dragOver && <div className="drop-overlay">Drop a log or DBC files to open them</div>}
+      {dragOver && <div className="drop-overlay">Drop a log, DBC files or a video to open them</div>}
     </div>
   );
 }

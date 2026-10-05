@@ -16,13 +16,18 @@ interface Props {
   /** Colour per signal, same order as `signals`. */
   colors: string[];
   highlight: string | null;
+  /** Bits (`byte * 8 + bit`) to call out with a dashed outline, described in the tooltip as `markedLabel`. */
+  marked?: ReadonlySet<number>;
+  markedLabel?: string;
+  /** Names the grid for assistive technology. */
+  label?: string;
 }
 
 /**
  * How often each payload bit changes between consecutive frames, one row per byte with the
  * MSB on the left. Changing bits stand out against constant ones; DBC signals are outlined.
  */
-export function BitHeatmap({ flips, frames, bytes, signals, colors, highlight }: Props) {
+export function BitHeatmap({ flips, frames, bytes, signals, colors, highlight, marked, markedLabel, label }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [available, setAvailable] = useState(0);
@@ -127,7 +132,28 @@ export function BitHeatmap({ flips, frames, bytes, signals, colors, highlight }:
       outline(block);
       ctx.stroke();
     }
-  }, [flips, frames, bytes, owners, signals, colors, highlight, width, height, pitch, rowPitch, available, fontsReady]);
+
+    // Marked cells: a dashed graphite outline on a paper halo, so the call-out never relies on colour.
+    for (const bit of marked ?? []) {
+      const byte = bit >> 3;
+      if (byte >= bytes) continue;
+      const cell = () => {
+        ctx.beginPath();
+        ctx.roundRect(LABEL_W + (7 - (bit & 7)) * pitch + 1, HEAD_H + byte * rowPitch + 1, pitch - 2, rowPitch - 2, radius);
+      };
+      ctx.setLineDash([]);
+      ctx.strokeStyle = cssVar('--paper');
+      ctx.lineWidth = 4;
+      cell();
+      ctx.stroke();
+      ctx.setLineDash([3, 2]);
+      ctx.strokeStyle = cssVar('--graphite');
+      ctx.lineWidth = 2;
+      cell();
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }, [flips, frames, bytes, owners, signals, colors, highlight, marked, width, height, pitch, rowPitch, available, fontsReady]);
 
   const onMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -153,7 +179,7 @@ export function BitHeatmap({ flips, frames, bytes, signals, colors, highlight }:
         onPointerMove={onMove}
         onPointerLeave={() => setHover(null)}
         role="img"
-        aria-label={`Bit change rates for ${bytes} bytes`}
+        aria-label={label ?? `Bit change rates for ${bytes} bytes`}
       />
       {hovered && hover && (
         <div
@@ -169,6 +195,7 @@ export function BitHeatmap({ flips, frames, bytes, signals, colors, highlight }:
               : `Changed ${formatCount(hovered.flips)} times \u00b7 ${((100 * hovered.flips) / Math.max(1, frames - 1)).toFixed(2)}% of frames`}
           </div>
           {hovered.owner && <div className="muted">Signal {hovered.owner.name}</div>}
+          {markedLabel && marked?.has(hover.bit) && <div>{markedLabel}</div>}
         </div>
       )}
     </div>

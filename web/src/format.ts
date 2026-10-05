@@ -16,9 +16,11 @@ export function formatBytes(n: number): string {
 
 export function formatDuration(s: number): string {
   if (s < 60) return `${s.toFixed(1)} s`;
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return h > 0 ? `${h} h ${m} min` : `${m} min ${Math.round(s % 60)} s`;
+  // Round first, so 1199.6 s reads 20 min 0 s, not 19 min 60 s.
+  const whole = Math.round(s);
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  return h > 0 ? `${h} h ${m} min` : `${m} min ${whole % 60} s`;
 }
 
 /** A message period, e.g. `10 ms` or `1.0 s`; empty when unknown. */

@@ -254,6 +254,20 @@ impl FrameStore {
         self.data.reserve(payload_bytes);
     }
 
+    /// Like [`FrameStore::reserve`], but reports running out of memory instead of aborting.
+    pub fn try_reserve(
+        &mut self,
+        frames: usize,
+        payload_bytes: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.ts_ns.try_reserve(frames)?;
+        self.id.try_reserve(frames)?;
+        self.channel.try_reserve(frames)?;
+        self.flags.try_reserve(frames)?;
+        self.data_start.try_reserve(frames)?;
+        self.data.try_reserve(payload_bytes)
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.ts_ns.len()

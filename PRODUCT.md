@@ -19,7 +19,7 @@ The job: open a log (often hundreds of MB), find out what's on the bus, decode i
 
 ## Product Purpose
 
-FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump logs today, with ASC, BLF, TRC, MF4 and CSV planned. It decodes with imported DBC files, plots signals, and makes bit-level activity visible so unknown messages can be defined by hand. FreeCAN Studio Pro is a paid desktop app on the same core that adds live capture, transmit and replay, UDS scanning, video sync, automated signal discovery, multi-GB files and scripting.
+FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump logs today, with ASC, BLF, TRC, MF4 and CSV planned. It decodes with imported DBC files, plots signals, and makes bit-level activity visible so unknown messages can be defined by hand. FreeCAN Studio Pro is a paid desktop app on the same core that adds live capture, transmit and replay, UDS scanning, automated signal discovery, multi-GB files and scripting. Paid features are hidden for now.
 
 Success: an engineer drops a large log into a browser tab and is reading decoded signals, or has defined an unknown one, within minutes, with nothing installed and nothing uploaded.
 

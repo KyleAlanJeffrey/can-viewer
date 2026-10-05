@@ -200,7 +200,8 @@ export function PlotView({ ctx }: ViewProps) {
             <p className="pv-empty-hint">
               {ctx.dbcs.length > 0 ? 'Up to six signals share one time axis, with cursors and markers.' : 'Signals come from a DBC, so open one first.'}
             </p>
-            {!video && (
+            {/* A video lines up with a finished log, not one still being recorded. */}
+            {!video && !ctx.capturing && (
               <p className="pv-empty-action">
                 <AddVideoButton log={log} />
               </p>
@@ -220,7 +221,7 @@ export function PlotView({ ctx }: ViewProps) {
               </div>
               <div className="content-actions">
                 <Segmented label="Cursors" options={CURSOR_OPTIONS} value={mode} onChange={changeMode} />
-                {!video && <AddVideoButton log={log} />}
+                {!video && !ctx.capturing && <AddVideoButton log={log} />}
                 <button className="button" onClick={addMarker} disabled={cursorA === null}>
                   <MapPin size={16} strokeWidth={1.5} aria-hidden="true" />
                   Add Marker

@@ -1062,14 +1062,7 @@ impl Session {
     /// Make log B the open log and the open log log B. Every series is dropped, as when a log is
     /// opened. Returns the new open log's JSON `LogInfo`.
     pub fn swap_compare_log(&mut self) -> Result<String, JsError> {
-        let log = match &mut self.log_b {
-            Some(log) if log.finished => log,
-            _ => return Err(js_err("there is no second log to swap with")),
-        };
-        std::mem::swap(&mut self.store, &mut log.store);
-        std::mem::swap(&mut self.input, &mut log.input);
-        self.series.clear();
-        self.filtered = None;
+        self.swap_logs().map_err(js_err)?;
         Ok(self.log_info())
     }
 
@@ -1151,6 +1144,22 @@ fn side_of(store: &FrameStore, key: f64) -> Option<Side<'_>> {
 }
 
 impl Session {
+    fn swap_logs(&mut self) -> Result<(), &'static str> {
+        // A capture's frames are kept apart from any file's reader, so they can't trade places.
+        if self.capture.is_some() {
+            return Err("a capture can't be swapped; save it and open the file instead");
+        }
+        let log = match &mut self.log_b {
+            Some(log) if log.finished => log,
+            _ => return Err("there is no second log to swap with"),
+        };
+        std::mem::swap(&mut self.store, &mut log.store);
+        std::mem::swap(&mut self.input, &mut log.input);
+        self.series.clear();
+        self.filtered = None;
+        Ok(())
+    }
+
     fn finished_b(&self) -> Option<&LogB> {
         self.log_b.as_ref().filter(|log| log.finished)
     }
@@ -1566,6 +1575,22 @@ mod tests {
             .find(|c| c["id"] == 0x0C9)
             .unwrap();
         assert_eq!(gone["reason"], "Appears only in B");
+    }
+
+    #[test]
+    fn a_capture_drops_log_b_and_cannot_be_swapped() {
+        let mut s = session();
+        open_b(&mut s);
+        s.start_capture("can0", 0.0);
+        assert_eq!(s.compare_log_info(), None);
+        s.finish_capture().unwrap();
+        open_b(&mut s);
+        assert_eq!(
+            s.swap_logs(),
+            Err("a capture can't be swapped; save it and open the file instead")
+        );
+        assert_eq!(s.store.len(), 0, "the capture stays the open log");
+        assert!(s.compare_log_info().is_some());
     }
 
     #[test]

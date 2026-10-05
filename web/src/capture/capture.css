@@ -1,0 +1,82 @@
+/* Live capture: the sheet and the recording status in the toolbar. Prefix cap-. */
+
+.cap-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cap-text {
+  max-width: 60ch;
+}
+
+.cap-quiet {
+  color: var(--slate);
+}
+
+.cap-hint {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.cap-device {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.cap-device-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cap-bitrate {
+  width: 160px;
+}
+
+.cap-switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+/* "Recording" is Error with the word and a dot, never colour alone (DESIGN.md). */
+.cap-recording {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--error);
+  font-weight: 500;
+}
+
+.cap-recording::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--error);
+}
+
+/* Recording, the toolbar's slack goes to the status line rather than to centring the views. */
+.toolbar.recording .toolbar-actions {
+  flex: none;
+}
+
+/* A narrow toolbar keeps "Stop" on the button; screen readers still hear "Stop Capture". */
+@container toolbar (max-width: 1269px) {
+  .stop-capture-rest {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}

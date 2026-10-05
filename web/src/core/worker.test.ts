@@ -2,10 +2,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from './worker';
 
 class FakeSession {
+  static captures: [string, number][] = [];
   static filters: string[] = [];
+  pushed: Uint8Array[] = [];
   hasB = false;
   free() {}
   set_databases() {}
+  start_capture(channel: string, startedAtMs: number) {
+    FakeSession.captures.push([channel, startedAtMs]);
+  }
+  log_info() {
+    return JSON.stringify({ format: 'capture', frames: this.pushed.length });
+  }
+  push_frames(packed: Uint8Array) {
+    this.pushed.push(packed);
+    return this.log_info();
+  }
+  finish_capture() {
+    return this.log_info();
+  }
   set_trace_filter(json: string): number {
     FakeSession.filters.push(json);
     return json === 'null' ? 0 : 3;
@@ -128,6 +143,18 @@ describe('core worker', () => {
     const hints = { markers: [{ t: 12 }], reference: { key: 5, signal: 'Speed' } };
     expect(await ask(port, 1, 9, 'suggestSignals', hints)).toEqual({ id: 1, result: { key: 9, hints } });
     expect(await ask(port, 2, 9, 'suggestSignals')).toEqual({ id: 2, result: { key: 9, hints: {} } });
+  });
+
+  it('runs a capture in a fresh session, without the old log B', async () => {
+    const port = await startWorker();
+    await call(port, 1, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+    await call(port, 2, 'openCompareLog', new Blob(['(2.0) can0 123#01\n']), 'door-lock.log');
+    const started = await call(port, 3, 'startCapture', 'capture-1.log', 'can0', 1000);
+    expect(started).toEqual({ id: 3, result: { name: 'capture-1.log', format: 'capture', frames: 0, parseMs: 0, wasmBytes: 0 } });
+    expect(FakeSession.captures.at(-1)).toEqual(['can0', 1000]);
+    expect(await call(port, 4, 'compareLogInfo')).toEqual({ id: 4, result: null });
+    expect(await call(port, 5, 'appendFrames', Uint8Array.of(1))).toMatchObject({ result: { name: 'capture-1.log', frames: 1 } });
+    expect(await call(port, 6, 'endCapture')).toMatchObject({ result: { name: 'capture-1.log', frames: 1 } });
   });
 
   it("reads log B beside the open log and keeps each log's name through a swap", async () => {

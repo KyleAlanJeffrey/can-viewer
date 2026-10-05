@@ -29,6 +29,7 @@ export interface ShellOptions {
   selected?: number;
   plots?: PlotSpec[];
   pinnedTime?: number | null;
+  capturing?: boolean;
   openLog?: ViewContext['openLog'];
   swapCompareLog?: ViewContext['swapCompareLog'];
 }
@@ -86,6 +87,7 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
     core,
     log,
     logVersion: 1,
+    capturing: options.capturing ?? false,
     ids,
     dbcs,
     messageOf,

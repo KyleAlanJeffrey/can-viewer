@@ -288,6 +288,20 @@ describe('results', () => {
     expect(swapCompareLog).toHaveBeenCalled();
   });
 
+  it('keeps Swap off for a capture, which the core cannot swap', async () => {
+    renderInShell(CompareView, { core: compareCore(), log: logInfo({ name: 'capture.log', format: 'capture' }) });
+    await screen.findByRole('row', { name: /^450 BODY/ });
+    expect(screen.getByRole('button', { name: 'Swap logs A and B' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('waits for a running capture to stop, without reading log B', async () => {
+    const compareLogInfo = vi.fn(async () => logB);
+    renderInShell(CompareView, { core: compareCore(RESULTS, { compareLogInfo }), capturing: true });
+    expect(screen.getByText(/A capture can be compared once it stops/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Open log B/ })).toBeNull();
+    expect(compareLogInfo).not.toHaveBeenCalled();
+  });
+
   it('recompares when an ignore rule changes', async () => {
     const compareLogs = vi.fn(async (_options: CompareOptions) => RESULTS);
     const { user } = renderInShell(CompareView, { core: compareCore(RESULTS, { compareLogs }) });

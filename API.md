@@ -54,15 +54,15 @@ Frame flags can also carry bits with no constant in `api.ts`: ESI (`1 << 2`) and
 
 ### The LogInfo object
 
-Describes the current log, or the comparison log. Returned by [`openLog`](#openlog), [`swapCompareLog`](#swapcomparelog), [`openCompareLog`](#opencomparelog) and [`compareLogInfo`](#compareloginfo).
+Describes the current log, or the comparison log. Returned by [`openLog`](#openlog), [`swapCompareLog`](#swapcomparelog), [`openCompareLog`](#opencomparelog), [`compareLogInfo`](#compareloginfo) and the [live capture](#live-capture) methods.
 
 **Attributes**
 
-- **`name`** `string` - The name passed to `openLog`.
-- **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md).
+- **`name`** `string` - The name passed to `openLog` or `startCapture`.
+- **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md). `'capture'` for frames recorded live with [`startCapture`](#startcapture).
 - **`frames`** `number` - Frames stored.
-- **`bytes`** `number` - Bytes read from the file.
-- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records.
+- **`bytes`** `number` - Bytes read from the file. 0 for a capture.
+- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records. For a capture, the frames received.
 - **`rejected`** `number` - Lines or records that did not parse as a frame.
 - **`firstRejection`** `[number, string] | null` - The 1-based line number (for a binary format, record number) and reason of the first rejected line or record, or null if none.
 - **`durationS`** `number` - Seconds from the first frame to the last.
@@ -72,6 +72,18 @@ Describes the current log, or the comparison log. Returned by [`openLog`](#openl
 - **`wasmBytes`** `number` - Size of the wasm memory after parsing, in bytes.
 - **`errorFrames`** `number` - Frames flagged as CAN error frames.
 - **`reassembledFrames`** `number` - J1939 transport protocol transfers that were reassembled into frames of their own (flag `FLAG_REASSEMBLED`). They are counted in `frames` too.
+
+### The CaptureFrame object
+
+One frame received by a live capture adapter. Passed to [`appendFrames`](#appendframes).
+
+**Attributes**
+
+- **`timeNs`** `number` - Nanoseconds since the capture started (`startedAtMs` of [`startCapture`](#startcapture)).
+- **`id`** `number` - The ID without flags: 11 or 29 bits. For an error frame, its error class.
+- **`extended`** `boolean` - Whether the ID is a 29-bit extended ID.
+- **`flags`** `number` - `FLAG_FD`, `FLAG_BRS`, `FLAG_RTR` and `FLAG_ERROR`, as received. `FLAG_REASSEMBLED` is ignored: the engine reassembles J1939 transfers itself.
+- **`data`** `Uint8Array` - The payload, at most 64 bytes; empty for a remote frame.
 
 ### The Progress object
 
@@ -424,7 +436,7 @@ console.log(`${log.frames} frames on ${log.channels.join(', ')}; ${log.rejected}
 ### exportLog
 
 ```ts
-exportLog(format: LogFormat): Promise<Blob>
+exportLog(format: ExportFormat): Promise<Blob>
 ```
 
 Writes the current log as a file in `format`, so it can be saved in another format. The frames are written in time order, leaving out the J1939 transfers the engine reassembled (`FLAG_REASSEMBLED`): their packets are written, and opening the file reassembles them again. It neither reads nor changes anything else; the log stays open. What each format keeps and loses is under "Log export" in [COMPATIBILITY.md](COMPATIBILITY.md#log-export).
@@ -433,7 +445,7 @@ The engine builds the whole file in its memory, in chunks of at most 8 MiB, then
 
 **Parameters**
 
-- **`format`** `LogFormat` - The format to write: `'candump'`, `'asc'`, `'trc'`, `'csv'`, `'blf'` or `'mf4'`, as in `LogInfo.format`.
+- **`format`** `ExportFormat` - The format to write: `'candump'`, `'asc'`, `'trc'`, `'csv'`, `'blf'` or `'mf4'`, as in `LogInfo.format`. `ExportFormat` is `LogFormat` without `'capture'`, which names no file format; a capture is exported like any log, usually as `'candump'`.
 
 **Returns** the file as a `Blob` with no type.
 
@@ -466,6 +478,62 @@ Estimated load (0 to 1) of one bus at `bitrate` bit/s, in `buckets` equal bucket
 const [times, loads] = await core.busLoad(0, 0, log.durationS, 200, 500_000);
 const peak = Math.max(...loads);
 ```
+
+## Live capture
+
+A capture is a log the page fills as an adapter receives frames, rather than one read from a file. Every read method works on it while it runs and sees the frames appended so far. The web app reads the adapter on the main thread (see "Live capture" in COMPATIBILITY.md) and calls `appendFrames` about every 100 ms.
+
+### startCapture
+
+```ts
+startCapture(name: string, channel: string, startedAtMs: number): Promise<LogInfo>
+```
+
+Starts a live capture of one bus in place of the log, as [`openLog`](#openlog) replaces it: the previous log, any [log B](#compare-logs) and every decoded series are freed, and the loaded databases are kept. Series handles restart from 0.
+
+**Parameters**
+
+- **`name`** `string` - What to call the capture; returned as `LogInfo.name`. The web app uses `capture-YYYYMMDD-HHMMSS.log`.
+- **`channel`** `string` - The bus name, such as `can0`. It is the capture's only channel, so databases scoped to it apply.
+- **`startedAtMs`** `number` - The wall-clock time, in milliseconds since the Unix epoch, that frame times count from. It becomes the absolute time of frames in an exported candump file.
+
+**Returns** the empty capture's [`LogInfo`](#the-loginfo-object), with `format` `'capture'`.
+
+```ts
+const log = await core.startCapture('capture-20261005-143000.log', 'can0', Date.now());
+```
+
+### appendFrames
+
+```ts
+appendFrames(frames: CaptureFrame[]): Promise<LogInfo>
+```
+
+Adds frames to the running capture, in the order received. Once it resolves, every other call sees them. `WebCore` packs the batch into one buffer and transfers it to the worker. Times are expected to rise, as a monotonic clock gives them; [`endCapture`](#endcapture) sorts the frames in case they do not.
+
+**Parameters**
+
+- **`frames`** [`CaptureFrame[]`](#the-captureframe-object) - The frames received since the last call.
+
+**Returns** the capture so far.
+
+**Errors** Rejects with `no capture is running` or `the capture has ended`, and with `a captured frame is longer than 64 bytes` or `a captured frame has no time` for a frame that cannot be stored; frames before it in the batch are kept. Rejects with `there is no memory left for more frames` when the engine can't grow its frame store for the batch; then none of the batch is kept, and the frames appended before stay intact.
+
+```ts
+const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xde, 0xad) }]);
+```
+
+### endCapture
+
+```ts
+endCapture(): Promise<LogInfo>
+```
+
+Ends the running capture and puts its frames in time order. The capture stays the current log, so it can be viewed and exported with [`exportLog`](#exportlog) (the web app's Save Capture... writes `'candump'`); `appendFrames` rejects from then on.
+
+**Returns** the finished capture.
+
+**Errors** Rejects with `no capture is running`.
 
 ## IDs and frames
 
@@ -622,7 +690,7 @@ const share = flips[0] / Math.max(1, frames - 1);
 setTraceFilter(filter: FrameFilter | null): Promise<number>
 ```
 
-Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log; until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames. The kept rows cost 4 bytes per matching frame.
+Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, starting a capture or ending one (which may reorder its frames); until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames. The kept rows cost 4 bytes per matching frame. During a capture, frames appended after the call do not join the rows; the web app turns filters off while recording.
 
 **Parameters**
 
@@ -926,7 +994,7 @@ downloadText('vehicle.dbc', text); // web/src/download.ts
 
 ## Compare logs
 
-A second log, B, can be read beside the open log, A, to find what differs between them: for example the car idle in A and the doors locking in B. Log B belongs to the open log: [`openLog`](#openlog) drops it, and the engine restarting loses it with the open log. Times for log B are seconds from log B's first frame.
+A second log, B, can be read beside the open log, A, to find what differs between them: for example the car idle in A and the doors locking in B. Log B belongs to the open log: [`openLog`](#openlog) and [`startCapture`](#startcapture) drop it, and the engine restarting loses it with the open log. A stopped capture can be log A; the web app reads no log B while a capture runs. Times for log B are seconds from log B's first frame.
 
 ### openCompareLog
 
@@ -981,7 +1049,7 @@ Makes log B the open log and the open log log B, without reading either again. E
 
 **Returns** the new open log's [`LogInfo`](#the-loginfo-object).
 
-**Errors** Rejects when there is no log B.
+**Errors** Rejects when there is no log B, and with `a capture can't be swapped; save it and open the file instead` when the open log is a live capture, running or stopped.
 
 ```ts
 const log = await core.swapCompareLog();

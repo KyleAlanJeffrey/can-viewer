@@ -171,7 +171,8 @@ export function Workspace(props: Props) {
       stale = true;
       if (handle !== null) core.dropSeries(handle);
     };
-  }, [core, summary.key, specKey, logVersion]);
+    // The ID's count grows during a live capture, which calls for decoding again.
+  }, [core, summary.key, summary.count, specKey, logVersion]);
 
   const [view, setView] = useState<CandidateView | null>(null);
   useEffect(() => {

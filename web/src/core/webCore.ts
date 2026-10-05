@@ -2,15 +2,16 @@ import type {
   ByteComparison,
   ByteLane,
   Candidate,
+  CaptureFrame,
   CompareOptions,
   CoreApi,
   Database,
   DiscoveryHints,
+  ExportFormat,
   FindRule,
   FrameFilter,
   IdComparison,
   IdSummary,
-  LogFormat,
   LogInfo,
   MessageSuggestions,
   Progress,
@@ -18,6 +19,7 @@ import type {
   ScopedDatabase,
   SeriesInfo,
 } from './api';
+import { packFrames } from './captureFrames';
 import { scanEach } from './discovery';
 import { RowBatch } from './rows';
 import type { Request } from './worker';
@@ -92,6 +94,11 @@ export class WebCore implements CoreApi {
     return this.send<T>(this.nextId++, method, args);
   }
 
+  /** Like `call`, handing `transfer` to the worker rather than copying it. */
+  private callTransferring<T>(method: Request['method'], args: unknown[], transfer: Transferable[]): Promise<T> {
+    return this.send<T>(this.nextId++, method, args, transfer);
+  }
+
   private async callWithProgress<T>(method: Request['method'], onProgress: (p: Progress) => void, ...args: unknown[]) {
     const id = this.nextId++;
     this.progress.set(id, onProgress);
@@ -102,17 +109,27 @@ export class WebCore implements CoreApi {
     }
   }
 
-  private send<T>(id: number, method: Request['method'], args: unknown[]): Promise<T> {
+  private send<T>(id: number, method: Request['method'], args: unknown[], transfer: Transferable[] = []): Promise<T> {
     if (this.failure) return Promise.reject(this.failure);
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.worker.postMessage({ id, method, args } satisfies Request);
+      this.worker.postMessage({ id, method, args } satisfies Request, transfer);
     });
   }
 
   async openLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo> {
     return { ...(await this.callWithProgress<LogInfo>('openLog', onProgress, file, name)), name };
   }
+
+  startCapture = (name: string, channel: string, startedAtMs: number) =>
+    this.call<LogInfo>('startCapture', name, channel, startedAtMs);
+
+  appendFrames(frames: CaptureFrame[]): Promise<LogInfo> {
+    const packed = packFrames(frames);
+    return this.callTransferring<LogInfo>('appendFrames', [packed], [packed.buffer]);
+  }
+
+  endCapture = () => this.call<LogInfo>('endCapture');
 
   idSummary = () => this.call<IdSummary[]>('idSummary');
   rowCount = (key: number) => this.call<number>('rowCount', key);
@@ -149,7 +166,7 @@ export class WebCore implements CoreApi {
   exportDbc = (db: Database) => this.call<string>('exportDbc', db);
   setTraceFilter = (filter: FrameFilter | null) => this.call<number>('setTraceFilter', filter);
   countFilterMatches = (filter: FrameFilter) => this.call<number | null>('countFilterMatches', filter);
-  exportLog = (format: LogFormat) => this.call<Blob>('exportLog', format);
+  exportLog = (format: ExportFormat) => this.call<Blob>('exportLog', format);
 
   setDatabases(dbs: ScopedDatabase[]) {
     this.databases = dbs;

@@ -23,7 +23,7 @@ It works offline and can be installed as an app. After one visit, a service work
 | `crates/can-dbc-model` | DBC loading via `can-dbc`, our own editable model, signal decode and encode |
 | `crates/can-wasm` | wasm-bindgen `Session` used by the web worker; min/max plot decimation |
 | `crates/sample-gen` | Dev tool: synthetic demo log + DBC, native benchmark, decode dumps, log conversion |
-| `web/` | Vite + React UI: canvas trace table, bit heatmap, uPlot plots |
+| `web/` | Vite + React UI: canvas trace table, bit heatmap, uPlot plots, video sync |
 | `web/src/capture` | Live capture: slcan (Web Serial) and gs_usb (WebUSB) adapters, frame batching, the Capture sheet |
 | `site/` | The landing site for `freecanstudio.com`: static HTML, no build ([site/README.md](site/README.md)) |
 | `scripts/crosscheck_cantools.py` | Compares our decoder with cantools |

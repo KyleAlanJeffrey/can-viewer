@@ -24,6 +24,8 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
 - [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
+- [x] Video sync: play a local video beside the Plot view, synced to cursor A by one matched moment, with offset nudges, a corner view and Space to play
+- [ ] Video sync: check by hand in Firefox and Safari (codecs, Space, the corner view and the resize handle); only Chromium was checked
 - [x] Export log as other formats (Export Log...: candump, ASC, BLF, TRC, MF4, CSV)
 - [x] Works offline and installable: a web app manifest with icons, and a service worker that precaches the app shell, keeps the demo after its first run and offers Reload when a new version is ready
 
@@ -47,6 +49,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Live capture in the web app: slcan adapters over Web Serial and gs_usb (candleLight) adapters over WebUSB, frames batched into the core about every 100 ms, live Trace, Overview and Plot, Stop, and Save Capture... as a candump log. Tested against simulated devices only
 - [ ] Try live capture with real adapters (owner): a CANable with slcan firmware and one with candleLight firmware at least, a USBtin or Lawicel CANUSB if at hand; Chrome or Edge on macOS, Windows and Linux (Linux needs the `gs_usb` driver unbound and udev access, see COMPATIBILITY.md). Check each bitrate used in practice, listen only (`L` on a USBtin; `M1` and the "Start anyway?" question on a CANable, whose slcan firmware answers no command; that a CANable in `M1` really sends no ACK), the frame count against `candump` on the same bus, unplugging mid-capture, Stop, Save Capture... and reopening the file, and a long capture on a busy bus
 - [x] Site copy: the CANalyzer alternative page said the app works on recorded logs only and can't connect to CAN hardware or capture; it and the home page now mention live capture in Chrome and Edge
+- [ ] Trace filters while recording: extend the filtered rows as frames are appended, rather than turning filters off until Stop
 - [ ] Use the adapter's own timestamps when it has them (slcan `Z1`, unwrapping its 60 s counter; gs_usb hardware timestamps) for sub-millisecond timing; today frames get the host clock when their bytes arrive
 - [ ] gs_usb: CAN FD (data bitrate through `BT_CONST_EXT` and `DATA_BITTIMING`) and a choice of channel on multi-channel adapters; today classic CAN on the first channel
 - [ ] slcan: a serial speed setting for adapters behind a UART at a baud rate other than 115200, and custom bit timing (`s`) for bitrates outside `S0` to `S8`
@@ -105,3 +108,11 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
 - [x] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)
 - [x] Start a new core worker after a wasm trap (an out-of-memory parse, say); today the failed open leaves a fresh session, but a trapped instance may stay unusable until a reload (PR #1 review)
+- [x] Trace filters: bus, IDs or names, data rules, frame kind and time range, filtered in the core (`setTraceFilter`, `countFilterMatches`), with chips, a match count and an empty state
+- [ ] Trace filters: "Remove last filter" drops the last chip in display order (bus, IDs, kinds, time, rules), not the filter edited last; keep an edit order if people expect the latter
+- [ ] Trace filters: a preview count that is already running in the worker is not stopped, only ignored; one queued behind it is skipped. On a 10M-frame log a count with data rules takes about 0.5 s natively (more in wasm), so a running count can delay the next table fetch by that much
+- [ ] Trace filters: data rules match any byte of a reassembled J1939 transfer, but matched bytes are only outlined in the first 64 the row carries
+- [ ] Trace filters: Apply filters the log again even when the preview just counted the same filters; keeping the preview's matches would cost 4 bytes per match for every draft
+- [ ] Trace filters: "Any byte changes" ignores a payload that only grows or shrinks; say so in the sheet's hint if that confuses people
+- [ ] Bit flips (`IdStats::bit_flips`) and change activity still compare each frame with the previous frame of its ID whatever its kind, so a polled ID's remote frames hide the changes between its data frames there too; the trace's changed bytes and the filter now skip them
+- [ ] Trace filters: check the sheet, the ID combobox and the range handles with a real screen reader (VoiceOver or NVDA) (owner)

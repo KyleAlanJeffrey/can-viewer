@@ -2,6 +2,8 @@ import type { RowBatch } from './rows';
 
 /** Pass as an ID key to mean "every frame" rather than one ID. */
 export const ALL_IDS = -1;
+/** Pass as a key to mean the rows the last `CoreApi.setTraceFilter` kept. */
+export const FILTERED_ROWS = -2;
 
 export const FLAG_FD = 1 << 0;
 export const FLAG_BRS = 1 << 1;
@@ -220,6 +222,35 @@ export interface Candidate {
   score: number;
 }
 
+/** What a frame is. Every frame is one kind; a CAN FD frame is a data frame. */
+export type FrameKind = 'data' | 'remote' | 'error' | 'reassembled';
+
+/** A condition on a frame's payload. Bit 0 is the least significant bit of its byte. */
+export type DataRule =
+  | { type: 'byteEquals'; byte: number; value: number }
+  | { type: 'bit'; byte: number; bit: number; set: boolean }
+  /** Some byte differs from the previous frame of the same ID and kind, over the bytes both have. */
+  | { type: 'changes' };
+
+/**
+ * Which frames a filtered trace keeps; every part must match. A null list means no restriction,
+ * and an empty list matches nothing.
+ */
+export interface FrameFilter {
+  /** Bus indexes into `LogInfo.channels`. */
+  channels: number[] | null;
+  /** ID keys. */
+  keys: number[] | null;
+  kinds: FrameKind[] | null;
+  /** No rules means no condition on the payload. */
+  rules: DataRule[];
+  /** Whether every rule must match, or any one of them. */
+  combine: 'all' | 'any';
+  /** Inclusive time window in seconds; null leaves that end open. */
+  t0: number | null;
+  t1: number | null;
+}
+
 /** One byte's decimated points across a window; see `CoreApi.byteLanes`. */
 export interface ByteLane {
   x: Float64Array;
@@ -322,6 +353,17 @@ export interface CoreApi {
   setDatabases(dbs: ScopedDatabase[]): Promise<void>;
   /** `db` as DBC text. */
   exportDbc(db: Database): Promise<string>;
+  /**
+   * Keep the frames that match `filter`, in time order, as the rows of `FILTERED_ROWS` for
+   * `rowCount`, `rows`, `frameData`, `rowBytes`, `rowAtTime` and `rowCountBetween`, and resolve to
+   * how many there are. Null drops them. Opening a log drops them too.
+   */
+  setTraceFilter(filter: FrameFilter | null): Promise<number>;
+  /**
+   * How many frames match `filter`, keeping nothing: a preview. Resolves null when a later call
+   * replaced this one before it ran.
+   */
+  countFilterMatches(filter: FrameFilter): Promise<number | null>;
   /**
    * The open log written as a file in `format`, leaving out the frames reassembled from J1939
    * transfers (`FLAG_REASSEMBLED`), which reading the file again reassembles. What each format

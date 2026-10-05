@@ -14,6 +14,7 @@ import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
+import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { chooseBlobFile } from './views/shared/saveFile';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
@@ -299,6 +300,7 @@ export function App({ core }: { core: CoreApi }) {
     setCaptureNotice(null);
     setLogVersion((v) => v + 1);
     viewState.clearScope('log');
+    videoSession.close();
   }, [viewState]);
 
   const restoreUi = useCallback(
@@ -319,47 +321,51 @@ export function App({ core }: { core: CoreApi }) {
   );
 
   const openLog = useCallback(
+    // A video added while a log loads would belong to the log being replaced.
     (file: Blob, name: string, restore?: SavedUi) =>
-      run(`Reading ${name}\u2026`, () =>
-        serially(async () => {
-          setSkippedDismissed(false);
-          let info: LogInfo;
-          try {
-            info = await core.openLog(file, name, (p) =>
-              setBusy({ label: `Parsing ${name}\u2026 ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total }),
-            );
-            const noFrames = noFramesMessage(info);
-            if (noFrames) throw new Error(noFrames);
-          } catch (e) {
-            showNoLog();
-            throw e;
-          }
-          const nextIds = await core.idSummary();
-          // The new log's series replaced the old ones in the core.
-          plotSignals.current.clear();
-          setPlots([]);
-          setSelected(ALL_IDS);
-          setNotKept(null);
-          setUnsavedCapture(false);
-          setCaptureNotice(null);
-          setLog(info);
-          setLogVersion((v) => v + 1);
-          setDbcs(dbcsRef.current);
-          setIds(nextIds);
-          if (restore) {
-            await restoreUi(restore, nextIds);
-            return;
-          }
-          viewState.clearScope('log');
-          setView('overview');
-          // Kept so a reload reopens it. A copy this browser can't store just isn't restored.
-          void save('log', { name, blob: file } satisfies SavedLog).then((kept) => {
-            if (!kept) {
-              setNotKept(name);
-              void forget('log');
+      videoSession.whileLoadingLog(() =>
+        run(`Reading ${name}\u2026`, () =>
+          serially(async () => {
+            setSkippedDismissed(false);
+            let info: LogInfo;
+            try {
+              info = await core.openLog(file, name, (p) =>
+                setBusy({ label: `Parsing ${name}\u2026 ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total }),
+              );
+              const noFrames = noFramesMessage(info);
+              if (noFrames) throw new Error(noFrames);
+            } catch (e) {
+              showNoLog();
+              throw e;
             }
-          });
-        }),
+            const nextIds = await core.idSummary();
+            // The new log's series replaced the old ones in the core.
+            plotSignals.current.clear();
+            setPlots([]);
+            setSelected(ALL_IDS);
+            setNotKept(null);
+            setUnsavedCapture(false);
+            setCaptureNotice(null);
+            setLog(info);
+            setLogVersion((v) => v + 1);
+            setDbcs(dbcsRef.current);
+            setIds(nextIds);
+            if (restore) {
+              await restoreUi(restore, nextIds);
+              return;
+            }
+            viewState.clearScope('log');
+            videoSession.close();
+            setView('overview');
+            // Kept so a reload reopens it. A copy this browser can't store just isn't restored.
+            void save('log', { name, blob: file } satisfies SavedLog).then((kept) => {
+              if (!kept) {
+                setNotKept(name);
+                void forget('log');
+              }
+            });
+          }),
+        ),
       ),
     [core, run, serially, showNoLog, setView, restoreUi, viewState],
   );
@@ -384,11 +390,24 @@ export function App({ core }: { core: CoreApi }) {
     async (files: FileList | File[]) => {
       const list = [...files];
       const dbcFiles = list.filter((f) => f.name.toLowerCase().endsWith('.dbc'));
-      const logFile = list.find((f) => !dbcFiles.includes(f));
+      const videoFiles = list.filter(isVideoFile);
+      const logFile = list.find((f) => !dbcFiles.includes(f) && !videoFiles.includes(f));
       for (const f of dbcFiles) await openDbc(f, f.name);
-      if (logFile) await openLog(logFile, logFile.name);
+      const logOpened = logFile ? await openLog(logFile, logFile.name) : false;
       // DBCs on their own are opened for editing.
-      else if (dbcFiles.length > 0 && !logRef.current) setView('database');
+      if (!logFile && dbcFiles.length > 0 && !logRef.current) setView('database');
+      const [videoFile] = videoFiles;
+      if (videoFile) {
+        // logRef only catches up with a log opened just now on the next render.
+        const log = logFile ? (logOpened ? { name: logFile.name, bytes: logFile.size } : null) : logRef.current;
+        if (log) {
+          videoSession.open(videoFile, log);
+          setView('plot');
+          if (videoFiles.length > 1) setError(`One video plays at a time, so only ${videoFile.name} was opened.`);
+        } else if (!logFile) {
+          setError('Open a log first, then add the video to line it up with it.');
+        }
+      }
     },
     [openDbc, openLog, setView],
   );
@@ -479,6 +498,7 @@ export function App({ core }: { core: CoreApi }) {
         const capture: LiveCapture = { recorder };
         liveRef.current = capture;
         // The capture replaced the log and its series in the core, as opening a log does.
+        videoSession.close();
         plotSignals.current.clear();
         setPlots([]);
         setSelected(ALL_IDS);
@@ -736,11 +756,13 @@ export function App({ core }: { core: CoreApi }) {
         return;
       }
       const files = [...e.dataTransfer.files];
-      const opensLog = files.some((f) => !f.name.toLowerCase().endsWith('.dbc'));
-      if (opensLog && liveRef.current) {
-        setError('Stop the capture before opening a log.');
+      const isDbc = (f: File) => f.name.toLowerCase().endsWith('.dbc');
+      if (liveRef.current && files.some((f) => !isDbc(f))) {
+        setError('Stop the capture before opening a log or a video.');
         return;
       }
+      // A video goes with the open log, so only a log replaces the capture.
+      const opensLog = files.some((f) => !isDbc(f) && !isVideoFile(f));
       if (opensLog) unlessUnsavedCapture(() => openFiles(files));
       else openFiles(files);
     };
@@ -1146,7 +1168,7 @@ export function App({ core }: { core: CoreApi }) {
         </div>
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
-      {dragOver && <div className="drop-overlay">Drop a log or DBC files to open them</div>}
+      {dragOver && <div className="drop-overlay">Drop a log, DBC files or a video to open them</div>}
       <Suspense fallback={null}>
         <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
       </Suspense>

@@ -70,13 +70,15 @@ interface Props {
   pinnedTime: number | null;
   /** Moves the pin to a clicked row's time. Absent when there are no plots to pin. */
   onPin?: (time: number) => void;
+  /** Payload bytes of row `i` that a filter matched; they are outlined and set in bold. */
+  matchedBytes?: (batch: RowBatch, i: number) => number[];
 }
 
 /**
  * Canvas trace view with a logical scrollbar: only the visible rows are ever fetched, so it
  * scrolls tens of millions of frames without hitting the browser's maximum element height.
  */
-export function TraceTable({ core, filterKey, rowCount, logVersion, follow = false, channels, nameOf, pinnedTime, onPin }: Props) {
+export function TraceTable({ core, filterKey, rowCount, logVersion, follow = false, channels, nameOf, pinnedTime, onPin, matchedBytes }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -234,8 +236,8 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, follow = fal
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const cursorAt = cursorShown && rows && activeRow !== null ? activeRow - rows.start : null;
-    draw(ctx, size.width, size.height, visible, columns, rows, channels, nameOf, selectedFrame, cursorAt);
-  }, [size, rows, visible, columns, channels, nameOf, selectedFrame, cursorShown, activeRow, fontsReady]);
+    draw(ctx, size.width, size.height, visible, columns, rows, channels, nameOf, selectedFrame, cursorAt, matchedBytes);
+  }, [size, rows, visible, columns, channels, nameOf, selectedFrame, cursorShown, activeRow, fontsReady, matchedBytes]);
 
   // What a screen reader reads: the fetched rows as DOM, laid over the canvas and transparent.
   const shownRows = rows ? Math.min(rows.length, visible + 1) : 0;
@@ -254,13 +256,13 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, follow = fal
         >
           {columns.map((col) => (
             <div key={col.key} role="gridcell" style={{ width: col.w }}>
-              {cellText(rows, i, col.key, channels, nameOf)}
+              {cellText(rows, i, col.key, channels, nameOf, matchedBytes)}
             </div>
           ))}
         </div>
       );
     });
-  }, [rows, shownRows, columns, channels, nameOf, selectedFrame, rowIdPrefix]);
+  }, [rows, shownRows, columns, channels, nameOf, selectedFrame, rowIdPrefix, matchedBytes]);
   const inDom = (row: number | null): row is number => rows !== null && row !== null && row >= rows.start && row < rows.start + shownRows;
   // While the rows the cursor moved to load, the old row stays active: dropping the attribute makes
   // screen readers announce the grid again.
@@ -372,6 +374,7 @@ function draw(
   selectedFrame: number | null,
   /** Row of the batch with the keyboard cursor, if it's shown. */
   cursorAt: number | null,
+  matchedBytes: Props['matchedBytes'],
 ) {
   const c = {
     bg: cssVar('--paper'),
@@ -384,6 +387,7 @@ function draw(
     changedSelected: cssVar('--changed-byte-selected'),
     warning: cssVar('--rust'),
     cursor: cssVar('--ochre-control'),
+    matched: cssVar('--ochre-control'),
   };
   const mono = cssVar('--font-mono');
   const ui = cssVar('--font-ui');
@@ -450,6 +454,7 @@ function draw(
           const room = cx + w - dx - (cut ? ctx.measureText(cut).width : 0);
           const fits = Math.max(0, Math.floor(room / pitch));
           const shown = Math.min(data.length, fits);
+          const matched = matchedBytes?.(batch, i) ?? [];
           for (let k = 0; k < shown; k++) {
             const bx = dx + k * pitch;
             if (batch.changed(i, k)) {
@@ -458,7 +463,18 @@ function draw(
               ctx.roundRect(bx - 4, y + 3, cw * 2 + 8, ROW_H - 6, 4);
               ctx.fill();
             }
-            cell(ctx, HEX[data[k]], bx, mid, c.text, 'left');
+            if (matched.includes(k)) {
+              ctx.strokeStyle = c.matched;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.roundRect(bx - 3.5, y + 3.5, cw * 2 + 7, ROW_H - 7, 4);
+              ctx.stroke();
+              ctx.font = `600 13px ${mono}`;
+              cell(ctx, HEX[data[k]], bx, mid, c.text, 'left');
+              ctx.font = `13px ${mono}`;
+            } else {
+              cell(ctx, HEX[data[k]], bx, mid, c.text, 'left');
+            }
           }
           if (cut) cell(ctx, cut, dx + shown * pitch, mid, c.secondary, 'left');
           else if (data.length > fits && fits > 0) cell(ctx, '\u2026', dx + fits * pitch - cw, mid, c.secondary, 'left');
@@ -492,6 +508,7 @@ function cellText(
   key: ColumnKey,
   channels: string[],
   nameOf: (channel: number, id: number) => string | undefined,
+  matchedBytes?: Props['matchedBytes'],
 ): string {
   const id = batch.id(i);
   const flags = batch.flags(i);
@@ -512,7 +529,9 @@ function cellText(
       for (const b of batch.data(i)) parts.push(HEX[b]);
       const note = lengthNote(batch, i);
       if (note) parts.push(note);
-      return parts.join(' ');
+      const matched = matchedBytes?.(batch, i) ?? [];
+      const why = matched.length === 0 ? '' : `, filter matched ${matched.length === 1 ? 'byte' : 'bytes'} ${matched.join(', ')}`;
+      return parts.join(' ') + why;
     }
   }
 }

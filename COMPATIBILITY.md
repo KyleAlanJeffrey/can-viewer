@@ -17,6 +17,7 @@ The app relies on these platform features:
 | `crypto.randomUUID` | IDs for loaded DBCs |
 | Native `<dialog>` with `showModal()` | Sheets (`web/src/components/Sheet.tsx`) |
 | `BroadcastChannel` | Telling other tabs of this app that the saved DBCs changed (`web/src/session.ts`) |
+| `<video>` playing an object URL (`URL.createObjectURL`) | Video sync in the Plot view (`web/src/views/plot/video/`) |
 
 Of these, the most recent addition in Firefox is module workers (Firefox 114), and in Safari it is `DecompressionStream` (Safari 16.4).
 
@@ -45,7 +46,8 @@ Notes:
 
 - `crypto.randomUUID` exists only in secure contexts, so the app must be served over HTTPS or from `localhost`. A dev server opened over plain HTTP on a LAN address cannot load DBCs.
 - When IndexedDB is unavailable (private windows, blocked site data) or full, the app still works but cannot restore the session after a reload. It tells the user when a log could not be kept.
-- The production Content-Security-Policy (`web/public/_headers`) allows scripts only from the app's origin plus `'wasm-unsafe-eval'`, which wasm compilation needs. Live capture needs no other origin. The Permissions-Policy header there leaves `serial` and `usb` at their default, the app's own origin.
+- The production Content-Security-Policy (`web/public/_headers`) allows scripts only from the app's origin plus `'wasm-unsafe-eval'`, which wasm compilation needs. `media-src blob:` lets the video sync panel play the local file the user chose through its object URL; no other media source is allowed. Live capture needs no other origin. The Permissions-Policy header there names `serial=(self)` and `usb=(self)`, so only the app's own origin may reach serial and USB devices.
+- Video sync plays whatever the browser can decode; the app converts nothing. MP4 with H.264 video plays in every supported browser. WebM (VP8, VP9, AV1) plays in Chrome, Edge and Firefox, and in Safari on recent macOS. HEVC (H.265), which phones often record, plays in Safari and in Chrome or Edge only where the system has a decoder. MKV and AVI files often do not play. A file that does not play shows an error in the panel saying so. Only Chromium was checked by hand.
 - The core runs on wasm32, so its memory is capped at 4 GiB, and a browser may allow less. In the spike, a 552 MB, 10M-frame candump log used about 654 MB of wasm memory (see [README.md](README.md)). An MF4 file is held whole while it is read, on top of its frames, in a buffer sized from the file's size: a 112 MB, 10M-frame MF4 from `sample-gen convert` uses about 610 MB, a 178 MB, 16M-frame one about 920 MB, and an uncompressed one near the 1 GiB limit (1.07 GB, 12.9M frames) about 1.7 GB. The frame store is pre-sized from the file size, for at most 20M frames (about 520 MB); a log with more grows it as it is read.
 
 ## Platforms
@@ -212,6 +214,7 @@ Limits:
 - Frames are kept in the tab's memory, like an opened log, at about 65 bytes a frame (see "Browsers" above for the wasm memory cap). A busy 500 kbit/s bus (about 4,000 frames/s) fills about 1 GB an hour.
 - Against a budget of 2 GB, so the views and saving have room: at about 16.5 million frames (half the budget) the app says to stop and save soon, and at about 24.7 million (three quarters) it stops the capture by itself, keeping the frames. If the engine still can't grow its frame store, the batch is refused, the capture stops with a message, and the frames before it are kept.
 - Frames reach the engine in batches about every 100 ms, or at once when 5,000 are waiting, so a capture keeps up in a background tab whose timers the browser slows down. The status line updates twice a second. The views go over every frame when they refresh, so they refresh every 500 ms plus 1 ms per 2,000 frames (about every 1.5 s at 2 million frames, every 5.5 s at 10 million), keeping their cost about level; plots of decoded signals refresh every fourth time.
+- Trace filters are off while recording, since the filtered rows are found once and new frames would not join them; they work on the capture once it is stopped. Video can't be added to a capture until it is stopped either.
 - One adapter, one bus (stored as `can0`) and one capture at a time. The app never sends a frame; an adapter not in listen-only mode still acknowledges the frames it receives, as any active node does.
 - A capture is not kept across a reload until it is saved (see "Saved sessions" below); the app asks before closing the tab, replacing or closing an unsaved capture.
 - Save Capture... writes the capture as a candump log (see "Log export" above), with absolute times from the computer's clock at the start of the capture. Once the capture is stopped, Export Log... saves it in any other format too; it is disabled while recording.
@@ -299,5 +302,7 @@ The last session is kept in the browser's IndexedDB:
   - `dbcs`: `{ revision, dbcs }`: the loaded DBCs (`LoadedDbc[]`, including each full `Database`, whether it has unexported edits and when it was last exported) under a revision number. A tab writes the key only if the store still holds the revision it last read or wrote, checked in the same transaction, so two tabs cannot overwrite each other's edits; the losing tab keeps its changes in memory and asks for a reload. Each successful write is announced on the `freecan-studio` `BroadcastChannel` as `{ type: 'dbcs', revision }`. A bare array, as the first builds wrote, reads as revision 0.
   - `ui`: the open view, selection, pinned time and plots.
   - `views`: per-view state.
+
+A video added for video sync is held only as an object URL in the open tab: it is never written to IndexedDB, and a reload, closing the log or opening another drops it. The offset found by a sync is kept in `localStorage` under `freecan-studio.video-offsets`, as `[key, offset]` pairs for the 50 most recent pairs, so adding the same video to the same log again restores the sync. The key is a JSON array of the log's file name and size in bytes and the video's file name, size and last-modified time, since dashcams reuse file names.
 
 Users will have values written by earlier versions. When the shape of a stored value changes, keep reading the old shape, or bump the IndexedDB version and migrate in `web/src/session.ts`. New `Database` fields should be optional, as `SignalDef.receivers` is: `receivers?` in TypeScript and `#[serde(default)]` in Rust. A `MessageDef` saved without `j1939` is restored with it set for 29-bit messages, as the core treated them before the flag existed.

@@ -8,7 +8,7 @@
  *  17  u8   flags
  *  18  u8   payload length in the row, at most 64
  *  20  u16  full payload length, above 64 only for reassembled J1939 transfers
- *  24  u64  bit k set when byte k differs from the previous frame of the same ID
+ *  24  u64  bit k set when byte k differs from the previous frame of the same ID and kind
  *  32  64B  payload
  */
 export const ROW_STRIDE = 96;

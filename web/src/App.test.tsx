@@ -85,6 +85,9 @@ describe('App', () => {
   });
 });
 
+/** The toolbar's status line, which screen readers hear; views have status lines of their own. */
+const toolbarStatus = () => document.querySelector('.toolbar [role=status]')?.textContent;
+
 describe('App live capture', () => {
   /** A browser with Web Serial whose device prompt picks `port`. */
   function withSerialPort(port: FakeSerialPort) {
@@ -131,7 +134,10 @@ describe('App live capture', () => {
     await startCapture(port);
 
     expect(screen.getByText('Recording').parentElement!.textContent).toMatch(/^Recording \u00b7 Listen only \u00b7 0 frames/);
-    expect(screen.getByRole('status').textContent).toBe('Recording from USB serial device 16D0:117E, listen only.');
+    expect(toolbarStatus()).toBe('Recording from USB serial device 16D0:117E, listen only.');
+    // Filtered rows are found once, so filters wait for the capture to stop.
+    expect((screen.getByRole('button', { name: 'Filters\u2026' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Filters apply once the capture stops.')).toBeTruthy();
     // Buttons that can't be used while recording give the status line their room.
     expect(screen.queryByRole('button', { name: 'Open Log\u2026' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Export Log\u2026' })).toBeNull();
@@ -148,6 +154,7 @@ describe('App live capture', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
     expect(await screen.findByText(/Not saved \u00b7 2 frames/)).toBeTruthy();
     expect(core.endCapture).toHaveBeenCalledTimes(1);
+    expect((screen.getByRole('button', { name: 'Filters\u2026' }) as HTMLButtonElement).disabled).toBe(false);
     expect(port.commands.at(-1)).toBe('C');
     expect(port.closed).toBe(true);
 
@@ -326,7 +333,7 @@ describe('App live capture', () => {
     await screen.findByRole('button', { name: 'Stop Capture' }, { timeout: 3000 });
     expect(port.commands.slice(-2)).toEqual(['M1', 'O']);
     expect(screen.getByText(/Listen-only mode isn't confirmed for this adapter/)).toBeTruthy();
-    expect(screen.getByRole('status').textContent).toBe('Recording from USB serial device 16D0:117E.');
+    expect(toolbarStatus()).toBe('Recording from USB serial device 16D0:117E.');
     port.send('t1230\r');
     await waitFor(() => expect(frames).toHaveLength(1));
     await screen.findByText(/1 frame \u00b7/);

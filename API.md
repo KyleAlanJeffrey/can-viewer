@@ -6,7 +6,7 @@
 
 - The web build implements `CoreApi` with `WebCore` (`web/src/core/webCore.ts`). `WebCore` starts one module Web Worker (`web/src/core/worker.ts`). The worker loads the wasm build of `crates/can-wasm` and owns a single `Session`, which holds the parsed log, the loaded databases and the decoded series.
 - Each call posts `{ id, method, args }` to the worker. The worker answers with `{ id, result }` or `{ id, error }`, and pushes parse progress as `{ event: 'progress', bytes, total }`.
-- Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it.
+- Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it. The one exception is [`countFilterMatches`](#countfiltermatches): a count still waiting when a newer count arrives is answered with null instead of run.
 - Bulk results (trace rows, bit counts, series points, bus load) arrive as typed arrays whose buffers are transferred, not copied. Small structured results cross the wasm boundary as JSON.
 - If the worker itself stops (an uncaught error or a reply that cannot be read), `WebCore` terminates it and starts another: every call in flight rejects with `The CAN core stopped and was restarted. Open the log again.`, the databases from the last `setDatabases` are set again, and the listeners given to [`onReset`](#onreset) are called. The log and every series are gone. A worker that stopped before it ever answered is not replaced, since another would fail the same way; every later call then rejects with the worker's error.
 - The planned desktop app will implement the same interface over Tauri commands, with the same crates running natively.
@@ -23,7 +23,7 @@ The examples below use this `core`, `log` (the `LogInfo` from `openLog`) and `su
 ## Conventions
 
 - **Times** are seconds from the first frame of the log, as floating-point numbers. This applies to every `t`, `t0` and `t1` argument and to every time returned. Times beyond about 30 years either side of the first frame are clamped.
-- **ID keys** (`key`) name one arbitration ID on one bus: `(channel << 32) | id`, where `id` has bit 31 set for extended IDs. Take keys from [`idSummary`](#idsummary) rather than building them, because JavaScript's bitwise operators work on 32 bits. Where a method says so, pass `ALL_IDS` (-1) to mean every frame.
+- **ID keys** (`key`) name one arbitration ID on one bus: `(channel << 32) | id`, where `id` has bit 31 set for extended IDs. Take keys from [`idSummary`](#idsummary) rather than building them, because JavaScript's bitwise operators work on 32 bits. Where a method says so, pass `ALL_IDS` (-1) to mean every frame, or `FILTERED_ROWS` (-2) to mean the frames the last [`setTraceFilter`](#settracefilter) kept.
 - **Channels** are bus indexes into [`LogInfo.channels`](#the-loginfo-object), numbered in order of first appearance in the log. Databases are scoped by bus name instead (see [`ScopedDatabase`](#the-scopeddatabase-object)).
 - **Message IDs** in a [`Database`](#the-database-object) follow the DBC convention: bit 31 set for extended IDs. `dbcId(summary)` converts an `IdSummary` to one.
 - **Errors**: a failed call rejects with an `Error` whose message comes from the engine. If the wasm module failed to load, every call rejects with that load error. Most read methods do not reject on an unknown key; they return an empty or zero result, as noted below.
@@ -35,6 +35,7 @@ Exported from `web/src/core/api.ts`:
 | Name | Value | Meaning |
 |---|---|---|
 | `ALL_IDS` | `-1` | Pass as a key to mean every frame |
+| `FILTERED_ROWS` | `-2` | Pass as a key to mean the frames the last [`setTraceFilter`](#settracefilter) kept |
 | `FLAG_FD` | `1 << 0` | CAN FD frame |
 | `FLAG_BRS` | `1 << 1` | CAN FD bit rate switch |
 | `FLAG_RTR` | `1 << 3` | Remote frame |
@@ -248,6 +249,30 @@ A bit range that matches a Find Signal query. Returned by [`findSignal`](#findsi
 - **`spec`** [`RawSignalSpec`](#the-rawsignalspec-object) - The bit range: 8 or 16 bits, unsigned, factor 1, offset 0. Pass it to `decodeRaw` to plot it.
 - **`score`** `number` - From 0 to 1: how well the range follows every rule.
 
+### The FrameFilter object
+
+Which frames a filtered trace keeps. Passed to [`setTraceFilter`](#settracefilter) and [`countFilterMatches`](#countfiltermatches). A frame is kept when every part matches. A list that is null puts no restriction on the frames; an empty list matches no frame.
+
+**Attributes**
+
+- **`channels`** `number[] | null` - Bus indexes into `LogInfo.channels`.
+- **`keys`** `number[] | null` - ID keys, as from `idSummary`. Unknown keys match nothing.
+- **`kinds`** `FrameKind[] | null` - Frame kinds: `'data'`, `'remote'`, `'error'` or `'reassembled'`. Every frame is exactly one kind: an error frame (`FLAG_ERROR`) is `error`, a reassembled J1939 transfer (`FLAG_REASSEMBLED`) is `reassembled`, a remote frame (`FLAG_RTR`) is `remote`, and every other frame, CAN FD included, is `data`.
+- **`rules`** [`DataRule[]`](#the-datarule-object) - Conditions on the payload. With none, the payload is not looked at.
+- **`combine`** `'all' | 'any'` - Whether a frame must match every rule or at least one.
+- **`t0`** `number | null` - Window start in seconds, inclusive, or null for the start of the log.
+- **`t1`** `number | null` - Window end in seconds, inclusive, or null for the end of the log. A window that ends before it starts matches nothing.
+
+### The DataRule object
+
+One condition on a frame's payload, told apart by `type`. Bytes count from 0, over the whole payload (a reassembled J1939 transfer included), and bit 0 is the least significant bit of its byte, as in [`bitFlips`](#bitflips). A frame too short to have the byte matches neither a byte rule nor a bit rule, whether the bit is wanted set or clear.
+
+**Variants**
+
+- **`{ type: 'byteEquals', byte: number, value: number }`** - Byte `byte` holds `value` (0 to 255).
+- **`{ type: 'bit', byte: number, bit: number, set: boolean }`** - Bit `bit` (0 to 7) of byte `byte` is set (`set: true`) or clear (`set: false`).
+- **`{ type: 'changes' }`** - Some byte differs from the previous frame of the same ID and kind in the log (so a remote frame between two data frames is skipped), over the bytes both frames have; a payload that only grows or shrinks is no change. It matches when `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) is true for some byte. The previous frame may be outside the filter's time window. An ID's first frame of a kind never matches.
+
 ### The SeriesInfo object
 
 A decoded signal held in the worker. Returned by [`decodeSignal`](#decodesignal) and [`decodeRaw`](#decoderaw).
@@ -277,7 +302,7 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 - **`flags(i)`** `number` - Frame flags.
 - **`len(i)`** `number` - Bytes of payload in the row, at most 64.
 - **`fullLength(i)`** `number` - The frame's whole payload length in bytes. It equals `len(i)` except for a reassembled J1939 transfer longer than 64 bytes, up to 1785.
-- **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID. Always false for an ID's first frame.
+- **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID and kind (data, remote, error or reassembled), so a polled ID's remote frames are skipped. Always false for an ID's first frame of a kind.
 - **`data(i)`** `Uint8Array` - The payload, as a view into the batch.
 
 A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, [`frameData`](#framedata) fetches the whole payload, and [`rowBytes`](#rowbytes) fetches a range of bytes of many rows. `decodeRaw` and `decodeSignal` work on the whole payload.
@@ -441,11 +466,11 @@ for (const s of await core.idSummary()) {
 rowCount(key: number): Promise<number>
 ```
 
-The number of rows in the trace: the frames of one ID, or every frame for `ALL_IDS`.
+The number of rows in the trace: the frames of one ID, every frame for `ALL_IDS`, or the frames the last [`setTraceFilter`](#settracefilter) kept for `FILTERED_ROWS`.
 
 **Parameters**
 
-- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`key`** `number` - An ID key, `ALL_IDS` or `FILTERED_ROWS`.
 
 **Returns** the row count. It is 0 for an unknown key.
 
@@ -459,11 +484,11 @@ const total = await core.rowCount(ALL_IDS);
 rows(key: number, start: number, count: number): Promise<RowBatch>
 ```
 
-Rows `start` to `start + count - 1` of the trace, clamped to the rows that exist. Row numbers count within the filter: with an ID key, row 0 is that ID's first frame.
+Rows `start` to `start + count - 1` of the trace, clamped to the rows that exist. Row numbers count within the key: with an ID key, row 0 is that ID's first frame, and with `FILTERED_ROWS`, the first frame the trace filter kept. `changed(i, byte)` always compares with the previous frame of the same ID and kind in the log, whichever key the rows are for.
 
 **Parameters**
 
-- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`key`** `number` - An ID key, `ALL_IDS` or `FILTERED_ROWS`.
 - **`start`** `number` - First row.
 - **`count`** `number` - Number of rows.
 
@@ -486,7 +511,7 @@ The whole payload of one trace row. [`rows`](#rows) cuts a payload at 64 bytes, 
 
 **Parameters**
 
-- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`key`** `number` - An ID key, `ALL_IDS` or `FILTERED_ROWS`.
 - **`row`** `number` - Row index, counted within the filter as in `rows`.
 
 **Returns** the payload, up to 1785 bytes. It is empty for an unknown key or a row past the end.
@@ -506,7 +531,7 @@ Payload bytes `first` to `first + byteCount - 1` of rows `start` to `start + cou
 
 **Parameters**
 
-- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`key`** `number` - An ID key, `ALL_IDS` or `FILTERED_ROWS`.
 - **`start`** `number` - First row, counted within the filter as in `rows`.
 - **`count`** `number` - Number of rows.
 - **`first`** `number` - The first byte index.
@@ -526,11 +551,11 @@ if (b97OfRow2 !== NO_BYTE) console.log(b97OfRow2);
 rowAtTime(key: number, t: number): Promise<number>
 ```
 
-The index of the first row of `key` (or `ALL_IDS`) at or after `t` seconds, clamped to the last row. It uses a binary search, since rows are in time order (a log out of order is sorted when it opens).
+The index of the first row of `key` (or `ALL_IDS`, or `FILTERED_ROWS`) at or after `t` seconds, clamped to the last row. It uses a binary search, since rows are in time order (a log out of order is sorted when it opens).
 
 **Parameters**
 
-- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`key`** `number` - An ID key, `ALL_IDS` or `FILTERED_ROWS`.
 - **`t`** `number` - Time in seconds.
 
 **Returns** a row index. It is 0 for an unknown key or an empty log.
@@ -546,11 +571,11 @@ const batch = await core.rows(ALL_IDS, row, 1);
 rowCountBetween(key: number, t0: number, t1: number): Promise<number>
 ```
 
-The number of rows of `key` (or `ALL_IDS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares, so a bit changes at most `rowCountBetween - 1` times. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
+The number of rows of `key` (or `ALL_IDS`, or `FILTERED_ROWS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares, so a bit changes at most `rowCountBetween - 1` times. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
 
 **Parameters**
 
-- **`key`** `number` - An ID key, or `ALL_IDS`.
+- **`key`** `number` - An ID key, `ALL_IDS` or `FILTERED_ROWS`.
 - **`t0`** `number` - Window start, in seconds.
 - **`t1`** `number` - Window end, in seconds.
 
@@ -560,6 +585,59 @@ The number of rows of `key` (or `ALL_IDS`) timestamped inside `[t0, t1]` seconds
 const frames = await core.rowCountBetween(summary.key, 120, 135);
 const flips = await core.bitFlipsBetween(summary.key, 120, 135);
 const share = flips[0] / Math.max(1, frames - 1);
+```
+
+## Trace filters
+
+### setTraceFilter
+
+```ts
+setTraceFilter(filter: FrameFilter | null): Promise<number>
+```
+
+Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, starting a capture or ending one (which may reorder its frames); until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames. The kept rows cost 4 bytes per matching frame. During a capture, frames appended after the call do not join the rows; the web app turns filters off while recording.
+
+**Parameters**
+
+- **`filter`** [`FrameFilter`](#the-framefilter-object)` | null` - The frames to keep, or null to drop the filtered rows.
+
+**Returns** the number of rows kept: what `rowCount(FILTERED_ROWS)` now gives. It is 0 for null.
+
+**Errors** Rejects with a JSON error if `filter` does not have the shape of `FrameFilter`, for example a byte value above 255, with `a bit must be 0 to 7` for a bit rule outside a byte, and with `not enough memory to filter this log` when the engine can't hold the matches. In every case the filtered rows of the call before are dropped, so `rowCount(FILTERED_ROWS)` is 0.
+
+```ts
+const matches = await core.setTraceFilter({
+  channels: [0],
+  keys: null,
+  kinds: ['data'],
+  rules: [{ type: 'byteEquals', byte: 2, value: 0x1f }],
+  combine: 'all',
+  t0: 12,
+  t1: 18.5,
+});
+console.log(`${matches} of ${log.frames} frames match`);
+const batch = await core.rows(FILTERED_ROWS, 0, 40);
+```
+
+### countFilterMatches
+
+```ts
+countFilterMatches(filter: FrameFilter): Promise<number | null>
+```
+
+How many frames match `filter`, without keeping them or changing the rows of `FILTERED_ROWS`: a preview while a filter is edited. Requests still run in order, so send a count only when the edit settles (the Trace view waits 250 ms). If another count arrives while this one is still waiting behind other work, this one is skipped and resolves to null, so only the newest count costs a pass over the log.
+
+**Parameters**
+
+- **`filter`** [`FrameFilter`](#the-framefilter-object) - The frames to count.
+
+**Returns** the number of matching frames, or null when a later count replaced this one before it ran.
+
+**Errors** Rejects for a malformed `filter` as [`setTraceFilter`](#settracefilter) does. A count never changes the rows of `FILTERED_ROWS`, even when it fails.
+
+```ts
+const count = await core.countFilterMatches(draft);
+if (count !== null) showPreview(`${count} of ${log.frames} frames match`);
 ```
 
 ## Bit activity

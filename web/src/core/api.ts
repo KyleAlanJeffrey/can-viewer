@@ -367,7 +367,7 @@ export interface CoreApi {
   findSignal(rules: FindRule[], keys: number[], limit: number): Promise<Candidate[]>;
   /**
    * Suggested signals for one ID: likely counters, checksums, flags, enums and values, judged
-   * from how its bits change over a sample of at most 20,000 frames. Guesses to check, not
+   * from how its bits change over a sample of about 20,000 frames. Guesses to check, not
    * decodes. Rejects for an unknown key, or a reference no loaded DBC decodes. See `suggest` in
    * crates/can-wasm/src/discover.rs.
    */

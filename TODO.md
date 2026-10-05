@@ -25,8 +25,8 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
 - [x] Reverse Engineer Advanced: Suggested signals (counters, checksums, flags, enums, continuous and signed values) with Accept, Dismiss and Plot it, event and reference hints, and a scan of the unknown messages (`suggestSignals`, `scanSignals`)
-- [ ] Suggested signals: float32 values are left out on purpose, multiplexed messages get a guess per page mixed together, and a value whose top bits never change in the log comes out narrower than its real field (VEHICLE_STATE in the demo)
-- [ ] Suggested signals: a 64-byte CAN FD message takes about 120 ms to suggest for, and Cancel only lands between messages; move the scan off the main request queue or split the work if logs with many large unknown IDs make it drag
+- [ ] Suggested signals: float32 values are left out on purpose, a multiplexed message's selector is suggested as a counter and its cells get nothing, and a value whose top bits never change in the log comes out narrower than its real field (VEHICLE_STATE in the demo)
+- [ ] Suggested signals: a 64-byte CAN FD message takes about 110 ms to suggest for in the browser (measured with 32 changing 16-bit values; about 1.5 s before the sample was cut for long payloads), and Cancel only lands between messages; move the scan off the main request queue or split the work if logs with many large unknown IDs make it drag
 - [x] Video sync: play a local video beside the Plot view, synced to cursor A by one matched moment, with offset nudges, a corner view and Space to play
 - [ ] Video sync: check by hand in Firefox and Safari (codecs, Space, the corner view and the resize handle); only Chromium was checked
 - [x] Export log as other formats (Export Log...: candump, ASC, BLF, TRC, MF4, CSV)

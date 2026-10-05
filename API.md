@@ -243,7 +243,7 @@ Optional help for [`suggestSignals`](#suggestsignals) and [`scanSignals`](#scans
 
 **Attributes**
 
-- **`markers`** `{ t: number }[]`, optional - Times, in seconds, when something happened, such as a press of the brake pedal. A candidate that changes unusually often within 1 s of a marker scores higher, and its `reason` says so. Other fields on a marker are ignored.
+- **`markers`** `{ t: number }[]`, optional - Times, in seconds, when something happened, such as a press of the brake pedal. A candidate that changes unusually often within 1 s of a marker scores higher, and its `reason` says so. In a sampled log, the frames around each marker are added to the sample. Other fields on a marker are ignored.
 - **`reference`** `{ key: number; signal: string } | null`, optional - A decoded signal, named as for [`decodeSignal`](#decodesignal), to compare value candidates with. A candidate whose raw value correlates with it (|r| at least 0.8) scores higher and gets a fitted scale in `fit`.
 
 ### The Suggestion object
@@ -252,11 +252,11 @@ A likely signal in one message: a guess from how its bits change, for a person t
 
 **Attributes**
 
-- **`kind`** `'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed'` - What it looks like: a counter that steps by a fixed amount each frame, a checksum byte, a single bit that switches rarely, a field with a few values, a smoothly changing unsigned value, or a two's complement value that crosses zero.
+- **`kind`** `'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed'` - What it looks like: a counter that steps by a fixed amount each frame, a checksum byte, a single bit that switches rarely or toggles on up to 30% of frames, a field with a few values, a smoothly changing unsigned value, or a two's complement value that crosses zero.
 - **`spec`** [`RawSignalSpec`](#the-rawsignalspec-object) - The bit range. `factor` and `offset` come from `fit` when there is one, and are otherwise 1 and 0. Pass it to `decodeRaw` to plot it.
 - **`confidence`** `number` - From 0 to 1, to two decimals: how sure the guess is.
 - **`level`** `'high' | 'medium' | 'low'` - `confidence` in words: high from 0.85, medium from 0.6.
-- **`reason`** `string` - One line on why, such as `Increments by 1 each frame; wraps at 255` or `Matches CRC-8 SAE J1850 over bytes 0-6`.
+- **`reason`** `string` - One line on why, such as `Increments by 1 each frame; wraps at 255` or `Matches CRC-8 SAE J1850 over bytes 0-6`. A counter with at most 8 values ends `: a counter or multiplexer selector`. For a sampled log, a continuous value's range (`Changes smoothly from 0 to 1023`) is over the whole log.
 - **`unconfirmed`** `boolean` - True for a checksum whose rule held on only most frames (90% or more), or that matched no rule and only looks random.
 - **`sparkline`** `{ t: number[]; v: number[] }` - About 64 values evenly spaced across the whole log, scaled by `spec`, with their times in seconds.
 - **`fit`** [`SignalFit`](#the-signalfit-object)` | null` - The scale fitted to the hints' reference, or null.
@@ -271,7 +271,7 @@ A scale fitted from a reference signal, as `reference = raw * factor + offset`. 
 - **`unit`** `string` - The reference signal's unit, possibly empty.
 - **`r`** `number` - Pearson correlation of the raw value with the reference, to three decimals; at least 0.8 in size.
 - **`factor`** `number` - The fitted factor, to three significant digits, or a round value such as 0.01 or 0.25 when it is within 3% of one.
-- **`offset`** `number` - The fitted offset, to three significant digits; 0 when it is no bigger than one step of the factor.
+- **`offset`** `number` - The fitted offset for the rounded `factor`, to three significant digits; 0 when it is no bigger than one step of the factor.
 
 ### The MessageSuggestions object
 
@@ -281,8 +281,8 @@ The suggested signals for one message. Returned by [`suggestSignals`](#suggestsi
 
 - **`key`** `number` - ID key of the message.
 - **`frames`** `number` - Frames of the ID in the log.
-- **`sampledFrames`** `number` - Frames read to judge the candidates: all of them up to 20,000, or 20 blocks of 1,000 consecutive frames spread evenly across the log.
-- **`suggestions`** [`Suggestion[]`](#the-suggestion-object) - At most 16, best first. Their bit ranges never overlap.
+- **`sampledFrames`** `number` - Frames read to judge the candidates: all of them up to 20,000, or 20 blocks of 1,000 consecutive frames spread across the log, plus a block around each event marker. Payloads longer than 8 bytes get proportionally fewer: 2,500 for 64 bytes. Fields that rarely change are also read over every frame.
+- **`suggestions`** [`Suggestion[]`](#the-suggestion-object) - At most 16, or one per payload byte when that is more, best first. Their bit ranges never overlap.
 
 ### The FrameFilter object
 
@@ -955,12 +955,13 @@ Proposes likely signals in one message from how its bits change: counters, check
 
 How it works (see `suggest` in `crates/can-wasm/src/discover.rs`):
 
-- Only the bytes every frame of the ID carries are looked at, up to 64.
+- Remote and empty frames are ignored, and only the bytes that 99% of the other frames carry are looked at, up to 64. Shorter frames are left out.
 - The bits are split into fields by how often each changes over the whole log: within a counter or a value, each more significant bit changes less often than the one below it. Both byte orders are tried, and neighbouring fields are joined, so a value's busy low bits stay with it.
-- Each field, its pieces and its whole-byte widths are read over a sample of frames (see `sampledFrames`) and tested as a counter (the same step on 90% or more of frames), a signed or unsigned value (small steps on 85% or more of changes, with the low bits carrying into the high ones), or an enum (2 to 16 values, changing on at most 20% of frames). A single bit that changes on fewer than 5% of frames is a flag.
+- Each field, its pieces and its whole-byte widths are read over a sample of frames (see `sampledFrames`) and tested as a counter (the same step on 90% or more of frames), a signed or unsigned value (small steps on 85% or more of changes, with the low bits carrying into the high ones), or an enum (2 to 16 values, changing on at most 20% of frames, and not just separate bits that almost never change on the same frame). A single bit that changes on fewer than 5% of frames is a flag, and on fewer than 30% a toggle, also suggested as a flag, unless it mostly changes along with a neighbouring bit. A signed value with constant bits above it is suggested at its own width, not as a wider unsigned value.
 - Each byte that changes on most frames is tested as a checksum over the message's other bytes: CRC-8 with the polynomials 0x1D (SAE J1850), 0x2F (AUTOSAR), 0x07 and 0x9B with any start value or final XOR, XOR, sum, sum plus a constant, and the complemented sum.
-- 32-bit words that read as smoothly changing floats get no suggestions, since a `RawSignalSpec` can't describe a float.
-- The best-scoring candidates are kept, with no two overlapping.
+- 32-bit words that read as smoothly changing floats, across more than one exponent, get no suggestions, since a `RawSignalSpec` can't describe a float. A word that overlaps a counter or checksum is not a float.
+- When a counter with at most 8 values looks like a multiplexer selector, bytes that change much more from frame to frame than from one frame of a page to the next one of that page get no suggestions.
+- The best-scoring candidates are kept, with no two overlapping. A candidate that straddles two others gives way when they and a range inside it score about as well.
 
 **Parameters**
 
@@ -985,6 +986,7 @@ scanSignals(
   hints: DiscoveryHints,
   onProgress: (done: number, total: number, latest: MessageSuggestions) => void,
   signal?: AbortSignal,
+  skip?: (key: number) => boolean,
 ): Promise<MessageSuggestions[]>
 ```
 
@@ -996,8 +998,9 @@ Runs [`suggestSignals`](#suggestsignals) for each ID in turn, so a scan of many 
 - **`hints`** [`DiscoveryHints`](#the-discoveryhints-object) - Applied to every message.
 - **`onProgress`** `(done: number, total: number, latest: MessageSuggestions) => void` - Called after each message with its suggestions, so a cancelled scan keeps what it found.
 - **`signal`** `AbortSignal`, optional - Aborting it stops the scan once the message in hand is done.
+- **`skip`** `(key: number) => boolean`, optional - Asked as each key's turn comes; a key it returns true for is passed over but counts towards `done`. The UI skips a message it suggested for meanwhile, such as one opened during the scan.
 
-**Returns** one [`MessageSuggestions`](#the-messagesuggestions-object) per key, in the order given.
+**Returns** one [`MessageSuggestions`](#the-messagesuggestions-object) per key scanned, in the order given.
 
 **Errors** Rejects with a `DOMException` named `AbortError` when cancelled, and otherwise as `suggestSignals` does for the first key that fails.
 

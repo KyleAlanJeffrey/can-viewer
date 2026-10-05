@@ -87,3 +87,8 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Exporting a DBC marks it clean, which resends every DBC to the core and refreshes the ID summaries even when nothing changed
 - [x] Show error frames as their own kind of row in the ID lists (today they appear as ID `20000080` and so on, kept apart from data IDs and never counted as unknown)
 - [x] Start a new core worker after a wasm trap (an out-of-memory parse, say); today the failed open leaves a fresh session, but a trapped instance may stay unusable until a reload (PR #1 review)
+- [x] Trace filters: bus, IDs or names, data rules, frame kind and time range, filtered in the core (`setTraceFilter`, `countFilterMatches`), with chips, a match count and an empty state
+- [ ] Trace filters: "Remove last filter" drops the last chip in display order (bus, IDs, kinds, time, rules), not the filter edited last; keep an edit order if people expect the latter
+- [ ] Trace filters: a preview count that is already running in the worker is not stopped, only ignored; one queued behind it is skipped. On a 10M-frame log a count takes about 85 ms natively, so a running count can delay the next table fetch by that much
+- [ ] Trace filters: data rules match any byte of a reassembled J1939 transfer, but matched bytes are only outlined in the first 64 the row carries
+- [ ] Trace filters: check the sheet, the ID combobox and the range handles with a real screen reader (VoiceOver or NVDA) (owner)

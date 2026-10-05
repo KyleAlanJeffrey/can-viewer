@@ -114,7 +114,7 @@
           <p>Your IT team can read the policy from the app&rsquo;s response headers:</p>
           <pre class="code">curl -sI https://app.freecanstudio.com/ | grep -i content-security-policy</pre>
           <p>The policy allows only the app&rsquo;s own origin (<span class="mono">'self'</span>):</p>
-          <pre class="code">default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'</pre>
+          <pre class="code">default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'</pre>
           <p class="small">Or open your browser&rsquo;s developer tools on the app and watch the Network tab while you work: every request goes to <span class="mono">app.freecanstudio.com</span>. This site, <span class="mono">freecanstudio.com</span>, is separate from the app.</p>
         </div>
       </div>

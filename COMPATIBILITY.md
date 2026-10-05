@@ -24,7 +24,7 @@ Used when present, with a fallback otherwise:
 
 | Feature | Used for |
 |---|---|
-| `showSaveFilePicker` (File System Access API, Chromium only) | Export DBC... saves through the browser's save dialog, and the DBC counts as exported only once the file is written; a cancelled dialog leaves it edited. Elsewhere the export is a download, which gives no completion signal, so the DBC counts as exported once the download starts. |
+| `showSaveFilePicker` (File System Access API, Chromium only) | Export DBC... saves through the browser's save dialog, and the DBC counts as exported only once the file is written; a cancelled dialog leaves it edited. Elsewhere the export is a download, which gives no completion signal, so the DBC counts as exported once the download starts. Export Log... works the same way: with the save dialog the log is converted only once a file is chosen, and its button reads Export...; elsewhere it reads Download and the converted file is downloaded. |
 
 Notes:
 
@@ -133,6 +133,31 @@ ASAM MF4 support (`crates/can-formats/src/mf4.rs`), for CAN bus logging as ASAM 
   - The custom flags (bytes 62 and 63) are the writer's own and are ignored: the file is read as it is. A standard flag above 0x40 rejects a single record with "unfinalized MF4 file; finalize it with the logger's tool". The flags of a finalized file (`MDF`) are ignored.
 - A file without the MDF signature, a version other than 4.x, a missing header, or a file with no CAN frame groups rejects a single record. A data group with a broken block, record ID or data list rejects one record and the other groups are still read. Links that lead back to a block already read (a data group, channel group, channel or data list), more channels than the file's size can hold (one per 32 bytes), a channel group with more than 65,536 channels named like CAN frame members, in an unfinalized file with flag 0x04 more links than the file has 8-byte words (each block's links counted once), more data list entries than the file has 8-byte words (each DL block and each block it lists counted every time a data group or SD data reads the list, so data groups sharing one large list end early), data blocks giving more than 100 bytes per byte of the file (a compressed block counts its compressed size when that is larger), and more frame records than the file has bytes are rejected with a reason, so a damaged file ends quickly. A frame record with a bad time, value or data offset is rejected with a reason, and a record cut short at the end of the data ends its data group with one.
 - Not read: MDF 3 files, CAN XL frames, CAN_OverloadFrame and other bus events, signal-based (decoded) MF4 files, sample reduction blocks, invalidation bits, attachments, events and the header's time zone and local-time flags.
+
+## Log export
+
+Export Log... saves the open log in any format the app reads, so it also works as a log converter. The writers are in `crates/can-formats/src/writer/`; `sample-gen convert` uses the same code. The file is made in the browser and never uploaded.
+
+What every export does:
+
+- Frames are written in time order, as the app holds them.
+- J1939 transfers reassembled from their packets (see "J1939 transport protocol" below) are left out, since they are not in the log. Their TP.CM and TP.DT packets are written, so opening the file reassembles them again.
+- Times are absolute (UTC) wherever the format has a start time or Unix times, as below.
+- ASC, BLF, TRC and MF4 number their buses rather than name them. When every bus of the log is named `can<N>`, with N from 1 to 255 and no two alike (as those formats name their buses on reading), N is kept, so a log read from them keeps its bus numbers. Otherwise the buses are numbered from 1 in order of first appearance: `can0` is written as 1 and reads back as `can1`. candump and CSV keep the bus names, with spaces, commas and double quotes turned into `_`.
+- A frame of more than 8 bytes that is not flagged CAN FD (an MF4 file can hold one) is written as a CAN FD frame.
+
+| Format | Written as | Keeps | Loses |
+|---|---|---|---|
+| candump (`.log`) | `candump -l` lines: Unix seconds with 6 decimals, the bus name, ` T` after transmitted frames as `candump -x` writes it | Every frame as read: bus names, error classes and their data, CAN FD flags, remote frames, direction | Time below the microsecond |
+| Vector ASC (`.asc`) | `base hex`, `timestamps absolute`, a `date` line for the first frame's second in UTC; classic, `CANFD` and `ErrorFrame` lines | Frames, CAN FD flags, remote frames, direction | Bus names; an error frame's class, data and direction; time below the microsecond |
+| Vector BLF (`.blf`) | Version 1 objects in zlib log containers of about 128 KiB: CAN_MESSAGE, CAN_FD_MESSAGE_64 and CAN_ERROR_EXT, with nanosecond times from the first frame's second | Frames, CAN FD flags, remote frames, direction, time to the nanosecond | Bus names; an error frame's class, direction and data past 8 bytes |
+| PEAK TRC (`.trc`) | Version 2.1 with the columns `N,O,T,B,I,d,R,L,D`, offsets in milliseconds with 3 decimals from the UTC midnight before the first frame | Frames, CAN FD flags, remote frames, direction | Bus names; an error frame's class (written as an `ER` line with its data); time below the microsecond. The `L` column is a DLC, so a CAN FD frame whose length is not one a DLC gives (not valid on a bus) does not read back |
+| ASAM MF4 (`.mf4`) | MDF 4.10 bus logging: one data group each for data, remote and error frames, records of a float64 time in seconds from the first frame's second and the `CAN_DataFrame` members with 64 data bytes, in transposed, deflated DZ blocks of 12,000 records | Frames, CAN FD flags, remote frames, direction, error data, time to the nanosecond in a log up to about a month long | Bus names; an error frame's class |
+| CSV (`.csv`) | The header `timestamp,channel,arbitration_id,extended,remote,error,fd,brs,esi,dlc,dir,data`: Unix seconds with 6 decimals, the bus name, a hex ID, flags as 0 or 1, the data length, `Rx` or `Tx`, and hex data | Every frame as read, error classes included | Time below the microsecond. Spreadsheet programs open about a million rows at most (Excel 1,048,576) |
+
+File sizes from the 1M-frame demo (55 MB as candump), in bytes per frame: candump 55, ASC 82, TRC 85, CSV 72, BLF 15 and MF4 12.
+
+Memory: the core builds the whole file in its own memory, in 8 MiB chunks, before handing it to the page a chunk at a time, freeing each as it goes; the page joins them into one file. So an export needs memory for the file on top of the log, and the browser holds another copy for a moment while the file is saved. For the 10M-frame demo (about 654 MB of wasm memory), a TRC export adds about 850 MB and an MF4 one about 120 MB. Wasm memory does not shrink, so the engine memory shown in the toolbar stays at its peak until the page is reloaded. If the file cannot be had, the export fails with "There isn't enough memory to build the exported file." and the log stays open.
 
 ## DBC files
 

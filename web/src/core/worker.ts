@@ -1,7 +1,7 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { Database, FindRule, RawSignalSpec, ScopedDatabase } from './api';
+import type { Database, FindRule, LogFormat, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 
 const CHUNK_BYTES = 8 << 20;
@@ -103,6 +103,15 @@ const handlers = {
     databasesJson = json;
   },
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
+  exportLog(format: LogFormat) {
+    session.export_log(format);
+    // Taken a chunk at a time, so the core frees each as it is copied out. Posting the Blob to
+    // the page shares its data rather than copying it.
+    const parts: Uint8Array<ArrayBuffer>[] = [];
+    // wasm-bindgen copies each chunk into an ArrayBuffer of its own, never a shared one.
+    for (let part = session.export_chunk(); part; part = session.export_chunk()) parts.push(part as Uint8Array<ArrayBuffer>);
+    return new Blob(parts);
+  },
 };
 
 const withTransfer = new Set(['rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);

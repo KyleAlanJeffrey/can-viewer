@@ -25,7 +25,7 @@ export class ChunkBoundary extends Component<Props, State> {
     return (
       <div className="empty" role="alert">
         <div className="empty-inner">
-          <p className="lede">{this.props.message ?? 'Couldn’t load this view.'}</p>
+          <p className="lede">{this.props.message ?? 'Couldn\u2019t load this view.'}</p>
           <button type="button" className="button" onClick={() => window.location.reload()}>
             Reload
           </button>

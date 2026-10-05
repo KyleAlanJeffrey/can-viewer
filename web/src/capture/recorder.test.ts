@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CaptureFrame, LogInfo } from '../core/api';
 import { fakeCore, logInfo } from '../test/fixtures';
-import type { CaptureAdapter, CaptureEvents } from './adapter';
+import type { CaptureAdapter, CaptureEvents, StartedCapture } from './adapter';
 import { CAPTURE_LIMITS, CaptureRecorder, captureFrameBytes, captureName } from './recorder';
 
 const frame = (timeNs: number): CaptureFrame => ({ timeNs, id: 0x123, extended: false, flags: 0, data: new Uint8Array(0) });
@@ -153,6 +153,25 @@ describe('CaptureRecorder status text', () => {
     const status = recorder.status();
     expect(recorder.text.summary(status)).toBe('1 frame \u00b7 0:00');
     expect(recorder.text.title(status)).toMatch(/, not listen only\./);
+  });
+});
+
+describe('CaptureRecorder start', () => {
+  it('gives up on an adapter that never finishes starting, and stops it', async () => {
+    const { adapter } = fakeAdapter();
+    let finishStart: (started: StartedCapture) => void = () => {};
+    adapter.start = vi.fn<CaptureAdapter['start']>(() => new Promise((resolve) => (finishStart = resolve)));
+    const core = fakeCore({ startCapture: vi.fn(() => Promise.resolve(logInfo())) });
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock());
+    recorder.startTimeoutMs = 20;
+    await expect(recorder.start(settings)).rejects.toThrow("The adapter didn't start within 0.02 seconds. Unplug it, plug it back in and try again.");
+    expect(adapter.stop).toHaveBeenCalledTimes(1);
+    expect(core.startCapture).not.toHaveBeenCalled();
+
+    // A start that still succeeds later is stopped again.
+    finishStart({ listenOnly: true });
+    await vi.waitFor(() => expect(adapter.stop).toHaveBeenCalledTimes(2));
+    expect(core.startCapture).not.toHaveBeenCalled();
   });
 });
 

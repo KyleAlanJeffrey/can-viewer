@@ -102,6 +102,8 @@ export class CaptureRecorder {
     sizeWarning: () =>
       "This capture is getting large, so stop and save it soon. It stops by itself before the app runs out of memory.",
   };
+  /** An adapter that hasn't started by then, such as a USB device that never answers, is given up on. */
+  startTimeoutMs = 10_000;
   /** Called once if the capture ends without `stop`: the adapter went away or the core failed. */
   onEnd: ((message: string) => void) | null = null;
   private frames = 0;
@@ -143,7 +145,7 @@ export class CaptureRecorder {
   async start(settings: CaptureSettings): Promise<{ info: LogInfo; listenOnly: boolean }> {
     this.origin = this.clock.now();
     const startedAtMs = this.clock.wallNow();
-    const started = await this.adapter.start(
+    const starting = this.adapter.start(
       settings,
       {
         onFrames: (frames) => {
@@ -170,6 +172,7 @@ export class CaptureRecorder {
       },
       () => Math.round((this.clock.now() - this.origin) * 1e6),
     );
+    const started = await this.withinStartTimeout(starting);
     this.bitrate = settings.bitrate;
     this.listenOnly = started.listenOnly;
     try {
@@ -180,6 +183,22 @@ export class CaptureRecorder {
     }
     this.batcher.start();
     return { info: this.info, listenOnly: started.listenOnly };
+  }
+
+  /** `starting`, or a rejection once `startTimeoutMs` has passed, with the adapter stopped. */
+  private withinStartTimeout<T>(starting: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        this.ended = true;
+        // Not awaited: a port that never opened may never close either. Stopped again in case
+        // the start still succeeds later.
+        void this.adapter.stop();
+        void starting.then(() => this.adapter.stop(), () => undefined);
+        reject(new Error(`The adapter didn't start within ${this.startTimeoutMs / 1000} seconds. Unplug it, plug it back in and try again.`));
+      }, this.startTimeoutMs);
+    });
+    return Promise.race([starting, timedOut]).finally(() => clearTimeout(timer));
   }
 
   status(): CaptureStatus {

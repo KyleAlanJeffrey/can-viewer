@@ -30,8 +30,15 @@ export async function networkFirst(load: Load, cached: Lookup, timeoutMs?: numbe
   }
 }
 
+/** The cached copy, else the network; offline with neither, a 503 the page can report. */
 export async function cacheFirst(cached: Lookup, load: Load): Promise<Response> {
-  return (await cached()) ?? load();
+  const copy = await cached();
+  if (copy) return copy;
+  try {
+    return await load();
+  } catch {
+    return new Response('Offline, and this file is not cached.', { status: 503, headers: { 'Content-Type': 'text/plain' } });
+  }
 }
 
 /** Network first like `networkFirst`, handing every whole, successful same-origin answer to `keep`. */

@@ -58,6 +58,10 @@ describe('cacheFirst', () => {
     expect(load).not.toHaveBeenCalled();
     expect(await (await cacheFirst(async () => undefined, load)).text()).toBe('fresh');
   });
+
+  it('answers 503 when offline with no cached copy', async () => {
+    expect((await cacheFirst(async () => undefined, offline)).status).toBe(503);
+  });
 });
 
 describe('networkFirstKeeping', () => {

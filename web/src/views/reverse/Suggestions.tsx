@@ -158,6 +158,19 @@ export function Suggestions(props: Props) {
     requestAnimationFrame(() => hintRef.current?.focus());
   };
 
+  if (ctx.capturing) {
+    return (
+      <section className="card re-card re-sug" aria-labelledby={`${ids}title`}>
+        <div className="re-card-head">
+          <h3 className="section-title" id={`${ids}title`}>
+            Suggested signals
+          </h3>
+        </div>
+        <p className="hint">Suggestions are made once the capture stops.</p>
+      </section>
+    );
+  }
+
   return (
     <section className="card re-card re-sug" aria-labelledby={`${ids}title`}>
       <div className="re-card-head">

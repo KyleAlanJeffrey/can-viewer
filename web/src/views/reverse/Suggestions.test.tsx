@@ -63,8 +63,8 @@ function discoveryCore(overrides: Partial<CoreApi> = {}) {
   return { core, scan };
 }
 
-async function openAdvanced(core: CoreApi, selected = first.key) {
-  const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [car], selected });
+async function openAdvanced(core: CoreApi, selected = first.key, capturing = false) {
+  const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [car], selected, capturing });
   await shell.user.click(screen.getByRole('tab', { name: 'Advanced' }));
   // The panel is loaded on first use.
   await screen.findByRole('region', { name: 'Suggested signals' });
@@ -106,6 +106,14 @@ describe('Suggested signals', () => {
     await user.click(within(panel()).getByRole('button', { name: 'Most promising: 200' }));
     expect(state.selected).toBe(first.key);
     expect(await within(panel()).findByText('Continuous value')).toBeTruthy();
+  });
+
+  it('waits for a live capture to stop before suggesting', async () => {
+    const { core, scan } = discoveryCore();
+    await openAdvanced(core, first.key, true);
+    expect(within(panel()).getByText('Suggestions are made once the capture stops.')).toBeTruthy();
+    expect(scan.keys).toEqual([]);
+    expect(core.suggestSignals).not.toHaveBeenCalled();
   });
 
   it('suggests for a message opened during the scan at once, which the scan then passes over', async () => {

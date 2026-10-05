@@ -234,7 +234,11 @@ export function Workspace(props: Props) {
   };
 
   const { ensure } = discovery;
-  useEffect(() => ensure(summary.key), [ensure, summary.key]);
+  const { capturing } = ctx;
+  // A capture's messages are still growing, so suggesting waits until it stops.
+  useEffect(() => {
+    if (!capturing) ensure(summary.key);
+  }, [ensure, summary.key, capturing]);
   const [activeSuggestion, setActiveSuggestion] = useState<string | null>(null);
   const [showDismissed, setShowDismissed] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);

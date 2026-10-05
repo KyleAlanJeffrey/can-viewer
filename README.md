@@ -8,18 +8,19 @@
 
 A free, browser-based CAN bus analyzer and log viewer with reverse-engineering tools. FreeCAN Studio Pro, a paid desktop app on the same core, is planned. The stack rationale is in [docs/research.md](docs/research.md) and the naming research in [docs/naming.md](docs/naming.md).
 
-Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker, and a React/TypeScript UI. The desktop build will run the same crates natively under Tauri, behind the same `CoreApi` interface ([web/src/core/api.ts](web/src/core/api.ts)).
+Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker, and a React/TypeScript UI. In Chrome and Edge it also records live from a CAN adapter (slcan over Web Serial, candleLight/gs_usb over WebUSB) and saves the capture as a candump log; see "Live capture" in [COMPATIBILITY.md](COMPATIBILITY.md#live-capture). The desktop build will run the same crates natively under Tauri, behind the same `CoreApi` interface ([web/src/core/api.ts](web/src/core/api.ts)).
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `crates/can-core` | Frame types; columnar frame store with per-ID stats and bit-flip counts |
-| `crates/can-formats` | Streaming log parsers: candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV, chosen by file name and content |
+| `crates/can-formats` | Streaming log parsers: candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV, chosen by file name and content; a candump writer |
 | `crates/can-dbc-model` | DBC loading via `can-dbc`, our own editable model, signal decode and encode |
 | `crates/can-wasm` | wasm-bindgen `Session` used by the web worker; min/max plot decimation |
 | `crates/sample-gen` | Dev tool: synthetic demo log + DBC, native benchmark, decode dumps |
 | `web/` | Vite + React UI: canvas trace table, bit heatmap, uPlot plots |
+| `web/src/capture` | Live capture: slcan (Web Serial) and gs_usb (WebUSB) adapters, frame batching, the Capture sheet |
 | `site/` | The landing site for `freecanstudio.com`: static HTML, no build ([site/README.md](site/README.md)) |
 | `scripts/crosscheck_cantools.py` | Compares our decoder with cantools |
 | `scripts/gen_extended_mux.py` | Test log + DBC with nested multiplexors, for the cantools cross-check |
@@ -95,3 +96,4 @@ These use the 10M-frame demo: a 552 MB candump file, about 5 h of driving, 11 ID
 - **Plot queries:** add level-of-detail pyramids so a query no longer scales linearly with the points in range.
 - **Reverse engineering:** drag-to-define signals on the heatmap, a scrubbable time window for bit flips, counter/CRC auto-labels, and DBC export.
 - **DBC:** extended multiplexing (`SG_MUL_VAL_`) is not decoded yet.
+- **Live capture:** not yet tried with real adapters. One bus at a time, receive only, classic CAN on gs_usb, host-clock timestamps; see [TODO.md](TODO.md) for the follow-ups.

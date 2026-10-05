@@ -19,7 +19,7 @@ The job: open a log (often hundreds of MB), find out what's on the bus, decode i
 
 ## Product Purpose
 
-FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump logs today, with ASC, BLF, TRC, MF4 and CSV planned. It decodes with imported DBC files, plots signals, and makes bit-level activity visible so unknown messages can be defined by hand. FreeCAN Studio Pro is a paid desktop app on the same core that adds live capture, transmit and replay, UDS scanning, video sync, automated signal discovery, multi-GB files and scripting.
+FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump logs today, with ASC, BLF, TRC, MF4 and CSV planned. It decodes with imported DBC files, plots signals, and makes bit-level activity visible so unknown messages can be defined by hand. It also records live from a CAN adapter (slcan over Web Serial, candleLight/gs_usb over WebUSB) in Chrome and Edge: live capture moved from the Pro plan into the free web app. FreeCAN Studio Pro is a planned paid desktop app on the same core that adds transmit and replay, UDS scanning, video sync, automated signal discovery, multi-GB files and scripting. Paid features are hidden for now: the web app shows no Pro features or upsell.
 
 Success: an engineer drops a large log into a browser tab and is reading decoded signals, or has defined an unknown one, within minutes, with nothing installed and nothing uploaded.
 
@@ -32,7 +32,7 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
 ## Operating Context
 
 - **Engineers:** long desk sessions with large logs from loggers and interfaces (SocketCAN candump, Vector BLF/ASC, PEAK TRC, ASAM MF4) and DBCs from OEMs, suppliers or opendbc. They switch between trace, plots and the DBC while tracking a behaviour down.
-- **Hobbyists:** a laptop in a car or garage, capturing with an adapter and then reverse-engineering at home.
+- **Hobbyists:** a laptop in a car or garage, capturing with an adapter (in the app, or with another tool) and then reverse-engineering at home.
 
 ## Capabilities and Constraints
 
@@ -42,7 +42,8 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
   - DBC decode (Intel/Motorola, signed, float, simple multiplexing), with several DBCs per log, each for every bus or one bus, and J1939 messages matched by PGN;
   - five views: Overview, Trace, Plot, Reverse Engineer (drag-to-define signals and Find Signal) and Database (DBC editing and export);
   - a virtualized canvas trace table, a bit heatmap, and uPlot plots with decimation;
-  - the open log, DBCs and view state kept across reloads.
+  - the open log, DBCs and view state kept across reloads;
+  - live capture from slcan and gs_usb adapters in Chrome and Edge, saved as candump logs (see "Live capture" in [COMPATIBILITY.md](COMPATIBILITY.md#live-capture)).
 - **Planned:** see [docs/screens.md](docs/screens.md), [docs/research.md](docs/research.md) and [TODO.md](TODO.md). Key items are more log formats, parallel parsing, extended multiplexing, J1939 multi-packet messages, and the Pro desktop app.
 - **Licensing:**
   - The product is closed-source and commercial, so no GPL or LGPL code can be copied in.

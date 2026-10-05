@@ -125,6 +125,7 @@ LC_ALL=C grep -n '[^[:print:][:space:]]' <files>
 | `web/src/views/<view>/` | One folder per view, each with its own stylesheet and class prefix |
 | `web/src/views/shared/` | Helpers shared by views |
 | `web/src/components/` | Shared components, such as `Sheet` and `Segmented` |
+| `web/src/capture/` | Live capture: the adapter interface, slcan and gs_usb adapters, frame batching and the Capture sheet. Tests drive a simulated serial port (`web/src/test/fakeSerial.ts`) |
 | `web/src/styles.css` | Design tokens and shared styles |
 
 Views live in `web/src/views/<view>/` with their own CSS file and class prefix: `overview/overview.css` uses `ov-`, `plot/plot.css` uses `pv-`, `reverse/reverse.css` uses `re-` and `database/database.css` uses `db-`. To add a view:

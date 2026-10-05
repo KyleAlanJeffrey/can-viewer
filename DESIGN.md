@@ -334,7 +334,8 @@ Three panes in a full-height grid on a 1440 x 900 reference.
 - **Toolbar** (60px, Paper White, hairline bottom border, 12px gaps), spanning content and inspector:
   - Leading: sidebar toggle, a 28px hairline divider, the document title over its Slate status subtitle (log format, frames, duration, DBC; progress text while busy).
   - Centre: the view switcher, a segmented control (Overview / Trace / Plot / Reverse Engineer / Database). Views that need a log are disabled until one is open; Database opens with a DBC alone.
-  - Trailing: Open DBC... (quiet), Open Log..., inspector toggle. Open Log is amber unless the view has its own primary, then it is an outline button. The inspector toggle is disabled on views without an inspector.
+  - Trailing: Open DBC... (quiet), Save Capture... (quiet, only while a capture is open), Capture... (quiet), Open Log..., inspector toggle. Open Log is amber unless the view has its own primary, then it is an outline button. The inspector toggle is disabled on views without an inspector.
+  - While capturing, Stop Capture takes the place of Save Capture and Capture and takes the amber (outline when the view has its own primary), Open Log is an outline button and disabled, and the subtitle reads "Recording" in Error with a 7px Error dot, then the frame count, rate, elapsed time, any errors, and the bitrate (and listen only) in Slate.
   - Below 1280px, Open DBC goes icon-only (its label stays for screen readers) and the switcher tightens, so the log name stays readable.
   - View actions never go in the toolbar; they sit in the view's content header.
   - There is no bottom status bar.
@@ -482,6 +483,5 @@ Motion is minimal: 120ms ease-out background transitions on buttons. The progres
 The owner chose no tagline, "Free. No account.", the shipped 1M-frame demo, and no undecided Pro format or size claims. These rules apply to the marketing site and Pro concept screens, which are not built yet. The app rules above (status, outline buttons, segmented controls, toolbar slots, primary actions, tints, marks) were adopted from the same corrections and are now implemented.
 
 - **Marketing type:** Plex Sans Display XL 600 at 56/60 (-0.02em); Display L 600 at 40/48; H2 600 at 28/36; Lead 400 at 20/30; Body 400 at 16/26; buttons 600 at 15px and 40px tall. No 700. Navigation's Open App is an outline button.
-- **Recording status** (Pro live capture): Error #A61B1B with the word.
 
 Exact mockup data is in [docs/mockup-data.json](docs/mockup-data.json), and the common generation style in [docs/mockup-style.txt](docs/mockup-style.txt). Generated PNGs are illustrative layouts, not exact sources for color tokens, font weights, bit activity, or calculated plot curves. Use the token definitions and data sheet when implementing. Signal colours follow the fixed series order per message (and the first free slot when plotting), so they can differ from the hand-picked colours in the mockups.

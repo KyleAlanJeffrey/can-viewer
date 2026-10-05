@@ -52,8 +52,13 @@ interface LiveCapture {
   listenOnly: boolean;
 }
 
-/** How often a live capture's frames reach the views, and its status line updates. */
+/** How often a live capture's status line updates, and at the start its frames reach the views. */
 const LIVE_REFRESH_MS = 500;
+/**
+ * The views go over every frame when they refresh, so a growing capture refreshes them less
+ * often: one more millisecond between refreshes per this many frames keeps their cost level.
+ */
+const FRAMES_PER_EXTRA_REFRESH_MS = 2000;
 /** Plotted signals are decoded again every this many refreshes while capturing. */
 const LIVE_PLOT_REFRESHES = 4;
 /** Save Capture writes candump, which keeps every frame, bus name and error class. */
@@ -131,6 +136,8 @@ export function App({ core }: { core: CoreApi }) {
   /** The open log is a capture not yet saved to a file, which a reload would lose. */
   const [unsavedCapture, setUnsavedCapture] = useState(false);
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
+  /** What screen readers are told while recording: the start, the first problem, the size warning. */
+  const [liveAnnouncement, setLiveAnnouncement] = useState('');
   /** What to do once the user agrees to discard an unsaved capture. */
   const [discardThen, setDiscardThen] = useState<(() => void) | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
@@ -444,10 +451,8 @@ export function App({ core }: { core: CoreApi }) {
           setIds(nextIds);
           await redecodePlots();
           if (endedBecause) setError(`${endedBecause} The frames captured until then are kept.`);
-          if (status.problems > 0) {
-            const count = `${formatCount(status.problems)} ${status.problems === 1 ? 'problem' : 'problems'}`;
-            setCaptureNotice(`${count} during the capture. The last: ${status.lastProblem}`);
-          }
+          // The notices while recording, such as the size warning, are done with.
+          setCaptureNotice(status.problems > 0 ? `${plural(status.problems, 'problem', 'problems')} during the capture. The last: ${status.lastProblem}` : null);
         });
       } catch (e) {
         showNoLog();
@@ -466,10 +471,15 @@ export function App({ core }: { core: CoreApi }) {
         // Loaded with the Capture sheet rather than with the app.
         const { CaptureRecorder, captureName } = await import('./capture/recorder');
         const recorder = new CaptureRecorder(core, adapter, captureName(new Date()));
+        // Set before the start, so an adapter that goes away while starting still ends the capture.
+        const endedWhileStarting: { message?: string } = {};
+        recorder.onEnd = (message) => {
+          if (liveRef.current?.recorder === recorder) void stopCapture(message);
+          else endedWhileStarting.message = message;
+        };
         const { info, listenOnly } = await recorder.start(settings);
         const capture: LiveCapture = { recorder, adapter: adapter.label, bitrate: settings.bitrate, listenOnly };
         liveRef.current = capture;
-        recorder.onEnd = (message) => void stopCapture(message);
         // The capture replaced the log and its series in the core, as opening a log does.
         plotSignals.current.clear();
         setPlots([]);
@@ -479,8 +489,9 @@ export function App({ core }: { core: CoreApi }) {
         setSkippedDismissed(false);
         setError(null);
         setCaptureNotice(
-          settings.listenOnly && !listenOnly ? "This adapter can't listen only, so it was opened normally: it acknowledges the frames it receives." : null,
+          settings.listenOnly && !listenOnly ? "Listen-only mode isn't confirmed for this adapter, so it may acknowledge the frames it receives." : null,
         );
+        setLiveAnnouncement(`Recording from ${adapter.label}${listenOnly ? ', listen only' : ''}.`);
         setLog(info);
         setLogVersion((v) => v + 1);
         setDbcs(dbcsRef.current);
@@ -492,11 +503,22 @@ export function App({ core }: { core: CoreApi }) {
         setView('trace');
         // Only a saved capture comes back after a reload.
         void forget('log');
+        if (endedWhileStarting.message) void stopCapture(endedWhileStarting.message);
       }),
     [core, serially, stopCapture, viewState, setView],
   );
 
-  const saveCapture = () => {
+  /** Keeps a saved capture like an opened log, so a reload reopens it. */
+  const keepSavedCapture = async (name: string, blob: Blob) => {
+    setUnsavedCapture(false);
+    if (!(await save('log', { name, blob } satisfies SavedLog))) {
+      setNotKept(name);
+      void forget('log');
+    }
+  };
+
+  /** Saves the capture as candump, then runs `then`, as when the discard prompt offers saving. */
+  const saveCapture = (then?: () => void) => {
     if (!log) return;
     const name = log.name;
     const label = 'Saving the capture\u2026';
@@ -504,16 +526,12 @@ export function App({ core }: { core: CoreApi }) {
     void chooseBlobFile(name, CANDUMP_FILE).then(
       async (write) => {
         if (!write) return;
-        await run(label, async () => {
+        const saved = await run(label, async () => {
           const blob = await core.exportLog('candump');
           await write(blob);
-          setUnsavedCapture(false);
-          // Kept like an opened log, so a reload reopens it.
-          if (!(await save('log', { name, blob } satisfies SavedLog))) {
-            setNotKept(name);
-            void forget('log');
-          }
+          await keepSavedCapture(name, blob);
         });
+        if (saved) then?.();
       },
       (error: unknown) => run(label, () => Promise.reject(error)),
     );
@@ -629,9 +647,25 @@ export function App({ core }: { core: CoreApi }) {
     if (!live) return;
     let refreshes = 0;
     let refreshing = false;
+    let lastRefresh = performance.now();
+    let toldOfProblem = false;
+    let warnedOfSize = false;
     const refresh = () => {
-      setLiveStatus(live.recorder.status());
-      if (refreshing) return;
+      const status = live.recorder.status();
+      setLiveStatus(status);
+      if (status.problems > 0 && !toldOfProblem) {
+        toldOfProblem = true;
+        setLiveAnnouncement(`The adapter reported a problem: ${status.lastProblem}`);
+      }
+      if (status.nearLimit && !warnedOfSize) {
+        warnedOfSize = true;
+        const warning = `This capture is getting large, so stop and save it soon. It stops by itself at ${formatCount(live.recorder.limits.maxFrames)} frames, so the app doesn't run out of memory.`;
+        setCaptureNotice(warning);
+        setLiveAnnouncement(warning);
+      }
+      const now = performance.now();
+      if (refreshing || now - lastRefresh < LIVE_REFRESH_MS + status.frames / FRAMES_PER_EXTRA_REFRESH_MS) return;
+      lastRefresh = now;
       refreshing = true;
       const decodePlotsToo = ++refreshes % LIVE_PLOT_REFRESHES === 0;
       serially(async () => {
@@ -651,6 +685,14 @@ export function App({ core }: { core: CoreApi }) {
     const timer = setInterval(refresh, LIVE_REFRESH_MS);
     return () => clearInterval(timer);
   }, [live, core, serially, redecodePlots]);
+
+  // A device left open would go on sending to a port nobody reads, or acknowledging frames.
+  useEffect(() => {
+    if (!live) return;
+    const release = () => live.recorder.release();
+    window.addEventListener('pagehide', release);
+    return () => window.removeEventListener('pagehide', release);
+  }, [live]);
 
   // Leaving the page would end the capture, or lose one that wasn't saved.
   useEffect(() => {
@@ -870,14 +912,17 @@ export function App({ core }: { core: CoreApi }) {
             <span className="toolbar-divider" />
             <div className="doc" title={log && log.format !== 'capture' ? parseStats(log) : undefined}>
               <h1 className="doc-title">{log?.name ?? (dbcs.length > 0 ? dbcSummary : 'No log open')}</h1>
-              {live && liveStatus ? (
-                // Not a live region: it changes twice a second. The status below says when recording starts.
-                <p className="doc-sub" title={liveStatus.lastProblem ?? live.adapter}>
+              {live && liveStatus && (
+                // Not a live region: it changes twice a second. The status below tells what matters.
+                <p className="doc-sub" title={liveTitle(live, liveStatus)}>
                   <span className="cap-recording">Recording</span> &middot; {liveSummary(live, liveStatus)}
                 </p>
-              ) : (
-                <p className="doc-sub" role="status" title={dbcs.map((d) => d.db.name).join(', ') || undefined}>
-                  {busy
+              )}
+              {/* Always mounted, so screen readers hear each change, recording or not. */}
+              <p className={live ? 'sr-only' : 'doc-sub'} role="status" title={live ? undefined : dbcs.map((d) => d.db.name).join(', ') || undefined}>
+                {live
+                  ? liveAnnouncement
+                  : busy
                     ? busy.label
                     : stopping
                       ? 'Stopping the capture\u2026'
@@ -888,11 +933,7 @@ export function App({ core }: { core: CoreApi }) {
                           : dbcs.length > 0
                             ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
                             : 'Open a CAN log to begin'}
-                </p>
-              )}
-              <span className="sr-only" role="status">
-                {live ? `Recording from ${live.adapter}` : ''}
-              </span>
+              </p>
             </div>
             {log && !live && (
               <button
@@ -938,7 +979,7 @@ export function App({ core }: { core: CoreApi }) {
             ) : (
               <>
                 {log?.format === 'capture' && (
-                  <button className="toolbar-button" onClick={saveCapture} disabled={!!busy || stopping} title={'Save Capture\u2026'}>
+                  <button className="toolbar-button save-capture" onClick={() => saveCapture()} disabled={!!busy || stopping} title={'Save Capture\u2026'}>
                     <Save size={16} strokeWidth={1.5} />
                     <span className="label">Save Capture&hellip;</span>
                   </button>
@@ -978,7 +1019,9 @@ export function App({ core }: { core: CoreApi }) {
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = '';
-              if (file) unlessUnsavedCapture(() => void openLog(file, file.name));
+              if (!file) return;
+              if (liveRef.current) setError('Stop the capture before opening a log.');
+              else unlessUnsavedCapture(() => void openLog(file, file.name));
             }}
           />
           <input
@@ -1119,7 +1162,7 @@ export function App({ core }: { core: CoreApi }) {
             </button>
             <button
               type="button"
-              className="primary"
+              className="button"
               onClick={() => {
                 const then = discardThen;
                 setDiscardThen(null);
@@ -1128,10 +1171,21 @@ export function App({ core }: { core: CoreApi }) {
             >
               Discard Capture
             </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                const then = discardThen ?? undefined;
+                setDiscardThen(null);
+                saveCapture(then);
+              }}
+            >
+              Save Capture&hellip;
+            </button>
           </>
         }
       >
-        <p>{log?.name} hasn&rsquo;t been saved. Save Capture&hellip; keeps it in a candump log file.</p>
+        <p>{log?.name} hasn&rsquo;t been saved. Save it as a candump log file first, or discard it.</p>
       </Sheet>
       {log && (
         <ExportLogSheet
@@ -1141,22 +1195,40 @@ export function App({ core }: { core: CoreApi }) {
           log={log}
           run={run}
           onDone={() => setExportEnded(true)}
+          onSaved={(format, file) => {
+            if (log.format !== 'capture') return;
+            // Only a candump file reopens a capture whole, so only it is kept for a reload.
+            if (format === 'candump') void keepSavedCapture(log.name, file);
+            else setUnsavedCapture(false);
+          }}
         />
       )}
     </div>
   );
 }
 
-/** The recording status: frames, rate, time, bitrate and any problems. */
+const plural = (n: number, one: string, many: string) => `${formatCount(n)} ${n === 1 ? one : many}`;
+
+/** The recording status, what matters most first, as the toolbar may cut its end off. */
 function liveSummary(live: LiveCapture, status: CaptureStatus): string {
   const parts = [
-    `${formatCount(status.frames)} frames`,
-    status.rate === null ? null : `${formatCount(Math.round(status.rate))} frames/s`,
+    status.problems > 0 ? plural(status.problems, 'error', 'errors') : null,
+    live.listenOnly ? 'Listen only' : null,
+    plural(status.frames, 'frame', 'frames'),
+    status.rate === null ? null : `${formatCount(Math.round(status.rate))}/s`,
     formatDuration(status.elapsedS),
-    status.problems > 0 ? `${formatCount(status.problems)} ${status.problems === 1 ? 'error' : 'errors'}` : null,
-    `${formatBitrate(live.bitrate)}${live.listenOnly ? ', listen only' : ''}`,
   ];
   return parts.filter((p) => p !== null).join(' \u00b7 ');
+}
+
+/** The whole recording status, for the status line's tooltip. */
+function liveTitle(live: LiveCapture, status: CaptureStatus): string {
+  const lines = [
+    `Recording from ${live.adapter} at ${formatBitrate(live.bitrate)}, ${live.listenOnly ? 'listen only' : 'not listen only'}.`,
+    `${plural(status.frames, 'frame', 'frames')}${status.rate === null ? '' : ` at ${formatCount(Math.round(status.rate))} frames/s`} in ${formatDuration(status.elapsedS)}.`,
+  ];
+  if (status.problems > 0) lines.push(`${plural(status.problems, 'error', 'errors')}. The last: ${status.lastProblem}`);
+  return lines.join('\n');
 }
 
 /** The demo log ships gzipped. A server may already have decoded it, so check for the gzip magic first. */

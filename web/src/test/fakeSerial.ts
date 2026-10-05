@@ -2,8 +2,8 @@ import type { SerialPortLike } from '../capture/webSerial';
 
 /**
  * A serial port with an slcan adapter behind it. Each command written is recorded and answered
- * by `answer` (CR, "done", unless a test says otherwise); `send` delivers what the adapter sends
- * by itself, such as frames.
+ * by `answer` (CR, "done", or a version for `V`, unless a test says otherwise); `send` delivers
+ * what the adapter sends by itself, such as frames.
  */
 export class FakeSerialPort implements SerialPortLike {
   readable: ReadableStream<Uint8Array> | null = null;
@@ -12,9 +12,11 @@ export class FakeSerialPort implements SerialPortLike {
   opened = false;
   closed = false;
   /** What the adapter answers to a command, or null for no answer. */
-  answer: (command: string) => string | null = () => '\r';
+  answer: (command: string) => string | null = (command) => (command === 'V' ? 'V1013\r' : '\r');
   /** Set to make `open` fail, as when another program holds the port. */
   openError: Error | null = null;
+  /** Set to make writes fail, as when the adapter has hung. */
+  writeError: Error | null = null;
   private controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   private written = '';
 
@@ -35,6 +37,7 @@ export class FakeSerialPort implements SerialPortLike {
     });
     this.writable = new WritableStream<Uint8Array>({
       write: (chunk) => {
+        if (this.writeError) throw this.writeError;
         this.written += new TextDecoder().decode(chunk);
         let end: number;
         while ((end = this.written.indexOf('\r')) >= 0) {
@@ -47,6 +50,11 @@ export class FakeSerialPort implements SerialPortLike {
         }
       },
     });
+  }
+
+  /** The adapter answers no command, as CANable's slcan firmware doesn't. */
+  silence() {
+    this.answer = () => null;
   }
 
   send(text: string | Uint8Array) {

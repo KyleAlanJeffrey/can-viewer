@@ -5,7 +5,15 @@
  */
 
 import { FLAG_BRS, FLAG_ERROR, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
-import { errorText, usbIds, type CaptureAdapter, type CaptureEvents, type CaptureSettings, type StartedCapture } from './adapter';
+import {
+  errorText,
+  ListenOnlyUnconfirmedError,
+  usbIds,
+  type CaptureAdapter,
+  type CaptureEvents,
+  type CaptureSettings,
+  type StartedCapture,
+} from './adapter';
 import type { UsbDeviceLike, UsbSetup } from './webUsb';
 
 /** Devices the Linux driver binds to: candleLight, CANable with candleLight firmware and kin. */
@@ -43,6 +51,8 @@ const FD_LENGTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64];
 /** Bulk reads kept waiting at once, so frames don't queue up in the device between reads. */
 const READS_IN_FLIGHT = 8;
 const READ_LENGTH = 128;
+/** Prescalers tried at most, so odd limits from a device can't make the search run long. */
+const MAX_PRESCALERS = 4096;
 
 /** The device's bit timing limits (`gs_device_bt_const`). */
 export interface BitTimingLimits {
@@ -84,15 +94,17 @@ export function parseBitTimingLimits(view: DataView): BitTimingLimits {
 }
 
 /**
- * Bit timing for exactly `bitrate`, with the sample point as near 87.5% as the limits allow
- * (CiA 301's recommendation up to 800 kbit/s) and, among equals, the most time quanta. Null if
- * no prescaler divides the clock into a whole number of quanta per bit within the limits.
+ * Bit timing for exactly `bitrate`, with the sample point as near CiA 301's recommendation as
+ * the limits allow (87.5% up to 800 kbit/s, 75% above) and, among equals, the most time quanta.
+ * Null if no prescaler divides the clock into a whole number of quanta per bit within the limits.
  */
-export function bitTiming(limits: BitTimingLimits, bitrate: number, samplePoint = 0.875): BitTiming | null {
+export function bitTiming(limits: BitTimingLimits, bitrate: number, samplePoint = bitrate > 800_000 ? 0.75 : 0.875): BitTiming | null {
   let best: BitTiming | null = null;
   let bestError = Infinity;
   const step = Math.max(1, limits.brpInc);
-  for (let brp = Math.max(1, limits.brpMin); brp <= limits.brpMax; brp += step) {
+  const first = Math.max(1, limits.brpMin);
+  const last = Math.min(limits.brpMax, first + step * (MAX_PRESCALERS - 1));
+  for (let brp = first; brp <= last; brp += step) {
     const quanta = limits.fclk / (brp * bitrate);
     if (!Number.isInteger(quanta)) continue;
     // One quantum is the sync segment; tseg1 and tseg2 share the rest.
@@ -114,9 +126,13 @@ export function bitTiming(limits: BitTimingLimits, bitrate: number, samplePoint 
 
 export type HostFrame = { frame: Omit<CaptureFrame, 'timeNs'>; overflow: boolean } | null;
 
-/** A received `gs_host_frame`, or null for an echo of a sent frame or a transfer too short. */
+/**
+ * A received `gs_host_frame` of channel 0, or null for an echo of a sent frame, another
+ * channel's frame or a transfer too short.
+ */
 export function parseHostFrame(view: DataView): HostFrame {
   if (view.byteLength < HOST_FRAME_HEADER || view.getUint32(0, true) !== RX_ECHO_ID) return null;
+  if (view.getUint8(9) !== 0) return null;
   const canId = view.getUint32(4, true);
   const dlc = view.getUint8(8) & 0x0f;
   const frameFlags = view.getUint8(10);
@@ -177,6 +193,9 @@ export class GsUsbAdapter implements CaptureAdapter {
       const timing = bitTiming(limits, settings.bitrate);
       if (!timing) throw new Error(`The adapter can't run at ${settings.bitrate} bit/s.`);
       const listenOnly = settings.listenOnly && (limits.feature & FEATURE_LISTEN_ONLY) !== 0;
+      if (settings.listenOnly && !listenOnly && !settings.allowUnconfirmedListenOnly) {
+        throw new ListenOnlyUnconfirmedError("This adapter can't listen only, so it would acknowledge frames on the bus.");
+      }
       await this.controlOut(BREQ_MODE, 0, u32s(MODE_RESET, 0));
       await this.controlOut(BREQ_BITTIMING, 0, u32s(timing.propSeg, timing.phaseSeg1, timing.phaseSeg2, timing.sjw, timing.brp));
       await this.controlOut(BREQ_MODE, 0, u32s(MODE_START, listenOnly ? MODE_FLAG_LISTEN_ONLY : 0));
@@ -200,6 +219,12 @@ export class GsUsbAdapter implements CaptureAdapter {
       await Promise.all(this.reads);
     })();
     return this.stopping;
+  }
+
+  release() {
+    if (!this.running) return;
+    this.running = false;
+    void this.device.controlTransferOut(this.setup(BREQ_MODE, 0), u32s(MODE_RESET, 0)).catch(() => undefined);
   }
 
   /** The interface with a bulk IN endpoint; candleLight has one, interface 0 endpoint 1. */

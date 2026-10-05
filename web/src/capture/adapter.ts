@@ -8,6 +8,23 @@ export interface CaptureSettings {
   bitrate: number;
   /** Ask the adapter to only listen: it then never acknowledges, sends or disturbs a frame. */
   listenOnly: boolean;
+  /**
+   * With `listenOnly`, open the adapter even when it can't confirm listen-only mode, so it may
+   * acknowledge frames. Set only once the user has agreed to that.
+   */
+  allowUnconfirmedListenOnly?: boolean;
+}
+
+/**
+ * Thrown by `start` when listen-only was asked for and the adapter can't confirm it. The
+ * adapter is left closed; the message says why, for the user to decide whether to go on.
+ */
+export class ListenOnlyUnconfirmedError extends Error {
+  override name = 'ListenOnlyUnconfirmedError';
+}
+
+export function isListenOnlyUnconfirmed(e: unknown): e is ListenOnlyUnconfirmedError {
+  return (e as { name?: unknown } | null)?.name === 'ListenOnlyUnconfirmedError';
 }
 
 /** What an adapter reports while it runs. */
@@ -21,7 +38,7 @@ export interface CaptureEvents {
 }
 
 export interface StartedCapture {
-  /** False when the adapter couldn't listen only and was opened normally instead. */
+  /** Whether the adapter confirmed listen-only mode. */
   listenOnly: boolean;
 }
 
@@ -40,6 +57,8 @@ export interface CaptureAdapter {
   start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture>;
   /** Stop receiving and release the device. Never rejects. */
   stop(): Promise<void>;
+  /** As the page goes away: ask the device to stop, without waiting, as nothing more will run. */
+  release?(): void;
 }
 
 /** An error's message. Some environments' DOMException isn't an Error, so any `message` will do. */

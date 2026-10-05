@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FLAG_BRS, FLAG_ERROR, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
-import type { CaptureEvents } from './adapter';
+import { isListenOnlyUnconfirmed, type CaptureEvents } from './adapter';
 import { GsUsbAdapter, bitTiming, parseHostFrame, type BitTimingLimits } from './gsUsb';
 import type { UsbDeviceLike, UsbInResult, UsbSetup } from './webUsb';
 
@@ -18,20 +18,21 @@ const CANDLELIGHT: BitTimingLimits = {
   brpInc: 1,
 };
 
-function hostFrame(canId: number, dlc: number, data: number[], { echoId = 0xffff_ffff, flags = 0 } = {}): DataView {
+function hostFrame(canId: number, dlc: number, data: number[], { echoId = 0xffff_ffff, flags = 0, channel = 0 } = {}): DataView {
   const view = new DataView(new ArrayBuffer(Math.max(20, 12 + data.length)));
   view.setUint32(0, echoId, true);
   view.setUint32(4, canId, true);
   view.setUint8(8, dlc);
+  view.setUint8(9, channel);
   view.setUint8(10, flags);
   data.forEach((b, i) => view.setUint8(12 + i, b));
   return view;
 }
 
 describe('bitTiming', () => {
-  it('times a candleLight at 87.5% for the common bitrates', () => {
+  it('times a candleLight at 87.5% up to 800 kbit/s and 75% above', () => {
     expect(bitTiming(CANDLELIGHT, 500_000)).toEqual({ propSeg: 6, phaseSeg1: 7, phaseSeg2: 2, sjw: 1, brp: 6 });
-    expect(bitTiming(CANDLELIGHT, 1_000_000)).toEqual({ propSeg: 6, phaseSeg1: 7, phaseSeg2: 2, sjw: 1, brp: 3 });
+    expect(bitTiming(CANDLELIGHT, 1_000_000)).toEqual({ propSeg: 5, phaseSeg1: 6, phaseSeg2: 4, sjw: 2, brp: 3 });
     expect(bitTiming(CANDLELIGHT, 250_000)?.brp).toBe(12);
     for (const bitrate of [10_000, 20_000, 50_000, 100_000, 125_000, 250_000, 500_000, 800_000, 1_000_000]) {
       const t = bitTiming(CANDLELIGHT, bitrate)!;
@@ -51,6 +52,11 @@ describe('bitTiming', () => {
   it('gives null when no prescaler fits the bitrate exactly', () => {
     expect(bitTiming(CANDLELIGHT, 83_333)).toBeNull();
     expect(bitTiming({ ...CANDLELIGHT, brpMax: 1 }, 10_000)).toBeNull();
+  });
+
+  it('tries a bounded number of prescalers, whatever limits the device reports', () => {
+    expect(bitTiming({ ...CANDLELIGHT, brpMax: 0xffff_ffff }, 500_000)?.brp).toBe(6);
+    expect(bitTiming({ ...CANDLELIGHT, brpMin: 5000, brpMax: 0xffff_ffff }, 500_000)).toBeNull();
   });
 });
 
@@ -73,6 +79,10 @@ describe('parseHostFrame', () => {
     expect(parseHostFrame(hostFrame(0x123, 0, [], { echoId: 0 }))).toBeNull();
     expect(parseHostFrame(new DataView(new ArrayBuffer(8)))).toBeNull();
     expect(parseHostFrame(hostFrame(0x321, 0xf, [], { flags: 0b10 }))).toBeNull();
+  });
+
+  it("skips another channel's frames", () => {
+    expect(parseHostFrame(hostFrame(0x123, 1, [1], { channel: 1 }))).toBeNull();
   });
 });
 
@@ -176,12 +186,27 @@ describe('GsUsbAdapter', () => {
     expect(device.closed).toBe(true);
   });
 
-  it('starts normally when the device has no listen-only mode', async () => {
+  it('starts a device with no listen-only mode only when the user agrees', async () => {
     const device = new FakeUsbDevice();
     device.limits = { ...CANDLELIGHT, feature: 0 };
     const adapter = new GsUsbAdapter(device);
-    expect(await adapter.start({ bitrate: 250_000, listenOnly: true }, recordingEvents().events, () => 0)).toEqual({ listenOnly: false });
+    const refusal = await adapter.start({ bitrate: 250_000, listenOnly: true }, recordingEvents().events, () => 0).catch((e: unknown) => e);
+    expect(isListenOnlyUnconfirmed(refusal)).toBe(true);
+    expect(device.requests.some((r) => r.request === 2 && r.data[0] === 1)).toBe(false);
+    expect(device.closed).toBe(true);
+
+    const settings = { bitrate: 250_000, listenOnly: true, allowUnconfirmedListenOnly: true };
+    expect(await adapter.start(settings, recordingEvents().events, () => 0)).toEqual({ listenOnly: false });
     expect(device.requests.at(-1)).toEqual({ request: 2, value: 0, data: [1, 0] });
+    await adapter.stop();
+  });
+
+  it('resets the device as the page goes away, without waiting', async () => {
+    const device = new FakeUsbDevice();
+    const adapter = new GsUsbAdapter(device);
+    await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0);
+    adapter.release();
+    expect(device.requests.at(-1)).toEqual({ request: 2, value: 0, data: [0, 0] });
     await adapter.stop();
   });
 

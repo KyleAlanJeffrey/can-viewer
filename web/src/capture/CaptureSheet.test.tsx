@@ -1,8 +1,8 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { FakeSerialPort } from '../test/fakeSerial';
-import type { CaptureAdapter } from './adapter';
+import { ListenOnlyUnconfirmedError, type CaptureAdapter } from './adapter';
 import { CaptureSheet } from './CaptureSheet';
 import { SlcanAdapter } from './slcan';
 
@@ -33,7 +33,7 @@ describe('CaptureSheet', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
     expect(request).toHaveBeenCalledWith('slcan');
     expect(screen.getByText('USB serial device 16D0:117E')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Choose Another\u2026' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Choose Another\u2026', description: 'USB serial device 16D0:117E' })).toBeTruthy();
 
     expect((screen.getByLabelText('Bitrate') as HTMLSelectElement).value).toBe('500000');
     await userEvent.selectOptions(screen.getByLabelText('Bitrate'), '250 kbit/s');
@@ -42,7 +42,7 @@ describe('CaptureSheet', () => {
     await userEvent.click(listenOnly);
 
     await userEvent.click(start);
-    expect(onStart).toHaveBeenCalledWith(adapter, { bitrate: 250_000, listenOnly: false });
+    expect(onStart).toHaveBeenCalledWith(adapter, { bitrate: 250_000, listenOnly: false, allowUnconfirmedListenOnly: false });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -67,6 +67,52 @@ describe('CaptureSheet', () => {
     expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true);
     finish();
     await screen.findByRole('button', { name: 'Start Capture' });
+  });
+
+  it("asks before starting an adapter that can't confirm listen-only", async () => {
+    const onClose = vi.fn();
+    const onStart = vi.fn(async (_adapter: CaptureAdapter, settings: { allowUnconfirmedListenOnly?: boolean }) => {
+      if (!settings.allowUnconfirmedListenOnly) throw new ListenOnlyUnconfirmedError("This adapter can't confirm listen-only mode, so it may acknowledge frames on the bus.");
+    });
+    render(<CaptureSheet open onClose={onClose} onStart={onStart} kinds={['slcan']} request={async () => slcan()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect((await screen.findByRole('alert')).textContent).toBe("This adapter can't confirm listen-only mode, so it may acknowledge frames on the bus. Start anyway?");
+    expect(onClose).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Anyway' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), { bitrate: 500_000, listenOnly: true, allowUnconfirmedListenOnly: true });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('asks again from the start once the listen-only setting changes', async () => {
+    const onStart = vi.fn(() => Promise.reject(new ListenOnlyUnconfirmedError('No listen-only.')));
+    render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    await screen.findByRole('button', { name: 'Start Anyway' });
+    await userEvent.click(screen.getByRole('switch', { name: 'Listen only' }));
+    await userEvent.click(screen.getByRole('switch', { name: 'Listen only' }));
+    expect(screen.getByRole('button', { name: 'Start Capture' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('stays open on Escape while starting', async () => {
+    let finish = () => {};
+    const onClose = vi.fn();
+    const onStart = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    render(<CaptureSheet open onClose={onClose} onStart={onStart} kinds={['slcan']} request={async () => slcan()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    const dialog = screen.getByRole('dialog') as HTMLDialogElement;
+    act(() => {
+      if (dialog.dispatchEvent(new Event('cancel', { cancelable: true }))) dialog.close();
+    });
+    expect(dialog.open).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    finish();
+    await screen.findByRole('button', { name: 'Start Capture' });
+    expect(onClose).toHaveBeenCalled();
   });
 
   it('stays without an adapter when the device prompt is dismissed', async () => {

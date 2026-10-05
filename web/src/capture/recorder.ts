@@ -6,6 +6,26 @@ import { FrameBatcher, type BatcherOptions } from './batcher';
 export const CAPTURE_CHANNEL = 'can0';
 /** The frame rate is averaged over about this long. */
 const RATE_WINDOW_MS = 2000;
+/**
+ * A conservative share of the 4 GB a wasm32 core can address, as the views and saving the
+ * capture need memory too.
+ */
+const MEMORY_BUDGET_BYTES = 2 * 1024 ** 3;
+/** Roughly what a classic frame costs in the core, with room for its columns to grow. */
+const BYTES_PER_FRAME = 65;
+
+export interface CaptureLimits {
+  /** Frames after which the user is told to save soon. */
+  warnFrames: number;
+  /** Frames after which the capture stops by itself, so the core can't run out of memory. */
+  maxFrames: number;
+}
+
+/** Warns at half the budget, so there is room to save, and stops at three quarters. */
+export const CAPTURE_LIMITS: CaptureLimits = {
+  warnFrames: Math.floor((MEMORY_BUDGET_BYTES * 0.5) / BYTES_PER_FRAME),
+  maxFrames: Math.floor((MEMORY_BUDGET_BYTES * 0.75) / BYTES_PER_FRAME),
+};
 
 export interface CaptureStatus {
   /** Frames received so far. */
@@ -16,6 +36,8 @@ export interface CaptureStatus {
   /** Lines that didn't parse, errors from the adapter or the serial port. */
   problems: number;
   lastProblem: string | null;
+  /** The capture is big enough that it should be saved soon; it stops at `maxFrames`. */
+  nearLimit: boolean;
 }
 
 export interface RecorderClock {
@@ -58,6 +80,7 @@ export class CaptureRecorder {
     readonly name: string,
     private readonly clock: RecorderClock = BROWSER_CLOCK,
     batching: Partial<BatcherOptions> = {},
+    readonly limits: CaptureLimits = CAPTURE_LIMITS,
   ) {
     this.batcher = new FrameBatcher(
       async (frames) => {
@@ -79,8 +102,14 @@ export class CaptureRecorder {
       settings,
       {
         onFrames: (frames) => {
-          this.frames += frames.length;
-          this.batcher.add(frames);
+          const room = this.limits.maxFrames - this.frames;
+          if (room <= 0) return;
+          const kept = frames.length > room ? frames.slice(0, room) : frames;
+          this.frames += kept.length;
+          this.batcher.add(kept);
+          if (this.frames >= this.limits.maxFrames) {
+            this.end(`The capture stopped at ${this.frames.toLocaleString('en-US')} frames, before the app ran out of memory.`);
+          }
         },
         onProblem: (message) => {
           this.problems += 1;
@@ -112,7 +141,14 @@ export class CaptureRecorder {
       elapsedS: (now - this.origin) / 1000,
       problems: this.problems,
       lastProblem: this.lastProblem,
+      nearLimit: this.frames >= this.limits.warnFrames,
     };
+  }
+
+  /** As the page goes away: asks the adapter to stop, without waiting. */
+  release() {
+    this.ended = true;
+    this.adapter.release?.();
   }
 
   /** Stops the adapter, hands the core the last frames and ends the capture there. */

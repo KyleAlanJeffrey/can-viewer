@@ -70,10 +70,12 @@ interface Props {
   run: (label: string, task: () => Promise<void>) => Promise<boolean>;
   /** Called once the export has ended, been cancelled or failed. */
   onDone?: () => void;
+  /** Called with the file once it is saved. */
+  onSaved?: (format: ExportFormat, file: Blob) => void;
 }
 
 /** Pick a format to save the open log in. The file is made in the browser and never uploaded. */
-export function ExportLogSheet({ open, onClose, core, log, run, onDone }: Props) {
+export function ExportLogSheet({ open, onClose, core, log, run, onDone, onSaved }: Props) {
   const [format, setFormat] = useState<ExportFormat>(() => (log.format === 'candump' ? 'asc' : 'candump'));
   const id = useId();
   const saveDialog = hasSaveDialog();
@@ -88,7 +90,13 @@ export function ExportLogSheet({ open, onClose, core, log, run, onDone }: Props)
     void chosen
       .then(
         async (save) => {
-          if (save) await run(label, async () => save(await core.exportLog(target.format)));
+          if (!save) return;
+          const exported: { file?: Blob } = {};
+          const saved = await run(label, async () => {
+            exported.file = await core.exportLog(target.format);
+            await save(exported.file);
+          });
+          if (saved && exported.file) onSaved?.(target.format, exported.file);
         },
         // A save dialog that failed to open is shown as the export's error.
         (error: unknown) => run(label, () => Promise.reject(error)),

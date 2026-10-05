@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { Segmented } from '../components/Segmented';
 import { Sheet } from '../components/Sheet';
-import { BITRATES, errorText, formatBitrate, type CaptureAdapter, type CaptureSettings } from './adapter';
+import { BITRATES, errorText, formatBitrate, isListenOnlyUnconfirmed, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { ADAPTER_KINDS, availableKinds, requestAdapter, type AdapterKind } from './devices';
 
 const DEFAULT_BITRATE = 500_000;
@@ -26,6 +26,8 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
   const [listenOnly, setListenOnly] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Why listen-only can't be confirmed, while the user decides whether to start anyway.
+  const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
 
   if (kinds.length === 0) {
     return (
@@ -50,13 +52,17 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
     setKind(next);
     setAdapter(null);
     setError(null);
+    setUnconfirmed(null);
   };
 
   const choose = async () => {
     setError(null);
     try {
       const picked = await request(kind);
-      if (picked) setAdapter(picked);
+      if (picked) {
+        setAdapter(picked);
+        setUnconfirmed(null);
+      }
     } catch (e) {
       setError(`The browser couldn't list the adapters: ${errorText(e)}`);
     }
@@ -67,10 +73,12 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
     setStarting(true);
     setError(null);
     try {
-      await onStart(adapter, { bitrate, listenOnly });
+      await onStart(adapter, { bitrate, listenOnly, allowUnconfirmedListenOnly: unconfirmed !== null });
+      setUnconfirmed(null);
       onClose();
     } catch (e) {
-      setError(errorText(e));
+      if (isListenOnlyUnconfirmed(e)) setUnconfirmed(e.message);
+      else setError(errorText(e));
     } finally {
       setStarting(false);
     }
@@ -82,6 +90,7 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
     <Sheet
       open={open}
       onClose={() => !starting && onClose()}
+      dismissible={!starting}
       title="Live Capture"
       description="Record frames from a CAN adapter on this computer. Nothing is uploaded."
       footer={
@@ -90,7 +99,7 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
             Cancel
           </button>
           <button type="button" className="primary" onClick={start} disabled={!adapter || starting}>
-            {starting ? 'Starting\u2026' : 'Start Capture'}
+            {starting ? 'Starting\u2026' : unconfirmed ? 'Start Anyway' : 'Start Capture'}
           </button>
         </>
       }
@@ -110,8 +119,10 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
         <div className="field">
           <span className="field-label">Adapter</span>
           <div className="cap-device">
-            <span className={adapter ? 'cap-device-name' : 'cap-device-name cap-quiet'}>{adapter?.label ?? 'None chosen'}</span>
-            <button type="button" className="button" onClick={choose} disabled={starting}>
+            <span id={`${ids}device`} className={adapter ? 'cap-device-name' : 'cap-device-name cap-quiet'}>
+              {adapter?.label ?? 'None chosen'}
+            </span>
+            <button type="button" className="button" onClick={choose} disabled={starting} aria-describedby={`${ids}device`}>
               {adapter ? 'Choose Another\u2026' : 'Choose Adapter\u2026'}
             </button>
           </div>
@@ -131,13 +142,28 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
         </div>
         <div className="field">
           <label className="cap-switch-row">
-            <input type="checkbox" role="switch" className="switch" checked={listenOnly} onChange={(e) => setListenOnly(e.target.checked)} disabled={starting} />
+            <input
+              type="checkbox"
+              role="switch"
+              className="switch"
+              checked={listenOnly}
+              onChange={(e) => {
+                setListenOnly(e.target.checked);
+                setUnconfirmed(null);
+              }}
+              disabled={starting}
+            />
             <span>Listen only</span>
           </label>
           <p className="cap-hint">
-            The adapter never acknowledges or sends a frame, so it can&rsquo;t disturb the bus. An adapter that can&rsquo;t listen only is opened normally, and you&rsquo;ll be told.
+            The adapter never acknowledges or sends a frame, so it can&rsquo;t disturb the bus. If an adapter can&rsquo;t confirm it, you&rsquo;ll be asked before it starts.
           </p>
         </div>
+        {unconfirmed && (
+          <p className="field-error" role="alert">
+            {unconfirmed} Start anyway?
+          </p>
+        )}
         {error && (
           <p className="field-error" role="alert">
             {error}

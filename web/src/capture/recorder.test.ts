@@ -128,6 +128,38 @@ describe('CaptureRecorder', () => {
   });
 });
 
+describe('CaptureRecorder limits', () => {
+  it('warns as the capture grows, then stops it by itself, keeping the frames up to the limit', async () => {
+    const { adapter, state } = fakeAdapter();
+    const appended: CaptureFrame[] = [];
+    const core = fakeCore({
+      startCapture: () => Promise.resolve(logInfo()),
+      appendFrames: vi.fn((frames: CaptureFrame[]) => {
+        appended.push(...frames);
+        return Promise.resolve(logInfo({ frames: appended.length }));
+      }),
+      endCapture: () => Promise.resolve(logInfo({ frames: appended.length })),
+    });
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock(), { intervalMs: 5 }, { warnFrames: 4, maxFrames: 6 });
+    const onEnd = vi.fn();
+    recorder.onEnd = onEnd;
+    await recorder.start(settings);
+
+    state.events!.onFrames([frame(1), frame(2), frame(3)]);
+    expect(recorder.status().nearLimit).toBe(false);
+    state.events!.onFrames([frame(4)]);
+    expect(recorder.status().nearLimit).toBe(true);
+    expect(onEnd).not.toHaveBeenCalled();
+
+    state.events!.onFrames([frame(5), frame(6), frame(7)]);
+    state.events!.onFrames([frame(8)]);
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledWith('The capture stopped at 6 frames, before the app ran out of memory.');
+    expect((await recorder.stop()).frames).toBe(6);
+    expect(appended.map((f) => f.timeNs)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+});
+
 describe('captureName', () => {
   it('names a capture by its local start time', () => {
     expect(captureName(new Date(2026, 9, 5, 14, 3, 9))).toBe('capture-20261005-140309.log');

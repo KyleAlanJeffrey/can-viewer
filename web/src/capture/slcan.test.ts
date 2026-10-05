@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FLAG_BRS, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
 import { FakeSerialPort } from '../test/fakeSerial';
-import type { CaptureEvents } from './adapter';
+import { isListenOnlyUnconfirmed, type CaptureEvents } from './adapter';
 import { SlcanAdapter, SlcanParser, parseSlcanFrame, type SlcanEvent } from './slcan';
 
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -138,7 +138,7 @@ describe('SlcanAdapter', () => {
     const { frames, problems, events } = recordingEvents();
     let now = 0;
     expect(await adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => now)).toEqual({ listenOnly: true });
-    expect(port.commands).toEqual(['C', 'S6', 'L']);
+    expect(port.commands).toEqual(['C', 'V', 'S6', 'L']);
 
     now = 1_500_000;
     port.send('t1232DEAD\rT1234ABCD1');
@@ -157,7 +157,7 @@ describe('SlcanAdapter', () => {
     expect(problems).toEqual(["A line from the adapter wasn't a CAN frame (bad CAN ID)."]);
 
     await adapter.stop();
-    expect(port.commands).toEqual(['C', 'S6', 'L', 'C']);
+    expect(port.commands).toEqual(['C', 'V', 'S6', 'L', 'C']);
     expect(port.closed).toBe(true);
   });
 
@@ -169,15 +169,31 @@ describe('SlcanAdapter', () => {
   ])('sets %i bit/s with %s', async (bitrate, command) => {
     const port = new FakeSerialPort();
     await new SlcanAdapter(port, timing).start({ bitrate, listenOnly: false }, recordingEvents().events, () => 0);
-    expect(port.commands).toEqual(['C', command, 'O']);
+    expect(port.commands).toEqual(['C', 'V', command, 'O']);
   });
 
-  it('opens normally when the adapter refuses listen-only', async () => {
+  it("falls back to CANable's silent mode when the adapter refuses L", async () => {
     const port = new FakeSerialPort();
     port.answer = (command) => (command === 'L' ? '\x07' : '\r');
     const adapter = new SlcanAdapter(port, timing);
-    expect(await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0)).toEqual({ listenOnly: false });
-    expect(port.commands).toEqual(['C', 'S6', 'L', 'O']);
+    expect(await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0)).toEqual({ listenOnly: true });
+    expect(port.commands).toEqual(['C', 'V', 'S6', 'L', 'M1', 'O']);
+  });
+
+  it('opens an adapter that refuses listen-only only when the user agrees', async () => {
+    const port = new FakeSerialPort();
+    port.answer = (command) => (command === 'L' || command === 'M1' ? '\x07' : '\r');
+    const adapter = new SlcanAdapter(port, timing);
+    const refusal = await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0).catch((e: unknown) => e);
+    expect(isListenOnlyUnconfirmed(refusal)).toBe(true);
+    expect(port.commands).toEqual(['C', 'V', 'S6', 'L', 'M1', 'C']);
+    expect(port.closed).toBe(true);
+
+    port.commands.length = 0;
+    const settings = { bitrate: 500_000, listenOnly: true, allowUnconfirmedListenOnly: true };
+    expect(await adapter.start(settings, recordingEvents().events, () => 0)).toEqual({ listenOnly: false });
+    expect(port.commands).toEqual(['C', 'V', 'S6', 'L', 'M1', 'O']);
+    await adapter.stop();
   });
 
   it("carries on when the channel wasn't open to close", async () => {
@@ -197,12 +213,65 @@ describe('SlcanAdapter', () => {
     expect(port.closed).toBe(true);
   });
 
-  it("fails with a message when nothing answers, as with a device that isn't slcan", async () => {
+  it('captures from an adapter that answers no command, as CANable firmware does', async () => {
     const port = new FakeSerialPort();
-    port.answer = () => null;
+    port.silence();
     const adapter = new SlcanAdapter(port, timing);
-    await expect(adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0)).rejects.toThrow("The adapter didn't answer.");
+    const { frames, problems, events } = recordingEvents();
+    expect(await adapter.start({ bitrate: 250_000, listenOnly: false }, events, () => 7)).toEqual({ listenOnly: false });
+    expect(port.commands).toEqual(['C', 'V', 'S5', 'O']);
+    port.send('t1231AA\r');
+    await tick();
+    expect(frames).toEqual([{ id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xaa), timeNs: 7 }]);
+    expect(problems).toEqual([]);
+    await adapter.stop();
     expect(port.closed).toBe(true);
+  });
+
+  it("asks before opening a silent adapter that can't confirm listen-only, then sends M1", async () => {
+    const port = new FakeSerialPort();
+    port.silence();
+    const adapter = new SlcanAdapter(port, timing);
+    const refusal = await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0).catch((e: unknown) => e);
+    expect(isListenOnlyUnconfirmed(refusal)).toBe(true);
+    expect((refusal as Error).message).toBe("This adapter can't confirm listen-only mode, so it may acknowledge frames on the bus.");
+    expect(port.commands).toEqual(['C', 'V', 'S6', 'C']);
+
+    port.commands.length = 0;
+    const settings = { bitrate: 500_000, listenOnly: true, allowUnconfirmedListenOnly: true };
+    expect(await adapter.start(settings, recordingEvents().events, () => 0)).toEqual({ listenOnly: false });
+    expect(port.commands).toEqual(['C', 'V', 'S6', 'M1', 'O']);
+    await adapter.stop();
+  });
+
+  it('still fails on a BEL from an adapter that otherwise answers nothing', async () => {
+    const port = new FakeSerialPort();
+    port.answer = (command) => (command === 'O' ? '\x07' : null);
+    const adapter = new SlcanAdapter(port, timing);
+    await expect(adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
+      'The adapter refused to open the CAN channel.',
+    );
+    expect(port.closed).toBe(true);
+  });
+
+  it('fails with a message when the adapter takes no more commands', async () => {
+    const port = new FakeSerialPort();
+    port.writeError = new DOMException('The device has been lost.', 'NetworkError');
+    const adapter = new SlcanAdapter(port, timing);
+    await expect(adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
+      'The adapter stopped taking commands. Unplug it, plug it back in and try again.',
+    );
+    expect(port.closed).toBe(true);
+  });
+
+  it('asks the adapter to close as the page goes away, without waiting', async () => {
+    const port = new FakeSerialPort();
+    const adapter = new SlcanAdapter(port, timing);
+    await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0);
+    adapter.release();
+    await tick();
+    expect(port.commands.at(-1)).toBe('C');
+    await adapter.stop();
   });
 
   it('fails with a message when the port is busy', async () => {
@@ -257,7 +326,7 @@ describe('SlcanAdapter', () => {
 
     const { frames, problems, events } = recordingEvents();
     await adapter.start({ bitrate: 250_000, listenOnly: true }, events, () => 0);
-    expect(port.commands.slice(4)).toEqual(['C', 'S5', 'L']);
+    expect(port.commands.slice(5)).toEqual(['C', 'V', 'S5', 'L']);
     port.send('t4561AA\r');
     await tick();
     expect(frames.map((f) => f.id)).toEqual([0x456]);

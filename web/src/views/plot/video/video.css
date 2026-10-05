@@ -10,8 +10,35 @@
 .pv-main {
   flex: 1 1 0;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* Too narrow to dock beside the plots: the video goes under them. */
+.pv-split.stacked {
+  flex-direction: column;
+}
+
+.pv-video.stacked {
+  flex: 0 1 auto;
+  max-height: 45%;
+  border-top: 1px solid var(--hairline);
+}
+
+.pv-video.stacked .pv-video-frame video {
+  max-height: 22vh;
+}
+
+.pv-split > .empty {
+  flex: 0 1 320px;
+  border-left: 1px solid var(--hairline);
+}
+
+.pv-split.stacked > .empty {
+  flex: none;
+  border-left: 0;
+  border-top: 1px solid var(--hairline);
 }
 
 .pv-splitter {
@@ -61,7 +88,7 @@
   right: 16px;
   bottom: 16px;
   z-index: 6;
-  width: 320px;
+  width: min(320px, calc(100% - 32px));
   max-height: calc(100% - 32px);
   gap: 8px;
   padding: 8px 12px 10px;

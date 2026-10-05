@@ -5,6 +5,7 @@ import {
   formatClock,
   logTimeOf,
   nudgeOffset,
+  offsetKey,
   parseTime,
   rememberOffset,
   rememberedOffset,
@@ -71,29 +72,40 @@ describe('video times as text', () => {
 describe('remembered offsets', () => {
   beforeEach(() => localStorage.clear());
 
-  it('keeps an offset per log and video name', () => {
-    rememberOffset('demo.log', 'dash.mp4', 3.2);
-    rememberOffset('demo.log', 'other.mp4', -1);
-    expect(rememberedOffset('demo.log', 'dash.mp4')).toBe(3.2);
-    expect(rememberedOffset('demo.log', 'other.mp4')).toBe(-1);
-    expect(rememberedOffset('other.log', 'dash.mp4')).toBeNull();
-    rememberOffset('demo.log', 'dash.mp4', null);
-    expect(rememberedOffset('demo.log', 'dash.mp4')).toBeNull();
+  const log = { name: 'demo.log', bytes: 55_000_000 };
+  const dash = { name: 'dash.mp4', size: 1000, lastModified: 1 };
+
+  it('keeps an offset per log and video', () => {
+    rememberOffset(offsetKey(log, dash), 3.2);
+    rememberOffset(offsetKey(log, { ...dash, name: 'other.mp4' }), -1);
+    expect(rememberedOffset(offsetKey(log, dash))).toBe(3.2);
+    expect(rememberedOffset(offsetKey(log, { ...dash, name: 'other.mp4' }))).toBe(-1);
+    expect(rememberedOffset(offsetKey({ ...log, name: 'other.log' }, dash))).toBeNull();
+    rememberOffset(offsetKey(log, dash), null);
+    expect(rememberedOffset(offsetKey(log, dash))).toBeNull();
+  });
+
+  it('tells apart files that share a name', () => {
+    rememberOffset(offsetKey(log, dash), 3.2);
+    // A dashcam starts its numbering again on a new card; a log can be recorded again too.
+    expect(rememberedOffset(offsetKey(log, { ...dash, size: 2000 }))).toBeNull();
+    expect(rememberedOffset(offsetKey(log, { ...dash, lastModified: 2 }))).toBeNull();
+    expect(rememberedOffset(offsetKey({ ...log, bytes: 1 }, dash))).toBeNull();
   });
 
   it('keeps only the most recent pairs', () => {
-    for (let i = 0; i < 60; i++) rememberOffset(`log${i}`, 'v.mp4', i);
-    expect(rememberedOffset('log0', 'v.mp4')).toBeNull();
-    expect(rememberedOffset('log59', 'v.mp4')).toBe(59);
+    for (let i = 0; i < 60; i++) rememberOffset(offsetKey({ name: `log${i}`, bytes: 1 }, dash), i);
+    expect(rememberedOffset(offsetKey({ name: 'log0', bytes: 1 }, dash))).toBeNull();
+    expect(rememberedOffset(offsetKey({ name: 'log59', bytes: 1 }, dash))).toBe(59);
   });
 
   it('carries on when storage is unusable', () => {
     localStorage.setItem('freecan-studio.video-offsets', '{not json');
-    expect(rememberedOffset('demo.log', 'dash.mp4')).toBeNull();
+    expect(rememberedOffset(offsetKey(log, dash))).toBeNull();
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('full', 'QuotaExceededError');
     });
-    expect(() => rememberOffset('demo.log', 'dash.mp4', 1)).not.toThrow();
+    expect(() => rememberOffset(offsetKey(log, dash), 1)).not.toThrow();
     setItem.mockRestore();
   });
 });
@@ -115,9 +127,9 @@ describe('video session', () => {
     const session = new VideoSession();
     const changes = vi.fn();
     session.subscribe(changes);
-    session.open(new File(['a'], 'a.mp4', { type: 'video/mp4' }), 'demo.log');
+    session.open(new File(['a'], 'a.mp4', { type: 'video/mp4' }), { name: 'demo.log', bytes: 100 });
     expect(session.get()).toMatchObject({ name: 'a.mp4', url: 'blob:video-1', offset: null });
-    session.open(new File(['b'], 'b.mp4', { type: 'video/mp4' }), 'demo.log');
+    session.open(new File(['b'], 'b.mp4', { type: 'video/mp4' }), { name: 'demo.log', bytes: 100 });
     expect(urls).toEqual(['blob:video-1']);
     session.close();
     expect(urls).toEqual(['blob:video-1', 'blob:video-2']);
@@ -128,13 +140,23 @@ describe('video session', () => {
   it('remembers the synced offset, and nudges keep the synced one to reset to', () => {
     const session = new VideoSession();
     const file = new File(['a'], 'dash.mp4', { type: 'video/mp4' });
-    session.open(file, 'demo.log');
+    session.open(file, { name: 'demo.log', bytes: 100 });
     session.sync(52.34 - 49.14);
     session.setOffset(3.3);
     expect(session.get()).toMatchObject({ offset: 3.3, syncedOffset: 3.2 });
     session.close();
-    session.open(file, 'demo.log');
+    session.open(file, { name: 'demo.log', bytes: 100 });
     expect(session.get()).toMatchObject({ offset: 3.3, syncedOffset: 3.3 });
+  });
+
+  it('counts a log as loading until its task settles, even when it fails', async () => {
+    const session = new VideoSession();
+    let fail = (_: Error) => {};
+    const loading = session.whileLoadingLog(() => new Promise<void>((_, reject) => (fail = reject)));
+    expect(session.isLoadingLog()).toBe(true);
+    fail(new Error('bad log'));
+    await expect(loading).rejects.toThrow('bad log');
+    expect(session.isLoadingLog()).toBe(false);
   });
 
   it('knows a video file by its type or name', () => {

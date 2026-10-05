@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Check, Circle, Link2, Lock, PanelRight, Pause, PictureInPicture2, Play, StepBack, StepForward, X } from 'lucide-react';
 import { formatSeconds } from '../model';
 import { coverage, describeOffset, formatClock, logTimeOf, nudgeOffset, parseTime, videoTimeOf } from './sync';
 import { AddVideoButton } from './AddVideoButton';
 import { videoSession, type LoadedVideo } from './videoSession';
-import type { VideoLayout } from './VideoWorkspace';
+import { PANEL_ID, type ShownLayout, type VideoLayout } from './VideoWorkspace';
 
 const STEP_S = 0.1;
 const BIG_STEP_S = 1;
@@ -33,9 +33,23 @@ function playbackError(code: number | undefined, name: string): string {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+/**
+ * How far the video can be seeked: its duration, or for a file that doesn't state one (a WebM
+ * from a screen recorder reports Infinity) the end of what can be seeked so far. Null if unknown.
+ */
+function knownEnd(media: HTMLMediaElement): number | null {
+  if (Number.isFinite(media.duration)) return media.duration;
+  const seekable = media.seekable;
+  if (seekable && seekable.length > 0) {
+    const end = seekable.end(seekable.length - 1);
+    if (Number.isFinite(end) && end > 0) return end;
+  }
+  return null;
+}
+
 interface PanelProps {
   video: LoadedVideo;
-  layout: VideoLayout;
+  layout: ShownLayout;
   onLayout: (layout: VideoLayout) => void;
   style: CSSProperties | undefined;
   logDuration: number;
@@ -45,8 +59,10 @@ interface PanelProps {
 
 export default function VideoPanel({ video, layout, onLayout, style, logDuration, cursor, onCursor }: PanelProps) {
   const mediaRef = useRef<HTMLVideoElement>(null);
-  /** Null until the video's metadata has loaded. */
-  const [duration, setDuration] = useState<number | null>(null);
+  /** Whether the video's metadata has loaded. */
+  const [loaded, setLoaded] = useState(false);
+  /** Where the video can be seeked up to (see knownEnd); null while that isn't known. */
+  const [end, setEnd] = useState<number | null>(null);
   const [current, setCurrent] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,13 +70,20 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
   const { offset } = video;
   const linked = offset !== null && !syncing;
   const corner = layout === 'corner';
-  const ready = duration !== null && !error;
+  const ready = loaded && !error;
+  /** The video's span, for working out what the log covers; open-ended while unknown. */
+  const span = end ?? Infinity;
+  const syncButton = useRef<HTMLButtonElement>(null);
+  /** Set when the sync step closes, so focus goes back to the button that opened it. */
+  const refocusSync = useRef(false);
 
   /** The cursor time the video last set, and under which offset, to tell its echo from a move in the plot. */
   const pushed = useRef<{ cursor: number; offset: number } | null>(null);
   // The animation loop and window listeners outlive renders; they read the current values here.
   const latest = useRef({ linked, offset, cursor, onCursor, logDuration });
-  latest.current = { linked, offset, cursor, onCursor, logDuration };
+  useLayoutEffect(() => {
+    latest.current = { linked, offset, cursor, onCursor, logDuration };
+  });
 
   /** Moves the plot cursor to where the video is, when the two are linked and the log covers that moment. */
   const follow = useCallback((videoTime: number) => {
@@ -74,8 +97,8 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
 
   const seek = (t: number, followCursor: boolean) => {
     const media = mediaRef.current;
-    if (!media || duration === null) return;
-    const to = clamp(t, 0, Number.isFinite(duration) ? duration : Math.max(t, 0));
+    if (!media || !loaded) return;
+    const to = clamp(t, 0, end ?? media.currentTime);
     media.currentTime = to;
     setCurrent(to);
     if (followCursor) follow(to);
@@ -95,18 +118,20 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
   // Plot cursor to video.
   useEffect(() => {
     const media = mediaRef.current;
-    if (!media || duration === null || !linked || offset === null || cursor === null) return;
+    if (!media || !loaded || !linked || offset === null || cursor === null) return;
     const echo = pushed.current;
     if (echo && echo.cursor === cursor && echo.offset === offset) return;
+    // Past the echo: a later offset change (a nudge, then Reset) must seek even back to this cursor.
+    pushed.current = null;
     const t = videoTimeOf(cursor, offset);
-    if (coverage(t, duration) !== 'inside') {
+    if (coverage(t, span) !== 'inside') {
       if (!media.paused) media.pause();
       return;
     }
     if (Math.abs(media.currentTime - t) < 5e-4) return;
     media.currentTime = t;
     setCurrent(t);
-  }, [cursor, offset, linked, duration]);
+  }, [cursor, offset, linked, loaded, span]);
 
   // Video to plot cursor, once per animation frame while playing.
   useEffect(() => {
@@ -147,10 +172,30 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
     setError(null);
     const { linked, offset, cursor } = latest.current;
     // A linked cursor inside the video decides the frame; the effect above seeks there.
-    const cursorDecides = linked && offset !== null && cursor !== null && coverage(videoTimeOf(cursor, offset), media.duration) === 'inside';
-    if (!cursorDecides && videoSession.position > 0) media.currentTime = Math.min(videoSession.position, media.duration);
+    const mediaEnd = knownEnd(media);
+    const cursorDecides = linked && offset !== null && cursor !== null && coverage(videoTimeOf(cursor, offset), mediaEnd ?? Infinity) === 'inside';
+    if (!cursorDecides && videoSession.position > 0) media.currentTime = Math.min(videoSession.position, mediaEnd ?? videoSession.position);
     setCurrent(media.currentTime);
-    setDuration(media.duration);
+    setEnd(mediaEnd);
+    setLoaded(true);
+  };
+
+  /** Duration and seekable range can grow after the metadata, as an open-ended WebM loads. */
+  const onRangeChange = () => {
+    const media = mediaRef.current;
+    if (media && loaded) setEnd(knownEnd(media));
+  };
+
+  // Back to the button that opened the sync step once it closes.
+  useEffect(() => {
+    if (syncing || !refocusSync.current) return;
+    refocusSync.current = false;
+    syncButton.current?.focus();
+  }, [syncing]);
+
+  const endSync = () => {
+    refocusSync.current = true;
+    setSyncing(false);
   };
 
   // A local file can load before React has mounted the element, and React drops events that come
@@ -182,7 +227,7 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
       PageDown: current - PAGE_STEP_S,
       PageUp: current + PAGE_STEP_S,
       Home: 0,
-      End: duration ?? 0,
+      End: end ?? current,
     };
     if (!(e.key in targets)) return;
     e.preventDefault();
@@ -200,34 +245,35 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
   let beyond: string | null = null;
   if (linked && offset !== null && ready) {
     if (cursor !== null) {
-      const where = coverage(videoTimeOf(cursor, offset), duration);
+      const where = coverage(videoTimeOf(cursor, offset), span);
       if (where === 'before') gap = `The cursor is before the video, which starts at ${formatSeconds(offset)} in the log.`;
-      if (where === 'after') gap = `The cursor is past the end of the video, which ends at ${formatSeconds(logTimeOf(duration, offset))} in the log.`;
+      if (where === 'after') gap = `The cursor is past the end of the video, which ends at ${formatSeconds(logTimeOf(span, offset))} in the log.`;
     }
     const where = coverage(logTimeOf(current, offset), logDuration);
     if (where === 'before') beyond = `Before the log: it starts at ${formatClock(videoTimeOf(0, offset))} in the video.`;
     if (where === 'after') beyond = `Past the end of the log: it ends at ${formatClock(videoTimeOf(logDuration, offset))} in the video.`;
   }
 
-  const durationText = duration !== null && Number.isFinite(duration) ? formatClock(duration) : '--:--.---';
+  const endText = end !== null ? formatClock(end) : '--:--.---';
   const synced = offset !== null && !syncing;
 
   return (
-    <section className={`pv-video ${layout}`} style={style} aria-label="Video">
+    <section id={PANEL_ID} className={`pv-video ${layout}`} style={style} aria-label="Video">
       <header className="pv-video-head">
         <h2 className="pv-video-name" title={video.name}>
           {video.name}
         </h2>
-        {corner ? (
-          <button className="icon-button" onClick={() => onLayout('docked')} aria-label="Dock video beside the plots" title="Dock beside the plots">
-            <PanelRight size={16} strokeWidth={1.5} />
-          </button>
-        ) : (
-          <button className="button" onClick={() => onLayout('corner')} disabled={syncing}>
-            <PictureInPicture2 size={16} strokeWidth={1.5} aria-hidden="true" />
-            Corner view
-          </button>
-        )}
+        {/* One element for both states, so focus stays on it when it flips. */}
+        <button
+          className={corner ? 'icon-button' : 'button'}
+          onClick={() => onLayout(corner ? 'docked' : 'corner')}
+          disabled={syncing}
+          aria-label={corner ? 'Dock video beside the plots' : undefined}
+          title={corner ? 'Dock beside the plots' : undefined}
+        >
+          {corner ? <PanelRight size={16} strokeWidth={1.5} aria-hidden="true" /> : <PictureInPicture2 size={16} strokeWidth={1.5} aria-hidden="true" />}
+          {!corner && 'Corner view'}
+        </button>
         <button className={corner ? 'icon-button' : 'button'} onClick={() => videoSession.close()} aria-label="Close video" title="Close video">
           <X size={16} strokeWidth={1.5} aria-hidden="true" />
           {!corner && 'Close video'}
@@ -243,7 +289,8 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
           aria-label={`Video ${video.name}`}
           onClick={togglePlay}
           onLoadedMetadata={onLoadedMetadata}
-          onDurationChange={(e) => duration !== null && setDuration(e.currentTarget.duration)}
+          onDurationChange={onRangeChange}
+          onProgress={onRangeChange}
           onPlay={() => setPlaying(true)}
           onPause={onPlaybackStopped}
           onEnded={onPlaybackStopped}
@@ -252,7 +299,7 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
         {error ? (
           <div className="pv-video-cover" role="alert">
             <p>{error}</p>
-            <AddVideoButton logName={video.logName}>Choose another video&hellip;</AddVideoButton>
+            <AddVideoButton log={video.log}>Choose another video&hellip;</AddVideoButton>
           </div>
         ) : (
           gap && (
@@ -271,20 +318,23 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
       </div>
 
       <div className="pv-video-scrub">
-        <input
-          type="range"
-          min={0}
-          max={duration !== null && Number.isFinite(duration) ? duration : current}
-          step="any"
-          value={current}
-          disabled={!ready}
-          aria-label="Video position"
-          aria-valuetext={formatClock(current)}
-          onChange={(e) => seek(Number(e.target.value), true)}
-          onKeyDown={onScrubKey}
-        />
+        {/* Without a known end there is no scale to scrub along; the step buttons still work. */}
+        {end !== null && (
+          <input
+            type="range"
+            min={0}
+            max={end}
+            step="any"
+            value={Math.min(current, end)}
+            disabled={!ready}
+            aria-label="Video position"
+            aria-valuetext={formatClock(current)}
+            onChange={(e) => seek(Number(e.target.value), true)}
+            onKeyDown={onScrubKey}
+          />
+        )}
         <span className="pv-video-clock">
-          {formatClock(current)} / {durationText}
+          {formatClock(current)} / {endText}
         </span>
       </div>
 
@@ -312,26 +362,27 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
         (syncing ? (
           <SyncForm
             videoTime={current}
-            duration={duration}
+            end={end}
+            playing={playing}
             cursor={cursor}
             logDuration={logDuration}
             onSeekVideo={(t) => seek(t, false)}
             onCursor={onCursor}
-            onCancel={() => setSyncing(false)}
+            onCancel={endSync}
             onConfirm={(next) => {
               videoSession.sync(next);
               pushed.current = null;
-              setSyncing(false);
+              endSync();
             }}
           />
         ) : offset !== null ? (
           <div className="pv-video-sync">
             <p className="pv-video-offset">{describeOffset(offset)}</p>
             <div className="pv-video-actions">
-              <button className="button" onClick={() => videoSession.setOffset(nudgeOffset(offset, -NUDGE_S))} aria-label="Video 0.1 s earlier" title="Start the video 0.1 s earlier against the log">
+              <button className="button" onClick={() => videoSession.setOffset(nudgeOffset(offset, -NUDGE_S))} aria-label="-0.1 s, video earlier" title="Start the video 0.1 s earlier against the log">
                 -0.1 s
               </button>
-              <button className="button" onClick={() => videoSession.setOffset(nudgeOffset(offset, NUDGE_S))} aria-label="Video 0.1 s later" title="Start the video 0.1 s later against the log">
+              <button className="button" onClick={() => videoSession.setOffset(nudgeOffset(offset, NUDGE_S))} aria-label="+0.1 s, video later" title="Start the video 0.1 s later against the log">
                 +0.1 s
               </button>
               <button
@@ -342,7 +393,7 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
               >
                 Reset
               </button>
-              <button className="button" onClick={startSync} disabled={!ready}>
+              <button ref={syncButton} className="button" onClick={startSync} disabled={!ready}>
                 Re-sync&hellip;
               </button>
             </div>
@@ -356,7 +407,7 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
             <p className="pv-video-offset">Not synced yet</p>
             <p className="pv-video-note">Line the video up with the log, and the plot cursor and the video move together.</p>
             <div className="pv-video-actions">
-              <button className="button" onClick={startSync} disabled={!ready}>
+              <button ref={syncButton} className="button" onClick={startSync} disabled={!ready}>
                 Sync with log&hellip;
               </button>
             </div>
@@ -375,7 +426,10 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
 
 interface SyncFormProps {
   videoTime: number;
-  duration: number | null;
+  /** The end of the video, or null while unknown. */
+  end: number | null;
+  /** While the video plays, the offset preview changes every frame and is not announced. */
+  playing: boolean;
   cursor: number | null;
   logDuration: number;
   onSeekVideo: (t: number) => void;
@@ -385,18 +439,22 @@ interface SyncFormProps {
 }
 
 /** Pairs a moment in the video with the same moment in the log. Each field follows its source until typed in. */
-function SyncForm({ videoTime, duration, cursor, logDuration, onSeekVideo, onCursor, onCancel, onConfirm }: SyncFormProps) {
+function SyncForm({ videoTime, end, playing, cursor, logDuration, onSeekVideo, onCursor, onCancel, onConfirm }: SyncFormProps) {
   const [videoText, setVideoText] = useState<string | null>(null);
   const [logText, setLogText] = useState<string | null>(null);
   const [logPoint, setLogPoint] = useState<number | null>(cursor);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [logError, setLogError] = useState<string | null>(null);
-  const end = duration !== null && Number.isFinite(duration) ? duration : Infinity;
+  const videoField = useRef<HTMLInputElement>(null);
+  const videoEnd = end ?? Infinity;
 
-  // Clicking in the plot picks the log point.
+  useEffect(() => videoField.current?.focus(), []);
+
+  // Clicking in the plot picks the log point, over anything typed.
   useEffect(() => {
     if (cursor === null) return;
     setLogPoint(cursor);
+    setLogText(null);
     setLogError(null);
   }, [cursor]);
 
@@ -404,8 +462,8 @@ function SyncForm({ videoTime, duration, cursor, logDuration, onSeekVideo, onCur
   const commitVideo = (): number | null => {
     if (videoText === null) return videoTime;
     const t = parseTime(videoText);
-    if (t === null || t > end) {
-      setVideoError(`Enter a video time from 00:00.000 to ${formatClock(end)}.`);
+    if (t === null || t > videoEnd) {
+      setVideoError(end === null ? 'Enter a video time such as 00:49.140.' : `Enter a video time from 00:00.000 to ${formatClock(end)}.`);
       return null;
     }
     setVideoError(null);
@@ -445,7 +503,7 @@ function SyncForm({ videoTime, duration, cursor, logDuration, onSeekVideo, onCur
   };
 
   const offset = logPoint !== null ? logPoint - videoTime : null;
-  const canConfirm = duration !== null && (logPoint !== null || logText !== null);
+  const canConfirm = logPoint !== null || logText !== null;
 
   return (
     <section className="pv-video-syncform" aria-labelledby="pv-sync-title">
@@ -460,6 +518,7 @@ function SyncForm({ videoTime, duration, cursor, logDuration, onSeekVideo, onCur
           <label htmlFor="pv-sync-video">Pause video at</label>
           <div className="pv-video-field">
             <input
+              ref={videoField}
               id="pv-sync-video"
               className="input mono"
               inputMode="decimal"
@@ -511,7 +570,7 @@ function SyncForm({ videoTime, duration, cursor, logDuration, onSeekVideo, onCur
           </div>
         </li>
       </ol>
-      <p className="pv-video-offset" role="status">
+      <p className="pv-video-offset" aria-live={playing ? 'off' : 'polite'}>
         {offset !== null ? describeOffset(offset) : 'Choose the log point to see the offset.'}
       </p>
       <div className="pv-video-actions end">

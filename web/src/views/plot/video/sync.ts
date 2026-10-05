@@ -73,7 +73,19 @@ const MAX_REMEMBERED = 50;
 
 type Remembered = [key: string, offset: number][];
 
-const pairKey = (logName: string, videoName: string) => `${logName}\n${videoName}`;
+/** What tells one log file from another: its name and size. */
+export interface LogIdentity {
+  name: string;
+  bytes: number;
+}
+
+/**
+ * The key an offset is remembered under. Dashcams reuse file names, so the video's size and
+ * modification time count too, and the log's size.
+ */
+export function offsetKey(log: LogIdentity, video: Pick<File, 'name' | 'size' | 'lastModified'>): string {
+  return JSON.stringify([log.name, log.bytes, video.name, video.size, video.lastModified]);
+}
 
 function readRemembered(): Remembered {
   try {
@@ -84,15 +96,13 @@ function readRemembered(): Remembered {
   }
 }
 
-/** The offset last synced for this log and video, by file name. */
-export function rememberedOffset(logName: string, videoName: string): number | null {
-  const key = pairKey(logName, videoName);
+/** The offset last synced for the log and video of `key` (see `offsetKey`). */
+export function rememberedOffset(key: string): number | null {
   return readRemembered().find(([k]) => k === key)?.[1] ?? null;
 }
 
-/** Keeps the offset for this log and video, or forgets it when null. Only the most recent pairs are kept. */
-export function rememberOffset(logName: string, videoName: string, offset: number | null) {
-  const key = pairKey(logName, videoName);
+/** Keeps the offset for `key`, or forgets it when null. Only the most recent pairs are kept. */
+export function rememberOffset(key: string, offset: number | null) {
   const rest = readRemembered().filter(([k]) => k !== key);
   const next = offset === null ? rest : [...rest, [key, offset] as Remembered[number]].slice(-MAX_REMEMBERED);
   try {

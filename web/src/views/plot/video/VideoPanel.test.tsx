@@ -7,7 +7,8 @@ import { fakeCore, logInfo, seriesInfo } from '../../../test/fixtures';
 import { renderInShell } from '../../../test/shell';
 import { ViewStateContext, ViewStateStore } from '../../shared/viewState';
 import { PlotView } from '../PlotView';
-import { rememberOffset } from './sync';
+import { AddVideoButton } from './AddVideoButton';
+import { offsetKey, rememberOffset } from './sync';
 import { spaceIsTaken } from './VideoPanel';
 import { VideoWorkspace } from './VideoWorkspace';
 import { videoSession } from './videoSession';
@@ -20,6 +21,8 @@ interface MediaState {
   paused: boolean;
   duration: number;
   error: { code: number } | null;
+  /** The end of the seekable range, for a video whose duration is Infinity. */
+  seekableEnd: number | null;
   seeks: number[];
 }
 
@@ -29,14 +32,14 @@ let preloadedDuration = NaN;
 function stateOf(el: HTMLMediaElement): MediaState {
   let s = media.get(el);
   if (!s) {
-    s = { currentTime: 0, paused: true, duration: preloadedDuration, error: null, seeks: [] };
+    s = { currentTime: 0, paused: true, duration: preloadedDuration, error: null, seekableEnd: null, seeks: [] };
     media.set(el, s);
   }
   return s;
 }
 
 const proto = HTMLMediaElement.prototype;
-const faked = ['currentTime', 'paused', 'duration', 'readyState', 'error', 'play', 'pause'] as const;
+const faked = ['currentTime', 'paused', 'duration', 'readyState', 'error', 'seekable', 'play', 'pause'] as const;
 const originals = new Map(faked.map((k) => [k, Object.getOwnPropertyDescriptor(proto, k)]));
 
 beforeAll(() => {
@@ -55,6 +58,13 @@ beforeAll(() => {
     duration: { configurable: true, get: function (this: HTMLMediaElement) { return stateOf(this).duration; } },
     readyState: { configurable: true, get: function (this: HTMLMediaElement) { return Number.isNaN(stateOf(this).duration) ? 0 : 4; } },
     error: { configurable: true, get: function (this: HTMLMediaElement) { return stateOf(this).error; } },
+    seekable: {
+      configurable: true,
+      get: function (this: HTMLMediaElement) {
+        const end = stateOf(this).seekableEnd;
+        return { length: end === null ? 0 : 1, start: () => 0, end: () => end };
+      },
+    },
     play: {
       configurable: true,
       value(this: HTMLMediaElement) {
@@ -127,9 +137,12 @@ interface Harness {
   moveCursor: (t: number | null) => void;
 }
 
+const LOG = { name: 'demo.log', bytes: 50_000 };
+const dashFile = () => new File(['x'], 'dash.mp4', { type: 'video/mp4', lastModified: 1_700_000_000_000 });
+
 /** The workspace with a stand-in for the plot cursor, which a test can read and move. */
 async function renderWorkspace({ cursor = 20 as number | null, logDuration = 100, offset = null as number | null } = {}) {
-  if (offset !== null) rememberOffset('demo.log', 'dash.mp4', offset);
+  if (offset !== null) rememberOffset(offsetKey(LOG, dashFile()), offset);
   const harness = { cursor } as Harness;
   function Shell() {
     const [store] = useState(() => new ViewStateStore());
@@ -146,7 +159,7 @@ async function renderWorkspace({ cursor = 20 as number | null, logDuration = 100
   }
   const user = userEvent.setup();
   render(<Shell />);
-  act(() => videoSession.open(new File(['x'], 'dash.mp4', { type: 'video/mp4' }), 'demo.log'));
+  act(() => videoSession.open(dashFile(), LOG));
   // The panel is loaded lazily.
   await screen.findByRole('region', { name: 'Video' });
   return { user, harness };
@@ -272,13 +285,13 @@ describe('Video sync', () => {
     const reset = screen.getByRole('button', { name: 'Reset' });
     expect(reset).toHaveProperty('disabled', true);
 
-    await user.click(screen.getByRole('button', { name: 'Video 0.1 s later' }));
+    await user.click(screen.getByRole('button', { name: '+0.1 s, video later' }));
     expect(screen.getByText('Video starts 3.3 s after the log')).toBeTruthy();
     // The cursor holds still and the video shows the frame now matched to it.
     expect(mediaState().currentTime).toBeCloseTo(49.04);
 
-    await user.click(screen.getByRole('button', { name: 'Video 0.1 s earlier' }));
-    await user.click(screen.getByRole('button', { name: 'Video 0.1 s earlier' }));
+    await user.click(screen.getByRole('button', { name: '-0.1 s, video earlier' }));
+    await user.click(screen.getByRole('button', { name: '-0.1 s, video earlier' }));
     expect(screen.getByText('Video starts 3.1 s after the log')).toBeTruthy();
     await user.click(reset);
     expect(screen.getByText('Video starts 3.2 s after the log')).toBeTruthy();
@@ -379,18 +392,18 @@ describe('Video in the Plot view', () => {
   };
 
   it('adds a video from the header, and playback moves cursor A', async () => {
-    rememberOffset('demo.log', 'dash.mp4', 3.2);
+    rememberOffset(offsetKey(LOG, dashFile()), 3.2);
     const { user } = renderInShell(PlotView, {
       core: plotCore(),
-      log: logInfo({ name: 'demo.log', durationS: 100 }),
+      log: logInfo({ name: LOG.name, bytes: LOG.bytes, durationS: 100 }),
       plots: [{ id: '1:Speed', label: 'Speed', info: { ...seriesInfo(1, 'Speed'), unit: 'km/h' }, color: 'c1' }],
     });
     await waitFor(() => expect(readoutA()).toBe('33.333 s'));
     expect(screen.queryByRole('region', { name: 'Video' })).toBeNull();
 
-    const input = document.querySelector<HTMLInputElement>('input[type="file"][accept="video/*"]')!;
+    const input = document.querySelector<HTMLInputElement>('input[type="file"][accept^="video/"]')!;
     expect(screen.getByRole('button', { name: 'Add video\u2026' })).toBeTruthy();
-    await user.upload(input, new File(['x'], 'dash.mp4', { type: 'video/mp4' }));
+    await user.upload(input, dashFile());
     await screen.findByRole('region', { name: 'Video' });
     expect(screen.queryByRole('button', { name: 'Add video\u2026' })).toBeNull();
 
@@ -400,5 +413,143 @@ describe('Video in the Plot view', () => {
     mediaState().currentTime = 40;
     runFrame();
     await waitFor(() => expect(readoutA()).toBe('43.200 s'));
+  });
+});
+
+describe('Video panel details', () => {
+  it('keeps the video in step after a step, a nudge and Reset', async () => {
+    const { user, harness } = await renderWorkspace({ cursor: 52.34, offset: 3.2 });
+    loadMetadata(138.36);
+    expect(mediaState().currentTime).toBeCloseTo(49.14);
+
+    await user.click(screen.getByRole('button', { name: 'Forward 0.1 s' }));
+    expect(mediaState().currentTime).toBeCloseTo(49.24);
+    expect(harness.cursor).toBeCloseTo(52.44);
+    await user.click(screen.getByRole('button', { name: '+0.1 s, video later' }));
+    expect(mediaState().currentTime).toBeCloseTo(49.14);
+    await user.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(screen.getByText('Video starts 3.2 s after the log')).toBeTruthy();
+    expect(mediaState().currentTime).toBeCloseTo(49.24);
+    expect(harness.cursor).toBeCloseTo(52.44);
+  });
+
+  it('moves focus into the sync step and back out of it', async () => {
+    const { user } = await renderWorkspace({ cursor: 20 });
+    loadMetadata(60);
+    await user.click(screen.getByRole('button', { name: 'Sync with log\u2026' }));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Pause video at' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sync with log\u2026' }));
+
+    await user.click(screen.getByRole('button', { name: 'Sync with log\u2026' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm sync' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Re-sync\u2026' }));
+  });
+
+  it('keeps focus on the layout toggle as it flips', async () => {
+    const { user } = await renderWorkspace();
+    loadMetadata(60);
+    await user.click(screen.getByRole('button', { name: 'Corner view' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Dock video beside the plots' }));
+    await user.keyboard('{Enter}');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Corner view' }));
+  });
+
+  it('lets a plot click replace a typed log point', async () => {
+    const { user, harness } = await renderWorkspace({ cursor: 20 });
+    loadMetadata(60);
+    await user.click(screen.getByRole('button', { name: 'Sync with log\u2026' }));
+    const logField = screen.getByRole('textbox', { name: 'Choose log point' });
+    await user.clear(logField);
+    await user.type(logField, '12');
+    act(() => logField.blur());
+    harness.moveCursor(30);
+    expect(logField).toHaveProperty('value', '30.000');
+    await user.clear(logField);
+    await user.type(logField, '1x');
+    harness.moveCursor(31);
+    expect(logField).toHaveProperty('value', '31.000');
+  });
+
+  it('scrubs a video that states no duration along what can be seeked', async () => {
+    await renderWorkspace();
+    expect(screen.queryByRole('slider', { name: 'Video position' })).toBeNull();
+    stateOf(videoEl()).seekableEnd = null;
+    loadMetadata(Infinity);
+    expect(screen.queryByRole('slider', { name: 'Video position' })).toBeNull();
+    expect(screen.getByText('00:00.000 / --:--.---')).toBeTruthy();
+
+    mediaState().seekableEnd = 42;
+    act(() => {
+      videoEl().dispatchEvent(new Event('progress'));
+    });
+    const scrubber = screen.getByRole('slider', { name: 'Video position' });
+    expect(scrubber.getAttribute('max')).toBe('42');
+    scrubber.focus();
+    act(() => {
+      scrubber.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    });
+    expect(mediaState().currentTime).toBe(42);
+  });
+
+  it('labels the resize handle with the panel width, Home narrowest and End widest', async () => {
+    const { user } = await renderWorkspace();
+    const handle = screen.getByRole('separator', { name: 'Resize video panel' });
+    expect(handle.getAttribute('aria-controls')).toBe(panel().id);
+    handle.focus();
+    await user.keyboard('{Home}');
+    expect(handle.getAttribute('aria-valuenow')).toBe(handle.getAttribute('aria-valuemin'));
+    expect(handle.getAttribute('aria-valuetext')).toBe('Video panel 280 pixels wide');
+    await user.keyboard('{End}');
+    expect(handle.getAttribute('aria-valuenow')).toBe(handle.getAttribute('aria-valuemax'));
+  });
+
+  it('puts a docked video under the plots when there is no room beside them', async () => {
+    let width = 600;
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width);
+    const observers: (() => void)[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(private cb: () => void) {}
+        observe() {
+          observers.push(this.cb);
+          this.cb();
+        }
+        disconnect() {}
+      },
+    );
+    try {
+      await renderWorkspace();
+      loadMetadata(60);
+      expect(panel().classList.contains('stacked')).toBe(true);
+      expect(screen.queryByRole('separator')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Sync with log\u2026' })).toBeTruthy();
+
+      width = 1200;
+      act(() => observers.forEach((cb) => cb()));
+      expect(panel().classList.contains('docked')).toBe(true);
+      expect(screen.getByRole('separator', { name: 'Resize video panel' })).toBeTruthy();
+    } finally {
+      clientWidth.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('can\u2019t add a video while a log is loading', async () => {
+    let finish = () => {};
+    render(<AddVideoButton log={LOG} />);
+    const button = screen.getByRole('button', { name: 'Add video\u2026' });
+    expect(button).toHaveProperty('disabled', false);
+    let loading!: Promise<void>;
+    act(() => {
+      loading = videoSession.whileLoadingLog(() => new Promise<void>((resolve) => (finish = resolve)));
+    });
+    expect(button).toHaveProperty('disabled', true);
+    await act(async () => {
+      finish();
+      await loading;
+    });
+    expect(button).toHaveProperty('disabled', false);
   });
 });

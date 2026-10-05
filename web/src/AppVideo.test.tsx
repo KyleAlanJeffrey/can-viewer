@@ -63,12 +63,26 @@ describe('Adding a video to the app', () => {
     drop([logFile('drive.log'), video()]);
     expect(await screen.findByRole('region', { name: 'Video' })).toBeTruthy();
     expect(screen.getByRole('radio', { name: 'Plot' }).getAttribute('aria-checked')).toBe('true');
-    expect(videoSession.get()).toMatchObject({ name: 'dash.mp4', logName: 'drive.log' });
+    expect(videoSession.get()).toMatchObject({ name: 'dash.mp4', log: { name: 'drive.log' } });
 
     const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
     await userEvent.upload(input, logFile('other.log'));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Video' })).toBeNull());
     expect(videoSession.get()).toBeNull();
     expect(revoked).toEqual(['blob:video-1']);
+  });
+
+  it('opens the first of several videos dropped on an open log, and keeps the log', async () => {
+    const { App, videoSession } = await freshApp();
+    render(<App core={core()} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    drop([logFile('drive.log')]);
+    await screen.findByRole('radio', { name: 'Plot' });
+
+    drop([video('front.mp4'), video('rear.mp4')]);
+    expect(await screen.findByRole('region', { name: 'Video' })).toBeTruthy();
+    expect(videoSession.get()).toMatchObject({ name: 'front.mp4', log: { name: 'drive.log' } });
+    expect(screen.getByRole('alert').textContent).toBe('One video plays at a time, so only front.mp4 was opened.');
+    expect(screen.queryByRole('heading', { name: 'Open a CAN log to get started' })).toBeNull();
   });
 });

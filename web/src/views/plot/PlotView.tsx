@@ -202,7 +202,7 @@ export function PlotView({ ctx }: ViewProps) {
             </p>
             {!video && (
               <p className="pv-empty-action">
-                <AddVideoButton logName={log.name} />
+                <AddVideoButton log={log} />
               </p>
             )}
           </div>
@@ -220,7 +220,7 @@ export function PlotView({ ctx }: ViewProps) {
               </div>
               <div className="content-actions">
                 <Segmented label="Cursors" options={CURSOR_OPTIONS} value={mode} onChange={changeMode} />
-                {!video && <AddVideoButton logName={log.name} />}
+                {!video && <AddVideoButton log={log} />}
                 <button className="button" onClick={addMarker} disabled={cursorA === null}>
                   <MapPin size={16} strokeWidth={1.5} aria-hidden="true" />
                   Add Marker

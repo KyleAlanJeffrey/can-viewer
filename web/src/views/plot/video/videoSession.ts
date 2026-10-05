@@ -1,12 +1,14 @@
 import { useSyncExternalStore } from 'react';
-import { rememberOffset, rememberedOffset, roundOffset } from './sync';
+import { offsetKey, rememberOffset, rememberedOffset, roundOffset, type LogIdentity } from './sync';
 
 export interface LoadedVideo {
   name: string;
   /** An object URL for the file, revoked when the video is closed. */
   url: string;
-  /** The log the video was added to, for remembering its offset. */
-  logName: string;
+  /** The log the video was added to. */
+  log: LogIdentity;
+  /** What its offset is remembered under. */
+  offsetKey: string;
   /** Log time minus video time. Null until the video is synced. */
   offset: number | null;
   /** The offset the last sync set, which Reset returns to after nudges. */
@@ -25,21 +27,38 @@ export function isVideoFile(file: File): boolean {
  */
 export class VideoSession {
   private video: LoadedVideo | null = null;
+  /** Logs being opened; a video added meanwhile would be closed when the log arrives. */
+  private logsLoading = 0;
   private listeners = new Set<() => void>();
   /** Where playback was when the panel last unmounted. Not state: nothing renders from it. */
   position = 0;
 
   get = () => this.video;
 
+  isLoadingLog = () => this.logsLoading > 0;
+
+  /** Runs `task`, which opens a log, flagged as loading so videos can't be added during it. */
+  async whileLoadingLog<T>(task: () => Promise<T>): Promise<T> {
+    this.logsLoading++;
+    this.emit();
+    try {
+      return await task();
+    } finally {
+      this.logsLoading--;
+      this.emit();
+    }
+  }
+
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
 
-  open(file: File, logName: string) {
+  open(file: File, log: LogIdentity) {
     this.release();
-    const offset = rememberedOffset(logName, file.name);
-    this.video = { name: file.name, url: URL.createObjectURL(file), logName, offset, syncedOffset: offset };
+    const key = offsetKey(log, file);
+    const offset = rememberedOffset(key);
+    this.video = { name: file.name, url: URL.createObjectURL(file), log, offsetKey: key, offset, syncedOffset: offset };
     this.position = 0;
     this.emit();
   }
@@ -65,7 +84,7 @@ export class VideoSession {
   private change(fields: Partial<LoadedVideo>) {
     if (!this.video) return;
     this.video = { ...this.video, ...fields };
-    if (this.video.offset !== null) rememberOffset(this.video.logName, this.video.name, this.video.offset);
+    if (this.video.offset !== null) rememberOffset(this.video.offsetKey, this.video.offset);
     this.emit();
   }
 
@@ -82,4 +101,8 @@ export const videoSession = new VideoSession();
 
 export function useVideo(session: VideoSession = videoSession): LoadedVideo | null {
   return useSyncExternalStore(session.subscribe, session.get);
+}
+
+export function useLoadingLog(session: VideoSession = videoSession): boolean {
+  return useSyncExternalStore(session.subscribe, session.isLoadingLog);
 }

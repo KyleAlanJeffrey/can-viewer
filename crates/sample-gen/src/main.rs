@@ -4,16 +4,15 @@
 //! sample-gen generate <out.log> <out.dbc> [frames]   synthetic drive + matching DBC
 //! sample-gen bench <file>                            native parse throughput
 //! sample-gen decode <file> <file.dbc> <frames>       CSV of decoded values, for cross-checks
-//! sample-gen convert <in> <out.asc|trc|csv|blf|mf4>        rewrite a log in another format
+//! sample-gen convert <in> <out.log|asc|trc|csv|blf|mf4>    rewrite a log in another format
 //! ```
 //!
-//! Logs are read in any format the app opens, chosen as the app chooses it.
+//! Logs are read in any format the app opens, chosen as the app chooses it. Where the app
+//! takes the browser's time zone (an ASC file's `date` line), this tool uses UTC.
 //!
 //! The demo DBC describes most IDs in the log. `0x123` and `0x456` are left out on purpose,
 //! as reverse-engineering practice: 0x123 carries a counter, a big-endian speed, a pedal
 //! position and a noise byte.
-
-mod export;
 
 use std::f64::consts::TAU;
 use std::fs::{self, File};
@@ -23,7 +22,7 @@ use std::time::Instant;
 
 use can_core::{flags, FrameStore, EXT_FLAG};
 use can_dbc_model::{Database, MessageDef};
-use can_formats::{AnyParser, Format, LogParser};
+use can_formats::{writer, AnyParser, Format, LocalTime, LogParser};
 
 const DEMO_DBC: &str = include_str!("demo.dbc");
 /// 2025-09-30T00:00:00Z
@@ -44,11 +43,11 @@ fn main() -> ExitCode {
             Err(_) => Err(format!("bad frame count {n:?}")),
         },
         ["convert", input, output] => {
-            load_store(input, true).and_then(|(store, _, _)| export::convert(&store, output))
+            load_store(input, true).and_then(|(store, _, _)| convert(&store, output))
         }
         _ => Err(
             "usage: sample-gen generate <out.log> <out.dbc> [frames] | bench <file> | \
-                  decode <file> <file.dbc> <frames> | convert <in> <out.asc|trc|csv|blf|mf4>"
+                  decode <file> <file.dbc> <frames> | convert <in> <out.log|asc|trc|csv|blf|mf4>"
                 .into(),
         ),
     };
@@ -86,6 +85,18 @@ fn load_store(path: &str, sort: bool) -> Result<(FrameStore, AnyParser, f64), St
         store.sort_by_time();
     }
     Ok((store, parser, started.elapsed().as_secs_f64()))
+}
+
+/// Writes `store` to `path` in the format its extension names, as the app's Export Log does.
+fn convert(store: &FrameStore, path: &str) -> Result<(), String> {
+    let format = Format::from_file_name(path).ok_or_else(|| {
+        format!("{path}: the extension must be .log, .asc, .trc, .csv, .blf or .mf4")
+    })?;
+    let file = File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut out = BufWriter::with_capacity(1 << 20, file);
+    writer::write_log(format, store, LocalTime::UTC, &mut out)
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("{path}: {e}"))
 }
 
 fn bench(path: &str) -> Result<(), String> {
@@ -442,18 +453,19 @@ fn generate(log_path: &str, dbc_path: &str, frames: u64) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// Converts a small demo to `extension` and checks that it reads back frame for frame.
-    fn round_trip(extension: &str, channels: [&str; 2]) {
+    /// Converts a small demo to `format` and checks that it reads back frame for frame.
+    fn round_trip(format: Format, channels: [&str; 2]) {
+        let extension = format.extension();
         let dir =
             std::env::temp_dir().join(format!("sample-gen-{}-{extension}", std::process::id()));
         let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
         generate(&path("demo.log"), &path("demo.dbc"), 20_000).unwrap();
         let (original, _, _) = load_store(&path("demo.log"), true).unwrap();
-        let converted = path(&format!("demo.{extension}"));
-        export::convert(&original, &converted).unwrap();
+        let converted = path(&format!("converted.{extension}"));
+        convert(&original, &converted).unwrap();
 
         let (copy, parser, _) = load_store(&converted, true).unwrap();
-        assert_eq!(parser.format().name(), extension);
+        assert_eq!(parser.format(), format);
         let stats = parser.stats();
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(copy.len(), original.len());
@@ -466,28 +478,33 @@ mod tests {
     }
 
     #[test]
+    fn candump_round_trips_the_demo() {
+        round_trip(Format::Candump, ["can0", "can1"]);
+    }
+
+    #[test]
     fn asc_round_trips_the_demo() {
-        round_trip("asc", ["can1", "can2"]);
+        round_trip(Format::Asc, ["can1", "can2"]);
     }
 
     #[test]
     fn trc_round_trips_the_demo() {
-        round_trip("trc", ["can1", "can2"]);
+        round_trip(Format::Trc, ["can1", "can2"]);
     }
 
     #[test]
     fn csv_round_trips_the_demo() {
-        round_trip("csv", ["can0", "can1"]);
+        round_trip(Format::Csv, ["can0", "can1"]);
     }
 
     #[test]
     fn blf_round_trips_the_demo() {
-        round_trip("blf", ["can1", "can2"]);
+        round_trip(Format::Blf, ["can1", "can2"]);
     }
 
     #[test]
     fn mf4_round_trips_the_demo() {
-        round_trip("mf4", ["can1", "can2"]);
+        round_trip(Format::Mf4, ["can1", "can2"]);
     }
 
     #[test]

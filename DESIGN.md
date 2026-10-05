@@ -334,8 +334,8 @@ Three panes in a full-height grid on a 1440 x 900 reference.
 - **Toolbar** (60px, Paper White, hairline bottom border, 12px gaps), spanning content and inspector:
   - Leading: sidebar toggle, a 28px hairline divider, the document title over its Slate status subtitle (log format, frames, duration, DBC; progress text while busy).
   - Centre: the view switcher, a segmented control (Overview / Trace / Plot / Reverse Engineer / Database). Views that need a log are disabled until one is open; Database opens with a DBC alone.
-  - Trailing: Open DBC... (quiet), Open Log..., inspector toggle. Open Log is amber unless the view has its own primary, then it is an outline button. The inspector toggle is disabled on views without an inspector.
-  - Below 1280px, Open DBC goes icon-only (its label stays for screen readers) and the switcher tightens, so the log name stays readable.
+  - Trailing: Open DBC... (quiet), Export Log... (quiet, disabled until a log is open; it opens a sheet to pick the format), Open Log..., inspector toggle. Open Log is amber unless the view has its own primary, then it is an outline button. The inspector toggle is disabled on views without an inspector.
+  - Below 1280px, Open DBC and Export Log go icon-only (their labels stay for screen readers) and the switcher tightens, so the log name stays readable.
   - View actions never go in the toolbar; they sit in the view's content header.
   - There is no bottom status bar.
   - A 2px Ochre Control progress bar sits on the toolbar's bottom edge while loading.

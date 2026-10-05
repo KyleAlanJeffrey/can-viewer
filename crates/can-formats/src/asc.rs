@@ -19,7 +19,7 @@ use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::lines::LineSplitter;
 use crate::text::{fields, parse_decimal, parse_decimal_ns, parse_hex_u32, unix_ns, ChannelName};
-use crate::{LogParser, ParseStats};
+use crate::{LocalTime, LogParser, ParseStats};
 
 /// Bits of the `Flags` field that follows the data of a CAN FD line.
 const FD_FLAG_RTR: u32 = 0x10;
@@ -37,10 +37,12 @@ struct Header {
     hex: bool,
     /// Timestamps are seconds since the previous event rather than since the start.
     relative: bool,
-    /// The `date` line as nanoseconds since the Unix epoch, taken as UTC; 0 without one.
+    /// The `date` line as nanoseconds since the Unix epoch; 0 without one.
     start_ns: i64,
     /// Time of the previous event, for relative timestamps.
     last_ns: i64,
+    /// The time zone of the `date` line.
+    local_time: LocalTime,
 }
 
 impl Default for Header {
@@ -50,6 +52,7 @@ impl Default for Header {
             relative: false,
             start_ns: 0,
             last_ns: 0,
+            local_time: LocalTime::UTC,
         }
     }
 }
@@ -58,6 +61,11 @@ impl AscParser {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the time zone the `date` line is read in, UTC unless set.
+    pub fn set_local_time(&mut self, local_time: LocalTime) {
+        self.header.local_time = local_time;
     }
 }
 
@@ -114,7 +122,11 @@ impl Header {
                     .is_some_and(|w| w.eq_ignore_ascii_case(b"relative"));
             }
         } else if first.eq_ignore_ascii_case(b"date") {
-            self.start_ns = parse_date(words).unwrap_or(0);
+            self.start_ns = parse_date(words).map_or(0, |local_ns| {
+                let local_s = local_ns.div_euclid(1_000_000_000);
+                let shift_s = self.local_time.to_unix(local_s) - local_s;
+                local_ns.saturating_add(shift_s.saturating_mul(1_000_000_000))
+            });
         } else if first.eq_ignore_ascii_case(b"begin") {
             self.last_ns = 0;
         }

@@ -336,6 +336,14 @@ export interface CoreApi {
    */
   countFilterMatches(filter: FrameFilter): Promise<number | null>;
   /**
+   * The open log written as a file in `format`, leaving out the frames reassembled from J1939
+   * transfers (`FLAG_REASSEMBLED`), which reading the file again reassembles. What each format
+   * keeps is in COMPATIBILITY.md. The engine builds the whole file in its memory before handing
+   * it over, so a log needs about the file's size on top of itself; a log too large for that
+   * rejects, and stays open.
+   */
+  exportLog(format: LogFormat): Promise<Blob>;
+  /**
    * Called after the engine stopped and was started again: the log and every series are gone,
    * calls in flight were rejected, and the databases were set again. Returns an unsubscribe.
    * Absent in an implementation whose engine never restarts.

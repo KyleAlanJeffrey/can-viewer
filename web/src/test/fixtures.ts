@@ -137,6 +137,7 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     exportDbc: notInFake('exportDbc'),
     setTraceFilter: notInFake('setTraceFilter'),
     countFilterMatches: notInFake('countFilterMatches'),
+    exportLog: notInFake('exportLog'),
     ...overrides,
   };
 }

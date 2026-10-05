@@ -18,6 +18,14 @@ class FakeSession {
     if (key === 2) throw new Error('No such ID');
     return 7;
   }
+  private chunks: Uint8Array[] = [];
+  export_log(format: string) {
+    if (format !== 'csv') throw new Error('Not a format');
+    this.chunks = [new Uint8Array([1, 2]), new Uint8Array([3])];
+  }
+  export_chunk(): Uint8Array | undefined {
+    return this.chunks.shift();
+  }
 }
 
 vi.mock('./pkg/can_wasm.js', () => ({
@@ -63,6 +71,15 @@ describe('core worker', () => {
     const port = await startWorker();
     expect(await ask(port, 1, 1)).toEqual({ id: 1, error: 'unreachable' });
     expect(() => vi.runAllTimers()).toThrow(WebAssembly.RuntimeError);
+  });
+
+  it('hands over an exported log as one Blob of every chunk', async () => {
+    const port = await startWorker();
+    const reply = new Promise<{ result: Blob }>((resolve) => port.postMessage.mockImplementationOnce(resolve));
+    port.onmessage?.({ data: { id: 1, method: 'exportLog', args: ['csv'] } });
+    const { result } = await reply;
+    expect(result).toBeInstanceOf(Blob);
+    expect([...new Uint8Array(await result.arrayBuffer())]).toEqual([1, 2, 3]);
   });
 
   it('answers an ordinary error without rethrowing it, and keeps answering', async () => {

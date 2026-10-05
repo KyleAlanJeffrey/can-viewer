@@ -25,13 +25,14 @@ Priority:
 
 ## Navigation model (applies to every app screen)
 
-- **Five views.** After a log loads, a segmented control in the centre of the toolbar switches between **Overview · Trace · Plot · Reverse Engineer · Database**. The same views are in the View menu with ⌘1–⌘5.
+- **Six views.** After a log loads, a segmented control in the centre of the toolbar switches between **Overview / Trace / Plot / Reverse Engineer / Compare / Database**. The same views are in the View menu with Cmd+1 to Cmd+6.
 - **The sidebar is always the source list,** and its content depends on the view:
 
   | View | Sidebar shows |
   |---|---|
   | Overview, Trace, Reverse Engineer | IDs grouped by bus |
   | Plot | A signal tree with checkboxes |
+  | Compare | Logs A and B with their durations, and Show: All messages / In both logs / Only in A / Only in B, with counts |
   | Database | The DBC's messages, including ones that aren't in the log |
 
   The selection carries across views: pick 0C9 in Trace, switch to Reverse Engineer, and 0C9 is still selected.
@@ -61,6 +62,7 @@ Priority:
 | A16 | Errors | P0 | **Inline banner** for skipped lines (see the design brief). **Unsupported file:** "This looks like a PDF, not a CAN log. FreeCAN Studio opens candump, ASC, BLF, TRC, MF4, CSV." **DBC mismatch:** "None of the 42 messages in this DBC appear in the log. Check the bus or ID format." **Browser too old:** needs WebAssembly and module workers. **File too big for the browser:** says honestly what the limit is, and mentions Pro. |
 | A17 | Small screen | P2 | Phone width: "FreeCAN Studio needs a desktop browser". Phones are out of scope, so there is no phone layout behind it. |
 | A18 | About | P2 | Version, build, credits, and a link to third-party licences. |
+| A19 | **Compare** | P1 | Built. The open log is A; open or drop a second log as B. IDs are grouped In both - different bytes / Only in B / Only in A / In both - no significant differences, with frames per second for each log, a 0-100% difference score and a reason. The selected ID shows A and B bit grids with the differing bits outlined, the selected byte over time and each byte at the cursor, with Open in Reverse Engineer and Export findings... beside it. Ignore rules leave out counters and checksums, and IDs that also change within A alone; both are on by default. IDs with fewer than 8 frames in either log say "Too few frames to compare". When the logs name their buses differently, buses are matched by order and the table says so. Swap and Replace... for each log; "These logs look the same" when nothing differs. |
 
 ## Marketing site (freecan.studio)
 
@@ -87,8 +89,8 @@ All the web app screens, plus:
 | P4 | Transmit and replay | P1 | **A transmit list:** ID, data, period, enabled toggle and Send. **A replay bar:** a log, playback speed, loop, and a filter of which IDs to replay. **Safety:** the first transmit opens a confirmation sheet ("You are about to send frames on can0 at 500 kbit/s. Only do this on a bench or a vehicle you're allowed to modify.") with a checkbox to remember. |
 | P5 | UDS / ISO-TP scanner | P2 | ECU discovery results in a table (address, response, services), with a detail inspector. |
 | P6 | Video sync | P2 | Shipped in the free web app instead, as the Plot view's side panel: a local video docked beside the plots (or in the corner), synced by one matched moment and locked to cursor A, with 0.1 s nudges. |
-| P7 | Auto-discovery | P1 | Results for one ID or the whole log: a list of suggested signals labelled Counter, Checksum/CRC, Constant, Correlates with vehicle speed (r = 0.98). Each one can be accepted into the Database or dismissed. |
-| P8 | Compare logs | P2 | Two logs side by side: IDs present in only one log, period changes, bit-activity differences. |
+| P7 | Auto-discovery | P1 | Results for one ID or the whole log: a list of suggested signals labelled Counter, Checksum/CRC, Constant, Correlates with vehicle speed (r = 0.98). Each one can be accepted into the Database or dismissed. Still Pro: the free Compare view detects counters and checksums only to leave them out of a comparison, and labels nothing. |
+| P8 | Compare logs | P2 | Shipped in the free web app instead, as the Compare view (A19): IDs only in one log, rate changes and byte and bit differences between two logs, with counter and checksum detection for the ignore rules. |
 | P9 | Scripting | P2 | A console pane with an editor and output; later a CLI. |
 | P10 | Preferences window | P0 | Native tabs: General, Interfaces, Appearance, License, Updates. |
 | P11 | Update available | P1 | A sheet with version, release notes, "Install and Relaunch" and "Later". |

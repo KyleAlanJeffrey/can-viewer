@@ -10,7 +10,8 @@ const STORE = 'session';
 const CHANNEL = 'freecan-studio';
 const DBCS_KEY = 'dbcs';
 
-export type SessionKey = 'log' | 'dbcs' | 'ui' | 'views';
+/** `compare` is the Compare view's second log, kept like `log` and dropped with it. */
+export type SessionKey = 'log' | 'dbcs' | 'ui' | 'views' | 'compare';
 
 let opening: Promise<IDBDatabase> | null = null;
 

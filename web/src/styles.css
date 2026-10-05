@@ -948,6 +948,12 @@ button:disabled {
   color: var(--slate);
 }
 
+.lazy-loading {
+  margin: 0;
+  padding: 16px;
+  font-size: 13px;
+}
+
 .heatmap {
   position: relative;
 }

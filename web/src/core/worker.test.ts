@@ -5,6 +5,7 @@ class FakeSession {
   static captures: [string, number][] = [];
   static filters: string[] = [];
   pushed: Uint8Array[] = [];
+  hasB = false;
   free() {}
   set_databases() {}
   start_capture(channel: string, startedAtMs: number) {
@@ -27,6 +28,29 @@ class FakeSession {
   count_filter_matches(json: string): number {
     FakeSession.filters.push(json);
     return 5;
+  }
+  set_file_name() {}
+  reserve_for_bytes() {}
+  push_chunk() {}
+  finish() {
+    return JSON.stringify({ frames: 10, durationS: 30 });
+  }
+  compare_begin(name: string) {
+    if (name === 'broken.log') throw new Error('No CAN frames');
+  }
+  compare_push_chunk() {}
+  compare_finish() {
+    this.hasB = true;
+    return JSON.stringify({ frames: 3, durationS: 28 });
+  }
+  compare_log_info() {
+    return this.hasB ? JSON.stringify({ frames: 3, durationS: 28 }) : undefined;
+  }
+  close_compare_log() {
+    this.hasB = false;
+  }
+  swap_compare_log() {
+    return JSON.stringify({ frames: 3, durationS: 28 });
   }
   row_count(key: number): number {
     if (key === 1) throw new WebAssembly.RuntimeError('unreachable');
@@ -64,18 +88,18 @@ async function startWorker(): Promise<Port> {
   return port;
 }
 
-/** Sends a request and resolves to the worker's reply and what it transferred. */
-function request(port: Port, id: number, method: Request['method'], args: unknown[]): Promise<unknown[]> {
-  const reply = new Promise<unknown[]>((resolve) => port.postMessage.mockImplementationOnce((...a: unknown[]) => resolve(a)));
-  port.onmessage?.({ data: { id, method, args } });
-  return reply;
-}
-
 /** Sends a rowCount request and resolves to the worker's reply. */
 function ask(port: Port, id: number, key: number): Promise<unknown> {
   // vi.waitFor would advance the fake timers and fire the rethrow too early.
   const reply = new Promise((resolve) => port.postMessage.mockImplementationOnce(resolve));
   port.onmessage?.({ data: { id, method: 'rowCount', args: [key] } });
+  return reply;
+}
+
+/** Sends any request and resolves to the worker's reply. */
+function call(port: Port, id: number, method: Request['method'], ...args: unknown[]): Promise<unknown> {
+  const reply = new Promise((resolve) => port.postMessage.mockImplementation((message: { event?: string }) => message.event || resolve(message)));
+  port.onmessage?.({ data: { id, method, args } });
   return reply;
 }
 
@@ -111,15 +135,38 @@ describe('core worker', () => {
     expect(await ask(port, 2, 3)).toEqual({ id: 2, result: 7 });
   });
 
-  it('runs a capture in a fresh session', async () => {
+  it('runs a capture in a fresh session, without the old log B', async () => {
     const port = await startWorker();
-    const [started] = await request(port, 1, 'startCapture', ['can0', 1000]);
-    expect(started).toEqual({ id: 1, result: { format: 'capture', frames: 0, parseMs: 0, wasmBytes: 0 } });
+    await call(port, 1, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+    await call(port, 2, 'openCompareLog', new Blob(['(2.0) can0 123#01\n']), 'door-lock.log');
+    const started = await call(port, 3, 'startCapture', 'capture-1.log', 'can0', 1000);
+    expect(started).toEqual({ id: 3, result: { name: 'capture-1.log', format: 'capture', frames: 0, parseMs: 0, wasmBytes: 0 } });
     expect(FakeSession.captures.at(-1)).toEqual(['can0', 1000]);
-    const [appended] = await request(port, 2, 'appendFrames', [Uint8Array.of(1)]);
-    expect(appended).toMatchObject({ id: 2, result: { frames: 1 } });
-    const [ended] = await request(port, 3, 'endCapture', []);
-    expect(ended).toMatchObject({ id: 3, result: { frames: 1 } });
+    expect(await call(port, 4, 'compareLogInfo')).toEqual({ id: 4, result: null });
+    expect(await call(port, 5, 'appendFrames', Uint8Array.of(1))).toMatchObject({ result: { name: 'capture-1.log', frames: 1 } });
+    expect(await call(port, 6, 'endCapture')).toMatchObject({ result: { name: 'capture-1.log', frames: 1 } });
+  });
+
+  it("reads log B beside the open log and keeps each log's name through a swap", async () => {
+    const port = await startWorker();
+    await call(port, 1, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+    expect(await call(port, 2, 'compareLogInfo')).toEqual({ id: 2, result: null });
+
+    const opened = (await call(port, 3, 'openCompareLog', new Blob(['(2.0) can0 123#01\n']), 'door-lock.log')) as { result: Record<string, unknown> };
+    expect(opened.result).toMatchObject({ name: 'door-lock.log', frames: 3 });
+    expect(await call(port, 4, 'compareLogInfo')).toMatchObject({ result: { name: 'door-lock.log', durationS: 28 } });
+
+    expect(await call(port, 5, 'swapCompareLog')).toMatchObject({ result: { name: 'door-lock.log' } });
+    expect(await call(port, 6, 'compareLogInfo')).toMatchObject({ result: { name: 'idle.log' } });
+
+    await call(port, 7, 'closeCompareLog');
+    expect(await call(port, 8, 'compareLogInfo')).toEqual({ id: 8, result: null });
+  });
+
+  it('leaves no log B after a failed read', async () => {
+    const port = await startWorker();
+    expect(await call(port, 1, 'openCompareLog', new Blob(['x']), 'broken.log')).toEqual({ id: 1, error: 'No CAN frames' });
+    expect(await call(port, 2, 'compareLogInfo')).toEqual({ id: 2, result: null });
   });
 
   it('runs only the newest of the filter counts waiting in the queue', async () => {

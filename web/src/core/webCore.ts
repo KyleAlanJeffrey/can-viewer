@@ -1,4 +1,22 @@
-import type { ByteLane, Candidate, CaptureFrame, CoreApi, Database, ExportFormat, FindRule, FrameFilter, IdSummary, LogInfo, Progress, RawSignalSpec, ScopedDatabase, SeriesInfo } from './api';
+import type {
+  ByteComparison,
+  ByteLane,
+  Candidate,
+  CaptureFrame,
+  CompareOptions,
+  CoreApi,
+  Database,
+  ExportFormat,
+  FindRule,
+  FrameFilter,
+  IdComparison,
+  IdSummary,
+  LogInfo,
+  Progress,
+  RawSignalSpec,
+  ScopedDatabase,
+  SeriesInfo,
+} from './api';
 import { packFrames } from './captureFrames';
 import { RowBatch } from './rows';
 import type { Request } from './worker';
@@ -13,14 +31,13 @@ export class WebCore implements CoreApi {
   private worker!: Worker;
   private readonly pending = new Map<number, Pending>();
   private nextId = 1;
-  private onProgress: ((p: Progress) => void) | null = null;
+  /** Progress listeners by request id, so a log read in the queue behind another gets its own. */
+  private readonly progress = new Map<number, (p: Progress) => void>();
   /** Set when a worker died before answering anything, so another would only fail the same way. */
   private failure: Error | null = null;
   /** The last databases set, so a restarted worker gets them back. */
   private databases: ScopedDatabase[] | null = null;
   private readonly resetListeners = new Set<() => void>();
-  /** The name of the running capture, which the worker doesn't keep. */
-  private captureName = '';
 
   constructor() {
     this.start();
@@ -35,7 +52,7 @@ export class WebCore implements CoreApi {
       answered = true;
       const msg = e.data;
       if (msg.event === 'progress') {
-        this.onProgress?.(msg as Progress);
+        this.progress.get(msg.id)?.({ bytes: msg.bytes, total: msg.total });
         return;
       }
       const p = this.pending.get(msg.id);
@@ -52,7 +69,7 @@ export class WebCore implements CoreApi {
     if (dead !== this.worker) return;
     dead.terminate();
     console.error(`The core worker stopped: ${detail || 'no detail'}`);
-    this.onProgress = null;
+    this.progress.clear();
     if (!answered) this.failure = new Error(detail || NOT_STARTED);
     const reason = this.failure ?? new Error(RESTARTED);
     for (const p of this.pending.values()) p.reject(reason);
@@ -71,12 +88,25 @@ export class WebCore implements CoreApi {
   }
 
   private call<T>(method: Request['method'], ...args: unknown[]): Promise<T> {
-    return this.callTransferring<T>(method, args, []);
+    return this.send<T>(this.nextId++, method, args);
   }
 
   /** Like `call`, handing `transfer` to the worker rather than copying it. */
   private callTransferring<T>(method: Request['method'], args: unknown[], transfer: Transferable[]): Promise<T> {
+    return this.send<T>(this.nextId++, method, args, transfer);
+  }
+
+  private async callWithProgress<T>(method: Request['method'], onProgress: (p: Progress) => void, ...args: unknown[]) {
     const id = this.nextId++;
+    this.progress.set(id, onProgress);
+    try {
+      return await this.send<T>(id, method, args);
+    } finally {
+      this.progress.delete(id);
+    }
+  }
+
+  private send<T>(id: number, method: Request['method'], args: unknown[], transfer: Transferable[] = []): Promise<T> {
     if (this.failure) return Promise.reject(this.failure);
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
@@ -85,28 +115,18 @@ export class WebCore implements CoreApi {
   }
 
   async openLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo> {
-    this.onProgress = onProgress;
-    try {
-      return { ...(await this.call<LogInfo>('openLog', file, name)), name };
-    } finally {
-      this.onProgress = null;
-    }
+    return { ...(await this.callWithProgress<LogInfo>('openLog', onProgress, file, name)), name };
   }
 
-  async startCapture(name: string, channel: string, startedAtMs: number): Promise<LogInfo> {
-    this.captureName = name;
-    return { ...(await this.call<LogInfo>('startCapture', channel, startedAtMs)), name };
-  }
+  startCapture = (name: string, channel: string, startedAtMs: number) =>
+    this.call<LogInfo>('startCapture', name, channel, startedAtMs);
 
-  async appendFrames(frames: CaptureFrame[]): Promise<LogInfo> {
+  appendFrames(frames: CaptureFrame[]): Promise<LogInfo> {
     const packed = packFrames(frames);
-    const info = await this.callTransferring<LogInfo>('appendFrames', [packed], [packed.buffer]);
-    return { ...info, name: this.captureName };
+    return this.callTransferring<LogInfo>('appendFrames', [packed], [packed.buffer]);
   }
 
-  async endCapture(): Promise<LogInfo> {
-    return { ...(await this.call<LogInfo>('endCapture')), name: this.captureName };
-  }
+  endCapture = () => this.call<LogInfo>('endCapture');
 
   idSummary = () => this.call<IdSummary[]>('idSummary');
   rowCount = (key: number) => this.call<number>('rowCount', key);
@@ -133,14 +153,7 @@ export class WebCore implements CoreApi {
   }
 
   async byteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]> {
-    const packed = await this.call<Float64Array>('byteLanes', key, first, count, t0, t1, buckets);
-    const lanes: ByteLane[] = [];
-    for (let at = 0; at < packed.length; ) {
-      const n = packed[at];
-      lanes.push({ x: packed.subarray(at + 1, at + 1 + n), y: packed.subarray(at + 1 + n, at + 1 + 2 * n) });
-      at += 1 + 2 * n;
-    }
-    return lanes;
+    return unpackLanes(await this.call<Float64Array>('byteLanes', key, first, count, t0, t1, buckets));
   }
 
   rowAtTime = (key: number, t: number) => this.call<number>('rowAtTime', key, t);
@@ -168,4 +181,33 @@ export class WebCore implements CoreApi {
   findSignal(rules: FindRule[], keys: number[], limit: number) {
     return this.call<Candidate[]>('findSignal', rules, keys, limit);
   }
+
+  openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo> {
+    return this.callWithProgress<LogInfo>('openCompareLog', onProgress, file, name);
+  }
+
+  compareLogInfo = () => this.call<LogInfo | null>('compareLogInfo');
+  closeCompareLog = () => this.call<void>('closeCompareLog');
+  swapCompareLog = () => this.call<LogInfo>('swapCompareLog');
+  compareLogs = (options: CompareOptions) => this.call<IdComparison[]>('compareLogs', options);
+  compareFrameAt = (key: number, t: number) => this.call<Uint8Array>('compareFrameAt', key, t);
+
+  compareBytes(keyA: number | null, keyB: number | null, options: CompareOptions) {
+    return this.call<ByteComparison>('compareBytes', keyA, keyB, options);
+  }
+
+  async compareByteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]> {
+    return unpackLanes(await this.call<Float64Array>('compareByteLanes', key, first, count, t0, t1, buckets));
+  }
+}
+
+/** Splits the worker's `[n, x..., y..., n, ...]` lanes into views of the one buffer. */
+function unpackLanes(packed: Float64Array): ByteLane[] {
+  const lanes: ByteLane[] = [];
+  for (let at = 0; at < packed.length; ) {
+    const n = packed[at];
+    lanes.push({ x: packed.subarray(at + 1, at + 1 + n), y: packed.subarray(at + 1 + n, at + 1 + 2 * n) });
+    at += 1 + 2 * n;
+  }
+  return lanes;
 }

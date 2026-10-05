@@ -146,25 +146,71 @@ describe('WebCore', () => {
     expect(reset).not.toHaveBeenCalled();
   });
 
-  it('names a capture, and hands its frames to the worker packed and transferred', async () => {
+  it('passes a capture its name, and its frames packed and transferred', async () => {
     const core = new WebCore();
     const [worker] = FakeWorker.all;
     const info = { format: 'capture', frames: 0 };
 
     const started = core.startCapture('capture.log', 'can0', 1000);
-    expect(worker.requests[0]).toEqual(expect.objectContaining({ method: 'startCapture', args: ['can0', 1000] }));
+    expect(worker.requests[0]).toEqual(expect.objectContaining({ method: 'startCapture', args: ['capture.log', 'can0', 1000] }));
     worker.reply('startCapture', { result: info });
-    expect(await started).toEqual({ ...info, name: 'capture.log' });
+    expect(await started).toEqual(info);
 
     const appended = core.appendFrames([{ timeNs: 5, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(9) }]);
     const [packed] = worker.requests[1].args as [Uint8Array];
     expect(packed.length).toBe(15);
     expect(worker.transfers[1]).toEqual([packed.buffer]);
     worker.reply('appendFrames', { result: { ...info, frames: 1 } });
-    expect(await appended).toEqual({ ...info, frames: 1, name: 'capture.log' });
+    expect(await appended).toEqual({ ...info, frames: 1 });
+  });
 
-    const ended = core.endCapture();
-    worker.reply('endCapture', { result: { ...info, frames: 1 } });
-    expect((await ended).name).toBe('capture.log');
+  it('passes the compare calls through and unpacks log B byte lanes', async () => {
+    const core = new WebCore();
+    const [worker] = FakeWorker.all;
+    const progress = vi.fn();
+
+    const open = core.openCompareLog(new Blob(['x']), 'door-lock.log', progress);
+    const openId = worker.requests.at(-1)!.id;
+    worker.onmessage?.({ data: { event: 'progress', id: openId, bytes: 1, total: 2 } } as MessageEvent);
+    worker.reply('openCompareLog', { result: { name: 'door-lock.log', frames: 3 } });
+    await expect(open).resolves.toMatchObject({ name: 'door-lock.log' });
+    expect(progress).toHaveBeenCalledWith({ bytes: 1, total: 2 });
+
+    const options = { ignoreCounters: true, ignoreChangesWithinA: false };
+    const found = core.compareLogs(options);
+    expect(worker.requests.at(-1)).toMatchObject({ method: 'compareLogs', args: [options] });
+    worker.reply('compareLogs', { result: [] });
+    await expect(found).resolves.toEqual([]);
+
+    const detail = core.compareBytes(null, 7, options);
+    expect(worker.requests.at(-1)).toMatchObject({ method: 'compareBytes', args: [null, 7, options] });
+    worker.reply('compareBytes', { result: { len: 0 } });
+    await detail;
+
+    const lanes = core.compareByteLanes(7, 3, 2, 0, 10, 50);
+    worker.reply('compareByteLanes', { result: Float64Array.from([1, 0.5, 9, 2, 0, 1, 1, 4]) });
+    const [b3, b4] = await lanes;
+    expect([...b3.x, ...b3.y]).toEqual([0.5, 9]);
+    expect([...b4.x, ...b4.y]).toEqual([0, 1, 1, 4]);
+  });
+
+  it('sends each log read its own progress, even when one is queued behind the other', async () => {
+    const core = new WebCore();
+    const [worker] = FakeWorker.all;
+    const progressB = vi.fn();
+    const progressA = vi.fn();
+    const openB = core.openCompareLog(new Blob(['b']), 'b.log', progressB);
+    const openA = core.openLog(new Blob(['a']), 'a.log', progressA);
+    const [idB, idA] = worker.requests.map((r) => r.id);
+
+    worker.onmessage?.({ data: { event: 'progress', id: idB, bytes: 1, total: 4 } } as MessageEvent);
+    worker.reply('openCompareLog', { error: 'Not a log' });
+    await expect(openB).rejects.toThrow('Not a log');
+    worker.onmessage?.({ data: { event: 'progress', id: idA, bytes: 2, total: 4 } } as MessageEvent);
+    worker.reply('openLog', { result: { frames: 1 } });
+    await openA;
+
+    expect(progressB).toHaveBeenCalledTimes(1);
+    expect(progressA).toHaveBeenCalledWith({ bytes: 2, total: 4 });
   });
 });

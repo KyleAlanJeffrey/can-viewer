@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react';
+import { useId, useState, type ReactNode, type Ref } from 'react';
 import { dbcId, formatId, type Database, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo, type SignalDef } from '../../core/api';
 import { Segmented } from '../../components/Segmented';
 import { formatCount } from '../../format';
@@ -113,12 +113,25 @@ interface Props {
   trace: Trace | null;
   /** The pinned signal the candidate can overlay, by name, or null when none shares its unit. */
   overlayTarget: string | null;
+  nameRef?: Ref<HTMLInputElement>;
+  /** Called once the signal is in a DBC. */
+  onAdded?: (added: AddedSignal) => void;
+}
+
+export interface AddedSignal {
+  signal: SignalDef;
+  /** The DBC's id, and the DBC message's ID. */
+  dbc: string;
+  messageId: number;
+  /** The add created the message, or the whole DBC. */
+  createdMessage: boolean;
+  createdDbc: boolean;
 }
 
 /** The New Signal inspector: the candidate's definition, its decoded values, and Add to Database. */
 export function SignalForm(props: Props) {
   const { ctx, summary, form, onChange, onByteOrder, range, rangeError, decoded, stats, statsExact, decodeError } = props;
-  const { window: win, cursor, trace, overlayTarget } = props;
+  const { window: win, cursor, trace, overlayTarget, nameRef, onAdded } = props;
   const [submitted, setSubmitted] = useState(false);
   /** `dbc` is the id of the DBC it went into; `file` its name, until the new DBC shows up in ctx. */
   const [added, setAdded] = useState<{ signal: string; message: string; dbc: string; file: string } | null>(null);
@@ -183,18 +196,22 @@ export function SignalForm(props: Props) {
     ctx.run(`Adding ${name}\u2026`, async () => {
       if (destination) {
         // Built from the latest copy, so an edit queued from the Database view isn't overwritten.
+        let createdMessage = false;
         await ctx.updateDbc(destination.id, ({ db }) => {
           const existing = db.messages.some((m) => m.id === message.id);
+          createdMessage = !existing;
           const next: Database = existing
             ? { ...db, messages: db.messages.map((m) => (m.id === message.id ? { ...m, signals: [...m.signals, signal] } : m)) }
             : { ...db, messages: [...db.messages, message] };
           return { db: next };
         });
         setAdded({ signal: name, message: messageName, dbc: destination.id, file: destination.db.name });
+        onAdded?.({ signal, dbc: destination.id, messageId: message.id, createdMessage, createdDbc: false });
       } else {
         const file = 'untitled.dbc';
         const id = await ctx.addDbc({ name: file, messages: [message] }, null);
         setAdded({ signal: name, message: messageName, dbc: id, file });
+        onAdded?.({ signal, dbc: id, messageId: message.id, createdMessage: true, createdDbc: true });
       }
       setSubmitted(false);
       onChange({ name: '' });
@@ -236,6 +253,7 @@ export function SignalForm(props: Props) {
 
         <Field id={`${ids}name`} label="Name" error={nameError}>
           <input
+            ref={nameRef}
             id={`${ids}name`}
             className="input mono"
             value={form.name}

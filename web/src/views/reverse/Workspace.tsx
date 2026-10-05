@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatId, type ByteLane, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo } from '../../core/api';
 import { formatCount } from '../../format';
 import { signalBits } from '../../signalBits';
@@ -8,7 +8,8 @@ import { BitGrid, HeatLegend } from './BitGrid';
 import { BitHistory } from './BitHistory';
 import { ByteStrip } from './ByteStrip';
 import { References, type Candidate } from './References';
-import { SignalForm, initialForm, parseRange, parseScale, useCandidateForms, type FormState } from './SignalForm';
+import { SignalForm, initialForm, parseRange, parseScale, useCandidateForms, type AddedSignal, type FormState } from './SignalForm';
+import { KIND_LABELS, Suggestions, shownSuggestions, type ShownSuggestion } from './Suggestions';
 import { WindowStrip } from './WindowStrip';
 import {
   coveringRange,
@@ -16,6 +17,7 @@ import {
   errorText,
   formatSeconds,
   layoutString,
+  plainNumber,
   rangeBits,
   rectBits,
   useDebounced,
@@ -26,7 +28,8 @@ import {
   type Trace,
   type WindowStats,
 } from './bits';
-import type { Pin, Reference } from './pins';
+import { pinId, type Pin, type Reference } from './pins';
+import type { Discovery } from './useDiscovery';
 import { useFrameAt } from './useFrameAt';
 
 /** Points per candidate view. Typical windows come back undecimated, so their changes count exactly. */
@@ -49,6 +52,13 @@ interface Props {
   onPinSignal: () => void;
   /** A quiet stretch whose changing bits are dimmed, or null. */
   baseline: TimeWindow | null;
+  discovery: Discovery;
+  /** Messages no loaded DBC describes. */
+  unknown: IdSummary[];
+  pins: Pin[];
+  onTogglePin: (pin: Pin) => void;
+  /** The parked cursor, or null. */
+  parked: number | null;
 }
 
 interface Activity {
@@ -71,7 +81,9 @@ interface CandidateView {
  * Advanced: one message's bit activity and history with the New Signal inspector. Mounted per
  * ID and log; its bit selection and form are kept per ID.
  */
-export function Workspace({ ctx, summary, message, window: win, onWindowChange, references, cursor, onHover, onPark, onUnpin, onPinSignal, baseline }: Props) {
+export function Workspace(props: Props) {
+  const { ctx, summary, message, window: win, onWindowChange, references, cursor, onHover, onPark, onUnpin, onPinSignal, baseline } = props;
+  const { discovery, unknown, pins, onTogglePin, parked } = props;
   const { core, logVersion, log } = ctx;
   const duration = log?.durationS ?? 0;
   const bytes = summary.maxLen;
@@ -217,6 +229,82 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
     patch({ byteOrder: order, limits: null, ...(kept && { startBit: String(kept.startBit), size: String(kept.size) }) });
   };
 
+  const { ensure } = discovery;
+  useEffect(() => ensure(summary.key), [ensure, summary.key]);
+  const [activeSuggestion, setActiveSuggestion] = useState<string | null>(null);
+  const [showDismissed, setShowDismissed] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+  // Remounting the form after an undo drops its note of the add.
+  const [formEpoch, setFormEpoch] = useState(0);
+  const { results, dismissed, accepted } = discovery;
+  // Held steady across renders so the grid redraws only when the suggestions change.
+  const listed = useMemo(
+    () => shownSuggestions({ results, dismissed, accepted }, summary.key, owners, true),
+    [results, dismissed, accepted, summary.key, owners],
+  );
+  const shown = showDismissed ? listed : listed.filter((s) => !dismissed.has(s.id));
+  const dismissedCount = listed.length - listed.filter((s) => !dismissed.has(s.id)).length;
+  const regions = useMemo(
+    () =>
+      listed
+        .filter((s) => !dismissed.has(s.id))
+        .map((s) => ({ id: s.id, number: s.number, label: `Suggestion ${s.number}, ${KIND_LABELS[s.suggestion.kind]}`, bits: s.bits })),
+    [listed, dismissed],
+  );
+  const selectedSuggestion = range ? (shown.find((s) => sameBits(s.suggestion.spec, range))?.id ?? null) : null;
+  const plotPin = (s: ShownSuggestion): Pin => ({
+    kind: 'range',
+    key: summary.key,
+    spec: s.suggestion.spec,
+    label: `Suggested ${KIND_LABELS[s.suggestion.kind].toLowerCase()}`,
+    unit: s.suggestion.fit?.unit ?? '',
+  });
+  const pinned = new Set(pins.map(pinId));
+  const plotted = new Set(shown.filter((s) => pinned.has(pinId(plotPin(s)))).map((s) => s.id));
+
+  const selectSuggestion = (s: ShownSuggestion, extra: Partial<FormState> = {}) => {
+    const { spec, fit } = s.suggestion;
+    patch({
+      startBit: String(spec.startBit),
+      size: String(spec.size),
+      byteOrder: spec.byteOrder,
+      signed: spec.signed,
+      fromGrid: false,
+      limits: null,
+      ...(fit && { factor: plainNumber(spec.factor), offset: plainNumber(spec.offset), unit: fit.unit }),
+      ...extra,
+    });
+  };
+  const acceptSuggestion = (s: ShownSuggestion) => {
+    selectSuggestion(s, { name: suggestedName(s, message) });
+    requestAnimationFrame(() => {
+      nameRef.current?.focus();
+      nameRef.current?.select();
+    });
+  };
+  // Whatever way its bits got into the form, a suggestion added to a DBC counts as accepted.
+  const onAdded = (added: AddedSignal) => {
+    const match = shown.find((s) => sameBits(s.suggestion.spec, added.signal));
+    if (!match) return;
+    const { dbc, messageId, createdMessage, createdDbc } = added;
+    discovery.markAccepted(match.id, { signal: added.signal.name, dbc, messageId, createdMessage, createdDbc });
+  };
+  const undo = (s: ShownSuggestion) => {
+    const accepted = discovery.accepted[s.id];
+    if (!accepted) return;
+    void ctx.run(`Removing ${accepted.signal}\u2026`, async () => {
+      const loaded = ctx.dbcs.find((d) => d.id === accepted.dbc);
+      const without = (messages: MessageDef[]) =>
+        messages
+          .map((m) => (m.id === accepted.messageId ? { ...m, signals: m.signals.filter((x) => x.name !== accepted.signal) } : m))
+          .filter((m) => !(m.id === accepted.messageId && accepted.createdMessage && m.signals.length === 0));
+      if (loaded && accepted.createdDbc && without(loaded.db.messages).length === 0) await ctx.removeDbc(loaded.id);
+      else if (loaded) await ctx.updateDbc(loaded.id, ({ db }) => ({ db: { ...db, messages: without(db.messages) } }));
+      discovery.markAccepted(s.id, null);
+      setFormEpoch((n) => n + 1);
+    });
+  };
+
   const windowFrames = activity && !activity.wholeLog ? activity.frames : (summary.count * (settled[1] - settled[0])) / Math.max(duration, 1e-9);
   const layout = range ? layoutString(range, form.signed) : null;
   const matching = <T extends { key: string }>(x: T | null) => (x && x.key === currentKey ? x : null);
@@ -282,43 +370,72 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
           )}
         </section>
 
-        <section className="card re-card" aria-labelledby="re-activity-title">
-          <div className="re-card-head">
-            <h3 className="section-title" id="re-activity-title">
-              Bit Activity
-            </h3>
-            <span className="re-card-note">
-              {activity && (activity.wholeLog ? 'Whole log; window counts are not available yet' : `${formatCount(activity.frames)} ${activity.frames === 1 ? 'frame' : 'frames'} in the window`)}
-            </span>
-          </div>
-          {bytes === 0 ? (
-            <p className="hint">These frames carry no payload.</p>
-          ) : activity ? (
-            <>
-              <BitGrid
-                flips={activity.flips}
-                bytes={bytes}
-                transitions={Math.max(1, activity.frames - 1)}
-                seconds={activity.seconds}
-                selected={selected}
-                owners={owners}
-                dimmed={baselineFlips}
-                onSelect={(a, b) => setRange(coveringRange(rectBits(a, b), form.byteOrder))}
-                onClear={() => patch({ startBit: '', size: '', fromGrid: true, limits: null })}
-              />
-              <HeatLegend
-                baseline={baselineFlips ? `${formatSeconds(b0)} to ${formatSeconds(b1)}` : null}
-                baselineNote={baselineCounts && !baselineFlips ? 'Too few frames in the baseline to compare' : null}
-                selection={range ? `${range.size} ${range.size === 1 ? 'bit' : 'bits'} selected \u00b7 ${layout}` : null}
-              />
-            </>
-          ) : (
-            <p className={activityError ? 're-quiet' : 'hint'}>{activityError ?? 'Counting bit changes\u2026'}</p>
-          )}
-          <div className="re-subhead">
-            <WindowStrip compact core={core} idKey={summary.key} logVersion={logVersion} duration={duration} window={win} onChange={onWindowChange} />
-          </div>
-        </section>
+        <div className="re-pair">
+          <section className="card re-card" aria-labelledby="re-activity-title">
+            <div className="re-card-head">
+              <h3 className="section-title" id="re-activity-title">
+                Bit Activity
+              </h3>
+              <span className="re-card-note">
+                {activity && (activity.wholeLog ? 'Whole log; window counts are not available yet' : `${formatCount(activity.frames)} ${activity.frames === 1 ? 'frame' : 'frames'} in the window`)}
+              </span>
+            </div>
+            {bytes === 0 ? (
+              <p className="hint">These frames carry no payload.</p>
+            ) : activity ? (
+              <>
+                <BitGrid
+                  flips={activity.flips}
+                  bytes={bytes}
+                  transitions={Math.max(1, activity.frames - 1)}
+                  seconds={activity.seconds}
+                  selected={selected}
+                  owners={owners}
+                  dimmed={baselineFlips}
+                  onSelect={(a, b) => setRange(coveringRange(rectBits(a, b), form.byteOrder))}
+                  onClear={() => patch({ startBit: '', size: '', fromGrid: true, limits: null })}
+                  regions={regions}
+                  activeRegion={activeSuggestion}
+                  onRegionHover={setActiveSuggestion}
+                  onRegionActivate={(id) => {
+                    const s = shown.find((x) => x.id === id);
+                    if (s) selectSuggestion(s);
+                  }}
+                />
+                <HeatLegend
+                  baseline={baselineFlips ? `${formatSeconds(b0)} to ${formatSeconds(b1)}` : null}
+                  baselineNote={baselineCounts && !baselineFlips ? 'Too few frames in the baseline to compare' : null}
+                  selection={range ? `${range.size} ${range.size === 1 ? 'bit' : 'bits'} selected \u00b7 ${layout}` : null}
+                />
+              </>
+            ) : (
+              <p className={activityError ? 're-quiet' : 'hint'}>{activityError ?? 'Counting bit changes\u2026'}</p>
+            )}
+            <div className="re-subhead">
+              <WindowStrip compact core={core} idKey={summary.key} logVersion={logVersion} duration={duration} window={win} onChange={onWindowChange} />
+            </div>
+          </section>
+
+          <Suggestions
+            ctx={ctx}
+            summary={summary}
+            discovery={discovery}
+            unknown={unknown}
+            shown={shown}
+            dismissedCount={dismissedCount}
+            showDismissed={showDismissed}
+            onShowDismissed={setShowDismissed}
+            active={activeSuggestion}
+            onActive={setActiveSuggestion}
+            selected={selectedSuggestion}
+            onSelect={(s) => selectSuggestion(s)}
+            onAccept={acceptSuggestion}
+            onUndo={undo}
+            plotted={plotted}
+            onPlot={(s) => onTogglePin(plotPin(s))}
+            parked={parked}
+          />
+        </div>
 
         <section className="card re-card" aria-labelledby="re-history-title">
           <div className="re-card-head">
@@ -333,6 +450,7 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
 
       <InspectorSlot>
         <SignalForm
+          key={formEpoch}
           ctx={ctx}
           summary={summary}
           form={form}
@@ -348,8 +466,33 @@ export function Workspace({ ctx, summary, message, window: win, onWindowChange, 
           cursor={cursor}
           trace={trace}
           overlayTarget={overlayTarget?.name ?? null}
+          nameRef={nameRef}
+          onAdded={onAdded}
         />
       </InspectorSlot>
     </>
   );
+}
+
+function sameBits(a: BitRange, b: BitRange): boolean {
+  return a.startBit === b.startBit && a.size === b.size && a.byteOrder === b.byteOrder;
+}
+
+const NAME_STEMS: Record<ShownSuggestion['suggestion']['kind'], string> = {
+  counter: 'Counter',
+  checksum: 'Checksum',
+  flag: 'Flag',
+  enum: 'Enum',
+  continuous: 'Value',
+  signed: 'Signed',
+};
+
+/** `Counter`, or `Value_16` for kinds a message often has several of, made unique in `message`. */
+function suggestedName(s: ShownSuggestion, message: MessageDef | null): string {
+  const { kind } = s.suggestion;
+  const base = kind === 'counter' || kind === 'checksum' ? NAME_STEMS[kind] : `${NAME_STEMS[kind]}_${Math.min(...s.bits)}`;
+  const taken = new Set((message?.signals ?? []).map((x) => x.name));
+  let name = base;
+  for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
+  return name;
 }

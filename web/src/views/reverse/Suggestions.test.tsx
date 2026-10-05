@@ -65,6 +65,8 @@ function discoveryCore(overrides: Partial<CoreApi> = {}) {
 async function openAdvanced(core: CoreApi, selected = first.key) {
   const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [car], selected });
   await shell.user.click(screen.getByRole('tab', { name: 'Advanced' }));
+  // The panel is loaded on first use.
+  await screen.findByRole('region', { name: 'Suggested signals' });
   return shell;
 }
 

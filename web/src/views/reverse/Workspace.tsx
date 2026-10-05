@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { formatId, type ByteLane, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo } from '../../core/api';
 import { formatCount } from '../../format';
 import { signalBits } from '../../signalBits';
@@ -9,7 +9,8 @@ import { BitHistory } from './BitHistory';
 import { ByteStrip } from './ByteStrip';
 import { References, type Candidate } from './References';
 import { SignalForm, initialForm, parseRange, parseScale, useCandidateForms, type AddedSignal, type FormState } from './SignalForm';
-import { KIND_LABELS, Suggestions, shownSuggestions, type ShownSuggestion } from './Suggestions';
+import { ChunkBoundary } from '../../components/ChunkBoundary';
+import { KIND_LABELS, shownSuggestions, type ShownSuggestion } from './suggestionList';
 import { WindowStrip } from './WindowStrip';
 import {
   coveringRange,
@@ -37,6 +38,8 @@ const VIEW_BUCKETS = 20000;
 const LANES = 8;
 const STRIP_BUCKETS = 80;
 const BLANK_FORM = initialForm(null);
+// Loaded on first use to keep the main bundle small.
+const Suggestions = lazy(() => import('./Suggestions').then((m) => ({ default: m.Suggestions })));
 
 interface Props {
   ctx: ViewContext;
@@ -275,8 +278,8 @@ export function Workspace(props: Props) {
       ...extra,
     });
   };
-  const acceptSuggestion = (s: ShownSuggestion) => {
-    selectSuggestion(s, { name: suggestedName(s, message) });
+  const acceptSuggestion = (s: ShownSuggestion, name: string) => {
+    selectSuggestion(s, { name });
     requestAnimationFrame(() => {
       nameRef.current?.focus();
       nameRef.current?.select();
@@ -288,21 +291,6 @@ export function Workspace(props: Props) {
     if (!match) return;
     const { dbc, messageId, createdMessage, createdDbc } = added;
     discovery.markAccepted(match.id, { signal: added.signal.name, dbc, messageId, createdMessage, createdDbc });
-  };
-  const undo = (s: ShownSuggestion) => {
-    const accepted = discovery.accepted[s.id];
-    if (!accepted) return;
-    void ctx.run(`Removing ${accepted.signal}\u2026`, async () => {
-      const loaded = ctx.dbcs.find((d) => d.id === accepted.dbc);
-      const without = (messages: MessageDef[]) =>
-        messages
-          .map((m) => (m.id === accepted.messageId ? { ...m, signals: m.signals.filter((x) => x.name !== accepted.signal) } : m))
-          .filter((m) => !(m.id === accepted.messageId && accepted.createdMessage && m.signals.length === 0));
-      if (loaded && accepted.createdDbc && without(loaded.db.messages).length === 0) await ctx.removeDbc(loaded.id);
-      else if (loaded) await ctx.updateDbc(loaded.id, ({ db }) => ({ db: { ...db, messages: without(db.messages) } }));
-      discovery.markAccepted(s.id, null);
-      setFormEpoch((n) => n + 1);
-    });
   };
 
   const windowFrames = activity && !activity.wholeLog ? activity.frames : (summary.count * (settled[1] - settled[0])) / Math.max(duration, 1e-9);
@@ -416,25 +404,30 @@ export function Workspace(props: Props) {
             </div>
           </section>
 
-          <Suggestions
-            ctx={ctx}
-            summary={summary}
-            discovery={discovery}
-            unknown={unknown}
-            shown={shown}
-            dismissedCount={dismissedCount}
-            showDismissed={showDismissed}
-            onShowDismissed={setShowDismissed}
-            active={activeSuggestion}
-            onActive={setActiveSuggestion}
-            selected={selectedSuggestion}
-            onSelect={(s) => selectSuggestion(s)}
-            onAccept={acceptSuggestion}
-            onUndo={undo}
-            plotted={plotted}
-            onPlot={(s) => onTogglePin(plotPin(s))}
-            parked={parked}
-          />
+          <ChunkBoundary message="Couldn't load the suggestions.">
+            <Suspense fallback={<p className="hint re-sug-loading">Loading suggestions&hellip;</p>}>
+              <Suggestions
+                ctx={ctx}
+                summary={summary}
+                discovery={discovery}
+                unknown={unknown}
+                shown={shown}
+                dismissedCount={dismissedCount}
+                showDismissed={showDismissed}
+                onShowDismissed={setShowDismissed}
+                active={activeSuggestion}
+                onActive={setActiveSuggestion}
+                selected={selectedSuggestion}
+                onSelect={(s) => selectSuggestion(s)}
+                message={message}
+                onAccept={acceptSuggestion}
+                onUndone={() => setFormEpoch((n) => n + 1)}
+                plotted={plotted}
+                onPlot={(s) => onTogglePin(plotPin(s))}
+                parked={parked}
+              />
+            </Suspense>
+          </ChunkBoundary>
         </div>
 
         <section className="card re-card" aria-labelledby="re-history-title">
@@ -476,23 +469,4 @@ export function Workspace(props: Props) {
 
 function sameBits(a: BitRange, b: BitRange): boolean {
   return a.startBit === b.startBit && a.size === b.size && a.byteOrder === b.byteOrder;
-}
-
-const NAME_STEMS: Record<ShownSuggestion['suggestion']['kind'], string> = {
-  counter: 'Counter',
-  checksum: 'Checksum',
-  flag: 'Flag',
-  enum: 'Enum',
-  continuous: 'Value',
-  signed: 'Signed',
-};
-
-/** `Counter`, or `Value_16` for kinds a message often has several of, made unique in `message`. */
-function suggestedName(s: ShownSuggestion, message: MessageDef | null): string {
-  const { kind } = s.suggestion;
-  const base = kind === 'counter' || kind === 'checksum' ? NAME_STEMS[kind] : `${NAME_STEMS[kind]}_${Math.min(...s.bits)}`;
-  const taken = new Set((message?.signals ?? []).map((x) => x.name));
-  let name = base;
-  for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
-  return name;
 }

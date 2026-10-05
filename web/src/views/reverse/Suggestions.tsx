@@ -1,52 +1,15 @@
 import { useId, useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, X } from 'lucide-react';
-import { formatId, type IdSummary, type Suggestion, type SuggestionKind } from '../../core/api';
+import { formatId, type IdSummary, type MessageDef, type Suggestion } from '../../core/api';
 import { formatCount } from '../../format';
 import type { ViewContext } from '../types';
 import { Sparkline } from './Sparkline';
 import { layoutString, plainNumber, rangeBits } from './bits';
+import { KIND_LABELS, type ShownSuggestion } from './suggestionList';
+import './suggestions.css';
 import { suggestionId, type Discovery, type MessageHints } from './useDiscovery';
 
-export const KIND_LABELS: Record<SuggestionKind, string> = {
-  counter: 'Counter',
-  checksum: 'Checksum',
-  flag: 'Flag',
-  enum: 'Enum',
-  continuous: 'Continuous value',
-  signed: 'Signed value',
-};
-
 const LEVEL_LABELS = { high: 'High', medium: 'Medium', low: 'Low' } as const;
-
-/** A suggestion as listed for one message, numbered as on the bit grid. */
-export interface ShownSuggestion {
-  id: string;
-  number: number;
-  suggestion: Suggestion;
-  bits: number[];
-}
-
-/**
- * The message's suggestions to list and outline: dismissed ones and ones over bits a DBC already
- * describes are left out, unless they were accepted here.
- */
-export function shownSuggestions(
-  discovery: Pick<Discovery, 'results' | 'dismissed' | 'accepted'>,
-  key: number,
-  owners: (string | null)[],
-  showDismissed = false,
-): ShownSuggestion[] {
-  const found = discovery.results[key]?.suggestions ?? [];
-  const listed: ShownSuggestion[] = [];
-  for (const suggestion of found) {
-    const id = suggestionId(key, suggestion);
-    const bits = rangeBits(suggestion.spec);
-    if (!discovery.accepted[id] && bits.some((b) => owners[b])) continue;
-    listed.push({ id, number: listed.length + 1, suggestion, bits });
-  }
-  // Numbers stay put when a suggestion is dismissed, so they keep matching the grid.
-  return showDismissed ? listed : listed.filter((s) => !discovery.dismissed.has(s.id));
-}
 
 /** Where its bits are, such as `bits 16-31 \u00b7 Motorola \u00b7 unsigned`. */
 export function describePlace(s: Suggestion): string {
@@ -67,6 +30,42 @@ function mostPromising(discovery: Discovery, unknown: IdSummary[], current: numb
     if (score > bestScore) [best, bestScore] = [s, score];
   }
   return best;
+}
+
+const NAME_STEMS: Record<Suggestion['kind'], string> = {
+  counter: 'Counter',
+  checksum: 'Checksum',
+  flag: 'Flag',
+  enum: 'Enum',
+  continuous: 'Value',
+  signed: 'Signed',
+};
+
+/** `Counter`, or `Value_16` for kinds a message often has several of, made unique in `message`. */
+function suggestedName(s: ShownSuggestion, message: MessageDef | null): string {
+  const { kind } = s.suggestion;
+  const base = kind === 'counter' || kind === 'checksum' ? NAME_STEMS[kind] : `${NAME_STEMS[kind]}_${Math.min(...s.bits)}`;
+  const taken = new Set((message?.signals ?? []).map((x) => x.name));
+  let name = base;
+  for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
+  return name;
+}
+
+/** Takes an accepted suggestion's signal out of its DBC again, and the message or DBC the add created once empty. */
+function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndone: () => void) {
+  const accepted = discovery.accepted[id];
+  if (!accepted) return;
+  void ctx.run(`Removing ${accepted.signal}\u2026`, async () => {
+    const loaded = ctx.dbcs.find((d) => d.id === accepted.dbc);
+    const without = (messages: MessageDef[]) =>
+      messages
+        .map((m) => (m.id === accepted.messageId ? { ...m, signals: m.signals.filter((x) => x.name !== accepted.signal) } : m))
+        .filter((m) => !(m.id === accepted.messageId && accepted.createdMessage && m.signals.length === 0));
+    if (loaded && accepted.createdDbc && without(loaded.db.messages).length === 0) await ctx.removeDbc(loaded.id);
+    else if (loaded) await ctx.updateDbc(loaded.id, ({ db }) => ({ db: { ...db, messages: without(db.messages) } }));
+    discovery.markAccepted(id, null);
+    onUndone();
+  });
 }
 
 /** The first number in `text`, as seconds: "12", "12.5 s" or "I pressed the brake at 12 s". */
@@ -91,8 +90,12 @@ interface Props {
   /** The suggestion whose bits are in the form. */
   selected: string | null;
   onSelect: (s: ShownSuggestion) => void;
-  onAccept: (s: ShownSuggestion) => void;
-  onUndo: (s: ShownSuggestion) => void;
+  /** The message the suggestions are for, when a DBC already has it. */
+  message: MessageDef | null;
+  /** Put the suggestion in the form under this name. */
+  onAccept: (s: ShownSuggestion, name: string) => void;
+  /** An accepted suggestion was taken out of its DBC again. */
+  onUndone: () => void;
   plotted: Set<string>;
   onPlot: (s: ShownSuggestion) => void;
   /** The parked cursor, offered as the time of an event. */
@@ -102,7 +105,7 @@ interface Props {
 /** Suggested signals for one message, from how its bits change, with hints to sharpen them. */
 export function Suggestions(props: Props) {
   const { ctx, summary, discovery, unknown, shown, dismissedCount, showDismissed, onShowDismissed, active, onActive, selected } = props;
-  const { onSelect, onAccept, onUndo, plotted, onPlot, parked } = props;
+  const { message, onSelect, onAccept, onUndone, plotted, onPlot, parked } = props;
   const key = summary.key;
   const result = discovery.results[key];
   const error = discovery.errors[key] ?? null;
@@ -258,8 +261,8 @@ export function Suggestions(props: Props) {
                 plotted={plotted.has(s.id)}
                 onActive={onActive}
                 onSelect={onSelect}
-                onAccept={onAccept}
-                onUndo={onUndo}
+                onAccept={(s) => onAccept(s, suggestedName(s, message))}
+                onUndo={(s) => undoAccepted(ctx, discovery, s.id, onUndone)}
                 onPlot={onPlot}
               />
             ))}

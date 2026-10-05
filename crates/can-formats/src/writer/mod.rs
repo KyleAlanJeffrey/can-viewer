@@ -409,6 +409,36 @@ mod tests {
     }
 
     #[test]
+    fn times_before_the_epoch_read_back_the_same() {
+        let times = [-1_000_001_000, -500_000_000, 250_000_000, 500_000_000];
+        let mut store = FrameStore::new();
+        let channel = store.channel_index(b"can1");
+        for (byte, ts_ns) in times.into_iter().enumerate() {
+            store.push(FrameRef {
+                ts_ns,
+                channel,
+                id: 0x123,
+                flags: 0,
+                data: &[byte as u8],
+            });
+        }
+        for format in [
+            Format::Candump,
+            Format::Asc,
+            Format::Trc,
+            Format::Csv,
+            Format::Blf,
+            Format::Mf4,
+        ] {
+            assert_eq!(
+                frames(&read(format, &write(format, &store))),
+                frames(&store),
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
     fn empty_logs_read_back_with_no_frames() {
         for format in [
             Format::Candump,

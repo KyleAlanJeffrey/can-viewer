@@ -276,8 +276,8 @@ Ignore rules for [`compareLogs`](#comparelogs) and [`compareBytes`](#comparebyte
 
 **Attributes**
 
-- **`ignoreCounters`** `boolean` - Leave out bits that behave like a counter or a checksum in both logs. A counter is a 4-bit nibble, or a whole byte taking more than 16 values, that steps by the same non-zero amount between at least 80% of consecutive frames and takes at least 4 values. A checksum is the first or last byte, taking at least 4 values, when in at least 95% of the frames of the ID's longest length it is the sum or the XOR of the other bytes plus a constant; or a first or last byte that takes at least 16 values and changes between at least 90% of consecutive frames (32 or more) with every bit toggling on 25% to 75% of them, as a CRC does. A byte that counts in one log and not the other is a real difference and is kept.
-- **`ignoreChangesWithinA`** `boolean` - Use log A as its own baseline: score the first half of log A's time span against the second half the same way, and subtract that from each part of the score (the rate, the length, each byte). An ID whose differences are no bigger than its changes within A scores near 0 with the reason `Also changes within A`.
+- **`ignoreCounters`** `boolean` - Leave out bits that behave like a counter or a checksum in both logs. A counter is a 4-bit nibble that takes at least 4 values and steps by the same non-zero amount between at least 80% of consecutive frames, judged on at least 8 pairs of consecutive frames. A whole byte counts as a counter only when it also takes more than 16 values and carries from the low nibble into the high one (fewer than 5% of its steps are off by 16 from the usual step); a nibble counter beside other bits, such as a state in bit 7, is left out as a nibble, and the other bits are kept. A checksum is the first or last byte, taking at least 4 values while at least 2 other bytes change, when in at least 95% of the frames of the ID's longest length it is the sum or the XOR of the other bytes plus a constant. When the sum relation holds for both end bytes, only the last byte is taken as the checksum. A first or last byte that takes at least 16 values and changes between at least 90% of consecutive frames (32 or more) with every bit toggling on 25% to 75% of them is taken as a CRC. A byte that counts in one log and not the other is a real difference and is kept.
+- **`ignoreChangesWithinA`** `boolean` - Use log A as its own baseline: score the first half of log A's time span against the second half the same way, and subtract that from the score (see [`compareLogs`](#comparelogs)). An ID whose differences are no bigger than its changes within A scores near 0 with the reason `Also changes within A`. The Compare view turns both rules on by default.
 
 ### The IdComparison object
 
@@ -285,7 +285,8 @@ One bus/ID pair of the open log (A) or the comparison log (B). Returned by [`com
 
 **Attributes**
 
-- **`bus`** `string` - The bus name. IDs match across the logs by bus name and ID, except that when each log has one bus, the two buses match whatever they are called, and the name is log A's.
+- **`bus`** `string` - The bus name. IDs match across the logs by bus name and ID. Buses that carry only error frames are left out of the matching. When both logs carry data on the same number of buses and either that number is 1 or the logs share no bus name, the buses match in order of first appearance whatever they are called, and the name is log A's (log B's when the ID is only in B).
+- **`busB`** `string | null` - Log B's name for the bus, or null when the ID is only in A. It differs from `bus` only when buses were matched in order.
 - **`id`** `number` - The ID without the extended flag.
 - **`extended`** `boolean` - True for a 29-bit ID.
 - **`keyA`** `number | null` - The ID's key in log A, for the other CoreApi calls, or null when it is only in B.
@@ -294,10 +295,10 @@ One bus/ID pair of the open log (A) or the comparison log (B). Returned by [`com
 - **`name`** `string | null` - Message name from the loaded databases, looked up as for [`setDatabases`](#setdatabases) on the bus named by `bus`, or null.
 - **`framesA`** `number` - Frames in log A; 0 when only in B.
 - **`framesB`** `number` - Frames in log B; 0 when only in A.
-- **`rateA`** `number` - Frames per second of log A's duration, so logs of different lengths compare.
-- **`rateB`** `number` - The same for log B.
+- **`rateA`** `number | null` - Frames per second of log A's duration, so logs of different lengths compare. Null when log A has no duration (all its frames have one timestamp); the rate then plays no part in the score.
+- **`rateB`** `number | null` - The same for log B.
 - **`score`** `number` - From 0 to 100, how differently the ID behaves. Below 10 is no significant difference. See [`compareLogs`](#comparelogs).
-- **`reason`** `string` - Why, in a few words: `Appears only in A`, `Appears only in B`, `Byte 3 takes new values`, `Byte 3 has values only in A`, `Byte 3 holds a different value`, `Byte 3 changes more often`, `Byte 3 changes less often`, `Byte 3 values shift`, `Small value changes`, `Length changes from 8 to 6 bytes`, `Rate doubled`, `Rate halved`, `Rate up 3.1x`, `Rate down 3.1x`, `Also changes within A` or `No significant changes`.
+- **`reason`** `string` - Why, in a few words: `Appears only in A`, `Appears only in B`, `Byte 3 takes new values`, `Byte 3 has values only in A`, `Byte 3 holds a different value`, `Byte 3 changes more often`, `Byte 3 changes less often`, `Byte 3 values shift`, `Small value changes`, `Length changes from 8 to 6 bytes`, `Changes from classic CAN to CAN FD`, `Changes from CAN FD to classic CAN`, `Rate doubled`, `Rate halved`, `Rate up 3.1x`, `Rate down 3.1x`, `Too few frames to compare`, `Also changes within A` or `No significant changes`.
 - **`bytes`** `number[]` - Payload bytes scoring 10 or more, most different first.
 
 ### The ByteComparison object
@@ -313,7 +314,7 @@ One ID compared byte by byte. Returned by [`compareBytes`](#comparebytes). Per-b
 - **`flipsB`** `number[]` - The same for log B.
 - **`bitScores`** `number[]` - From 0 to 1 per bit, how differently it behaves (see [`compareLogs`](#comparelogs)), before the log A baseline. 0 for ignored bits and when either log lacks the ID or the byte.
 - **`byteScores`** `number[]` - From 0 to 100 per byte, after both ignore rules.
-- **`byteReasons`** `string[]` - Each byte's reason, worded as `IdComparison.reason`; `No significant changes` below 10, and empty when either log lacks the byte.
+- **`byteReasons`** `string[]` - Each byte's reason, worded as `IdComparison.reason`; `No significant changes` below 10, `Too few frames to compare` for every byte when either log has fewer than 8 frames of the ID, and empty when either log lacks the byte.
 - **`newValues`** `number[][]` - Per byte, up to 16 values log B shows and log A never does, with ignored bits cleared.
 - **`ignored`** `{ byte: number, mask: number, kind: 'counter' | 'checksum' }[]` - Bits left out by `ignoreCounters`, as a bit mask per byte.
 
@@ -808,7 +809,7 @@ A second log, B, can be read beside the open log, A, to find what differs betwee
 openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>
 ```
 
-Reads `file` as log B, replacing any log B before it. The file is read as [`openLog`](#openlog) reads one: in 8 MiB chunks, with the format chosen the same way and the same limits. Both logs are held in the engine's memory at once, so together they must fit in it (see "Browsers" in COMPATIBILITY.md).
+Reads `file` as log B, replacing any log B before it. The file is read as [`openLog`](#openlog) reads one: in 8 MiB chunks, with the format chosen the same way and the same limits. Both logs are held in the engine's memory at once, so log B gets what is left of a 2 GiB budget once log A is counted. A log B estimated from its size and format to need more is refused before any frame is stored, and the frame store for log B is reserved in a way that can fail without harm, so log A stays open (see "Browsers" in COMPATIBILITY.md).
 
 **Parameters**
 
@@ -818,7 +819,7 @@ Reads `file` as log B, replacing any log B before it. The file is read as [`open
 
 **Returns** log B's [`LogInfo`](#the-loginfo-object). A log with no frames is still kept; check `frames`.
 
-**Errors** Rejects if the file cannot be read or the engine fails. Log B is then gone.
+**Errors** Rejects if the file cannot be read, with `<name> is too large to read beside the open log in this browser's memory. Compare a shorter log, or open a smaller log A.` when log B does not fit the budget, or if the engine fails. Log B is then gone and log A stays open. If the engine runs out of memory anyway, as a log with far more frames than its size suggests can make it, the engine restarts (see [`onReset`](#onreset)) and both logs are gone.
 
 ```ts
 const b = await core.openCompareLog(file, file.name, (p) => showProgress(p.bytes / p.total));
@@ -868,17 +869,19 @@ const ids = await core.idSummary();
 compareLogs(options: CompareOptions): Promise<IdComparison[]>
 ```
 
-Every bus/ID pair of either log, error frames aside, scored from 0 to 100 by how differently it behaves in the two logs. The score is the largest of these parts:
+Every bus/ID pair of either log, error frames aside, scored from 0 to 100 by how differently it behaves in the two logs. An ID with fewer than 8 frames in either log scores 0 with the reason `Too few frames to compare`. Otherwise the score is the largest of these parts:
 
 - **Only one log has the ID:** 100.
-- **Rate:** rates are frames per second of each log's duration. The ratio of the larger rate to the smaller scores 0 up to 1.1, rising in a straight line to 80 at 2 (doubled or halved) and above.
+- **Rate:** rates are frames per second of each log's duration. The ratio of the larger rate to the smaller scores 0 up to a tolerance of 1.1 plus 2 divided by the smaller frame count, rising in a straight line to 80 at 2 (doubled or halved) and above. Skipped when either log has no duration.
 - **Length:** 90 when the ID's longest payload differs.
+- **Classic CAN or CAN FD:** 90 when one log sends the ID as CAN FD and the other never does.
 - **Each payload byte** both logs carry (the first 64), over the bits the ignore rules keep, scores the largest of:
-  - per bit, the difference between the logs in the share of frames with the bit set, and in the share of consecutive frames where it toggles (each 0 to 1);
-  - 0.75 for a bit that is constant in one log and not the other;
-  - for a byte that takes at most 16 values in one log (a state rather than a measurement), when the other log shows values it never does: 0.75, plus up to 0.25 as those frames reach a quarter of the other log. Even a single frame of a new value counts, so a short event such as a door locking stands out.
+  - **New values:** values log B shows that log A never does (and, as `has values only in A`, the other way round). A value counts as new only when log A could not reach it: when log A takes 4 or more values, a value within a few steps of the ones it takes, chained the way sensor noise or a drifting reading spreads, is a shift instead. When log A takes at most 3 values (a state), any other value is new. A new value scores up to 100 by how sure it is that log A would have shown it had it been as common there, given log A's frame count: 75 when that is certain, plus up to 25 as the value's frames reach a quarter of log B. A single frame of a new value in a long, steady state still scores high, so a short event such as a door locking stands out. A byte that holds one value in each log reads `holds a different value`.
+  - **Shifts:** per bit, the difference between the logs in the share of frames with the bit set, and in the share of consecutive frames where it toggles, each scoring at most 50.
 
-With `ignoreChangesWithinA`, each part first loses what it scores between the halves of log A. The reason names the part that scored highest; a byte reason for a shift or a change of toggling under 35 reads `Small value changes`. See `compare.rs` in `crates/can-wasm`.
+Both new values and shifts are scaled down when the logs differ in length: new values by the shorter log's time span over the longer's when the reference log is the shorter, since it may simply not have run into the values, and shifts by the square root of that ratio. So a short log B does not make every ID look different.
+
+With `ignoreChangesWithinA`, the halves of log A are compared the same way, and each part loses what it scores there: the rate, length and CAN FD parts their own score, new values in B what new values A's second half shows, values only in A what either half shows the other lacks, and shifts the largest byte part within A. A reading that drifts on through log B is then `Also changes within A`, while a new state in B is kept even if other values of the byte vary within A. The reason names the part that scored highest; a byte reason for a shift or a change of toggling under 35 reads `Small value changes`. See `compare.rs` in `crates/can-wasm`.
 
 **Parameters**
 
@@ -887,7 +890,7 @@ With `ignoreChangesWithinA`, each part first loses what it scores between the ha
 **Returns** an array of [`IdComparison`](#the-idcomparison-object), highest score first. It is empty without log B.
 
 ```ts
-const found = await core.compareLogs({ ignoreCounters: true, ignoreChangesWithinA: false });
+const found = await core.compareLogs({ ignoreCounters: true, ignoreChangesWithinA: true });
 const changed = found.filter((c) => c.presence === 'both' && c.score >= 10);
 ```
 

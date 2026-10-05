@@ -4,6 +4,8 @@ import { formatSeconds } from './filters';
 
 type Edge = 't0' | 't1' | 'move';
 
+const HALF_MS = 0.0005;
+
 interface Props {
   duration: number;
   /** The range's ends in seconds; null is the start or end of the log. */
@@ -18,6 +20,7 @@ interface Props {
  */
 export function TimeRangeStrip({ duration, t0, t1, onChange }: Props) {
   const stripRef = useRef<HTMLDivElement>(null);
+  const handles = useRef<Record<'t0' | 't1', HTMLDivElement | null>>({ t0: null, t1: null });
   const drag = useRef<{ edge: Edge; x0: number; from: [number, number] } | null>(null);
   const [dragEdge, setDragEdge] = useState<Edge | null>(null);
   const start = clamp(t0 ?? 0, 0, duration);
@@ -36,13 +39,20 @@ export function TimeRangeStrip({ duration, t0, t1, onChange }: Props) {
     return lo + ((clientX - r.left) / Math.max(1, r.width)) * span;
   };
 
+  // Rounded to the millisecond, except that the log's own end stays the end: rounded down, it
+  // would leave out the last frames.
+  const snap = (t: number) => {
+    const rounded = ms(t);
+    return rounded >= duration - HALF_MS ? duration : rounded;
+  };
+
   const moved = (edge: Edge, [a, b]: [number, number], dt: number): [number, number] => {
     if (edge === 'move') {
       const shift = clamp(dt, -a, duration - b);
-      return [ms(a + shift), ms(b + shift)];
+      return [snap(a + shift), snap(b + shift)];
     }
-    if (edge === 't0') return [ms(clamp(a + dt, 0, b)), b];
-    return [a, ms(clamp(b + dt, a, duration))];
+    if (edge === 't0') return [Math.min(snap(clamp(a + dt, 0, b)), b), b];
+    return [a, snap(clamp(b + dt, a, duration))];
   };
 
   const onPointerDown = (e: PointerEvent<HTMLElement>, edge?: Edge) => {
@@ -55,9 +65,11 @@ export function TimeRangeStrip({ duration, t0, t1, onChange }: Props) {
       // A press on the track brings the nearer end there, then drags it.
       const t = clamp(timeAt(e.clientX), 0, duration);
       grabbed = Math.abs(t - start) <= Math.abs(t - end) ? 't0' : 't1';
-      from = grabbed === 't0' ? [ms(Math.min(t, end)), end] : [start, ms(Math.max(t, start))];
+      from = grabbed === 't0' ? [Math.min(snap(t), end), end] : [start, snap(Math.max(t, start))];
       onChange(...from);
     }
+    // The default focus change was prevented, to keep the drag from selecting text.
+    if (grabbed !== 'move') handles.current[grabbed]?.focus();
     drag.current = { edge: grabbed, x0: e.clientX, from };
     setDragEdge(grabbed);
     stripRef.current?.setPointerCapture(e.pointerId);
@@ -109,6 +121,9 @@ export function TimeRangeStrip({ duration, t0, t1, onChange }: Props) {
         <div className="tv-strip-track" />
         <div className="tv-strip-band" style={{ left: `${pct(start)}%`, width: `${pct(end) - pct(start)}%` }} onPointerDown={(e) => onPointerDown(e, 'move')} />
         <div
+          ref={(el) => {
+            handles.current.t0 = el;
+          }}
           className="tv-strip-handle"
           role="slider"
           tabIndex={0}
@@ -122,6 +137,9 @@ export function TimeRangeStrip({ duration, t0, t1, onChange }: Props) {
           onKeyDown={(e) => onKeyDown(e, 't0')}
         />
         <div
+          ref={(el) => {
+            handles.current.t1 = el;
+          }}
           className="tv-strip-handle"
           role="slider"
           tabIndex={0}

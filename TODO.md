@@ -25,7 +25,6 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
 - [x] Reverse Engineer Advanced: Suggested signals (counters, checksums, flags, enums, continuous and signed values) with Accept, Dismiss and Plot it, event and reference hints, and a scan of the unknown messages (`suggestSignals`, `scanSignals`)
-- [ ] PRODUCT.md lists automated signal discovery as a Pro feature that must not ship in the web bundle, but Suggested signals is in the free web app; decide which it is (owner)
 - [ ] Suggested signals: float32 values are left out on purpose, multiplexed messages get a guess per page mixed together, and a value whose top bits never change in the log comes out narrower than its real field (VEHICLE_STATE in the demo)
 - [ ] Suggested signals: a 64-byte CAN FD message takes about 120 ms to suggest for, and Cancel only lands between messages; move the scan off the main request queue or split the work if logs with many large unknown IDs make it drag
 - [x] Export log as other formats (Export Log...: candump, ASC, BLF, TRC, MF4, CSV)

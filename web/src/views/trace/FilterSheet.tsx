@@ -6,6 +6,7 @@ import { Sheet } from '../../components/Sheet';
 import { formatCount } from '../../format';
 import { KINDS, formatSeconds, hasFilters, hexByte, toFrameFilter, type TraceFilters } from './filters';
 import { TimeRangeStrip } from './TimeRangeStrip';
+import './filter-sheet.css';
 
 /** How long the draft must stay unchanged before its matches are counted. */
 const PREVIEW_DELAY_MS = 250;
@@ -251,6 +252,9 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
               </div>
             );
           })}
+          {draft.rules.some((r) => r.type === 'changes') && (
+            <p className="tv-hint">Any byte changes compares each frame with the previous frame of its ID and kind, over the bytes both have.</p>
+          )}
           <div className="tv-rules-foot">
             <button
               type="button"
@@ -364,7 +368,7 @@ function IdPicker({ ids, channels, picked, onChange }: { ids: IdSummary[]; chann
   const multiBus = channels.length > 1;
 
   const matches = useMemo(() => {
-    const q = text.trim().toLowerCase();
+    const q = text.trim().toLowerCase().replace(/^0x/, '');
     return ids
       .filter((s) => {
         if (picked.includes(s.key)) return false;
@@ -393,9 +397,14 @@ function IdPicker({ ids, channels, picked, onChange }: { ids: IdSummary[]; chann
       }
       const step = e.key === 'ArrowDown' ? 1 : -1;
       setActive(Math.max(0, Math.min(shown.length - 1, activeIndex + step)));
-    } else if (e.key === 'Enter' && expanded) {
+    } else if ((e.key === 'Home' || e.key === 'End') && expanded) {
       e.preventDefault();
-      pick(shown[activeIndex]);
+      setActive(e.key === 'Home' ? 0 : shown.length - 1);
+    } else if (e.key === 'Enter') {
+      // Never submits the sheet: Enter here is for picking.
+      e.preventDefault();
+      if (expanded) pick(shown[activeIndex]);
+      else setOpen(true);
     } else if (e.key === 'Escape' && (expanded || text !== '')) {
       // Closes the list, not the sheet.
       e.preventDefault();
@@ -486,8 +495,9 @@ function draftOf(filters: TraceFilters | null, channelCount: number): Draft {
     kinds: f?.kinds ?? KINDS.map((k) => k.kind),
     rules: (f?.rules ?? []).map((rule, i) => ruleDraft(rule, i + 1)),
     combine: f?.combine ?? 'all',
-    from: f?.t0 != null ? formatSeconds(f.t0) : '',
-    to: f?.t1 != null ? formatSeconds(f.t1) : '',
+    // As typed: String gives back the shortest text for the number, never rounding it.
+    from: f?.t0 != null ? String(f.t0) : '',
+    to: f?.t1 != null ? String(f.t1) : '',
   };
 }
 

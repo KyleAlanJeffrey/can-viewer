@@ -79,7 +79,9 @@ export function filterChips(f: TraceFilters, channels: string[], ids: IdSummary[
   if (f.keys.length > 0) {
     const labels = f.keys.map((key) => {
       const s = ids.find((i) => i.key === key);
-      return s ? idLabel(s) : String(key);
+      if (!s) return String(key);
+      const onOtherBus = ids.some((o) => o.channel !== s.channel && o.id === s.id && o.extended === s.extended);
+      return onOtherBus ? `${idLabel(s)} on ${channels[s.channel] ?? `bus ${s.channel}`}` : idLabel(s);
     });
     const shown = labels.slice(0, 3).join(', ');
     chips.push({ id: 'ids', label: labels.length > 3 ? `${shown} +${labels.length - 3}` : shown, without: { ...f, keys: [] } });

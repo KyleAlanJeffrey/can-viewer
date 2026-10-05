@@ -23,7 +23,7 @@ export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onR
     <div className="tv-bar">
       <button ref={editRef} type="button" className="button" onClick={onEdit}>
         <SlidersHorizontal size={16} strokeWidth={1.5} aria-hidden="true" />
-        {filtered ? 'Edit filters…' : 'Filters…'}
+        {filtered ? 'Edit filters\u2026' : 'Filters\u2026'}
       </button>
       {filtered && (
         <>
@@ -46,7 +46,7 @@ export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onR
       <p className="tv-count" role="status">
         {filtered &&
           (matches == null ? (
-            'Filtering…'
+            'Filtering\u2026'
           ) : (
             <>
               <span className="num">{formatCount(matches)}</span> of <span className="num">{formatCount(total)}</span> frames match

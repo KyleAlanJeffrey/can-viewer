@@ -37,6 +37,7 @@ const LOG_FORMAT_NAMES: Record<LogFormat, string> = {
   csv: 'CSV',
   blf: 'BLF',
   mf4: 'MF4',
+  capture: 'Capture',
 };
 
 export function logFormatName(format: LogFormat): string {

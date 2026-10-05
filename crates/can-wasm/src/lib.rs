@@ -6,9 +6,12 @@
 mod find;
 mod series;
 
-use can_core::{tp::MAX_TRANSFER, FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
+use can_core::{
+    flags, tp::MAX_TRANSFER, FrameRef, FrameSink, FrameStore, IdKey, ERR_FLAG, EXT_FLAG,
+    MAX_PAYLOAD,
+};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
-use can_formats::{mf4, AnyParser, Format, LogParser, ParseStats};
+use can_formats::{candump, mf4, AnyParser, Format, LogParser, ParseStats};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -54,9 +57,26 @@ pub const NO_BYTE: u16 = 0xFFFF;
 pub struct Session {
     store: FrameStore,
     input: LogInput,
+    /// Set when the log is a live capture rather than a file.
+    capture: Option<Capture>,
     databases: Vec<ScopedDatabase>,
     series: Vec<Option<Series>>,
 }
+
+/// A live capture: frames pushed by the page as an adapter receives them.
+#[derive(Debug)]
+struct Capture {
+    started_at_ns: i64,
+    channel: u8,
+    finished: bool,
+}
+
+/// Bytes before the payload of each frame in a [`Session::push_frames`] batch.
+const CAPTURE_RECORD_HEADER: usize = 14;
+
+/// Frame flags a capture may set; the store sets [`flags::REASSEMBLED`] itself.
+const CAPTURE_FLAGS: u8 =
+    flags::FD | flags::BRS | flags::ESI | flags::RTR | flags::ERROR | flags::TX;
 
 /// The log being read: its parser once the format is known, and the first bytes until then.
 #[derive(Default)]
@@ -274,14 +294,64 @@ impl Session {
         self.log_info()
     }
 
+    /// Start a live capture on one bus named `channel` in place of the log. `started_at_ms` is
+    /// the wall-clock start in milliseconds since the Unix epoch; frames are timed from it.
+    pub fn start_capture(&mut self, channel: &str, started_at_ms: f64) {
+        self.store = FrameStore::new();
+        self.input = LogInput::default();
+        self.series.clear();
+        let channel = self.store.channel_index(channel.as_bytes());
+        self.capture = Some(Capture {
+            started_at_ns: (started_at_ms * 1e6).round() as i64,
+            channel,
+            finished: false,
+        });
+    }
+
+    /// Add captured frames, packed as `CaptureFrame` records by `web/src/core/captureFrames.ts`.
+    /// Returns a JSON `LogInfo` of the capture so far.
+    pub fn push_frames(&mut self, packed: &[u8]) -> Result<String, JsError> {
+        self.push_capture_records(packed).map_err(js_err)?;
+        Ok(self.log_info())
+    }
+
+    /// End the capture, putting its frames in time order if they are not. Returns a JSON
+    /// `LogInfo`.
+    pub fn finish_capture(&mut self) -> Result<String, JsError> {
+        let capture = self
+            .capture
+            .as_mut()
+            .ok_or_else(|| js_err("no capture is running"))?;
+        capture.finished = true;
+        self.store.sort_by_time();
+        Ok(self.log_info())
+    }
+
+    /// The log as a `candump -l` file; see [`candump::write_log`].
+    pub fn export_candump(&self) -> Vec<u8> {
+        candump::write_log(&self.store)
+    }
+
     pub fn log_info(&self) -> String {
-        let stats = self.input.stats();
+        let (format, stats) = match &self.capture {
+            // Each frame received counts as a line read.
+            Some(_) => {
+                let received = (self.store.len() - self.store.reassembled_frames()) as u64;
+                let stats = ParseStats {
+                    lines: received,
+                    frames: received,
+                    ..ParseStats::default()
+                };
+                ("capture", stats)
+            }
+            None => (self.input.format().name(), self.input.stats()),
+        };
         let duration_s = match (self.store.first_ts_ns(), self.store.last_ts_ns()) {
             (Some(a), Some(b)) => (b - a) as f64 / 1e9,
             _ => 0.0,
         };
         to_json(&LogInfo {
-            format: self.input.format().name(),
+            format,
             frames: self.store.len(),
             bytes: stats.bytes,
             lines: stats.lines,
@@ -709,6 +779,46 @@ impl Session {
             .or_else(|| applicable().find_map(|(i, d)| d.db.j1939_message(id).map(|m| (i, m))))
     }
 
+    /// Each record: the time in nanoseconds since the capture started (f64), the ID with
+    /// [`EXT_FLAG`] or [`ERR_FLAG`] (u32), the frame flags (u8) and the payload length (u8), all
+    /// little-endian, then the payload.
+    fn push_capture_records(&mut self, mut packed: &[u8]) -> Result<(), &'static str> {
+        let capture = match &self.capture {
+            Some(c) if !c.finished => c,
+            Some(_) => return Err("the capture has ended"),
+            None => return Err("no capture is running"),
+        };
+        let (started_at_ns, channel) = (capture.started_at_ns, capture.channel);
+        while !packed.is_empty() {
+            let header = packed
+                .get(..CAPTURE_RECORD_HEADER)
+                .ok_or("a captured frame is cut short")?;
+            let offset_ns = f64::from_le_bytes(header[0..8].try_into().unwrap());
+            let id = u32::from_le_bytes(header[8..12].try_into().unwrap());
+            let frame_flags = header[12] & CAPTURE_FLAGS;
+            let len = usize::from(header[13]);
+            if len > MAX_PAYLOAD {
+                return Err("a captured frame is longer than 64 bytes");
+            }
+            let end = CAPTURE_RECORD_HEADER + len;
+            let data = packed
+                .get(CAPTURE_RECORD_HEADER..end)
+                .ok_or("a captured frame is cut short")?;
+            if !offset_ns.is_finite() {
+                return Err("a captured frame has no time");
+            }
+            self.store.push(FrameRef {
+                ts_ns: started_at_ns.saturating_add(offset_ns.round() as i64),
+                channel,
+                id,
+                flags: frame_flags,
+                data,
+            });
+            packed = &packed[end..];
+        }
+        Ok(())
+    }
+
     fn filter(&self, key: f64) -> Result<Option<&can_core::IdStats>, ()> {
         if key < 0.0 {
             return Ok(None);
@@ -793,6 +903,133 @@ mod tests {
     fn spec(start_bit: u16, size: u16, byte_order: &str, signed: bool) -> Value {
         json!({ "startBit": start_bit, "size": size, "byteOrder": byte_order, "signed": signed,
                 "factor": 1, "offset": 0 })
+    }
+
+    /// One `push_frames` record.
+    fn capture_record(offset_ns: f64, id: u32, frame_flags: u8, data: &[u8]) -> Vec<u8> {
+        let mut record = offset_ns.to_le_bytes().to_vec();
+        record.extend_from_slice(&id.to_le_bytes());
+        record.push(frame_flags);
+        record.push(data.len() as u8);
+        record.extend_from_slice(data);
+        record
+    }
+
+    #[test]
+    fn a_capture_takes_frames_in_batches_and_reports_itself() {
+        let mut s = session();
+        s.start_capture("slcan0", 1_700_000_000_000.0);
+        assert_eq!(json(&s.log_info())["frames"], 0);
+        assert!(s.series.is_empty());
+
+        let mut batch = capture_record(0.0, 0x123, 0, &[1, 2]);
+        batch.extend(capture_record(
+            1_500_000.0,
+            0x1234_5678 | EXT_FLAG,
+            flags::RTR,
+            &[],
+        ));
+        s.push_capture_records(&batch).unwrap();
+        let mut batch = capture_record(
+            2_000_000.0,
+            0x321,
+            flags::FD | flags::BRS | flags::REASSEMBLED,
+            &[7; 12],
+        );
+        batch.extend(capture_record(
+            3_000_000.0,
+            0x80 | ERR_FLAG,
+            flags::ERROR,
+            &[0; 8],
+        ));
+        s.push_capture_records(&batch).unwrap();
+
+        let info = json(&s.log_info());
+        assert_eq!(info["format"], "capture");
+        assert_eq!(info["frames"], 4);
+        assert_eq!(info["lines"], 4);
+        assert_eq!(info["rejected"], 0);
+        assert_eq!(info["channels"], json!(["slcan0"]));
+        assert_eq!(info["errorFrames"], 1);
+        assert!((info["durationS"].as_f64().unwrap() - 0.003).abs() < 1e-9);
+
+        assert_eq!(s.store.frame(0).ts_ns, 1_700_000_000_000_000_000);
+        assert_eq!(s.store.frame(1).ts_ns, 1_700_000_000_001_500_000);
+        assert_eq!(s.store.frame(1).id, 0x1234_5678 | EXT_FLAG);
+        assert_eq!(s.store.frame(1).flags, flags::RTR);
+        assert_eq!(
+            s.store.frame(2).flags,
+            flags::FD | flags::BRS,
+            "only the store marks reassembled frames"
+        );
+        assert_eq!(s.store.frame(2).data, &[7; 12]);
+        let ids = json(&s.id_summary());
+        assert_eq!(ids.as_array().unwrap().len(), 4);
+
+        assert_eq!(json(&s.finish_capture().unwrap())["frames"], 4);
+        assert_eq!(
+            s.push_capture_records(&capture_record(4e6, 0x123, 0, &[])),
+            Err("the capture has ended")
+        );
+        assert_eq!(
+            String::from_utf8(s.export_candump()).unwrap(),
+            "(1700000000.000000) slcan0 123#0102\n\
+             (1700000000.001500) slcan0 12345678#R\n\
+             (1700000000.002000) slcan0 321##1070707070707070707070707\n\
+             (1700000000.003000) slcan0 20000080#0000000000000000\n"
+        );
+    }
+
+    #[test]
+    fn a_capture_rejects_bad_batches_and_frames_outside_a_capture() {
+        let mut s = Session::new();
+        assert_eq!(
+            s.push_capture_records(&capture_record(0.0, 0x123, 0, &[])),
+            Err("no capture is running")
+        );
+        s.start_capture("can0", 0.0);
+        let record = capture_record(0.0, 0x123, 0, &[1, 2, 3]);
+        assert_eq!(
+            s.push_capture_records(&record[..record.len() - 1]),
+            Err("a captured frame is cut short")
+        );
+        assert_eq!(
+            s.push_capture_records(&record[..5]),
+            Err("a captured frame is cut short")
+        );
+        let mut long = capture_record(0.0, 0x123, 0, &[]);
+        long[13] = 65;
+        long.extend([0; 65]);
+        assert_eq!(
+            s.push_capture_records(&long),
+            Err("a captured frame is longer than 64 bytes")
+        );
+        assert_eq!(
+            s.push_capture_records(&capture_record(f64::NAN, 0x123, 0, &[])),
+            Err("a captured frame has no time")
+        );
+    }
+
+    #[test]
+    fn a_capture_out_of_order_is_sorted_when_it_ends() {
+        let mut s = Session::new();
+        s.start_capture("can0", 1000.0);
+        let mut batch = capture_record(2e6, 0x200, 0, &[2]);
+        batch.extend(capture_record(1e6, 0x100, 0, &[1]));
+        s.push_capture_records(&batch).unwrap();
+        s.finish_capture().unwrap();
+        assert_eq!(s.store.frame(0).id, 0x100);
+        assert_eq!(s.store.frame(1).id, 0x200);
+    }
+
+    #[test]
+    fn opening_a_log_after_a_capture_reports_its_format() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        s.finish_capture().unwrap();
+        let mut s = Session::new();
+        s.push_chunk(LOG.as_bytes());
+        assert_eq!(json(&s.finish())["format"], "candump");
     }
 
     #[test]

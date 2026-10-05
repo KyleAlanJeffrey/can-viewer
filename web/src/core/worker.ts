@@ -31,6 +31,11 @@ function freshSession(): Session {
   return next;
 }
 
+/** A `LogInfo` from the session's JSON, with what only the worker knows. */
+function logInfo(json: string, parseMs: number) {
+  return { ...JSON.parse(json), parseMs, wasmBytes: memory?.buffer.byteLength ?? 0 };
+}
+
 /** A result plus the buffers to transfer rather than copy. */
 function transfer<T extends ArrayBufferView>(view: T): [T, Transferable[]] {
   return [view, [view.buffer]];
@@ -60,8 +65,7 @@ const handlers = {
           port.postMessage({ event: 'progress', bytes: at + chunk.length, total: file.size });
         }
       }
-      const info = JSON.parse(session.finish());
-      return { ...info, parseMs: performance.now() - started, wasmBytes: memory?.buffer.byteLength ?? 0 };
+      return logInfo(session.finish(), performance.now() - started);
     } catch (err) {
       // Leave no log rather than part of one; the app shows no log after a failed open.
       try {
@@ -73,6 +77,15 @@ const handlers = {
       throw err;
     }
   },
+  startCapture(channel: string, startedAtMs: number) {
+    session.free();
+    session = freshSession();
+    session.start_capture(channel, startedAtMs);
+    return logInfo(session.log_info(), 0);
+  },
+  appendFrames: (packed: Uint8Array) => logInfo(session.push_frames(packed), 0),
+  endCapture: () => logInfo(session.finish_capture(), 0),
+  exportCandump: () => transfer(session.export_candump()),
   idSummary: () => JSON.parse(session.id_summary()),
   rowCount: (key: number) => session.row_count(key),
   rows: (key: number, start: number, count: number) => transfer(session.rows(key, start, count)),
@@ -105,7 +118,7 @@ const handlers = {
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
 };
 
-const withTransfer = new Set(['rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
+const withTransfer = new Set(['exportCandump', 'rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
 
 // Requests run one at a time so a request never observes a half-parsed log.
 let initError: unknown = null;

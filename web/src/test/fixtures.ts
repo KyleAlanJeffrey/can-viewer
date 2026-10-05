@@ -115,6 +115,10 @@ const notInFake = (method: string) => () => Promise.reject(new Error(`${method} 
 export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
   return {
     openLog: notInFake('openLog'),
+    startCapture: notInFake('startCapture'),
+    appendFrames: notInFake('appendFrames'),
+    endCapture: notInFake('endCapture'),
+    exportCandump: notInFake('exportCandump'),
     idSummary: notInFake('idSummary'),
     rowCount: notInFake('rowCount'),
     rows: notInFake('rows'),

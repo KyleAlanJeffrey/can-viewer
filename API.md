@@ -53,15 +53,15 @@ Frame flags can also carry bits with no constant in `api.ts`: ESI (`1 << 2`) and
 
 ### The LogInfo object
 
-Describes the current log. Returned by [`openLog`](#openlog).
+Describes the current log. Returned by [`openLog`](#openlog) and by the [live capture](#live-capture) methods.
 
 **Attributes**
 
-- **`name`** `string` - The name passed to `openLog`.
-- **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md).
+- **`name`** `string` - The name passed to `openLog` or `startCapture`.
+- **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md). `'capture'` for frames recorded live with [`startCapture`](#startcapture).
 - **`frames`** `number` - Frames stored.
-- **`bytes`** `number` - Bytes read from the file.
-- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records.
+- **`bytes`** `number` - Bytes read from the file. 0 for a capture.
+- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records. For a capture, the frames received.
 - **`rejected`** `number` - Lines or records that did not parse as a frame.
 - **`firstRejection`** `[number, string] | null` - The 1-based line number (for a binary format, record number) and reason of the first rejected line or record, or null if none.
 - **`durationS`** `number` - Seconds from the first frame to the last.
@@ -71,6 +71,18 @@ Describes the current log. Returned by [`openLog`](#openlog).
 - **`wasmBytes`** `number` - Size of the wasm memory after parsing, in bytes.
 - **`errorFrames`** `number` - Frames flagged as CAN error frames.
 - **`reassembledFrames`** `number` - J1939 transport protocol transfers that were reassembled into frames of their own (flag `FLAG_REASSEMBLED`). They are counted in `frames` too.
+
+### The CaptureFrame object
+
+One frame received by a live capture adapter. Passed to [`appendFrames`](#appendframes).
+
+**Attributes**
+
+- **`timeNs`** `number` - Nanoseconds since the capture started (`startedAtMs` of [`startCapture`](#startcapture)).
+- **`id`** `number` - The ID without flags: 11 or 29 bits. For an error frame, its error class.
+- **`extended`** `boolean` - Whether the ID is a 29-bit extended ID.
+- **`flags`** `number` - `FLAG_FD`, `FLAG_BRS`, `FLAG_RTR` and `FLAG_ERROR`, as received. `FLAG_REASSEMBLED` is ignored: the engine reassembles J1939 transfers itself.
+- **`data`** `Uint8Array` - The payload, at most 64 bytes; empty for a remote frame.
 
 ### The Progress object
 
@@ -322,6 +334,77 @@ Estimated load (0 to 1) of one bus at `bitrate` bit/s, in `buckets` equal bucket
 ```ts
 const [times, loads] = await core.busLoad(0, 0, log.durationS, 200, 500_000);
 const peak = Math.max(...loads);
+```
+
+## Live capture
+
+A capture is a log the page fills as an adapter receives frames, rather than one read from a file. Every read method works on it while it runs and sees the frames appended so far. The web app reads the adapter on the main thread (see "Live capture" in COMPATIBILITY.md) and calls `appendFrames` about every 100 ms.
+
+### startCapture
+
+```ts
+startCapture(name: string, channel: string, startedAtMs: number): Promise<LogInfo>
+```
+
+Starts a live capture of one bus in place of the log, as [`openLog`](#openlog) replaces it: the previous log and every decoded series are freed, and the loaded databases are kept. Series handles restart from 0.
+
+**Parameters**
+
+- **`name`** `string` - What to call the capture; returned as `LogInfo.name`. The web app uses `capture-YYYYMMDD-HHMMSS.log`.
+- **`channel`** `string` - The bus name, such as `can0`. It is the capture's only channel, so databases scoped to it apply.
+- **`startedAtMs`** `number` - The wall-clock time, in milliseconds since the Unix epoch, that frame times count from. It becomes the absolute time of frames in an exported candump file.
+
+**Returns** the empty capture's [`LogInfo`](#the-loginfo-object), with `format` `'capture'`.
+
+```ts
+const log = await core.startCapture('capture-20261005-143000.log', 'can0', Date.now());
+```
+
+### appendFrames
+
+```ts
+appendFrames(frames: CaptureFrame[]): Promise<LogInfo>
+```
+
+Adds frames to the running capture, in the order received. Once it resolves, every other call sees them. `WebCore` packs the batch into one buffer and transfers it to the worker. Times are expected to rise, as a monotonic clock gives them; [`endCapture`](#endcapture) sorts the frames in case they do not.
+
+**Parameters**
+
+- **`frames`** [`CaptureFrame[]`](#the-captureframe-object) - The frames received since the last call.
+
+**Returns** the capture so far.
+
+**Errors** Rejects with `no capture is running` or `the capture has ended`, and with `a captured frame is longer than 64 bytes` or `a captured frame has no time` for a frame that cannot be stored; frames before it in the batch are kept.
+
+```ts
+const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xde, 0xad) }]);
+```
+
+### endCapture
+
+```ts
+endCapture(): Promise<LogInfo>
+```
+
+Ends the running capture and puts its frames in time order. The capture stays the current log, so it can be viewed and exported; `appendFrames` rejects from then on.
+
+**Returns** the finished capture.
+
+**Errors** Rejects with `no capture is running`.
+
+### exportCandump
+
+```ts
+exportCandump(): Promise<Uint8Array>
+```
+
+The current log as a `candump -l` file in UTF-8, one line per frame: `(seconds.microseconds) bus ID#data`, with `##<flags>` for CAN FD frames, `#R` for remote frames and a trailing ` T` for transmitted frames. Frames reassembled from J1939 transport protocol packets are left out, since the packets themselves are written. It works for any log, not only a capture. Reading the file again gives the same frames, apart from times rounded to the microsecond.
+
+**Returns** the file contents. The buffer is transferred.
+
+```ts
+const bytes = await core.exportCandump();
+downloadBlob(log.name, new Blob([bytes], { type: 'text/plain' })); // web/src/download.ts
 ```
 
 ## IDs and frames

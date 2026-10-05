@@ -1,4 +1,5 @@
-import type { ByteLane, Candidate, CoreApi, Database, FindRule, IdSummary, LogInfo, Progress, RawSignalSpec, ScopedDatabase, SeriesInfo } from './api';
+import type { ByteLane, Candidate, CaptureFrame, CoreApi, Database, FindRule, IdSummary, LogInfo, Progress, RawSignalSpec, ScopedDatabase, SeriesInfo } from './api';
+import { packFrames } from './captureFrames';
 import { RowBatch } from './rows';
 import type { Request } from './worker';
 
@@ -18,6 +19,8 @@ export class WebCore implements CoreApi {
   /** The last databases set, so a restarted worker gets them back. */
   private databases: ScopedDatabase[] | null = null;
   private readonly resetListeners = new Set<() => void>();
+  /** The name of the running capture, which the worker doesn't keep. */
+  private captureName = '';
 
   constructor() {
     this.start();
@@ -68,11 +71,16 @@ export class WebCore implements CoreApi {
   }
 
   private call<T>(method: Request['method'], ...args: unknown[]): Promise<T> {
+    return this.callTransferring<T>(method, args, []);
+  }
+
+  /** Like `call`, handing `transfer` to the worker rather than copying it. */
+  private callTransferring<T>(method: Request['method'], args: unknown[], transfer: Transferable[]): Promise<T> {
     const id = this.nextId++;
     if (this.failure) return Promise.reject(this.failure);
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.worker.postMessage({ id, method, args } satisfies Request);
+      this.worker.postMessage({ id, method, args } satisfies Request, transfer);
     });
   }
 
@@ -85,6 +93,22 @@ export class WebCore implements CoreApi {
     }
   }
 
+  async startCapture(name: string, channel: string, startedAtMs: number): Promise<LogInfo> {
+    this.captureName = name;
+    return { ...(await this.call<LogInfo>('startCapture', channel, startedAtMs)), name };
+  }
+
+  async appendFrames(frames: CaptureFrame[]): Promise<LogInfo> {
+    const packed = packFrames(frames);
+    const info = await this.callTransferring<LogInfo>('appendFrames', [packed], [packed.buffer]);
+    return { ...info, name: this.captureName };
+  }
+
+  async endCapture(): Promise<LogInfo> {
+    return { ...(await this.call<LogInfo>('endCapture')), name: this.captureName };
+  }
+
+  exportCandump = () => this.call<Uint8Array>('exportCandump');
   idSummary = () => this.call<IdSummary[]>('idSummary');
   rowCount = (key: number) => this.call<number>('rowCount', key);
   frameData = (key: number, row: number) => this.call<Uint8Array>('frameData', key, row);

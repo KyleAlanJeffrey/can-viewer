@@ -19,7 +19,7 @@ The job: open a log (often hundreds of MB), find out what's on the bus, decode i
 
 ## Product Purpose
 
-FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump logs today, with ASC, BLF, TRC, MF4 and CSV planned. It decodes with imported DBC files, plots signals, and makes bit-level activity visible so unknown messages can be defined by hand. FreeCAN Studio Pro is a paid desktop app on the same core that adds live capture, transmit and replay, UDS scanning, video sync, automated signal discovery, multi-GB files and scripting.
+FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump logs today, with ASC, BLF, TRC, MF4 and CSV planned. It decodes with imported DBC files, plots signals, and makes bit-level activity visible so unknown messages can be defined by hand. FreeCAN Studio Pro is a paid desktop app on the same core that adds live capture, transmit and replay, UDS scanning, automated signal discovery, multi-GB files and scripting. Paid features are hidden for now.
 
 Success: an engineer drops a large log into a browser tab and is reading decoded signals, or has defined an unknown one, within minutes, with nothing installed and nothing uploaded.
 
@@ -42,7 +42,9 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
   - DBC decode (Intel/Motorola, signed, float, simple multiplexing), with several DBCs per log, each for every bus or one bus, and J1939 messages matched by PGN;
   - six views: Overview, Trace, Plot, Reverse Engineer (drag-to-define signals and Find Signal), Compare (what differs between two logs, such as idle and one action) and Database (DBC editing and export);
   - a virtualized canvas trace table, a bit heatmap, and uPlot plots with decimation;
-  - the open log, DBCs and view state kept across reloads.
+  - trace filters by bus, ID or name, data rules, frame kind and time range, run in the core;
+  - the open log, DBCs and view state kept across reloads;
+  - video sync in the Plot view: a local video plays beside the plots, lined up with the log by one matched moment, and moves with the plot cursor. The video stays in the tab and is never stored or uploaded.
 - **Planned:** see [docs/screens.md](docs/screens.md), [docs/research.md](docs/research.md) and [TODO.md](TODO.md). Key items are more log formats, parallel parsing, extended multiplexing, J1939 multi-packet messages, and the Pro desktop app.
 - **Licensing:**
   - The product is closed-source and commercial, so no GPL or LGPL code can be copied in.

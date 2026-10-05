@@ -6,6 +6,7 @@ import type {
   CoreApi,
   Database,
   FindRule,
+  FrameFilter,
   IdComparison,
   IdSummary,
   LogFormat,
@@ -143,6 +144,8 @@ export class WebCore implements CoreApi {
   bitFlipsBetween = (key: number, t0: number, t1: number) => this.call<Uint32Array>('bitFlipsBetween', key, t0, t1);
   decodeRaw = (key: number, spec: RawSignalSpec) => this.call<SeriesInfo>('decodeRaw', key, spec);
   exportDbc = (db: Database) => this.call<string>('exportDbc', db);
+  setTraceFilter = (filter: FrameFilter | null) => this.call<number>('setTraceFilter', filter);
+  countFilterMatches = (filter: FrameFilter) => this.call<number | null>('countFilterMatches', filter);
   exportLog = (format: LogFormat) => this.call<Blob>('exportLog', format);
 
   setDatabases(dbs: ScopedDatabase[]) {

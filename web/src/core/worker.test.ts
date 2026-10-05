@@ -2,9 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from './worker';
 
 class FakeSession {
+  static filters: string[] = [];
   hasB = false;
   free() {}
   set_databases() {}
+  set_trace_filter(json: string): number {
+    FakeSession.filters.push(json);
+    return json === 'null' ? 0 : 3;
+  }
+  count_filter_matches(json: string): number {
+    FakeSession.filters.push(json);
+    return 5;
+  }
   set_file_name() {}
   reserve_for_bytes() {}
   push_chunk() {}
@@ -131,5 +140,25 @@ describe('core worker', () => {
     const port = await startWorker();
     expect(await call(port, 1, 'openCompareLog', new Blob(['x']), 'broken.log')).toEqual({ id: 1, error: 'No CAN frames' });
     expect(await call(port, 2, 'compareLogInfo')).toEqual({ id: 2, result: null });
+  });
+
+  it('runs only the newest of the filter counts waiting in the queue', async () => {
+    FakeSession.filters = [];
+    const port = await startWorker();
+    const replies: unknown[] = [];
+    port.postMessage.mockImplementation((reply: unknown) => replies.push(reply));
+    const filter = { channels: null, keys: [1], kinds: null, rules: [], combine: 'all', t0: null, t1: null };
+    port.onmessage?.({ data: { id: 1, method: 'countFilterMatches', args: [filter] } });
+    port.onmessage?.({ data: { id: 2, method: 'countFilterMatches', args: [filter] } });
+    port.onmessage?.({ data: { id: 3, method: 'setTraceFilter', args: [filter] } });
+    port.onmessage?.({ data: { id: 4, method: 'setTraceFilter', args: [null] } });
+    await vi.waitUntil(() => replies.length === 4);
+    expect(replies).toEqual([
+      { id: 1, result: null },
+      { id: 2, result: 5 },
+      { id: 3, result: 3 },
+      { id: 4, result: 0 },
+    ]);
+    expect(FakeSession.filters).toEqual([JSON.stringify(filter), JSON.stringify(filter), 'null']);
   });
 });

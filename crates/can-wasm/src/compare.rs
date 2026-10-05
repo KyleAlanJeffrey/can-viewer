@@ -1069,6 +1069,7 @@ impl Session {
         std::mem::swap(&mut self.store, &mut log.store);
         std::mem::swap(&mut self.input, &mut log.input);
         self.series.clear();
+        self.filtered = None;
         Ok(self.log_info())
     }
 
@@ -1540,7 +1541,14 @@ mod tests {
             r#"{"startBit":0,"size":8,"byteOrder":"intel","signed":false,"factor":1,"offset":0}"#,
         )
         .unwrap();
+        let every = r#"{"channels":null,"keys":null,"kinds":null,"rules":[],"combine":"all","t0":null,"t1":null}"#;
+        assert!(s.set_trace_filter(every).unwrap() > 0);
         let info: serde_json::Value = serde_json::from_str(&s.swap_compare_log().unwrap()).unwrap();
+        assert_eq!(
+            s.row_count(-2.0),
+            0,
+            "the filtered rows were the old open log's"
+        );
         assert_eq!(info["frames"], 11);
         assert!(s.store.id_stats(id_key(0, 0x123)).is_some());
         assert!(

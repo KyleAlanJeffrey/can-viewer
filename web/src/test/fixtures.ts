@@ -143,6 +143,8 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     compareBytes: notInFake('compareBytes'),
     compareByteLanes: notInFake('compareByteLanes'),
     compareFrameAt: notInFake('compareFrameAt'),
+    setTraceFilter: notInFake('setTraceFilter'),
+    countFilterMatches: notInFake('countFilterMatches'),
     exportLog: notInFake('exportLog'),
     ...overrides,
   };

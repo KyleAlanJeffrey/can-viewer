@@ -11,7 +11,10 @@ mod series;
 
 use std::collections::VecDeque;
 
-use can_core::{tp::MAX_TRANSFER, FrameStore, IdKey, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
+use can_core::{
+    tp::MAX_TRANSFER, Combine, DataRule, FrameFilter, FrameKind, FrameStore, IdKey, IdStats,
+    ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
+};
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{mf4, writer, AnyParser, Format, LogParser, ParseStats};
 use serde::{Deserialize, Serialize};
@@ -58,6 +61,11 @@ const SNIFF_BYTES: usize = 4096;
 /// What [`Session::row_bytes`] gives for a byte past the end of a frame.
 pub const NO_BYTE: u16 = 0xFFFF;
 
+/// The key of every frame, as opposed to one ID's.
+const ALL_IDS: f64 = -1.0;
+/// The key of the rows [`Session::set_trace_filter`] kept.
+const FILTERED: f64 = -2.0;
+
 #[wasm_bindgen]
 #[derive(Default)]
 pub struct Session {
@@ -67,8 +75,56 @@ pub struct Session {
     series: Vec<Option<Series>>,
     /// A second log, to compare the open log with.
     log_b: Option<compare::LogB>,
+    /// Store indices of the frames the trace filter matched, in time order.
+    filtered: Option<Vec<u32>>,
     /// The chunks of the last `export_log` not yet taken by `export_chunk`.
     export: VecDeque<Vec<u8>>,
+}
+
+/// The rows a key names: every frame, one ID's frames, or the filtered frames.
+#[derive(Clone, Copy)]
+enum Trace<'a> {
+    All,
+    Id(&'a IdStats),
+    Filtered(&'a [u32]),
+}
+
+impl Trace<'_> {
+    fn len(self, store: &FrameStore) -> usize {
+        match self {
+            Self::All => store.len(),
+            Self::Id(stats) => stats.frames.len(),
+            Self::Filtered(rows) => rows.len(),
+        }
+    }
+
+    /// The store index of row `row`, which must exist.
+    fn index(self, row: usize) -> usize {
+        match self {
+            Self::All => row,
+            Self::Id(stats) => stats.frames[row] as usize,
+            Self::Filtered(rows) => rows[row] as usize,
+        }
+    }
+
+    /// The frame row `row`'s payload is compared with; see [`FrameStore::previous_of_same_kind`].
+    fn previous_of_same_kind(self, store: &FrameStore, row: usize) -> Option<usize> {
+        match self {
+            Self::Id(stats) => store.previous_of_same_kind_at(stats, row),
+            Self::All | Self::Filtered(_) => store.previous_of_same_kind(self.index(row)),
+        }
+    }
+
+    /// The first row at or after `ts_ns`, or `len` if there is none.
+    fn first_at_or_after(self, store: &FrameStore, ts_ns: i64) -> usize {
+        match self {
+            Self::All => store.first_at_or_after(ts_ns),
+            Self::Id(stats) => store.first_of_id_at_or_after(stats, ts_ns),
+            Self::Filtered(rows) => {
+                rows.partition_point(|&i| store.frame(i as usize).ts_ns < ts_ns)
+            }
+        }
+    }
 }
 
 /// The log being read: its parser once the format is known, and the first bytes until then.
@@ -249,6 +305,43 @@ struct FindRule {
     t1: f64,
 }
 
+/// A JSON `FrameFilter`; see [`FrameFilter`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FilterSpec {
+    channels: Option<Vec<u8>>,
+    keys: Option<Vec<IdKey>>,
+    kinds: Option<Vec<KindSpec>>,
+    rules: Vec<RuleSpec>,
+    combine: CombineSpec,
+    t0: Option<f64>,
+    t1: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum KindSpec {
+    Data,
+    Remote,
+    Error,
+    Reassembled,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum RuleSpec {
+    ByteEquals { byte: u32, value: u8 },
+    Bit { byte: u32, bit: u8, set: bool },
+    Changes,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum CombineSpec {
+    All,
+    Any,
+}
+
 #[derive(Serialize)]
 struct Candidate {
     key: IdKey,
@@ -421,35 +514,51 @@ impl Session {
         to_json(&summaries)
     }
 
-    /// Number of rows in the trace, either all frames or only those of `key` (pass -1 for all).
+    /// Number of rows in the trace: all frames (key -1), the filtered frames (-2) or those of `key`.
     pub fn row_count(&self, key: f64) -> u32 {
-        match self.filter(key) {
-            Ok(Some(stats)) => stats.frames.len() as u32,
-            Ok(None) => self.store.len() as u32,
-            Err(()) => 0,
-        }
+        self.trace(key).map_or(0, |t| t.len(&self.store) as u32)
+    }
+
+    /// Keep the frames that match a JSON `FrameFilter` as the rows of key -2, in time order, and
+    /// return how many there are. JSON `null` drops them.
+    pub fn set_trace_filter(&mut self, json: &str) -> Result<u32, JsError> {
+        self.filtered = None;
+        let Some(filter) = self.parse_filter(json).map_err(js_err)? else {
+            return Ok(0);
+        };
+        let rows = self
+            .store
+            .filter(&filter)
+            .map_err(|_| js_err("not enough memory to filter this log"))?;
+        let count = rows.len() as u32;
+        self.filtered = Some(rows);
+        Ok(count)
+    }
+
+    /// How many frames match a JSON `FrameFilter`, keeping nothing.
+    pub fn count_filter_matches(&self, json: &str) -> Result<u32, JsError> {
+        let filter = self
+            .parse_filter(json)
+            .map_err(js_err)?
+            .ok_or_else(|| js_err("no filter to count"))?;
+        Ok(self.store.count_matches(&filter) as u32)
     }
 
     /// Rows `start..start + count` of the trace, packed [`ROW_STRIDE`] bytes each. A row holds
     /// at most [`MAX_PAYLOAD`] bytes of payload: a reassembled frame is cut there, and its full
     /// length is at offset 20 as a `u16`.
     pub fn rows(&self, key: f64, start: u32, count: u32) -> Vec<u8> {
-        let Ok(filter) = self.filter(key) else {
+        let Ok(trace) = self.trace(key) else {
             return Vec::new();
         };
         let origin = self.origin_ns();
-        let total = self.row_count(key) as usize;
+        let total = trace.len(&self.store);
         let start = (start as usize).min(total);
         let end = start.saturating_add(count as usize).min(total);
         let mut out = Vec::with_capacity((end - start) * ROW_STRIDE);
         for row in start..end {
-            let (index, prev) = match filter {
-                Some(stats) => (
-                    stats.frames[row] as usize,
-                    row.checked_sub(1).map(|p| stats.frames[p] as usize),
-                ),
-                None => (row, self.store.previous_of_same_id(row)),
-            };
+            let index = trace.index(row);
+            let prev = trace.previous_of_same_kind(&self.store, row);
             let frame = self.store.frame(index);
             let changed = prev.map_or(0u64, |p| {
                 let before = self.store.frame(p).data;
@@ -486,16 +595,17 @@ impl Session {
         out
     }
 
-    /// The whole payload of row `row` of the trace of `key` (pass -1 for all), which [`Self::rows`]
-    /// cuts at [`MAX_PAYLOAD`] bytes. Empty for an unknown key or a row past the end.
+    /// The whole payload of row `row` of the trace of `key` (-1 for all, -2 for the filtered
+    /// frames), which [`Self::rows`] cuts at [`MAX_PAYLOAD`] bytes. Empty for an unknown key or a
+    /// row past the end.
     pub fn frame_data(&self, key: f64, row: u32) -> Vec<u8> {
         let row = row as usize;
-        let index = match self.filter(key) {
-            Ok(Some(stats)) => stats.frames.get(row).map(|&f| f as usize),
-            Ok(None) => (row < self.store.len()).then_some(row),
-            Err(()) => None,
-        };
-        index.map_or_else(Vec::new, |i| self.store.frame(i).data.to_vec())
+        match self.trace(key) {
+            Ok(trace) if row < trace.len(&self.store) => {
+                self.store.frame(trace.index(row)).data.to_vec()
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Payload bytes `first..first + byte_count` of rows `start..start + count` of the trace of
@@ -511,7 +621,7 @@ impl Session {
         first: u32,
         byte_count: u32,
     ) -> Vec<u16> {
-        let Ok(filter) = self.filter(key) else {
+        let Ok(trace) = self.trace(key) else {
             return Vec::new();
         };
         let Some(end_byte) = first.checked_add(byte_count) else {
@@ -520,7 +630,7 @@ impl Session {
         if byte_count as usize > MAX_TRANSFER {
             return Vec::new();
         }
-        let total = self.row_count(key) as usize;
+        let total = trace.len(&self.store);
         let start = (start as usize).min(total);
         let end = start.saturating_add(count as usize).min(total);
         let Some(len) = (end - start).checked_mul(byte_count as usize) else {
@@ -529,8 +639,7 @@ impl Session {
         let bytes = first as usize..end_byte as usize;
         let mut out = Vec::with_capacity(len);
         for row in start..end {
-            let index = filter.map_or(row, |stats| stats.frames[row] as usize);
-            let data = self.store.frame(index).data;
+            let data = self.store.frame(trace.index(row)).data;
             out.extend(
                 bytes
                     .clone()
@@ -629,35 +738,27 @@ impl Session {
         Ok(())
     }
 
-    /// Index of the first row of `key` (-1 for all frames) at or after `t` seconds, clamped to
-    /// the last row.
+    /// Index of the first row of `key` (-1 for all frames, -2 for the filtered frames) at or
+    /// after `t` seconds, clamped to the last row.
     pub fn row_at_time(&self, key: f64, t: f64) -> u32 {
-        let ts = self.ns_at(t);
-        let (row, rows) = match self.filter(key) {
-            Ok(Some(stats)) => (
-                self.store.first_of_id_at_or_after(stats, ts),
-                stats.frames.len(),
-            ),
-            Ok(None) => (self.store.first_at_or_after(ts), self.store.len()),
-            Err(()) => return 0,
+        let Ok(trace) = self.trace(key) else {
+            return 0;
         };
-        row.min(rows.saturating_sub(1)) as u32
+        let row = trace.first_at_or_after(&self.store, self.ns_at(t));
+        row.min(trace.len(&self.store).saturating_sub(1)) as u32
     }
 
-    /// Number of rows of `key` (-1 for all frames) timestamped between `t0` and `t1` seconds,
-    /// both ends included. For an ID key these are the frames [`Session::bit_flips_between`]
-    /// compares.
+    /// Number of rows of `key` (-1 for all frames, -2 for the filtered frames) timestamped
+    /// between `t0` and `t1` seconds, both ends included. For an ID key these are the frames
+    /// [`Session::bit_flips_between`] compares.
     pub fn row_count_between(&self, key: f64, t0: f64, t1: f64) -> u32 {
-        let (t0, t1) = (self.ns_at(t0), self.ns_at(t1));
-        let rows = match self.filter(key) {
-            Ok(Some(stats)) => self.store.id_frames_between(stats, t0, t1).len(),
-            Ok(None) => self
-                .store
-                .first_at_or_after(t1.saturating_add(1))
-                .saturating_sub(self.store.first_at_or_after(t0)),
-            Err(()) => 0,
+        let Ok(trace) = self.trace(key) else {
+            return 0;
         };
-        rows as u32
+        let (t0, t1) = (self.ns_at(t0), self.ns_at(t1));
+        trace
+            .first_at_or_after(&self.store, t1.saturating_add(1))
+            .saturating_sub(trace.first_at_or_after(&self.store, t0)) as u32
     }
 
     /// Estimated load (0..1) of `channel` at `bitrate` bit/s in `buckets` buckets between `t0`
@@ -810,11 +911,71 @@ impl Session {
             .or_else(|| applicable().find_map(|(i, d)| d.db.j1939_message(id).map(|m| (i, m))))
     }
 
-    fn filter(&self, key: f64) -> Result<Option<&can_core::IdStats>, ()> {
+    fn filter(&self, key: f64) -> Result<Option<&IdStats>, ()> {
         if key < 0.0 {
             return Ok(None);
         }
         self.store.id_stats(key as IdKey).map(Some).ok_or(())
+    }
+
+    /// The rows of a trace key. The filtered rows are empty until a filter is set.
+    fn trace(&self, key: f64) -> Result<Trace<'_>, ()> {
+        if key == FILTERED {
+            return Ok(Trace::Filtered(self.filtered.as_deref().unwrap_or(&[])));
+        }
+        if key == ALL_IDS {
+            return Ok(Trace::All);
+        }
+        Ok(self.filter(key)?.map_or(Trace::All, Trace::Id))
+    }
+
+    /// A JSON `FrameFilter`, or `None` for JSON `null`.
+    fn parse_filter(&self, json: &str) -> Result<Option<FrameFilter>, String> {
+        let spec: Option<FilterSpec> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        spec.map(|spec| self.frame_filter(spec)).transpose()
+    }
+
+    fn frame_filter(&self, spec: FilterSpec) -> Result<FrameFilter, String> {
+        let rules = spec
+            .rules
+            .into_iter()
+            .map(|rule| match rule {
+                RuleSpec::ByteEquals { byte, value } => Ok(DataRule::ByteEquals {
+                    byte: byte as usize,
+                    value,
+                }),
+                RuleSpec::Bit { byte, bit, set } if bit < 8 => Ok(DataRule::Bit {
+                    byte: byte as usize,
+                    bit,
+                    set,
+                }),
+                RuleSpec::Bit { .. } => Err("a bit must be 0 to 7".to_owned()),
+                RuleSpec::Changes => Ok(DataRule::Changes),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let kinds = spec.kinds.map(|kinds| {
+            kinds
+                .into_iter()
+                .map(|kind| match kind {
+                    KindSpec::Data => FrameKind::Data,
+                    KindSpec::Remote => FrameKind::Remote,
+                    KindSpec::Error => FrameKind::Error,
+                    KindSpec::Reassembled => FrameKind::Reassembled,
+                })
+                .collect()
+        });
+        Ok(FrameFilter {
+            channels: spec.channels,
+            keys: spec.keys,
+            kinds,
+            rules,
+            combine: match spec.combine {
+                CombineSpec::All => Combine::All,
+                CombineSpec::Any => Combine::Any,
+            },
+            t0_ns: spec.t0.map_or(i64::MIN, |t| self.ns_at(t)),
+            t1_ns: spec.t1.map_or(i64::MAX, |t| self.ns_at(t)),
+        })
     }
 }
 
@@ -1442,6 +1603,114 @@ mod tests {
             .iter()
             .all(|c| c["spec"]["startBit"].as_u64().unwrap() < 512));
         assert_eq!(found[0]["spec"]["startBit"], 0);
+    }
+
+    fn filter_json(extra: Value) -> String {
+        let mut filter = json!({ "channels": null, "keys": null, "kinds": null, "rules": [],
+            "combine": "all", "t0": null, "t1": null });
+        for (k, v) in extra.as_object().unwrap() {
+            filter[k] = v.clone();
+        }
+        filter.to_string()
+    }
+
+    /// Store indices (offset 12) of the rows of `key`.
+    fn row_indices(s: &Session, key: f64) -> Vec<u32> {
+        s.rows(key, 0, u32::MAX)
+            .chunks(ROW_STRIDE)
+            .map(|r| u32::from_le_bytes(r[12..16].try_into().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn a_trace_filter_keeps_its_matches_as_the_rows_of_key_minus_2() {
+        let mut s = session();
+        assert_eq!(s.row_count(FILTERED), 0, "nothing until a filter is set");
+        assert!(s.rows(FILTERED, 0, 10).is_empty());
+
+        // Byte 1 of 123 is 02, 04 and 06: bit 2 is set in the last two.
+        let filter = filter_json(json!({
+            "keys": [id_key(0, 0x123), id_key(1, 0x7FF)],
+            "rules": [{ "type": "bit", "byte": 1, "bit": 2, "set": true }],
+        }));
+        assert_eq!(s.count_filter_matches(&filter).unwrap(), 2);
+        assert_eq!(s.row_count(FILTERED), 0, "counting keeps nothing");
+        assert_eq!(s.set_trace_filter(&filter).unwrap(), 2);
+        assert_eq!(s.row_count(FILTERED), 2);
+        assert_eq!(row_indices(&s, FILTERED), [1, 5]);
+        // Changed bytes still compare with the previous frame of the ID, not the previous row.
+        let rows = s.rows(FILTERED, 1, 1);
+        assert_eq!(u64::from_le_bytes(rows[24..32].try_into().unwrap()), 0b0111);
+        assert_eq!(s.frame_data(FILTERED, 1), [5, 6, 0, 0]);
+        assert!(s.frame_data(FILTERED, 2).is_empty());
+        assert_eq!(s.row_bytes(FILTERED, 0, 2, 0, 1), [3, 5]);
+        assert_eq!(s.row_at_time(FILTERED, 0.0), 0);
+        assert_eq!(s.row_at_time(FILTERED, 0.02), 1);
+        assert_eq!(s.row_at_time(FILTERED, 9.0), 1);
+        assert_eq!(s.row_count_between(FILTERED, 0.0, 0.06), 2);
+        assert_eq!(s.row_count_between(FILTERED, 0.011, 0.059), 0);
+
+        let any = filter_json(json!({
+            "channels": [0],
+            "kinds": ["data", "error"],
+            "rules": [{ "type": "byteEquals", "byte": 0, "value": 0 }, { "type": "changes" }],
+            "combine": "any",
+            "t0": 0.02,
+            "t1": 0.06,
+        }));
+        assert_eq!(s.set_trace_filter(&any).unwrap(), 3);
+        assert_eq!(row_indices(&s, FILTERED), [2, 4, 5]);
+        let errors = filter_json(json!({ "kinds": ["error"] }));
+        assert_eq!(s.count_filter_matches(&errors).unwrap(), 1);
+        let remote = filter_json(json!({ "kinds": ["remote", "reassembled"] }));
+        assert_eq!(s.count_filter_matches(&remote).unwrap(), 0);
+
+        assert_eq!(s.set_trace_filter("null").unwrap(), 0);
+        assert_eq!(s.row_count(FILTERED), 0);
+        assert_eq!(s.row_count(ALL_IDS), 6, "the other keys are untouched");
+    }
+
+    #[test]
+    fn changed_bytes_skip_the_remote_frames_of_a_polled_id() {
+        let mut s = Session::new();
+        s.push_chunk(
+            b"(0.0) can0 100#R\n(0.1) can0 100#0102\n(0.2) can0 100#R\n(0.3) can0 100#0302\n",
+        );
+        s.finish();
+        let changed = |s: &Session, key: f64, row: u32| {
+            let rows = s.rows(key, row, 1);
+            u64::from_le_bytes(rows[24..32].try_into().unwrap())
+        };
+        assert_eq!(changed(&s, ALL_IDS, 3), 0b01);
+        assert_eq!(changed(&s, id_key(0, 0x100) as f64, 3), 0b01);
+        assert_eq!(
+            changed(&s, ALL_IDS, 2),
+            0,
+            "a remote frame has no bytes to change"
+        );
+        let filter = filter_json(json!({ "rules": [{ "type": "changes" }] }));
+        assert_eq!(s.set_trace_filter(&filter).unwrap(), 1);
+        assert_eq!(changed(&s, FILTERED, 0), 0b01);
+    }
+
+    #[test]
+    fn malformed_trace_filters_are_rejected() {
+        let s = session();
+        assert!(s.parse_filter("null").unwrap().is_none());
+        assert!(s.parse_filter(&filter_json(json!({}))).unwrap().is_some());
+        let bad_bit =
+            filter_json(json!({ "rules": [{ "type": "bit", "byte": 0, "bit": 8, "set": true }] }));
+        assert_eq!(
+            s.parse_filter(&bad_bit).unwrap_err(),
+            "a bit must be 0 to 7"
+        );
+        let bad_value =
+            filter_json(json!({ "rules": [{ "type": "byteEquals", "byte": 0, "value": 256 }] }));
+        assert!(s.parse_filter(&bad_value).is_err());
+        assert!(s.parse_filter(r#"{ "rules": [] }"#).is_err());
+        assert!(s
+            .parse_filter(&filter_json(json!({ "kinds": ["fd"] })))
+            .is_err());
     }
 
     #[test]

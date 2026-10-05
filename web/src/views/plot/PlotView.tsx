@@ -14,6 +14,9 @@ import { clampRange, clampTime, formatSeconds, formatValue, withUnit, type Curso
 import { Readouts } from './Readouts';
 import { SignalTree } from './SignalTree';
 import { useCursorSamples } from './useCursorSamples';
+import { AddVideoButton } from './video/AddVideoButton';
+import { VideoWorkspace } from './video/VideoWorkspace';
+import { useVideo } from './video/videoSession';
 import './plot.css';
 
 const SYNC_KEY = 'plot-view';
@@ -127,6 +130,7 @@ export function PlotView({ ctx }: ViewProps) {
   useLayoutEffect(measure, [measure, plots.length]);
 
   const samples = useCursorSamples(core, plots, cursorA, b);
+  const video = useVideo();
 
   if (!log) return null;
 
@@ -189,94 +193,102 @@ export function PlotView({ ctx }: ViewProps) {
   return (
     <>
       <SignalTree ctx={ctx} />
-      {!hasPlots ? (
-        <div className="pv-empty">
-          <p className="pv-empty-title">Choose signals in the sidebar to plot them</p>
-          <p className="pv-empty-hint">
-            {ctx.dbcs.length > 0 ? 'Up to six signals share one time axis, with cursors and markers.' : 'Signals come from a DBC, so open one first.'}
-          </p>
-        </div>
-      ) : (
-        <>
-          <header className="content-header pv-header">
-            <div className="pv-summary">
-              <p className="content-sub pv-summary-text" title="Drag across a plot or scroll to zoom. Shift-scroll pans. Double-click resets.">
-                {plots.length} {plots.length === 1 ? 'signal' : 'signals'} &middot;{' '}
-                {zoomed ? `Showing ${formatDuration(span)} of ${formatDuration(duration)}` : `All ${formatDuration(duration)}`}
+      <VideoWorkspace logDuration={duration} cursor={cursorA} onCursor={(t) => moveCursor('a', t)}>
+        {!hasPlots ? (
+          <div className="pv-empty">
+            <p className="pv-empty-title">Choose signals in the sidebar to plot them</p>
+            <p className="pv-empty-hint">
+              {ctx.dbcs.length > 0 ? 'Up to six signals share one time axis, with cursors and markers.' : 'Signals come from a DBC, so open one first.'}
+            </p>
+            {!video && (
+              <p className="pv-empty-action">
+                <AddVideoButton log={log} />
               </p>
-              <button className="text-button" onClick={resetZoom} disabled={!zoomed} title="Or double-click a plot">
-                Reset Zoom
-              </button>
-            </div>
-            <div className="content-actions">
-              <Segmented label="Cursors" options={CURSOR_OPTIONS} value={mode} onChange={changeMode} />
-              <button className="button" onClick={addMarker} disabled={cursorA === null}>
-                <MapPin size={16} strokeWidth={1.5} aria-hidden="true" />
-                Add Marker
-              </button>
-              <button className="button" onClick={exportPng}>
-                <ImageDown size={16} strokeWidth={1.5} aria-hidden="true" />
-                Export PNG
-              </button>
-              <button className="text-button" onClick={ctx.clearPlots}>
-                Clear
-              </button>
-            </div>
-          </header>
-          <div className="pv-body">
-            <div className="pv-stack" ref={stackRef}>
-              <CursorRail
-                railRef={railRef}
-                area={area && { left: area.rail, width: area.width }}
-                range={range}
-                duration={duration}
-                cursors={railCursors}
-                onMove={moveCursor}
-              />
-              <div className="pv-lanes">
-                {plots.map((spec, i) => (
-                  <Lane
-                    key={spec.id}
-                    core={core}
-                    spec={spec}
-                    range={range}
-                    duration={duration}
-                    plotHeight={plotHeight}
-                    showTimeAxis={i === plots.length - 1}
-                    showMarkerLabels={i === 0}
-                    syncKey={SYNC_KEY}
-                    cursorA={cursorA}
-                    cursorB={b}
-                    samples={samples[spec.id]}
-                    markers={markers}
-                    readoutA={readout(spec, 'a')}
-                    readoutB={b !== null ? readout(spec, 'b') : null}
-                    onZoom={setRange}
-                    onResetZoom={resetZoom}
-                    onPick={pick}
-                    onRemove={() => ctx.removePlot(spec.id)}
-                    onPlot={onPlot}
-                    onLayout={measure}
-                  />
-                ))}
-              </div>
-            </div>
-            <Minimap
-              core={core}
-              spec={plots[0]}
-              duration={duration}
-              range={range}
-              cursorA={cursorA}
-              cursorB={b}
-              markers={markers}
-              rootRef={minimapRef}
-              area={area && { left: area.minimap, width: area.width }}
-              onRange={setRange}
-            />
-            <Readouts plots={plots} cursorA={cursorA} cursorB={b} samples={samples} markers={markers} onRemoveMarker={removeMarker} />
+            )}
           </div>
-        </>
-      )}
+        ) : (
+          <>
+            <header className="content-header pv-header">
+              <div className="pv-summary">
+                <p className="content-sub pv-summary-text" title="Drag across a plot or scroll to zoom. Shift-scroll pans. Double-click resets.">
+                  {plots.length} {plots.length === 1 ? 'signal' : 'signals'} &middot;{' '}
+                  {zoomed ? `Showing ${formatDuration(span)} of ${formatDuration(duration)}` : `All ${formatDuration(duration)}`}
+                </p>
+                <button className="text-button" onClick={resetZoom} disabled={!zoomed} title="Or double-click a plot">
+                  Reset Zoom
+                </button>
+              </div>
+              <div className="content-actions">
+                <Segmented label="Cursors" options={CURSOR_OPTIONS} value={mode} onChange={changeMode} />
+                {!video && <AddVideoButton log={log} />}
+                <button className="button" onClick={addMarker} disabled={cursorA === null}>
+                  <MapPin size={16} strokeWidth={1.5} aria-hidden="true" />
+                  Add Marker
+                </button>
+                <button className="button" onClick={exportPng}>
+                  <ImageDown size={16} strokeWidth={1.5} aria-hidden="true" />
+                  Export PNG
+                </button>
+                <button className="text-button" onClick={ctx.clearPlots}>
+                  Clear
+                </button>
+              </div>
+            </header>
+            <div className="pv-body">
+              <div className="pv-stack" ref={stackRef}>
+                <CursorRail
+                  railRef={railRef}
+                  area={area && { left: area.rail, width: area.width }}
+                  range={range}
+                  duration={duration}
+                  cursors={railCursors}
+                  onMove={moveCursor}
+                />
+                <div className="pv-lanes">
+                  {plots.map((spec, i) => (
+                    <Lane
+                      key={spec.id}
+                      core={core}
+                      spec={spec}
+                      range={range}
+                      duration={duration}
+                      plotHeight={plotHeight}
+                      showTimeAxis={i === plots.length - 1}
+                      showMarkerLabels={i === 0}
+                      syncKey={SYNC_KEY}
+                      cursorA={cursorA}
+                      cursorB={b}
+                      samples={samples[spec.id]}
+                      markers={markers}
+                      readoutA={readout(spec, 'a')}
+                      readoutB={b !== null ? readout(spec, 'b') : null}
+                      onZoom={setRange}
+                      onResetZoom={resetZoom}
+                      onPick={pick}
+                      onRemove={() => ctx.removePlot(spec.id)}
+                      onPlot={onPlot}
+                      onLayout={measure}
+                    />
+                  ))}
+                </div>
+              </div>
+              <Minimap
+                core={core}
+                spec={plots[0]}
+                duration={duration}
+                range={range}
+                cursorA={cursorA}
+                cursorB={b}
+                markers={markers}
+                rootRef={minimapRef}
+                area={area && { left: area.minimap, width: area.width }}
+                onRange={setRange}
+              />
+              <Readouts plots={plots} cursorA={cursorA} cursorB={b} samples={samples} markers={markers} onRemoveMarker={removeMarker} />
+            </div>
+          </>
+        )}
+      </VideoWorkspace>
     </>
   );
 }

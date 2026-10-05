@@ -3,7 +3,7 @@ import { formatId, type CompareOptions, type IdComparison, type LogInfo } from '
 /** Scores from here up count as a difference, as the core reports them. */
 export const SIGNIFICANT = 10;
 
-export const DEFAULT_OPTIONS: CompareOptions = { ignoreCounters: true, ignoreChangesWithinA: false };
+export const DEFAULT_OPTIONS: CompareOptions = { ignoreCounters: true, ignoreChangesWithinA: true };
 
 export type GroupId = 'different' | 'onlyB' | 'onlyA' | 'same';
 export type Show = 'all' | 'both' | 'onlyA' | 'onlyB';
@@ -38,12 +38,27 @@ export function matchesQuery(c: IdComparison, query: string): boolean {
   return !q || formatId(c.id, c.extended).toLowerCase().includes(q) || (c.name ?? '').toLowerCase().includes(q);
 }
 
-/** No ID differs under the current ignore rules. */
+/** No ID differs under the current ignore rules, and there was something to compare. */
 export function looksTheSame(results: IdComparison[]): boolean {
-  return results.every((c) => groupOf(c) === 'same');
+  return results.length > 0 && results.every((c) => groupOf(c) === 'same');
 }
 
-export function formatRate(perSecond: number): string {
+/**
+ * How log B's buses were paired with log A's when the logs share no bus name, such as
+ * `can0 = vcan0`, or null when every bus kept its name.
+ */
+export function busesMatchedByOrder(results: IdComparison[]): string | null {
+  const pairs = new Map<string, string>();
+  for (const c of results) {
+    if (c.presence === 'both' && c.busB !== null && c.busB !== c.bus) pairs.set(c.bus, c.busB);
+  }
+  if (pairs.size === 0) return null;
+  return [...pairs].sort(([a], [b]) => a.localeCompare(b)).map(([a, b]) => `${a} = ${b}`).join(', ');
+}
+
+/** Frames per second, or a dash for a log of no duration. */
+export function formatRate(perSecond: number | null): string {
+  if (perSecond === null) return '-';
   if (perSecond >= 9.95) return String(Math.round(perSecond));
   if (perSecond >= 0.995) return perSecond.toFixed(1);
   return perSecond === 0 ? '0' : perSecond.toPrecision(2);
@@ -83,8 +98,8 @@ export function findingsCsv(results: IdComparison[], a: LogInfo, b: LogInfo, opt
       formatId(c.id, c.extended),
       c.name ?? '',
       PRESENCE[c.presence],
-      c.rateA.toFixed(3),
-      c.rateB.toFixed(3),
+      c.rateA?.toFixed(3) ?? '',
+      c.rateB?.toFixed(3) ?? '',
       c.score,
       c.reason,
       c.bytes.join(' '),

@@ -43,7 +43,7 @@ export function LogCards({ logA, logB, reading, notKept, onReplaceA, onPickB, on
 
   return (
     <header className="content-header cmp-files">
-      <LogCard letter="A" log={logA} action={<button type="button" className="button" onClick={onReplaceA} aria-label={'Replace log A\u2026'}>Replace&hellip;</button>} />
+      <LogCard letter="A" log={logA} action={<button type="button" className="button" onClick={onReplaceA} disabled={!!reading} aria-label={'Replace log A\u2026'}>Replace&hellip;</button>} />
       <button type="button" className="cmp-swap" onClick={onSwap} disabled={!logB || !!reading} aria-label="Swap logs A and B">
         <ArrowLeftRight size={18} strokeWidth={1.5} aria-hidden="true" />
         <span aria-hidden="true">Swap</span>

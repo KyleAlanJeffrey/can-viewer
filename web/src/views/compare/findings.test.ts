@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { IdComparison } from '../../core/api';
 import { logInfo } from '../../test/fixtures';
-import { bitList, findingsCsv, formatRate, groupOf, looksTheSame, matchesQuery, rowKey, stem } from './findings';
+import { bitList, busesMatchedByOrder, findingsCsv, formatRate, groupOf, looksTheSame, matchesQuery, rowKey, stem } from './findings';
 
 function comparison(fields: Partial<IdComparison> = {}): IdComparison {
   return {
@@ -16,6 +16,7 @@ function comparison(fields: Partial<IdComparison> = {}): IdComparison {
     framesB: 100,
     rateA: 10,
     rateB: 10,
+    busB: 'can0',
     score: 0,
     reason: 'No significant changes',
     bytes: [],
@@ -34,6 +35,20 @@ describe('groupOf', () => {
   it('calls the logs the same only when no ID differs', () => {
     expect(looksTheSame([comparison(), comparison({ id: 0x451, score: 5 })])).toBe(true);
     expect(looksTheSame([comparison(), comparison({ presence: 'onlyB', score: 100 })])).toBe(false);
+    expect(looksTheSame([])).toBe(false);
+  });
+});
+
+describe('busesMatchedByOrder', () => {
+  it('lists the buses log B names differently, once each', () => {
+    expect(busesMatchedByOrder([comparison(), comparison({ presence: 'onlyA', busB: null })])).toBeNull();
+    const renamed = [
+      comparison({ bus: 'can1', busB: 'vcan1' }),
+      comparison({ busB: 'vcan0' }),
+      comparison({ id: 0x451, busB: 'vcan0' }),
+      comparison({ presence: 'onlyB', bus: 'vcan2', busB: 'vcan2' }),
+    ];
+    expect(busesMatchedByOrder(renamed)).toBe('can0 = vcan0, can1 = vcan1');
   });
 });
 
@@ -61,6 +76,7 @@ describe('formatting', () => {
     expect(formatRate(2.04)).toBe('2.0');
     expect(formatRate(0.25)).toBe('0.25');
     expect(formatRate(0)).toBe('0');
+    expect(formatRate(null)).toBe('-');
   });
 
   it('lists bits as ranges', () => {
@@ -87,5 +103,10 @@ describe('findingsCsv', () => {
     expect(lines[4]).toBe('bus,id,name,in,a_frames_per_s,b_frames_per_s,score,reason,bytes');
     expect(lines[5]).toBe('can0,450,BODY,both,10.000,10.000,100,Byte 3 takes new values,3 4');
     expect(lines[6]).toBe('can0,7DF,,only B,10.000,10.000,0,"Rate up, ""a lot""",');
+  });
+
+  it('leaves the rate of a log of no duration blank', () => {
+    const csv = findingsCsv([comparison({ rateB: null })], logInfo(), logInfo(), { ignoreCounters: false, ignoreChangesWithinA: false });
+    expect(csv.trimEnd().split('\n')[5]).toBe('can0,450,,both,10.000,,0,No significant changes,');
   });
 });

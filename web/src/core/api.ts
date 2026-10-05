@@ -236,6 +236,11 @@ export type Presence = 'both' | 'onlyA' | 'onlyB';
 export interface IdComparison {
   /** Bus name, as in log A's `LogInfo.channels` (log B's bus when the ID is only in B). */
   bus: string;
+  /**
+   * Log B's name for the bus, or null when the ID is only in A. It differs from `bus` when the
+   * logs share no bus name and their buses were matched by order.
+   */
+  busB: string | null;
   /** ID without the extended flag. */
   id: number;
   extended: boolean;
@@ -248,9 +253,9 @@ export interface IdComparison {
   name: string | null;
   framesA: number;
   framesB: number;
-  /** Frames per second of each log's duration, so logs of different lengths compare. */
-  rateA: number;
-  rateB: number;
+  /** Frames per second of each log's duration, so logs of different lengths compare; null for a log of no duration. */
+  rateA: number | null;
+  rateB: number | null;
   /** 0 to 100: how differently the ID behaves. Below 10 is no significant difference. */
   score: number;
   /** Why, in a few words, such as `Byte 3 takes new values` or `Rate doubled`. */

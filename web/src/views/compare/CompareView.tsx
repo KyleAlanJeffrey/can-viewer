@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { CircleCheck } from 'lucide-react';
 import type { CompareOptions, IdComparison, LogInfo } from '../../core/api';
 import { formatCount, formatDuration, noFramesMessage } from '../../format';
-import { loadSaved, save } from '../../session';
+import { forget, loadSaved, save } from '../../session';
 import type { SelectedByte } from '../reverse/ByteMatrix';
 import { errorText } from '../reverse/bits';
 import { startTextSave } from '../shared/saveFile';
@@ -13,7 +13,7 @@ import { ByteCompare } from './ByteCompare';
 import { CompareTable } from './CompareTable';
 import { IgnoreRulesSheet } from './IgnoreRules';
 import { LogCards, type Reading } from './LogCards';
-import { DEFAULT_OPTIONS, GROUPS, SHOW_OPTIONS, findingsCsv, groupOf, looksTheSame, matchesQuery, rowKey, stem, type Show } from './findings';
+import { DEFAULT_OPTIONS, GROUPS, SHOW_OPTIONS, busesMatchedByOrder, findingsCsv, groupOf, looksTheSame, matchesQuery, rowKey, stem, type Show } from './findings';
 import './compare.css';
 
 /** A log file as the session store keeps it. */
@@ -28,6 +28,8 @@ interface SavedLog {
  */
 let heldB: SavedLog | null = null;
 
+const ONLY_IN_B = 'Only in log B: swap the logs to open it in Reverse Engineer.';
+
 /** Compares the open log (A) with a second log (B): which IDs and bytes behave differently. */
 export function CompareView({ ctx }: ViewProps) {
   const { core, log, logVersion, query, dbcs } = ctx;
@@ -36,6 +38,7 @@ export function CompareView({ ctx }: ViewProps) {
   const [notKept, setNotKept] = useState(false);
   const [results, setResults] = useState<IdComparison[] | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [notice, setNotice] = useState('');
   const [options, setOptions] = useViewState<CompareOptions>('cmp.options', DEFAULT_OPTIONS);
   const [show, setShow] = useViewState<Show>('cmp.show', 'all');
   const [picked, setPicked] = useViewState<string | null>('cmp.selected', null);
@@ -50,7 +53,7 @@ export function CompareView({ ctx }: ViewProps) {
   /** Reads `file` as log B. `persist` keeps a copy so a reload reopens it. */
   const readB = async (file: Blob, name: string, persist: boolean): Promise<LogInfo | null> => {
     let info: LogInfo | null = null;
-    readsOfB.current++;
+    const thisRead = ++readsOfB.current;
     setReading({ name, fraction: 0 });
     await ctx.run(`Reading ${name}\u2026`, async () => {
       try {
@@ -68,9 +71,20 @@ export function CompareView({ ctx }: ViewProps) {
     if (info) {
       heldB = { name, blob: file };
       setLogB(info);
-      if (persist) void save('compare', { name, blob: file } satisfies SavedLog).then((kept) => setNotKept(!kept));
+      if (persist) {
+        void save('compare', { name, blob: file } satisfies SavedLog).then((kept) => {
+          setNotKept(!kept);
+          if (!kept) void forget('compare');
+        });
+      }
+      return info;
     }
-    return info;
+    // A failed read leaves the core without the earlier log B too.
+    heldB = null;
+    const left = await core.compareLogInfo().catch(() => null);
+    if (readsOfB.current === thisRead) setLogB(left);
+    if (!left) await forget('compare');
+    return null;
   };
 
   // The core holds log B across view switches; after a reload it is read again from the saved copy.
@@ -135,11 +149,16 @@ export function CompareView({ ctx }: ViewProps) {
 
   const swap = async () => {
     heldB = null;
+    setNotKept(false);
     await ctx.swapCompareLog();
   };
 
   const openInReverse = (c: IdComparison, byte: number) => {
-    if (c.keyA === null) return;
+    if (c.keyA === null) {
+      setPicked(rowKey(c));
+      setNotice(ONLY_IN_B);
+      return;
+    }
     ctx.select(c.keyA);
     setReverseByte({ key: c.keyA, byte });
     setReverseMode('advanced');
@@ -153,6 +172,7 @@ export function CompareView({ ctx }: ViewProps) {
   };
 
   const same = !!logB && results !== null && looksTheSame(results);
+  const matchedBuses = results ? busesMatchedByOrder(results) : null;
 
   return (
     <>
@@ -192,7 +212,7 @@ export function CompareView({ ctx }: ViewProps) {
               <button type="button" className="button" onClick={() => setRulesOpen(true)}>
                 Review ignore rules&hellip;
               </button>
-              <button type="button" className="primary" onClick={() => pickB.current?.click()}>
+              <button type="button" className="primary" onClick={() => pickB.current?.click()} disabled={!!reading}>
                 Replace log B&hellip;
               </button>
             </div>
@@ -204,8 +224,12 @@ export function CompareView({ ctx }: ViewProps) {
               show={show}
               query={query}
               selected={selected ? rowKey(selected) : null}
-              onSelect={(c) => setPicked(rowKey(c))}
+              onSelect={(c) => {
+                setPicked(rowKey(c));
+                setNotice('');
+              }}
               onOpen={(c) => openInReverse(c, c.bytes[0] ?? 0)}
+              busNote={matchedBuses && `Buses matched by order: ${matchedBuses}`}
               hasDbc={dbcs.length > 0}
               options={options}
               onOptions={setOptions}
@@ -229,6 +253,9 @@ export function CompareView({ ctx }: ViewProps) {
           </div>
         ) : null}
       </div>
+      <p className="sr-only" role="status">
+        {notice}
+      </p>
       <IgnoreRulesSheet open={rulesOpen} onClose={() => setRulesOpen(false)} options={options} onChange={setOptions} />
       <input
         ref={pickB}

@@ -1,9 +1,22 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ByteComparison, CompareOptions, CoreApi, IdComparison } from '../../core/api';
 import { fakeCore, lane, logInfo, makeRowBatch } from '../../test/fixtures';
 import { renderInShell } from '../../test/shell';
 import { CompareView } from './CompareView';
+
+const session = vi.hoisted(() => ({
+  loadSaved: vi.fn(async (): Promise<unknown> => undefined),
+  save: vi.fn(async () => true),
+  forget: vi.fn(async () => {}),
+}));
+vi.mock('../../session', () => session);
+
+beforeEach(() => {
+  session.loadSaved.mockClear();
+  session.save.mockReset().mockResolvedValue(true);
+  session.forget.mockClear();
+});
 
 const logB = logInfo({ name: 'door-lock.log', durationS: 50 });
 
@@ -20,6 +33,7 @@ function comparison(id: number, fields: Partial<IdComparison> = {}): IdCompariso
     framesB: 500,
     rateA: 10,
     rateB: 10,
+    busB: 'can0',
     score: 0,
     reason: 'No significant changes',
     bytes: [],
@@ -29,7 +43,7 @@ function comparison(id: number, fields: Partial<IdComparison> = {}): IdCompariso
 
 const body = comparison(0x450, { name: 'BODY', score: 100, reason: 'Byte 3 takes new values', bytes: [3] });
 const onlyB = comparison(0x7df, { presence: 'onlyB', keyA: null, framesA: 0, rateA: 0, rateB: 1, score: 100, reason: 'Appears only in B' });
-const onlyA = comparison(0x456, { presence: 'onlyA', keyB: null, framesB: 0, rateB: 0, score: 100, reason: 'Appears only in A' });
+const onlyA = comparison(0x456, { presence: 'onlyA', keyB: null, busB: null, framesB: 0, rateB: 0, score: 100, reason: 'Appears only in A' });
 const steady = comparison(0x0c1, { score: 3 });
 // In the core's order, by score; the table groups them.
 const RESULTS = [onlyA, onlyB, body, steady];
@@ -91,7 +105,7 @@ describe('choosing log B', () => {
     await user.upload(fileInputs()[0], file);
     expect(openCompareLog).toHaveBeenCalledWith(file, 'door-lock.log', expect.any(Function));
     expect(await screen.findByRole('region', { name: 'Log B' })).toBeTruthy();
-    expect(compareLogs).toHaveBeenCalledWith({ ignoreCounters: true, ignoreChangesWithinA: false });
+    expect(compareLogs).toHaveBeenCalledWith({ ignoreCounters: true, ignoreChangesWithinA: true });
     expect(await screen.findByRole('row', { name: /^450 BODY/ })).toBeTruthy();
   });
 
@@ -118,6 +132,65 @@ describe('choosing log B', () => {
     await waitFor(() => expect(state.error).toMatch(/empty\.log/));
     expect(closeCompareLog).toHaveBeenCalled();
     expect(screen.getByText('Choose a second log')).toBeTruthy();
+  });
+
+  it('shows no log B, and forgets the saved one, when replacing log B fails', async () => {
+    let held: typeof logB | null = logB;
+    const core = compareCore([steady], {
+      compareLogInfo: async () => held,
+      openCompareLog: async () => {
+        held = null;
+        throw new Error('Not a CAN log');
+      },
+    });
+    const { user, state } = renderInShell(CompareView, { core });
+    expect(await screen.findByRole('heading', { name: 'These logs look the same' })).toBeTruthy();
+
+    await user.upload(fileInputs()[0], new File(['x'], 'photo.jpg'));
+    await waitFor(() => expect(state.error).toBe('Not a CAN log'));
+    expect(await screen.findByText('Choose a second log')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'These logs look the same' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Log B' })).toBeNull();
+    expect(session.forget).toHaveBeenCalledWith('compare');
+  });
+
+  it('forgets a saved log B that no longer reads', async () => {
+    session.loadSaved.mockResolvedValueOnce({ name: 'gone.log', blob: new Blob(['x']) });
+    const core = compareCore(RESULTS, {
+      compareLogInfo: async () => null,
+      openCompareLog: async () => {
+        throw new Error('Not a CAN log');
+      },
+    });
+    renderInShell(CompareView, { core });
+    expect(await screen.findByText('Choose a second log')).toBeTruthy();
+    await waitFor(() => expect(session.forget).toHaveBeenCalledWith('compare'));
+  });
+
+  it('forgets the saved log B when this browser could not keep the new one', async () => {
+    session.save.mockResolvedValue(false);
+    const core = compareCore(RESULTS, { compareLogInfo: async () => null, openCompareLog: async () => logB });
+    const { user } = renderInShell(CompareView, { core });
+    await screen.findByText('Choose a second log');
+    await user.upload(fileInputs()[0], new File(['b'], 'door-lock.log'));
+    expect(await screen.findByText(/Not kept for a reload/)).toBeTruthy();
+    expect(session.forget).toHaveBeenCalledWith('compare');
+  });
+
+  it('keeps Replace log A and Swap off while log B is read', async () => {
+    let finish: (info: typeof logB) => void = () => {};
+    const openCompareLog = vi.fn(() => new Promise<typeof logB>((resolve) => (finish = resolve)));
+    const core = compareCore(RESULTS, { compareLogInfo: async () => null, openCompareLog });
+    const { user } = renderInShell(CompareView, { core });
+    await screen.findByText('Choose a second log');
+    await user.upload(fileInputs()[0], new File(['b'], 'door-lock.log'));
+
+    expect(await screen.findByText(/^Reading/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Replace log A\u2026' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Swap logs A and B' }).hasAttribute('disabled')).toBe(true);
+    finish(logB);
+    await screen.findByRole('region', { name: 'Log B' });
+    expect(screen.getByRole('button', { name: 'Replace log A\u2026' }).hasAttribute('disabled')).toBe(false);
   });
 });
 
@@ -175,7 +248,7 @@ describe('results', () => {
     const byte3 = screen.getByRole('button', { name: /^Byte 3/ });
     expect(byte3.className).toContain('changed');
     expect(byte3.getAttribute('aria-pressed')).toBe('true');
-    await waitFor(() => expect(byte3.textContent).toBe('Byte 3A 00B 01Changed'));
+    await waitFor(() => expect(byte3.textContent).toBe('Byte 3A 00B 01 (differs)Changed'));
   });
 
   it('opens the selected ID and byte in Reverse Engineer on log A', async () => {
@@ -184,6 +257,21 @@ describe('results', () => {
     await user.click(screen.getByRole('button', { name: 'Open in Reverse Engineer' }));
     expect(state.view).toBe('reverse');
     expect(state.selected).toBe(0x450);
+  });
+
+  it('says why Enter does nothing on an ID only in log B', async () => {
+    const { user } = renderInShell(CompareView, { core: compareCore() });
+    const row = await screen.findByRole('row', { name: /^7DF/ });
+    row.focus();
+    await user.keyboard('{Enter}');
+    expect(row.getAttribute('aria-current')).toBe('true');
+    expect(screen.getByText('Only in log B: swap the logs to open it in Reverse Engineer.', { selector: '[role="status"]' })).toBeTruthy();
+  });
+
+  it('says how buses were paired when the logs name them differently', async () => {
+    const renamed = RESULTS.map((c) => (c.presence === 'both' ? { ...c, busB: 'vcan0' } : c));
+    renderInShell(CompareView, { core: compareCore(renamed) });
+    expect(await screen.findByText('Buses matched by order: can0 = vcan0')).toBeTruthy();
   });
 
   it('swaps the logs through the shell', async () => {
@@ -199,7 +287,7 @@ describe('results', () => {
     const { user } = renderInShell(CompareView, { core: compareCore(RESULTS, { compareLogs }) });
     await screen.findByRole('row', { name: /^450 BODY/ });
     await user.click(screen.getByRole('checkbox', { name: 'Ignore IDs that also change within A alone' }));
-    await waitFor(() => expect(compareLogs).toHaveBeenLastCalledWith({ ignoreCounters: true, ignoreChangesWithinA: true }));
+    await waitFor(() => expect(compareLogs).toHaveBeenLastCalledWith({ ignoreCounters: true, ignoreChangesWithinA: false }));
   });
 });
 
@@ -215,7 +303,15 @@ describe('logs that look the same', () => {
     await user.click(screen.getByRole('button', { name: 'Review ignore rules\u2026' }));
     const sheet = screen.getByRole('dialog', { name: 'Ignore Rules' });
     await user.click(within(sheet).getByRole('checkbox', { name: /^Ignore counters and checksums/ }));
-    await waitFor(() => expect(compareLogs).toHaveBeenLastCalledWith({ ignoreCounters: false, ignoreChangesWithinA: false }));
+    await waitFor(() => expect(compareLogs).toHaveBeenLastCalledWith({ ignoreCounters: false, ignoreChangesWithinA: true }));
+  });
+});
+
+describe('a comparison with no IDs', () => {
+  it('does not say the logs look the same', async () => {
+    renderInShell(CompareView, { core: compareCore([]) });
+    expect(await screen.findByText('No IDs to show here.')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'These logs look the same' })).toBeNull();
   });
 });
 

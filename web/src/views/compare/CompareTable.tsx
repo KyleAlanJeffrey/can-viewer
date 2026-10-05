@@ -17,12 +17,14 @@ interface Props {
   hasDbc: boolean;
   options: CompareOptions;
   onOptions: (options: CompareOptions) => void;
+  /** Says how buses were paired when the logs name them differently. */
+  busNote: string | null;
 }
 
 const COLUMNS = 6;
 
 /** Every compared ID in groups, most different first, with the ignore rules at the foot. */
-export function CompareTable({ results, show, query, selected, onSelect, onOpen, hasDbc, options, onOptions }: Props) {
+export function CompareTable({ results, show, query, selected, onSelect, onOpen, hasDbc, options, onOptions, busNote }: Props) {
   const [collapsed, setCollapsed] = useViewState<GroupId[]>('cmp.collapsed', []);
   const bodyRef = useRef<HTMLTableSectionElement>(null);
 
@@ -108,8 +110,8 @@ export function CompareTable({ results, show, query, selected, onSelect, onOpen,
                       <Dash label="No DBC loaded" />
                     )}
                   </td>
-                  <td className="cmp-num">{c.presence === 'onlyB' ? <Dash label="Not in log A" /> : formatRate(c.rateA)}</td>
-                  <td className="cmp-num">{c.presence === 'onlyA' ? <Dash label="Not in log B" /> : formatRate(c.rateB)}</td>
+                  <td className="cmp-num">{c.presence === 'onlyB' ? <Dash label="Not in log A" /> : <Rate perSecond={c.rateA} />}</td>
+                  <td className="cmp-num">{c.presence === 'onlyA' ? <Dash label="Not in log B" /> : <Rate perSecond={c.rateB} />}</td>
                   <td className={`cmp-num${c.score >= SIGNIFICANT ? ' cmp-strong' : ''}`}>{c.score}%</td>
                   <td className="cmp-reason cmp-human" title={c.reason}>
                     {c.reason}
@@ -129,6 +131,7 @@ export function CompareTable({ results, show, query, selected, onSelect, onOpen,
           Message comparison
         </h2>
         <p className="cmp-note">Rates are frames per second of each log, so logs of different lengths compare.</p>
+        {busNote && <p className="cmp-note">{busNote}</p>}
       </div>
       <div className="cmp-table-scroll">
         <table>
@@ -167,6 +170,10 @@ function EmptyRow({ children }: { children: ReactNode }) {
       </td>
     </tr>
   );
+}
+
+function Rate({ perSecond }: { perSecond: number | null }) {
+  return perSecond === null ? <Dash label="The log has no duration" /> : <>{formatRate(perSecond)}</>;
 }
 
 function Dash({ label }: { label: string }) {

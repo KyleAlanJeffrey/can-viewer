@@ -8,7 +8,13 @@ export function lazyView(load: () => Promise<ComponentType<ViewProps>>): Compone
   return function LazyView(props: ViewProps) {
     return (
       <ChunkBoundary>
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            <p className="hint lazy-loading" role="status">
+              Loading...
+            </p>
+          }
+        >
           <View {...props} />
         </Suspense>
       </ChunkBoundary>

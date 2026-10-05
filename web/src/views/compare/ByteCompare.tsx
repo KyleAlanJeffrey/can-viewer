@@ -183,6 +183,7 @@ export function ByteCompare({ ctx, comparison: c, logA, logB, options, onOpenInR
                   </span>
                   <span className={`cmp-byte-value${a !== null && b !== null && a !== b ? ' differs' : ''}`}>
                     B <span className="mono">{b ?? '\u2014'}</span>
+                    {a !== null && b !== null && a !== b && <span className="sr-only"> (differs)</span>}
                   </span>
                   {changed(k) && <span className="cmp-byte-flag">Changed</span>}
                 </button>

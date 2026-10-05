@@ -3,6 +3,8 @@
 
 /// A frame of this many bytes or fewer is checked whole; longer ones are not checked.
 const MAX_CHECKED_LEN: usize = 64;
+/// A rule is first tried on this many frames, and dropped when it holds on under half of them.
+const SCREEN_FRAMES: usize = 256;
 
 /// A rule whose result is compared with the candidate byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,20 +173,29 @@ pub fn detect(frames: &[&[u8]], byte: usize, len: usize, min_share: f64) -> Opti
         }
         out
     };
+    let mode = |counts: &[usize; 256]| {
+        counts
+            .iter()
+            .enumerate()
+            .max_by_key(|&(k, &n)| (n, std::cmp::Reverse(k)))
+            .map(|(k, &n)| (k, n))
+            .expect("256 counts")
+    };
+    let screen = frames.len().min(SCREEN_FRAMES);
     let mut best: Option<ChecksumMatch> = None;
     for check in &CHECKS {
         let mut counts = [0usize; 256];
-        for data in frames {
+        for (i, data) in frames.iter().enumerate() {
+            // Most bytes follow no rule, and long CAN FD frames make each try costly.
+            if i == screen && (mode(&counts).1 as f64) < 0.5 * screen as f64 {
+                break;
+            }
             let rest = others(data);
             let result = check.rule.apply(rest[..len - 1].iter().copied());
             counts[usize::from(check.relation.key(data[byte], result))] += 1;
         }
-        let (constant, hits) = counts
-            .iter()
-            .enumerate()
-            .max_by_key(|&(k, &n)| (n, std::cmp::Reverse(k)))
-            .expect("256 counts");
-        let share = *hits as f64 / frames.len() as f64;
+        let (constant, hits) = mode(&counts);
+        let share = hits as f64 / frames.len() as f64;
         if share >= min_share && best.as_ref().is_none_or(|b| share > b.share) {
             best = Some(ChecksumMatch {
                 name: describe(check, constant as u8, len - 1),

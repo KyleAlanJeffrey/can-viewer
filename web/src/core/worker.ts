@@ -32,6 +32,9 @@ let compareMeta: LogMeta | null = null;
 
 const withMemory = (json: string, meta: LogMeta) => ({ ...JSON.parse(json), ...meta, wasmBytes: memory?.buffer.byteLength ?? 0 });
 
+/** The request being answered, so its progress events reach the right listener. */
+let currentId = 0;
+
 /** Reads `file` in chunks through `push`, reporting progress at most every 100 ms. */
 async function readChunks(file: Blob, push: (chunk: Uint8Array) => void) {
   let lastReport = 0;
@@ -41,7 +44,7 @@ async function readChunks(file: Blob, push: (chunk: Uint8Array) => void) {
     const now = performance.now();
     if (now - lastReport > 100) {
       lastReport = now;
-      port.postMessage({ event: 'progress', bytes: at + chunk.length, total: file.size });
+      port.postMessage({ event: 'progress', id: currentId, bytes: at + chunk.length, total: file.size });
     }
   }
 }
@@ -187,6 +190,7 @@ port.onmessage = (e) => {
   queue = queue.then(async () => {
     try {
       if (initError) throw initError;
+      currentId = id;
       const handler = handlers[method] as (...a: unknown[]) => unknown;
       const out = await handler(...args);
       if (withTransfer.has(method)) {

@@ -1,4 +1,4 @@
-//! Streaming parsers for CAN log file formats.
+//! Streaming parsers for CAN log file formats, and writers for the same formats.
 //!
 //! Parsers take the file in arbitrary chunks, so the browser can stream a `File` through a
 //! worker without ever holding the whole log in memory.
@@ -14,6 +14,7 @@ pub mod mf4;
 mod testing;
 mod text;
 pub mod trc;
+pub mod writer;
 
 pub use asc::AscParser;
 pub use blf::BlfParser;
@@ -53,6 +54,39 @@ impl ParseStats {
     }
 }
 
+/// The local time zone, for the wall-clock times a file gives with no time zone: an ASC file's
+/// `date` line, which CANoe writes and CANoe and python-can read as local time. It holds the
+/// offset of local time from UTC, in seconds, at a Unix time in seconds; the host supplies it,
+/// as the crate has no clock or time zone database.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalTime(pub fn(i64) -> i64);
+
+impl LocalTime {
+    pub const UTC: LocalTime = LocalTime(no_offset);
+
+    /// The local wall-clock time at `unix_s`, in seconds since 1970-01-01 00:00.
+    pub(crate) fn to_local(self, unix_s: i64) -> i64 {
+        unix_s.saturating_add((self.0)(unix_s))
+    }
+
+    /// The Unix time of a local wall-clock time. In the hour a clock is set back, which comes
+    /// twice, it may give either.
+    pub(crate) fn to_unix(self, local_s: i64) -> i64 {
+        let guess = local_s.saturating_sub((self.0)(local_s));
+        local_s.saturating_sub((self.0)(guess))
+    }
+}
+
+impl Default for LocalTime {
+    fn default() -> Self {
+        Self::UTC
+    }
+}
+
+fn no_offset(_unix_s: i64) -> i64 {
+    0
+}
+
 /// The parser for whichever [`Format`] a file turned out to be.
 #[derive(Debug)]
 pub enum AnyParser {
@@ -86,6 +120,13 @@ impl AnyParser {
             AnyParser::Csv(_) => Format::Csv,
             AnyParser::Blf(_) => Format::Blf,
             AnyParser::Mf4(_) => Format::Mf4,
+        }
+    }
+
+    /// Set the time zone of wall-clock times in the file, UTC unless set. Only ASC uses it.
+    pub fn set_local_time(&mut self, local_time: LocalTime) {
+        if let AnyParser::Asc(parser) = self {
+            parser.set_local_time(local_time);
         }
     }
 

@@ -8,6 +8,8 @@
 
 A free, browser-based CAN bus analyzer and log viewer with reverse-engineering tools. FreeCAN Studio Pro, a paid desktop app on the same core, is planned. The stack rationale is in [docs/research.md](docs/research.md) and the naming research in [docs/naming.md](docs/naming.md).
 
+It opens candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV logs, and Export Log... saves the open log in any of those formats, so it doubles as a free log converter ([what each format keeps](COMPATIBILITY.md#log-export)).
+
 Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker, and a React/TypeScript UI. The desktop build will run the same crates natively under Tauri, behind the same `CoreApi` interface ([web/src/core/api.ts](web/src/core/api.ts)).
 
 It works offline and can be installed as an app. After one visit, a service worker keeps the app itself, so it opens with no network (a laptop in a garage); the demo log is kept too once it has been opened. Chrome and Edge offer **Install** in the address bar, and Safari has **File > Add to Dock**. A new version downloads in the background and the app offers **Reload** when it is ready. See [COMPATIBILITY.md](COMPATIBILITY.md#offline-and-install).
@@ -17,10 +19,10 @@ It works offline and can be installed as an app. After one visit, a service work
 | Path | What |
 |---|---|
 | `crates/can-core` | Frame types; columnar frame store with per-ID stats and bit-flip counts |
-| `crates/can-formats` | Streaming log parsers: candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV, chosen by file name and content |
+| `crates/can-formats` | Streaming log parsers: candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV, chosen by file name and content; writers for the same formats (`writer/`) |
 | `crates/can-dbc-model` | DBC loading via `can-dbc`, our own editable model, signal decode and encode |
 | `crates/can-wasm` | wasm-bindgen `Session` used by the web worker; min/max plot decimation |
-| `crates/sample-gen` | Dev tool: synthetic demo log + DBC, native benchmark, decode dumps |
+| `crates/sample-gen` | Dev tool: synthetic demo log + DBC, native benchmark, decode dumps, log conversion |
 | `web/` | Vite + React UI: canvas trace table, bit heatmap, uPlot plots, video sync |
 | `site/` | The landing site for `freecanstudio.com`: static HTML, no build ([site/README.md](site/README.md)) |
 | `scripts/crosscheck_cantools.py` | Compares our decoder with cantools |
@@ -58,7 +60,7 @@ Tests:
 cargo test --workspace
 ```
 
-Rewrite the demo in another format to try the parsers on it (the extension picks the format: `.asc`, `.trc`, `.csv`, `.blf` or `.mf4`):
+Rewrite the demo in another format to try the parsers on it, with the writers Export Log... uses (the extension picks the format: `.log` for candump, `.asc`, `.trc`, `.csv`, `.blf` or `.mf4`):
 
 ```bash
 cargo run --release -p sample-gen -- convert target/demo/demo.log target/demo/demo.asc

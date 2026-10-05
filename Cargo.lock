@@ -210,7 +210,6 @@ dependencies = [
  "can-core",
  "can-dbc-model",
  "can-formats",
- "miniz_oxide",
 ]
 
 [[package]]

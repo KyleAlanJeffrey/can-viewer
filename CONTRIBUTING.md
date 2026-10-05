@@ -125,6 +125,7 @@ LC_ALL=C grep -n '[^[:print:][:space:]]' <files>
 | `web/src/views/<view>/` | One folder per view, each with its own stylesheet and class prefix |
 | `web/src/views/shared/` | Helpers shared by views |
 | `web/src/components/` | Shared components, such as `Sheet` and `Segmented` |
+| `web/src/offline/` | The service worker, its registration and the build plugin that writes its precache list |
 | `web/src/styles.css` | Design tokens and shared styles |
 
 Views live in `web/src/views/<view>/` with their own CSS file and class prefix: `overview/overview.css` uses `ov-`, `plot/plot.css` uses `pv-`, `reverse/reverse.css` uses `re-` and `database/database.css` uses `db-`. To add a view:
@@ -161,3 +162,7 @@ The app is a static site on Cloudflare Workers static assets, configured in `wra
 - That script installs the Rust toolchain from `rust-toolchain.toml`, the wasm target and wasm-pack 0.15.0 when they are missing, then in `web/` runs `pnpm install --frozen-lockfile` (through `npx` when pnpm isn't installed), then the `wasm`, `demo` and `build` scripts. It is safe to run locally to reproduce a deploy build.
 - The install fails if `web/pnpm-lock.yaml` is out of step with `web/package.json`, so commit them together.
 - `web/public/_headers` is copied into `web/dist` and sets the Content-Security-Policy and long-lived caching for `/assets/*`. Every asset must be under Cloudflare's 25 MiB per-file limit.
+- `/sw.js` and `/manifest.webmanifest` are served with `Cache-Control: no-cache` (also in `_headers`), so browsers check them on every visit and pick up a deploy. Never give `sw.js` long-lived caching: a browser would keep running an old service worker, and with it the old app.
+- The service worker is built from `web/src/offline/sw.ts` by the `precachePlugin` in `web/src/offline/precachePlugin.ts`, which writes the list of built files to precache into it. Files from `web/public` that the app needs offline are listed in `PRECACHED_PUBLIC_FILES` in `web/vite.config.ts`; add to it when the page starts using another one. The demo is left out on purpose and cached at runtime. Each build gets its own cache, named from a hash of its files, and older ones are deleted when the new version takes over.
+- To check offline use locally: `pnpm build`, then `pnpm exec vite preview --port 5352`, open the page once, stop the server and reload. The service worker is never registered by `pnpm dev`.
+- The app icons in `web/public/icons` are rendered from `web/public/favicon.svg` (the Twisted F, as in `site/public`) by `node scripts/icons.mjs` in `web/`, which uses headless Chrome (set `CHROME` to its path if it is not in `/Applications`).

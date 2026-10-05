@@ -25,6 +25,19 @@ Used when present, with a fallback otherwise:
 | Feature | Used for |
 |---|---|
 | `showSaveFilePicker` (File System Access API, Chromium only) | Export DBC... saves through the browser's save dialog, and the DBC counts as exported only once the file is written; a cancelled dialog leaves it edited. Elsewhere the export is a download, which gives no completion signal, so the DBC counts as exported once the download starts. |
+| Service workers and Cache Storage | Opening the app with no network (see "Offline and install" below). Without them the app works online only. |
+
+### Offline and install
+
+A service worker (`web/src/offline/sw.ts`, built into `/sw.js`) keeps the app so it opens with no network, and a web app manifest (`web/public/manifest.webmanifest`) makes it installable. Both need a secure context (HTTPS or `localhost`), and the service worker is registered only by production builds, never by `pnpm dev` or the tests.
+
+- On the first visit the service worker downloads the app shell: the page, the JavaScript, CSS, the core worker, the wasm, the fonts, the icons and the manifest. From then on the app opens offline, and so do logs and DBCs restored from the last session.
+- The demo log is not downloaded up front (it is large). The first time Try the Demo runs online, the service worker keeps a copy, and from then on the demo opens offline too.
+- User files never pass through the service worker: they are read with the File API and kept in IndexedDB, never fetched.
+- The page is fetched from the network first, so a deploy is seen on the next visit; the service worker serves the cached page only when the network fails. Fingerprinted files under `/assets` come from the cache.
+- A new version installs in the background and waits. The app shows "A new version of FreeCAN Studio is ready" with a Reload button, which switches to it and reloads the tab. Open tabs look for a new version every hour.
+- Installing: Chrome and Edge offer Install in the address bar; Safari 17 and later has File > Add to Dock. Firefox may not offer to install it, depending on its version and platform, but the app still works offline there.
+- When the browser refuses service workers (some private windows, or site data blocked), the app works online only.
 
 Notes:
 

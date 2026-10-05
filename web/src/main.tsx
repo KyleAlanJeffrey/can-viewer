@@ -9,6 +9,7 @@ import '@fontsource/ibm-plex-mono/latin-600.css';
 import './styles.css';
 import { App } from './App';
 import { WebCore } from './core/webCore';
+import { registerServiceWorker } from './offline/register';
 
 const core = new WebCore();
 // Dev-only handle for poking the engine from the console.
@@ -19,3 +20,6 @@ createRoot(document.getElementById('root')!).render(
     <App core={core} />
   </StrictMode>,
 );
+
+// After load, so precaching the app does not compete with the first page load.
+window.addEventListener('load', () => void registerServiceWorker(), { once: true });

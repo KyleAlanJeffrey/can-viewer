@@ -584,3 +584,7 @@
 .pv-lane-host .u-over {
   cursor: crosshair;
 }
+
+.pv-empty-action {
+  margin-top: 10px;
+}

@@ -31,8 +31,13 @@ describe('routeFor', () => {
 });
 
 describe('staleCaches', () => {
-  it("deletes this app's old shells but keeps the current shell, the demo and other caches", () => {
+  it("deletes this app's older shells but keeps the current one, the one before it, the demo and other caches", () => {
     const current = shellCacheName('new');
-    expect(staleCaches([shellCacheName('old'), current, DEMO_CACHE, 'someone-else'], current)).toEqual([shellCacheName('old')]);
+    const names = [shellCacheName('oldest'), DEMO_CACHE, shellCacheName('older'), 'someone-else', shellCacheName('previous'), current];
+    expect(staleCaches(names, current)).toEqual([shellCacheName('oldest'), shellCacheName('older')]);
+  });
+
+  it('keeps the only other shell on the first update', () => {
+    expect(staleCaches([shellCacheName('old'), shellCacheName('new')], shellCacheName('new'))).toEqual([]);
   });
 });

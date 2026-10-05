@@ -1,16 +1,28 @@
 // Cache names and request routing for the service worker (sw.ts), kept apart so they can be tested.
 
-const CACHE_PREFIX = 'freecan-studio-';
-/** The demo is cached the first time it runs and kept across app updates. */
+export const CACHE_PREFIX = 'freecan-studio-';
+const SHELL_PREFIX = `${CACHE_PREFIX}shell-`;
+/**
+ * The demo is cached the first time it runs and kept across app updates. Bump the version when the
+ * demo's paths change, so the old files are not kept forever.
+ */
 export const DEMO_CACHE = `${CACHE_PREFIX}demo-v1`;
 
 export function shellCacheName(version: string): string {
-  return `${CACHE_PREFIX}shell-${version}`;
+  return `${SHELL_PREFIX}${version}`;
 }
 
-/** This app's caches that the current version no longer uses. Other caches on the origin are left alone. */
+/**
+ * This app's caches that the current version no longer uses. The newest older shell is kept for one
+ * more version, so a tab still running it can load its files. `cacheNames` is in creation order, as
+ * `caches.keys()` gives it. Other caches on the origin are left alone.
+ */
 export function staleCaches(cacheNames: string[], currentShell: string): string[] {
-  return cacheNames.filter((name) => name.startsWith(CACHE_PREFIX) && name !== currentShell && name !== DEMO_CACHE);
+  const olderShells = cacheNames.filter((name) => name.startsWith(SHELL_PREFIX) && name !== currentShell);
+  const previousShell = olderShells.at(-1);
+  return cacheNames.filter(
+    (name) => name.startsWith(CACHE_PREFIX) && name !== currentShell && name !== previousShell && name !== DEMO_CACHE,
+  );
 }
 
 /**

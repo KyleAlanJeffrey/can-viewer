@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PRECACHED_PUBLIC_FILES } from '../../vite.config.ts';
-import { PRECACHE_PLACEHOLDER, injectPrecache, precacheFiles, precacheVersion } from './precachePlugin';
+import type { Rolldown } from 'vite';
+import { PRECACHE_PLACEHOLDER, injectPrecache, precacheFiles, precachePlugin, precacheVersion } from './precachePlugin';
 
 describe('precacheFiles', () => {
   it('keeps the page and the fingerprinted assets, and adds the public files', () => {
@@ -11,6 +12,11 @@ describe('precacheFiles', () => {
     expect(files).toEqual(['./', 'assets/can_wasm_bg-123.wasm', 'assets/index-abc.js', 'assets/worker-def.js', 'favicon.svg', 'manifest.webmanifest']);
   });
 
+  it('leaves out WOFF fonts when WOFF2 ones exist', () => {
+    expect(precacheFiles(['index.html', 'assets/plex-1.woff', 'assets/plex-2.woff2'], [])).toEqual(['./', 'assets/plex-2.woff2']);
+    expect(precacheFiles(['index.html', 'assets/plex-1.woff'], [])).toEqual(['./', 'assets/plex-1.woff']);
+  });
+
   it('never precaches the demo or the service worker itself', () => {
     const files = precacheFiles(['index.html', 'sw.js', 'demo/demo.log.gz', 'demo/demo.dbc', '_headers'], []);
     expect(files).toEqual(['./']);
@@ -18,12 +24,14 @@ describe('precacheFiles', () => {
 });
 
 describe('precacheVersion', () => {
-  it('is stable for the same build and changes with a file or the page', async () => {
-    const version = await precacheVersion(['./', 'assets/a-1.js'], '<html>');
+  it('is stable for the same build and changes with a file, the page or a public file', async () => {
+    const icon = new Uint8Array([1, 2, 3]);
+    const version = await precacheVersion(['./', 'assets/a-1.js'], ['<html>', icon]);
     expect(version).toMatch(/^[0-9a-f]{16}$/);
-    expect(await precacheVersion(['./', 'assets/a-1.js'], '<html>')).toBe(version);
-    expect(await precacheVersion(['./', 'assets/a-2.js'], '<html>')).not.toBe(version);
-    expect(await precacheVersion(['./', 'assets/a-1.js'], '<html lang="en">')).not.toBe(version);
+    expect(await precacheVersion(['./', 'assets/a-1.js'], ['<html>', new Uint8Array([1, 2, 3])])).toBe(version);
+    expect(await precacheVersion(['./', 'assets/a-2.js'], ['<html>', icon])).not.toBe(version);
+    expect(await precacheVersion(['./', 'assets/a-1.js'], ['<html lang="en">', icon])).not.toBe(version);
+    expect(await precacheVersion(['./', 'assets/a-1.js'], ['<html>', new Uint8Array([1, 2, 4])])).not.toBe(version);
   });
 });
 
@@ -48,5 +56,39 @@ describe('PRECACHED_PUBLIC_FILES', () => {
       path.replace('../../public/', ''),
     );
     for (const file of PRECACHED_PUBLIC_FILES) expect(publicFiles).toContain(file);
+  });
+});
+
+describe('precachePlugin', () => {
+  function bundleWith(swImports: string[]) {
+    return {
+      'index.html': { type: 'asset', fileName: 'index.html', source: '<html>' },
+      'assets/index-abc.js': { type: 'chunk', fileName: 'assets/index-abc.js', code: '', imports: [], dynamicImports: [] },
+      'sw.js': { type: 'chunk', fileName: 'sw.js', code: `const m=${PRECACHE_PLACEHOLDER};`, imports: swImports, dynamicImports: [] },
+    } as unknown as Rolldown.OutputBundle & Record<string, { code: string }>;
+  }
+
+  async function generate(bundle: Rolldown.OutputBundle) {
+    const plugin = precachePlugin({ swEntry: '/src/offline/sw.ts', publicFiles: ['favicon.svg'] });
+    const read: string[] = [];
+    (plugin.configResolved as (config: { publicDir: string }) => void)({ publicDir: '/app/public' });
+    const context = {
+      error: (message: string) => {
+        throw new Error(message);
+      },
+      fs: { readFile: async (path: string) => (read.push(path), new Uint8Array([1])) },
+    };
+    await (plugin.generateBundle as (this: unknown, options: unknown, bundle: Rolldown.OutputBundle) => Promise<void>).call(context, {}, bundle);
+    return read;
+  }
+
+  it('writes the precache manifest into sw.js, reading the public files', async () => {
+    const bundle = bundleWith([]);
+    expect(await generate(bundle)).toEqual(['/app/public/favicon.svg']);
+    expect(bundle['sw.js'].code).toMatch(/^const m=\{"version":"[0-9a-f]{16}","files":\["\.\/","assets\/index-abc\.js","favicon\.svg"\]\};$/);
+  });
+
+  it('fails the build when sw.js imports another chunk, since it is registered as a classic script', async () => {
+    await expect(generate(bundleWith(['assets/shared-1.js']))).rejects.toThrow(/must not import/);
   });
 });

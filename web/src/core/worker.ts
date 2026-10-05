@@ -1,7 +1,7 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { Database, FindRule, RawSignalSpec, ScopedDatabase } from './api';
+import type { CompareOptions, Database, FindRule, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 
 const CHUNK_BYTES = 8 << 20;
@@ -25,6 +25,27 @@ let session: Session;
 /** The current databases as JSON, kept so they (with any edits) survive opening another log. */
 let databasesJson: string | null = null;
 
+/** What the engine doesn't know about a log it read: its name and how long it took. */
+type LogMeta = Pick<LogInfo, 'name' | 'parseMs'>;
+let logMeta: LogMeta = { name: '', parseMs: 0 };
+let compareMeta: LogMeta | null = null;
+
+const withMemory = (json: string, meta: LogMeta) => ({ ...JSON.parse(json), ...meta, wasmBytes: memory?.buffer.byteLength ?? 0 });
+
+/** Reads `file` in chunks through `push`, reporting progress at most every 100 ms. */
+async function readChunks(file: Blob, push: (chunk: Uint8Array) => void) {
+  let lastReport = 0;
+  for (let at = 0; at < file.size; at += CHUNK_BYTES) {
+    const chunk = new Uint8Array(await file.slice(at, at + CHUNK_BYTES).arrayBuffer());
+    push(chunk);
+    const now = performance.now();
+    if (now - lastReport > 100) {
+      lastReport = now;
+      port.postMessage({ event: 'progress', bytes: at + chunk.length, total: file.size });
+    }
+  }
+}
+
 function freshSession(): Session {
   const next = new Session();
   if (databasesJson) next.set_databases(databasesJson);
@@ -46,22 +67,15 @@ const handlers = {
   async openLog(file: Blob, name: string) {
     session.free();
     session = freshSession();
+    compareMeta = null;
     const started = performance.now();
-    let lastReport = 0;
     try {
       session.set_file_name(name);
       session.reserve_for_bytes(file.size);
-      for (let at = 0; at < file.size; at += CHUNK_BYTES) {
-        const chunk = new Uint8Array(await file.slice(at, at + CHUNK_BYTES).arrayBuffer());
-        session.push_chunk(chunk);
-        const now = performance.now();
-        if (now - lastReport > 100) {
-          lastReport = now;
-          port.postMessage({ event: 'progress', bytes: at + chunk.length, total: file.size });
-        }
-      }
-      const info = JSON.parse(session.finish());
-      return { ...info, parseMs: performance.now() - started, wasmBytes: memory?.buffer.byteLength ?? 0 };
+      await readChunks(file, (chunk) => session.push_chunk(chunk));
+      const json = session.finish();
+      logMeta = { name, parseMs: performance.now() - started };
+      return withMemory(json, logMeta);
     } catch (err) {
       // Leave no log rather than part of one; the app shows no log after a failed open.
       try {
@@ -103,9 +117,46 @@ const handlers = {
     databasesJson = json;
   },
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
+  async openCompareLog(file: Blob, name: string) {
+    compareMeta = null;
+    const started = performance.now();
+    try {
+      session.compare_begin(name, file.size);
+      await readChunks(file, (chunk) => session.compare_push_chunk(chunk));
+      const json = session.compare_finish();
+      compareMeta = { name, parseMs: performance.now() - started };
+      return withMemory(json, compareMeta);
+    } catch (err) {
+      try {
+        session.close_compare_log();
+      } catch {
+        // A session that trapped mid-call is replaced anyway.
+      }
+      throw err;
+    }
+  },
+  compareLogInfo() {
+    const json = session.compare_log_info();
+    return json && compareMeta ? withMemory(json, compareMeta) : null;
+  },
+  closeCompareLog() {
+    session.close_compare_log();
+    compareMeta = null;
+  },
+  swapCompareLog() {
+    const json = session.swap_compare_log();
+    [logMeta, compareMeta] = [compareMeta ?? logMeta, logMeta];
+    return withMemory(json, logMeta);
+  },
+  compareLogs: (options: CompareOptions) => JSON.parse(session.compare_logs(JSON.stringify(options))),
+  compareBytes: (keyA: number | null, keyB: number | null, options: CompareOptions) =>
+    JSON.parse(session.compare_bytes(keyA ?? -1, keyB ?? -1, JSON.stringify(options))),
+  compareByteLanes: (key: number, first: number, count: number, t0: number, t1: number, buckets: number) =>
+    transfer(session.compare_byte_lanes(key, first, count, t0, t1, buckets)),
+  compareFrameAt: (key: number, t: number) => transfer(session.compare_frame_at(key, t)),
 };
 
-const withTransfer = new Set(['rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
+const withTransfer = new Set(['rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes', 'compareByteLanes', 'compareFrameAt']);
 
 // Requests run one at a time so a request never observes a half-parsed log.
 let initError: unknown = null;

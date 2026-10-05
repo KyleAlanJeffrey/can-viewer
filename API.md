@@ -53,7 +53,7 @@ Frame flags can also carry bits with no constant in `api.ts`: ESI (`1 << 2`) and
 
 ### The LogInfo object
 
-Describes the current log. Returned by [`openLog`](#openlog).
+Describes the current log, or the comparison log. Returned by [`openLog`](#openlog), [`swapCompareLog`](#swapcomparelog), [`openCompareLog`](#opencomparelog) and [`compareLogInfo`](#compareloginfo).
 
 **Attributes**
 
@@ -270,6 +270,53 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 
 A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, [`frameData`](#framedata) fetches the whole payload, and [`rowBytes`](#rowbytes) fetches a range of bytes of many rows. `decodeRaw` and `decodeSignal` work on the whole payload.
 
+### The CompareOptions object
+
+Ignore rules for [`compareLogs`](#comparelogs) and [`compareBytes`](#comparebytes).
+
+**Attributes**
+
+- **`ignoreCounters`** `boolean` - Leave out bits that behave like a counter or a checksum in both logs. A counter is a 4-bit nibble, or a whole byte taking more than 16 values, that steps by the same non-zero amount between at least 80% of consecutive frames and takes at least 4 values. A checksum is the first or last byte, taking at least 4 values, when in at least 95% of the frames of the ID's longest length it is the sum or the XOR of the other bytes plus a constant; or a first or last byte that takes at least 16 values and changes between at least 90% of consecutive frames (32 or more) with every bit toggling on 25% to 75% of them, as a CRC does. A byte that counts in one log and not the other is a real difference and is kept.
+- **`ignoreChangesWithinA`** `boolean` - Use log A as its own baseline: score the first half of log A's time span against the second half the same way, and subtract that from each part of the score (the rate, the length, each byte). An ID whose differences are no bigger than its changes within A scores near 0 with the reason `Also changes within A`.
+
+### The IdComparison object
+
+One bus/ID pair of the open log (A) or the comparison log (B). Returned by [`compareLogs`](#comparelogs).
+
+**Attributes**
+
+- **`bus`** `string` - The bus name. IDs match across the logs by bus name and ID, except that when each log has one bus, the two buses match whatever they are called, and the name is log A's.
+- **`id`** `number` - The ID without the extended flag.
+- **`extended`** `boolean` - True for a 29-bit ID.
+- **`keyA`** `number | null` - The ID's key in log A, for the other CoreApi calls, or null when it is only in B.
+- **`keyB`** `number | null` - The ID's key in log B, for [`compareByteLanes`](#comparebytelanes) and [`compareFrameAt`](#compareframeat), or null when it is only in A.
+- **`presence`** `'both' | 'onlyA' | 'onlyB'` - Which logs have the ID.
+- **`name`** `string | null` - Message name from the loaded databases, looked up as for [`setDatabases`](#setdatabases) on the bus named by `bus`, or null.
+- **`framesA`** `number` - Frames in log A; 0 when only in B.
+- **`framesB`** `number` - Frames in log B; 0 when only in A.
+- **`rateA`** `number` - Frames per second of log A's duration, so logs of different lengths compare.
+- **`rateB`** `number` - The same for log B.
+- **`score`** `number` - From 0 to 100, how differently the ID behaves. Below 10 is no significant difference. See [`compareLogs`](#comparelogs).
+- **`reason`** `string` - Why, in a few words: `Appears only in A`, `Appears only in B`, `Byte 3 takes new values`, `Byte 3 has values only in A`, `Byte 3 holds a different value`, `Byte 3 changes more often`, `Byte 3 changes less often`, `Byte 3 values shift`, `Small value changes`, `Length changes from 8 to 6 bytes`, `Rate doubled`, `Rate halved`, `Rate up 3.1x`, `Rate down 3.1x`, `Also changes within A` or `No significant changes`.
+- **`bytes`** `number[]` - Payload bytes scoring 10 or more, most different first.
+
+### The ByteComparison object
+
+One ID compared byte by byte. Returned by [`compareBytes`](#comparebytes). Per-bit arrays are indexed `byte * 8 + bit`, bit 0 the least significant bit of the byte, as in [`bitFlips`](#bitflips).
+
+**Attributes**
+
+- **`len`** `number` - Bytes described: the longer payload of the two logs, at most 64.
+- **`framesA`** `number` - Frames of the ID in log A, 0 if none.
+- **`framesB`** `number` - Frames of the ID in log B, 0 if none.
+- **`flipsA`** `number[]` - How often each bit toggled between consecutive frames in log A; `len * 8` counts, zeros when log A lacks the ID.
+- **`flipsB`** `number[]` - The same for log B.
+- **`bitScores`** `number[]` - From 0 to 1 per bit, how differently it behaves (see [`compareLogs`](#comparelogs)), before the log A baseline. 0 for ignored bits and when either log lacks the ID or the byte.
+- **`byteScores`** `number[]` - From 0 to 100 per byte, after both ignore rules.
+- **`byteReasons`** `string[]` - Each byte's reason, worded as `IdComparison.reason`; `No significant changes` below 10, and empty when either log lacks the byte.
+- **`newValues`** `number[][]` - Per byte, up to 16 values log B shows and log A never does, with ignored bits cleared.
+- **`ignored`** `{ byte: number, mask: number, kind: 'counter' | 'checksum' }[]` - Bits left out by `ignoreCounters`, as a bit mask per byte.
+
 ## Logs
 
 ### openLog
@@ -278,7 +325,7 @@ A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REA
 openLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>
 ```
 
-Parses a CAN log and makes it the current log. It replaces the previous log and frees every decoded series. The loaded databases are kept and apply to the new log. The format is chosen from `name`'s extension and the file's first bytes, and reported in `LogInfo.format`; see "Log formats" in COMPATIBILITY.md for the formats and how one is chosen. The file is read in 8 MiB chunks, so a text log is never held in memory whole. Lines that do not parse do not fail the call; they are counted in `LogInfo.rejected`.
+Parses a CAN log and makes it the current log. It replaces the previous log, drops the comparison log (see [Compare logs](#compare-logs)) and frees every decoded series. The loaded databases are kept and apply to the new log. The format is chosen from `name`'s extension and the file's first bytes, and reported in `LogInfo.format`; see "Log formats" in COMPATIBILITY.md for the formats and how one is chosen. The file is read in 8 MiB chunks, so a text log is never held in memory whole. Lines that do not parse do not fail the call; they are counted in `LogInfo.rejected`.
 
 Series handles restart from 0 for each log. Forget every handle from before the call, and do not pass one to `dropSeries`: it could name a new series.
 
@@ -726,6 +773,145 @@ Writes `db` as DBC text. It neither reads nor changes the session. Parsing the t
 ```ts
 const text = await core.exportDbc(db);
 downloadText('vehicle.dbc', text); // web/src/download.ts
+```
+
+## Compare logs
+
+A second log, B, can be read beside the open log, A, to find what differs between them: for example the car idle in A and the doors locking in B. Log B belongs to the open log: [`openLog`](#openlog) drops it, and the engine restarting loses it with the open log. Times for log B are seconds from log B's first frame.
+
+### openCompareLog
+
+```ts
+openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>
+```
+
+Reads `file` as log B, replacing any log B before it. The file is read as [`openLog`](#openlog) reads one: in 8 MiB chunks, with the format chosen the same way and the same limits. Both logs are held in the engine's memory at once, so together they must fit in it (see "Browsers" in COMPATIBILITY.md).
+
+**Parameters**
+
+- **`file`** `Blob` - The log file.
+- **`name`** `string` - The file name. Its extension suggests the format; it is also returned as `LogInfo.name`.
+- **`onProgress`** `(p: Progress) => void` - Called as the file is read, at most about every 100 ms.
+
+**Returns** log B's [`LogInfo`](#the-loginfo-object). A log with no frames is still kept; check `frames`.
+
+**Errors** Rejects if the file cannot be read or the engine fails. Log B is then gone.
+
+```ts
+const b = await core.openCompareLog(file, file.name, (p) => showProgress(p.bytes / p.total));
+```
+
+### compareLogInfo
+
+```ts
+compareLogInfo(): Promise<LogInfo | null>
+```
+
+Log B's [`LogInfo`](#the-loginfo-object), or null when there is none.
+
+```ts
+const b = await core.compareLogInfo();
+if (!b) askForLogB();
+```
+
+### closeCompareLog
+
+```ts
+closeCompareLog(): Promise<void>
+```
+
+Drops log B and frees its memory. Does nothing without one.
+
+### swapCompareLog
+
+```ts
+swapCompareLog(): Promise<LogInfo>
+```
+
+Makes log B the open log and the open log log B, without reading either again. Every series is dropped and handles restart from 0, as after [`openLog`](#openlog), and ID keys now name the new open log's IDs: call [`idSummary`](#idsummary) again.
+
+**Returns** the new open log's [`LogInfo`](#the-loginfo-object).
+
+**Errors** Rejects when there is no log B.
+
+```ts
+const log = await core.swapCompareLog();
+const ids = await core.idSummary();
+```
+
+### compareLogs
+
+```ts
+compareLogs(options: CompareOptions): Promise<IdComparison[]>
+```
+
+Every bus/ID pair of either log, error frames aside, scored from 0 to 100 by how differently it behaves in the two logs. The score is the largest of these parts:
+
+- **Only one log has the ID:** 100.
+- **Rate:** rates are frames per second of each log's duration. The ratio of the larger rate to the smaller scores 0 up to 1.1, rising in a straight line to 80 at 2 (doubled or halved) and above.
+- **Length:** 90 when the ID's longest payload differs.
+- **Each payload byte** both logs carry (the first 64), over the bits the ignore rules keep, scores the largest of:
+  - per bit, the difference between the logs in the share of frames with the bit set, and in the share of consecutive frames where it toggles (each 0 to 1);
+  - 0.75 for a bit that is constant in one log and not the other;
+  - for a byte that takes at most 16 values in one log (a state rather than a measurement), when the other log shows values it never does: 0.75, plus up to 0.25 as those frames reach a quarter of the other log. Even a single frame of a new value counts, so a short event such as a door locking stands out.
+
+With `ignoreChangesWithinA`, each part first loses what it scores between the halves of log A. The reason names the part that scored highest; a byte reason for a shift or a change of toggling under 35 reads `Small value changes`. See `compare.rs` in `crates/can-wasm`.
+
+**Parameters**
+
+- **`options`** [`CompareOptions`](#the-compareoptions-object) - Ignore rules.
+
+**Returns** an array of [`IdComparison`](#the-idcomparison-object), highest score first. It is empty without log B.
+
+```ts
+const found = await core.compareLogs({ ignoreCounters: true, ignoreChangesWithinA: false });
+const changed = found.filter((c) => c.presence === 'both' && c.score >= 10);
+```
+
+### compareBytes
+
+```ts
+compareBytes(keyA: number | null, keyB: number | null, options: CompareOptions): Promise<ByteComparison>
+```
+
+One ID compared byte by byte, scored as by [`compareLogs`](#comparelogs).
+
+**Parameters**
+
+- **`keyA`** `number | null` - The ID's key in log A (`IdComparison.keyA`), or null.
+- **`keyB`** `number | null` - The ID's key in log B (`IdComparison.keyB`), or null.
+- **`options`** [`CompareOptions`](#the-compareoptions-object) - Ignore rules.
+
+**Returns** a [`ByteComparison`](#the-bytecomparison-object). With one key null or unknown, only the other log's bit toggles are filled in.
+
+```ts
+const detail = await core.compareBytes(found[0].keyA, found[0].keyB, options);
+const loudest = detail.byteScores.indexOf(Math.max(...detail.byteScores));
+```
+
+### compareByteLanes
+
+```ts
+compareByteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]>
+```
+
+Like [`byteLanes`](#bytelanes), for ID `key` of log B, with times in seconds from log B's first frame. Empty without log B or for an unknown key.
+
+```ts
+const [a] = await core.byteLanes(c.keyA, 3, 1, 0, 30, 400);
+const [b] = await core.compareByteLanes(c.keyB, 3, 1, 0, 30, 400);
+```
+
+### compareFrameAt
+
+```ts
+compareFrameAt(key: number, t: number): Promise<Uint8Array>
+```
+
+The whole payload of log B's last frame of ID `key` at or before `t` seconds from log B's first frame, or its first frame when `t` is earlier. Empty without log B or for an unknown key.
+
+```ts
+const bytesB = await core.compareFrameAt(c.keyB, 12);
 ```
 
 ## Engine lifecycle

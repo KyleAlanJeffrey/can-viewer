@@ -113,4 +113,33 @@ describe('WebCore', () => {
     expect(FakeWorker.all).toHaveLength(1);
     expect(reset).not.toHaveBeenCalled();
   });
+
+  it('passes the compare calls through and unpacks log B byte lanes', async () => {
+    const core = new WebCore();
+    const [worker] = FakeWorker.all;
+    const progress = vi.fn();
+
+    const open = core.openCompareLog(new Blob(['x']), 'door-lock.log', progress);
+    worker.onmessage?.({ data: { event: 'progress', bytes: 1, total: 2 } } as MessageEvent);
+    worker.reply('openCompareLog', { result: { name: 'door-lock.log', frames: 3 } });
+    await expect(open).resolves.toMatchObject({ name: 'door-lock.log' });
+    expect(progress).toHaveBeenCalledWith({ event: 'progress', bytes: 1, total: 2 });
+
+    const options = { ignoreCounters: true, ignoreChangesWithinA: false };
+    const found = core.compareLogs(options);
+    expect(worker.requests.at(-1)).toMatchObject({ method: 'compareLogs', args: [options] });
+    worker.reply('compareLogs', { result: [] });
+    await expect(found).resolves.toEqual([]);
+
+    const detail = core.compareBytes(null, 7, options);
+    expect(worker.requests.at(-1)).toMatchObject({ method: 'compareBytes', args: [null, 7, options] });
+    worker.reply('compareBytes', { result: { len: 0 } });
+    await detail;
+
+    const lanes = core.compareByteLanes(7, 3, 2, 0, 10, 50);
+    worker.reply('compareByteLanes', { result: Float64Array.from([1, 0.5, 9, 2, 0, 1, 1, 4]) });
+    const [b3, b4] = await lanes;
+    expect([...b3.x, ...b3.y]).toEqual([0.5, 9]);
+    expect([...b4.x, ...b4.y]).toEqual([0, 1, 1, 4]);
+  });
 });

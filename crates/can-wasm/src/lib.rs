@@ -3,6 +3,7 @@
 //!
 //! Bulk data crosses the boundary as typed arrays; small structured results as JSON strings.
 
+mod compare;
 mod find;
 mod series;
 
@@ -56,6 +57,8 @@ pub struct Session {
     input: LogInput,
     databases: Vec<ScopedDatabase>,
     series: Vec<Option<Series>>,
+    /// A second log, to compare the open log with.
+    log_b: Option<compare::LogB>,
 }
 
 /// The log being read: its parser once the format is known, and the first bytes until then.
@@ -230,6 +233,73 @@ pub fn export_dbc(json_db: &str) -> Result<String, JsError> {
     Ok(db.to_dbc())
 }
 
+/// The JSON `LogInfo` of a log read into `store` through `input`.
+fn log_info_json(store: &FrameStore, input: &LogInput) -> String {
+    let stats = input.stats();
+    let duration_s = match (store.first_ts_ns(), store.last_ts_ns()) {
+        (Some(a), Some(b)) => (b - a) as f64 / 1e9,
+        _ => 0.0,
+    };
+    to_json(&LogInfo {
+        format: input.format().name(),
+        frames: store.len(),
+        bytes: stats.bytes,
+        lines: stats.lines,
+        rejected: stats.rejected,
+        first_rejection: stats.first_rejection,
+        duration_s,
+        channels: store.channels(),
+        heap_bytes: store.heap_bytes(),
+        error_frames: store.error_frames(),
+        reassembled_frames: store.reassembled_frames(),
+    })
+}
+
+/// Times cross the boundary as seconds from the first frame of the log, as in [`Session::rows`].
+fn origin_in(store: &FrameStore) -> i64 {
+    store.first_ts_ns().unwrap_or(0)
+}
+
+fn ns_in(store: &FrameStore, t: f64) -> i64 {
+    // About 30 years either way, so differences of these times can't overflow an i64.
+    const LIMIT_S: f64 = 1e9;
+    origin_in(store).saturating_add((t.clamp(-LIMIT_S, LIMIT_S) * 1e9).round() as i64)
+}
+
+/// [`Session::byte_lanes`] of a log read into `store`.
+fn byte_lanes_in(
+    store: &FrameStore,
+    key: f64,
+    first: u32,
+    count: u32,
+    t0: f64,
+    t1: f64,
+    buckets: u32,
+) -> Vec<f64> {
+    let Some(stats) = (key >= 0.0).then(|| store.id_stats(key as IdKey)).flatten() else {
+        return Vec::new();
+    };
+    if !t0.is_finite() || !t1.is_finite() {
+        return Vec::new();
+    }
+    // The frames in the window plus one neighbour each side, so lines reach the plot edges.
+    let inside = store.id_frames_between(stats, ns_in(store, t0), ns_in(store, t1));
+    let frames =
+        &stats.frames[inside.start.saturating_sub(1)..(inside.end + 1).min(stats.frames.len())];
+    let origin = origin_in(store);
+    let mut out = Vec::new();
+    for byte in first..first.saturating_add(count) {
+        let byte = byte as usize;
+        let series = Series::decode(store, frames, origin, |data| {
+            data.get(byte).map(|&b| f64::from(b))
+        });
+        let view = series.view(t0, t1, buckets as usize);
+        out.push((view.len() / 2) as f64);
+        out.extend_from_slice(&view);
+    }
+    out
+}
+
 /// Stores `series` and returns its JSON `SeriesInfo`.
 fn add_series(slots: &mut Vec<Option<Series>>, series: Series, name: &str, unit: &str) -> String {
     let info = to_json(&SeriesInfo {
@@ -275,24 +345,7 @@ impl Session {
     }
 
     pub fn log_info(&self) -> String {
-        let stats = self.input.stats();
-        let duration_s = match (self.store.first_ts_ns(), self.store.last_ts_ns()) {
-            (Some(a), Some(b)) => (b - a) as f64 / 1e9,
-            _ => 0.0,
-        };
-        to_json(&LogInfo {
-            format: self.input.format().name(),
-            frames: self.store.len(),
-            bytes: stats.bytes,
-            lines: stats.lines,
-            rejected: stats.rejected,
-            first_rejection: stats.first_rejection,
-            duration_s,
-            channels: self.store.channels(),
-            heap_bytes: self.store.heap_bytes(),
-            error_frames: self.store.error_frames(),
-            reassembled_frames: self.store.reassembled_frames(),
-        })
+        log_info_json(&self.store, &self.input)
     }
 
     /// JSON array of `IdSummary`, one per channel/ID pair.
@@ -647,42 +700,15 @@ impl Session {
         t1: f64,
         buckets: u32,
     ) -> Vec<f64> {
-        let Ok(Some(stats)) = self.filter(key) else {
-            return Vec::new();
-        };
-        if !t0.is_finite() || !t1.is_finite() {
-            return Vec::new();
-        }
-        // The frames in the window plus one neighbour each side, so lines reach the plot edges.
-        let inside = self
-            .store
-            .id_frames_between(stats, self.ns_at(t0), self.ns_at(t1));
-        let frames =
-            &stats.frames[inside.start.saturating_sub(1)..(inside.end + 1).min(stats.frames.len())];
-        let origin = self.origin_ns();
-        let mut out = Vec::new();
-        for byte in first..first.saturating_add(count) {
-            let byte = byte as usize;
-            let series = Series::decode(&self.store, frames, origin, |data| {
-                data.get(byte).map(|&b| f64::from(b))
-            });
-            let view = series.view(t0, t1, buckets as usize);
-            out.push((view.len() / 2) as f64);
-            out.extend_from_slice(&view);
-        }
-        out
+        byte_lanes_in(&self.store, key, first, count, t0, t1, buckets)
     }
 
-    /// Times cross the boundary as seconds from the first frame, as in [`Session::rows`].
     fn origin_ns(&self) -> i64 {
-        self.store.first_ts_ns().unwrap_or(0)
+        origin_in(&self.store)
     }
 
     fn ns_at(&self, t: f64) -> i64 {
-        // About 30 years either way, so differences of these times can't overflow an i64.
-        const LIMIT_S: f64 = 1e9;
-        self.origin_ns()
-            .saturating_add((t.clamp(-LIMIT_S, LIMIT_S) * 1e9).round() as i64)
+        ns_in(&self.store, t)
     }
 
     /// The definition of `id` (DBC convention) on bus `channel`, by the rule in
@@ -697,7 +723,11 @@ impl Session {
         if id & ERR_FLAG != 0 {
             return None;
         }
-        let bus = self.store.channels().get(usize::from(channel));
+        self.resolve_on(self.store.channels().get(usize::from(channel)), id)
+    }
+
+    /// Like [`Session::resolve`], for a bus by name.
+    fn resolve_on(&self, bus: Option<&String>, id: u32) -> Option<(usize, &MessageDef)> {
         let applicable = || {
             self.databases
                 .iter()

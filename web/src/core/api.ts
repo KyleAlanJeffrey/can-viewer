@@ -221,6 +221,72 @@ export interface SeriesInfo {
   max: number | null;
 }
 
+/** Ignore rules for `CoreApi.compareLogs` and `CoreApi.compareBytes`. */
+export interface CompareOptions {
+  /** Leave out bits that behave like a counter or a checksum in both logs. */
+  ignoreCounters: boolean;
+  /** Subtract what each part of the score is between the first and second halves of log A. */
+  ignoreChangesWithinA: boolean;
+}
+
+/** Whether an ID is in both logs or only one. */
+export type Presence = 'both' | 'onlyA' | 'onlyB';
+
+/** One bus/ID pair of the open log (A) or the comparison log (B), scored by how differently it behaves. */
+export interface IdComparison {
+  /** Bus name, as in log A's `LogInfo.channels` (log B's bus when the ID is only in B). */
+  bus: string;
+  /** ID without the extended flag. */
+  id: number;
+  extended: boolean;
+  /** The ID's key in log A, or null when it is only in B. */
+  keyA: number | null;
+  /** The ID's key in log B, for the `compare...` calls, or null when it is only in A. */
+  keyB: number | null;
+  presence: Presence;
+  /** Message name from the loaded databases, or null. */
+  name: string | null;
+  framesA: number;
+  framesB: number;
+  /** Frames per second of each log's duration, so logs of different lengths compare. */
+  rateA: number;
+  rateB: number;
+  /** 0 to 100: how differently the ID behaves. Below 10 is no significant difference. */
+  score: number;
+  /** Why, in a few words, such as `Byte 3 takes new values` or `Rate doubled`. */
+  reason: string;
+  /** Payload bytes that differ, most different first. */
+  bytes: number[];
+}
+
+/** Bits the ignore rules left out of a comparison. */
+export interface IgnoredBits {
+  byte: number;
+  /** Bit mask within the byte, bit 0 the least significant. */
+  mask: number;
+  kind: 'counter' | 'checksum';
+}
+
+/** One ID compared byte by byte; see `CoreApi.compareBytes`. */
+export interface ByteComparison {
+  /** Bytes described: the longer payload of the two logs, at most 64. */
+  len: number;
+  framesA: number;
+  framesB: number;
+  /** Bit toggles between consecutive frames in each log, indexed `byte * 8 + bit` as in `bitFlips`. */
+  flipsA: number[];
+  flipsB: number[];
+  /** 0 to 1 per bit, indexed the same way: how differently the bit behaves. 0 for ignored bits. */
+  bitScores: number[];
+  /** 0 to 100 per byte, after the ignore rules. */
+  byteScores: number[];
+  /** Why each byte scores as it does. */
+  byteReasons: string[];
+  /** Per byte, up to 16 values log B shows that log A never does. */
+  newValues: number[][];
+  ignored: IgnoredBits[];
+}
+
 /**
  * Everything the UI needs from the engine. The web build talks to a wasm Web Worker; the
  * desktop build will implement this over Tauri commands with the same Rust crates running
@@ -293,6 +359,25 @@ export interface CoreApi {
   setDatabases(dbs: ScopedDatabase[]): Promise<void>;
   /** `db` as DBC text. */
   exportDbc(db: Database): Promise<string>;
+
+  /**
+   * Read a second log, B, to compare the open log (A) with, replacing any earlier one. Read like
+   * `openLog`, in chunks with progress. Opening another log with `openLog` drops it.
+   */
+  openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>;
+  /** Log B, or null when there is none. */
+  compareLogInfo(): Promise<LogInfo | null>;
+  closeCompareLog(): Promise<void>;
+  /** Make log B the open log and the open log log B, dropping every series. Returns the new open log. */
+  swapCompareLog(): Promise<LogInfo>;
+  /** Every ID of either log, error frames aside, scored, most different first. Empty without log B. */
+  compareLogs(options: CompareOptions): Promise<IdComparison[]>;
+  /** One ID byte by byte: `keyA` in log A and `keyB` in log B, either null when that log lacks it. */
+  compareBytes(keyA: number | null, keyB: number | null, options: CompareOptions): Promise<ByteComparison>;
+  /** Like `byteLanes`, for ID `key` of log B, in seconds from log B's first frame. */
+  compareByteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]>;
+  /** The payload of log B's last frame of `key` at or before `t` seconds (its first frame before that). */
+  compareFrameAt(key: number, t: number): Promise<Uint8Array>;
   /**
    * Called after the engine stopped and was started again: the log and every series are gone,
    * calls in flight were rejected, and the databases were set again. Returns an unsubscribe.

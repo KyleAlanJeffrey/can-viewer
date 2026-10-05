@@ -1,4 +1,19 @@
-import type { ByteLane, Candidate, CoreApi, Database, FindRule, IdSummary, LogInfo, Progress, RawSignalSpec, ScopedDatabase, SeriesInfo } from './api';
+import type {
+  ByteComparison,
+  ByteLane,
+  Candidate,
+  CompareOptions,
+  CoreApi,
+  Database,
+  FindRule,
+  IdComparison,
+  IdSummary,
+  LogInfo,
+  Progress,
+  RawSignalSpec,
+  ScopedDatabase,
+  SeriesInfo,
+} from './api';
 import { RowBatch } from './rows';
 import type { Request } from './worker';
 
@@ -110,14 +125,7 @@ export class WebCore implements CoreApi {
   }
 
   async byteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]> {
-    const packed = await this.call<Float64Array>('byteLanes', key, first, count, t0, t1, buckets);
-    const lanes: ByteLane[] = [];
-    for (let at = 0; at < packed.length; ) {
-      const n = packed[at];
-      lanes.push({ x: packed.subarray(at + 1, at + 1 + n), y: packed.subarray(at + 1 + n, at + 1 + 2 * n) });
-      at += 1 + 2 * n;
-    }
-    return lanes;
+    return unpackLanes(await this.call<Float64Array>('byteLanes', key, first, count, t0, t1, buckets));
   }
 
   rowAtTime = (key: number, t: number) => this.call<number>('rowAtTime', key, t);
@@ -142,4 +150,38 @@ export class WebCore implements CoreApi {
   findSignal(rules: FindRule[], keys: number[], limit: number) {
     return this.call<Candidate[]>('findSignal', rules, keys, limit);
   }
+
+  async openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo> {
+    this.onProgress = onProgress;
+    try {
+      return await this.call<LogInfo>('openCompareLog', file, name);
+    } finally {
+      this.onProgress = null;
+    }
+  }
+
+  compareLogInfo = () => this.call<LogInfo | null>('compareLogInfo');
+  closeCompareLog = () => this.call<void>('closeCompareLog');
+  swapCompareLog = () => this.call<LogInfo>('swapCompareLog');
+  compareLogs = (options: CompareOptions) => this.call<IdComparison[]>('compareLogs', options);
+  compareFrameAt = (key: number, t: number) => this.call<Uint8Array>('compareFrameAt', key, t);
+
+  compareBytes(keyA: number | null, keyB: number | null, options: CompareOptions) {
+    return this.call<ByteComparison>('compareBytes', keyA, keyB, options);
+  }
+
+  async compareByteLanes(key: number, first: number, count: number, t0: number, t1: number, buckets: number): Promise<ByteLane[]> {
+    return unpackLanes(await this.call<Float64Array>('compareByteLanes', key, first, count, t0, t1, buckets));
+  }
+}
+
+/** Splits the worker's `[n, x..., y..., n, ...]` lanes into views of the one buffer. */
+function unpackLanes(packed: Float64Array): ByteLane[] {
+  const lanes: ByteLane[] = [];
+  for (let at = 0; at < packed.length; ) {
+    const n = packed[at];
+    lanes.push({ x: packed.subarray(at + 1, at + 1 + n), y: packed.subarray(at + 1 + n, at + 1 + 2 * n) });
+    at += 1 + 2 * n;
+  }
+  return lanes;
 }

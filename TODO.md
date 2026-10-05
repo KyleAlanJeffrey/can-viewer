@@ -28,6 +28,8 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Compare: check the counter and checksum detection, and the scores, against real before-and-after logs (the tests and the smoke test use the generated demo) (owner, with your own logs)
 - [ ] Compare: Open in Reverse Engineer selects the ID and byte, but the Advanced window stays where it was; move it to where the byte differs (the first frame of a value log A never shows, say)
 - [ ] Compare: log B is read whole into wasm memory beside log A; warn before reading a B that would not fit, rather than failing the read
+- [x] Export log as other formats (Export Log...: candump, ASC, BLF, TRC, MF4, CSV)
+- [x] Works offline and installable: a web app manifest with icons, and a service worker that precaches the app shell, keeps the demo after its first run and offers Reload when a new version is ready
 
 ## Landing page
 

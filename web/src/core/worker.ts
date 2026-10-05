@@ -1,7 +1,7 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { CompareOptions, Database, FindRule, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
+import type { CompareOptions, Database, FindRule, LogFormat, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 
 const CHUNK_BYTES = 8 << 20;
@@ -154,6 +154,18 @@ const handlers = {
   compareByteLanes: (key: number, first: number, count: number, t0: number, t1: number, buckets: number) =>
     transfer(session.compare_byte_lanes(key, first, count, t0, t1, buckets)),
   compareFrameAt: (key: number, t: number) => transfer(session.compare_frame_at(key, t)),
+  exportLog(format: LogFormat) {
+    session.export_log(format);
+    // Taken a chunk at a time, so the core frees each as it is copied out, and added to the
+    // Blob at once, so each copy can be collected rather than all being held to the end. A
+    // Blob made from a Blob shares its data, and so does posting the result to the page.
+    let file = new Blob([]);
+    for (let part = session.export_chunk(); part; part = session.export_chunk()) {
+      // wasm-bindgen copies each chunk into an ArrayBuffer of its own, never a shared one.
+      file = new Blob([file, part as Uint8Array<ArrayBuffer>]);
+    }
+    return file;
+  },
 };
 
 const withTransfer = new Set(['rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes', 'compareByteLanes', 'compareFrameAt']);

@@ -334,8 +334,8 @@ Three panes in a full-height grid on a 1440 x 900 reference.
 - **Toolbar** (60px, Paper White, hairline bottom border, 12px gaps), spanning content and inspector:
   - Leading: sidebar toggle, a 28px hairline divider, the document title over its Slate status subtitle (log format, frames, duration, DBC; progress text while busy).
   - Centre: the view switcher, a segmented control (Overview / Trace / Plot / Reverse Engineer / Compare / Database). Views that need a log are disabled until one is open; Database opens with a DBC alone.
-  - Trailing: Open DBC... (quiet), Open Log..., inspector toggle. Open Log is amber unless the view has its own primary, then it is an outline button. The inspector toggle is disabled on views without an inspector.
-  - Below 1280px, Open DBC goes icon-only (its label stays for screen readers) and the switcher tightens, so the log name stays readable.
+  - Trailing: Open DBC... (quiet), Export Log... (quiet, disabled until a log is open; it opens a sheet to pick the format), Open Log..., inspector toggle. Open Log is amber unless the view has its own primary, then it is an outline button. The inspector toggle is disabled on views without an inspector.
+  - Below 1280px, Open DBC and Export Log go icon-only (their labels stay for screen readers) and the switcher tightens, so the log name stays readable.
   - View actions never go in the toolbar; they sit in the view's content header.
   - There is no bottom status bar.
   - A 2px Ochre Control progress bar sits on the toolbar's bottom edge while loading.
@@ -434,7 +434,7 @@ Virtualised and canvas-drawn for 10M+ frames, with a custom 10px scrollbar (Grap
 36px rows, inset by an 8px negative margin, with 8px corners and Hover Wash. Each row has a 10px series dot, the name at 500 with the unit in Slate, the mono 12px Slate layout (`0|16@1+`), and a Plot checkbox under a 12px Slate "Plot" column label. Defining a signal from a bit selection lives in Reverse Engineer, not here.
 
 ### Banner and Empty State
-- **Banner:** Paper White, Hairline, 8px corners, with a Rust warning icon and a Slate detail line.
+- **Banner:** Paper White, Hairline, 8px corners, with a Rust warning icon and a Slate detail line. The update banner ("A new version of FreeCAN Studio is ready", or "This tab is out of date. Reload to keep working." once another tab has moved to it, with an outline Reload button) is news, not a warning, so its icon is a Slate refresh icon.
 - **Empty state:** centred, at most 440px wide. It holds the 64px mark on Paper, the empty title, a Slate lede, the secondary demo button, and a 12px Slate privacy line with a lock icon.
 - **Drop overlay:** a 2px dashed Ochre Control border, 12px corners, inset 8px, over Selected Row at 72%.
 

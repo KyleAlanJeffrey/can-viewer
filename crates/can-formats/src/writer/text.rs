@@ -4,6 +4,8 @@ use std::io::{self, Write};
 
 use can_core::{flags, FrameRef, FrameStore, EXT_FLAG};
 
+use crate::LocalTime;
+
 use super::{
     bus_numbers, civil_from_days, is_fd, len_to_dlc, log_frames, plain_name, start_ns,
     write_hex_bytes, write_seconds,
@@ -54,11 +56,15 @@ pub(super) fn write_candump(store: &FrameStore, out: &mut impl Write) -> io::Res
 }
 
 /// Vector ASC, base hex with absolute timestamps from the second of the first frame, which
-/// the `date` line gives in UTC.
-pub(super) fn write_asc(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
+/// the `date` line gives in local time, as CANoe writes it and CANoe and python-can read it.
+pub(super) fn write_asc(
+    store: &FrameStore,
+    local_time: LocalTime,
+    out: &mut impl Write,
+) -> io::Result<()> {
     let start_s = start_ns(store).div_euclid(1_000_000_000);
     let channels = bus_numbers(store);
-    let date = asc_date(start_s);
+    let date = asc_date(local_time.to_local(start_s));
     writeln!(out, "date {date}")?;
     writeln!(out, "base hex  timestamps absolute")?;
     writeln!(out, "internal events logged")?;
@@ -215,7 +221,7 @@ fn asc_id(frame: &FrameRef<'_>) -> String {
     }
 }
 
-/// `Tue Sep 30 00:00:00.000 2025` for a Unix time in seconds, in UTC.
+/// `Tue Sep 30 00:00:00.000 2025` for a time in seconds since 1970-01-01 00:00.
 fn asc_date(epoch_s: i64) -> String {
     const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const MONTHS: [&str; 12] = [

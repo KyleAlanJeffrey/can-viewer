@@ -17,18 +17,20 @@ use miniz_oxide::deflate::core::{
     compress, create_comp_flags_from_zip_params, CompressorOxide, TDEFLFlush, TDEFLStatus,
 };
 
-use crate::Format;
+use crate::{Format, LocalTime};
 
-/// Writes the frames of `store` to `out` as `format`. BLF and MF4 seek back to fill in links
-/// and sizes once their frames are written; the text formats only write forward.
+/// Writes the frames of `store` to `out` as `format`. `local_time` is the time zone of the
+/// wall-clock times that ASC writes. BLF and MF4 seek back to fill in links and sizes once
+/// their frames are written; the text formats only write forward.
 pub fn write_log<W: Write + Seek>(
     format: Format,
     store: &FrameStore,
+    local_time: LocalTime,
     out: &mut W,
 ) -> io::Result<()> {
     match format {
         Format::Candump => text::write_candump(store, out),
-        Format::Asc => text::write_asc(store, out),
+        Format::Asc => text::write_asc(store, local_time, out),
         Format::Trc => text::write_trc(store, out),
         Format::Csv => text::write_csv(store, out),
         Format::Blf => blf::write_blf(store, out),
@@ -293,14 +295,19 @@ mod tests {
 
     fn write(format: Format, store: &FrameStore) -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());
-        write_log(format, store, &mut out).unwrap();
+        write_log(format, store, LocalTime::UTC, &mut out).unwrap();
         out.into_inner()
     }
 
     fn read(format: Format, bytes: &[u8]) -> FrameStore {
+        read_in(format, bytes, LocalTime::UTC)
+    }
+
+    fn read_in(format: Format, bytes: &[u8], local_time: LocalTime) -> FrameStore {
         let detected = Format::detect(&format!("x.{}", format.extension()), bytes);
         assert_eq!(detected, format);
         let mut parser = AnyParser::new(format);
+        parser.set_local_time(local_time);
         let mut store = FrameStore::new();
         for chunk in bytes.chunks(4096) {
             parser.push(chunk, &mut store);
@@ -405,6 +412,55 @@ mod tests {
         ] {
             assert_eq!(read(format, &write(format, &FrameStore::new())).len(), 0);
         }
+    }
+
+    /// US Eastern time in 2025, daylight saving from 9 March to 2 November.
+    fn new_york(unix_s: i64) -> i64 {
+        if (1_741_503_600..1_762_063_200).contains(&unix_s) {
+            -4 * 3600
+        } else {
+            -5 * 3600
+        }
+    }
+
+    #[test]
+    fn asc_dates_are_local_time_and_read_back_in_the_same_zone() {
+        let original = sample_log(["can1", "can2"]);
+        let mut out = Cursor::new(Vec::new());
+        write_log(Format::Asc, &original, LocalTime(new_york), &mut out).unwrap();
+        let bytes = out.into_inner();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            text.starts_with("date Mon Sep 29 20:00:00.000 2025\n"),
+            "{text}"
+        );
+
+        let mut expected = frames(&original);
+        classless_errors(&mut expected, false);
+        assert_eq!(
+            frames(&read_in(Format::Asc, &bytes, LocalTime(new_york))),
+            expected
+        );
+        let as_utc = read(Format::Asc, &bytes);
+        assert_eq!(as_utc.frame(0).ts_ns, T0 - 4 * 3_600_000_000_000);
+    }
+
+    #[test]
+    fn local_times_convert_both_ways_across_daylight_saving() {
+        let zone = LocalTime(new_york);
+        for unix_s in [
+            1_741_503_599,
+            1_741_503_600,
+            1_759_190_400,
+            1_762_063_199,
+            1_762_063_200 + 3600,
+        ] {
+            assert_eq!(zone.to_unix(zone.to_local(unix_s)), unix_s, "{unix_s}");
+        }
+        assert_eq!(
+            LocalTime::UTC.to_local(T0 / 1_000_000_000),
+            T0 / 1_000_000_000
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //!
 //! Bulk data crosses the boundary as typed arrays; small structured results as JSON strings.
 
+mod clock;
 mod export;
 mod find;
 mod series;
@@ -95,6 +96,7 @@ impl LogInput {
             self.reserve(format, store);
         }
         let mut parser = AnyParser::new(format);
+        parser.set_local_time(clock::local_time());
         parser.expect_bytes(self.total_bytes as u64);
         parser.push(&self.head, store);
         self.head = Vec::new();
@@ -700,7 +702,7 @@ impl Session {
     fn export(&mut self, format: Format) -> std::io::Result<VecDeque<Vec<u8>>> {
         self.export = VecDeque::new();
         let mut file = ChunkedFile::default();
-        writer::write_log(format, &self.store, &mut file)?;
+        writer::write_log(format, &self.store, clock::local_time(), &mut file)?;
         Ok(file.into_chunks())
     }
 

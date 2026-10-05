@@ -7,7 +7,8 @@
 //! sample-gen convert <in> <out.log|asc|trc|csv|blf|mf4>    rewrite a log in another format
 //! ```
 //!
-//! Logs are read in any format the app opens, chosen as the app chooses it.
+//! Logs are read in any format the app opens, chosen as the app chooses it. Where the app
+//! takes the browser's time zone (an ASC file's `date` line), this tool uses UTC.
 //!
 //! The demo DBC describes most IDs in the log. `0x123` and `0x456` are left out on purpose,
 //! as reverse-engineering practice: 0x123 carries a counter, a big-endian speed, a pedal
@@ -21,7 +22,7 @@ use std::time::Instant;
 
 use can_core::{flags, FrameStore, EXT_FLAG};
 use can_dbc_model::{Database, MessageDef};
-use can_formats::{writer, AnyParser, Format, LogParser};
+use can_formats::{writer, AnyParser, Format, LocalTime, LogParser};
 
 const DEMO_DBC: &str = include_str!("demo.dbc");
 /// 2025-09-30T00:00:00Z
@@ -93,7 +94,7 @@ fn convert(store: &FrameStore, path: &str) -> Result<(), String> {
     })?;
     let file = File::create(path).map_err(|e| format!("{path}: {e}"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
-    writer::write_log(format, store, &mut out)
+    writer::write_log(format, store, LocalTime::UTC, &mut out)
         .and_then(|()| out.flush())
         .map_err(|e| format!("{path}: {e}"))
 }

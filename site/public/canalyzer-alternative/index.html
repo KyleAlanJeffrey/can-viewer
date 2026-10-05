@@ -70,16 +70,16 @@
     <div class="wrap">
       <div class="section-head">
         <h2 id="fit-title">What it does, and what it doesn&rsquo;t</h2>
-        <p class="lead">FreeCAN Studio works on recorded logs. Here is where it fits.</p>
+        <p class="lead">FreeCAN Studio works on recorded logs, and can record a bus itself through a low-cost USB adapter. Here is where it fits.</p>
       </div>
       <ul class="planned-list">
         <li class="card">
           <h3>It does</h3>
-          <p>Open BLF, ASC, MF4, TRC, CSV and candump logs. Decode them with one or more DBC files, including J1939 by PGN. Plot signals with cursors. Show bit activity to reverse-engineer unknown messages. Edit and export DBC files. All of it on your computer, in a browser tab.</p>
+          <p>Open BLF, ASC, MF4, TRC, CSV and candump logs. Decode them with one or more DBC files, including J1939 by PGN. Plot signals with cursors. Show bit activity to reverse-engineer unknown messages. Edit and export DBC files. In Chrome or Edge, capture a bus live from an slcan adapter (such as a CANable or USBtin) or a candleLight (gs_usb) USB adapter, and save the capture as a log. All of it on your computer, in a browser tab.</p>
         </li>
         <li class="card">
           <h3>It doesn&rsquo;t</h3>
-          <p>Connect to CAN hardware, so there is no live capture, transmit or replay. It has no scripting, and it reads CAN only, not LIN, FlexRay or Ethernet.</p>
+          <p>Connect to Vector, PEAK or Kvaser interfaces, or capture in Firefox or Safari. It only listens, so there is no transmit or replay. It has no scripting, and it reads CAN only, not LIN, FlexRay or Ethernet.</p>
         </li>
       </ul>
     </div>
@@ -93,7 +93,7 @@
       <div class="card faq">
         <div class="faq-item">
           <h3>Can FreeCAN Studio replace CANalyzer?</h3>
-          <p>For reading and decoding recorded logs, it may be all you need. It does not connect to CAN interfaces, so it cannot capture, transmit or replay traffic, and it has no scripting. If you need those, use a tool that connects to your hardware.</p>
+          <p>For reading and decoding recorded logs, and for recording a bus with an slcan or candleLight adapter, it may be all you need. It does not work with Vector, PEAK or Kvaser interfaces, it cannot transmit or replay traffic, and it has no scripting. If you need those, use a tool made for your hardware.</p>
         </div>
         <div class="faq-item">
           <h3>Which files from my existing setup can I open?</h3>

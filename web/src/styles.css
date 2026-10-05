@@ -322,6 +322,7 @@ button:disabled {
 
 /* Toolbar */
 .toolbar {
+  container: toolbar / inline-size;
   position: relative;
   display: flex;
   align-items: center;
@@ -1395,10 +1396,44 @@ input[type='checkbox'] {
   }
 }
 
-/* The toolbar holds the view switcher and up to five buttons, so their labels go well before the
-   log name's room does. */
-@media (max-width: 1599px) {
-  .toolbar-button .label {
+/* The toolbar holds the view switcher and up to five buttons, so their labels go one by one as
+   it narrows, the least needed first, keeping about 400px beside the centred switcher for the
+   log name and its status. */
+@container toolbar (max-width: 1759px) {
+  .toolbar-button.save-capture .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@container toolbar (max-width: 1559px) {
+  .toolbar-button.capture .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@container toolbar (max-width: 1429px) {
+  .toolbar-button.export-log .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@container toolbar (max-width: 1269px) {
+  .toolbar-button.open-dbc .label {
     position: absolute;
     width: 1px;
     height: 1px;

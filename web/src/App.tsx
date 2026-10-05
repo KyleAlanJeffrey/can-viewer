@@ -925,7 +925,7 @@ export function App({ core }: { core: CoreApi }) {
                       : restoring
                         ? 'Restoring your last session\u2026'
                         : log
-                          ? `${unsavedCapture ? 'Not saved \u00b7 ' : ''}${logFormatName(log.format)} \u00b7 ${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
+                          ? `${unsavedCapture ? 'Not saved \u00b7 ' : ''}${log.format === 'capture' ? '' : `${logFormatName(log.format)} \u00b7 `}${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
                           : dbcs.length > 0
                             ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
                             : 'Open a CAN log to begin'}
@@ -953,7 +953,7 @@ export function App({ core }: { core: CoreApi }) {
             />
           )}
           <div className="toolbar-actions">
-            <button className="toolbar-button" onClick={() => dbcInput.current?.click()} disabled={!!busy} title={'Open DBC\u2026'}>
+            <button className="toolbar-button open-dbc" onClick={() => dbcInput.current?.click()} disabled={!!busy} title={'Open DBC\u2026'}>
               <FileText size={16} strokeWidth={1.5} />
               <span className="label">Open DBC&hellip;</span>
             </button>
@@ -961,7 +961,7 @@ export function App({ core }: { core: CoreApi }) {
             {!live && (
               <button
                 ref={exportButton}
-                className="toolbar-button"
+                className="toolbar-button export-log"
                 onClick={() => setExportOpen(true)}
                 disabled={!!busy || !log || stopping}
                 title={'Export Log\u2026'}
@@ -973,7 +973,9 @@ export function App({ core }: { core: CoreApi }) {
             {live ? (
               <button className={showView && meta.hasPrimary ? 'button' : 'primary'} onClick={() => void stopCapture()} disabled={stopping}>
                 <Square size={14} strokeWidth={2} aria-hidden="true" />
-                Stop Capture
+                <span>
+                  Stop <span className="stop-capture-rest">Capture</span>
+                </span>
               </button>
             ) : (
               <>
@@ -984,7 +986,7 @@ export function App({ core }: { core: CoreApi }) {
                   </button>
                 )}
                 <button
-                  className="toolbar-button"
+                  className="toolbar-button capture"
                   onClick={() => unlessUnsavedCapture(() => setCaptureOpen(true))}
                   disabled={!!busy || stopping}
                   title={'Capture\u2026'}

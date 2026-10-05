@@ -146,7 +146,7 @@ describe('App live capture', () => {
     expect(await screen.findByText('123')).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
-    expect(await screen.findByText(/Not saved \u00b7 Capture \u00b7 2 frames/)).toBeTruthy();
+    expect(await screen.findByText(/Not saved \u00b7 2 frames/)).toBeTruthy();
     expect(core.endCapture).toHaveBeenCalledTimes(1);
     expect(port.commands.at(-1)).toBe('C');
     expect(port.closed).toBe(true);

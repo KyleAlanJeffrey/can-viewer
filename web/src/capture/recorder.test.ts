@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CaptureFrame, LogInfo } from '../core/api';
 import { fakeCore, logInfo } from '../test/fixtures';
 import type { CaptureAdapter, CaptureEvents } from './adapter';
-import { CaptureRecorder, captureName } from './recorder';
+import { CAPTURE_LIMITS, CaptureRecorder, captureFrameBytes, captureName } from './recorder';
 
 const frame = (timeNs: number): CaptureFrame => ({ timeNs, id: 0x123, extended: false, flags: 0, data: new Uint8Array(0) });
 
@@ -168,7 +168,8 @@ describe('CaptureRecorder limits', () => {
       }),
       endCapture: () => Promise.resolve(logInfo({ frames: appended.length })),
     });
-    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock(), { intervalMs: 5 }, { warnFrames: 4, maxFrames: 6 });
+    const each = captureFrameBytes(frame(0));
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock(), { intervalMs: 5 }, { warnBytes: 4 * each, maxBytes: 6 * each });
     const onEnd = vi.fn();
     recorder.onEnd = onEnd;
     await recorder.start(settings);
@@ -185,6 +186,15 @@ describe('CaptureRecorder limits', () => {
     expect(onEnd).toHaveBeenCalledWith('The capture stopped at 6 frames, before the app ran out of memory.');
     expect((await recorder.stop()).frames).toBe(6);
     expect(appended.map((f) => f.timeNs)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('counts each frame by its payload, so CAN FD frames reach the limit sooner', () => {
+    const classic = { ...frame(0), data: new Uint8Array(8) };
+    const fd = { ...frame(0), data: new Uint8Array(64) };
+    expect(captureFrameBytes(fd)).toBeGreaterThan(2 * captureFrameBytes(classic));
+    const maxFrames = (f: CaptureFrame) => Math.floor(CAPTURE_LIMITS.maxBytes / captureFrameBytes(f));
+    expect(maxFrames(classic)).toBeGreaterThan(24_000_000);
+    expect(maxFrames(fd)).toBeLessThan(10_000_000);
   });
 });
 

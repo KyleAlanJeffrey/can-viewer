@@ -91,6 +91,9 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Start a new core worker after a wasm trap (an out-of-memory parse, say); today the failed open leaves a fresh session, but a trapped instance may stay unusable until a reload (PR #1 review)
 - [x] Trace filters: bus, IDs or names, data rules, frame kind and time range, filtered in the core (`setTraceFilter`, `countFilterMatches`), with chips, a match count and an empty state
 - [ ] Trace filters: "Remove last filter" drops the last chip in display order (bus, IDs, kinds, time, rules), not the filter edited last; keep an edit order if people expect the latter
-- [ ] Trace filters: a preview count that is already running in the worker is not stopped, only ignored; one queued behind it is skipped. On a 10M-frame log a count takes about 85 ms natively, so a running count can delay the next table fetch by that much
+- [ ] Trace filters: a preview count that is already running in the worker is not stopped, only ignored; one queued behind it is skipped. On a 10M-frame log a count with data rules takes about 0.5 s natively (more in wasm), so a running count can delay the next table fetch by that much
 - [ ] Trace filters: data rules match any byte of a reassembled J1939 transfer, but matched bytes are only outlined in the first 64 the row carries
+- [ ] Trace filters: Apply filters the log again even when the preview just counted the same filters; keeping the preview's matches would cost 4 bytes per match for every draft
+- [ ] Trace filters: "Any byte changes" ignores a payload that only grows or shrinks; say so in the sheet's hint if that confuses people
+- [ ] Bit flips (`IdStats::bit_flips`) and change activity still compare each frame with the previous frame of its ID whatever its kind, so a polled ID's remote frames hide the changes between its data frames there too; the trace's changed bytes and the filter now skip them
 - [ ] Trace filters: check the sheet, the ID combobox and the range handles with a real screen reader (VoiceOver or NVDA) (owner)

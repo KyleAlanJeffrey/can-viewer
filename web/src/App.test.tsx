@@ -132,8 +132,9 @@ describe('App live capture', () => {
 
     expect(screen.getByText('Recording').parentElement!.textContent).toMatch(/^Recording \u00b7 Listen only \u00b7 0 frames/);
     expect(screen.getByRole('status').textContent).toBe('Recording from USB serial device 16D0:117E, listen only.');
-    expect((screen.getByRole('button', { name: 'Open Log\u2026' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Export Log\u2026' }) as HTMLButtonElement).disabled).toBe(true);
+    // Buttons that can't be used while recording give the status line their room.
+    expect(screen.queryByRole('button', { name: 'Open Log\u2026' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Export Log\u2026' })).toBeNull();
     expect(screen.getByRole('radio', { name: 'Trace' }).getAttribute('aria-checked')).toBe('true');
 
     port.send('t1232DEAD\rt1232BEEF\r');
@@ -145,7 +146,7 @@ describe('App live capture', () => {
     expect(await screen.findByText('123')).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
-    expect(await screen.findByText(/Capture \u00b7 2 frames .* \u00b7 Not saved/)).toBeTruthy();
+    expect(await screen.findByText(/Not saved \u00b7 Capture \u00b7 2 frames/)).toBeTruthy();
     expect(core.endCapture).toHaveBeenCalledTimes(1);
     expect(port.commands.at(-1)).toBe('C');
     expect(port.closed).toBe(true);

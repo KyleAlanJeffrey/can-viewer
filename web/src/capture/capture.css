@@ -63,3 +63,8 @@
   border-radius: 50%;
   background: var(--error);
 }
+
+/* Recording, the toolbar's slack goes to the status line rather than to centring the views. */
+.toolbar.recording .toolbar-actions {
+  flex: none;
+}

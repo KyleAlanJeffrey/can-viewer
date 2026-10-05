@@ -1,5 +1,6 @@
 import type { CoreApi, LogInfo } from '../core/api';
-import { errorText, type CaptureAdapter, type CaptureSettings } from './adapter';
+import { formatCount, formatCountOf, formatDuration } from '../format';
+import { errorText, formatBitrate, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { FrameBatcher, type BatcherOptions } from './batcher';
 
 /** The bus name a capture's frames are stored under. */
@@ -63,12 +64,44 @@ export function captureName(date: Date): string {
 export class CaptureRecorder {
   /** The capture as the core last reported it. */
   info: LogInfo | null = null;
+  /** What the app shows and announces about this capture, kept here to keep it out of the main chunk. */
+  readonly text = {
+    /** The recording status, what matters most first, as the toolbar may cut its end off. */
+    summary: (status: CaptureStatus): string => {
+      const parts = [
+        status.problems > 0 ? formatCountOf(status.problems, 'error', 'errors') : null,
+        this.listenOnly ? 'Listen only' : null,
+        formatCountOf(status.frames, 'frame', 'frames'),
+        stopwatch(status.elapsedS),
+        status.rate === null ? null : `${formatCount(Math.round(status.rate))}/s`,
+      ];
+      return parts.filter((p) => p !== null).join(' \u00b7 ');
+    },
+    /** The whole recording status, for the status line's tooltip. */
+    title: (status: CaptureStatus): string => {
+      const rate = status.rate === null ? '' : ` at ${formatCount(Math.round(status.rate))} frames/s`;
+      const lines = [
+        `Recording from ${this.adapter.label} at ${formatBitrate(this.bitrate)}, ${this.listenOnly ? 'listen only' : 'not listen only'}.`,
+        `${formatCountOf(status.frames, 'frame', 'frames')}${rate} in ${formatDuration(status.elapsedS)}.`,
+      ];
+      if (status.problems > 0) lines.push(`${formatCountOf(status.problems, 'error', 'errors')}. The last: ${status.lastProblem}`);
+      return lines.join('\n');
+    },
+    started: () => `Recording from ${this.adapter.label}${this.listenOnly ? ', listen only' : ''}.`,
+    listenOnlyUnconfirmed: "Listen-only mode isn't confirmed for this adapter, so it may acknowledge the frames it receives.",
+    problem: (status: CaptureStatus) => `The adapter reported a problem: ${status.lastProblem}`,
+    sizeWarning: () =>
+      `This capture is getting large, so stop and save it soon. It stops by itself at ${formatCount(this.limits.maxFrames)} frames, so the app doesn't run out of memory.`,
+  };
   /** Called once if the capture ends without `stop`: the adapter went away or the core failed. */
   onEnd: ((message: string) => void) | null = null;
   private frames = 0;
   private problems = 0;
   private lastProblem: string | null = null;
   private origin = 0;
+  private bitrate = 0;
+  /** Whether the adapter confirmed listen-only mode. */
+  private listenOnly = false;
   private samples: [number, number][] = [];
   private ended = false;
   private stopping: Promise<LogInfo> | null = null;
@@ -119,6 +152,8 @@ export class CaptureRecorder {
       },
       () => Math.round((this.clock.now() - this.origin) * 1e6),
     );
+    this.bitrate = settings.bitrate;
+    this.listenOnly = started.listenOnly;
     try {
       this.info = await this.core.startCapture(this.name, CAPTURE_CHANNEL, startedAtMs);
     } catch (e) {
@@ -168,4 +203,13 @@ export class CaptureRecorder {
     this.ended = true;
     this.onEnd?.(message);
   }
+}
+
+/** Elapsed time as a stopwatch shows it: `0:05`, `12:34`, `1:02:03`. */
+function stopwatch(seconds: number): string {
+  const s = Math.floor(seconds);
+  const two = (n: number) => String(n).padStart(2, '0');
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}:${two(m)}:${two(s % 60)}` : `${m}:${two(s % 60)}`;
 }

@@ -1409,7 +1409,7 @@ input[type='checkbox'] {
 }
 
 /* The view switcher needs the toolbar's middle, so it tightens too well before phone widths. */
-@media (max-width: 1279px) {
+@media (max-width: 1439px) {
   .toolbar-button {
     padding: 0 8px;
   }

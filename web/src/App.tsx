@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, PanelRight, Save, Search, Square, X } from 'lucide-react';
-import { errorText, formatBitrate, type CaptureAdapter, type CaptureSettings } from './capture/adapter';
+// Type-only, so the adapters stay out of the main chunk.
+import type { CaptureAdapter, CaptureSettings } from './capture/adapter';
 import type { CaptureRecorder, CaptureStatus } from './capture/recorder';
 import './capture/capture.css';
 import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
@@ -10,7 +11,7 @@ import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
 import { Sheet } from './components/Sheet';
 import { UpdateBanner } from './components/UpdateBanner';
-import { cssVar, formatBytes, formatCount, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
+import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
 import { chooseBlobFile } from './views/shared/saveFile';
@@ -47,9 +48,6 @@ interface Resolved {
 /** A capture that is recording. */
 interface LiveCapture {
   recorder: CaptureRecorder;
-  adapter: string;
-  bitrate: number;
-  listenOnly: boolean;
 }
 
 /** How often a live capture's status line updates, and at the start its frames reach the views. */
@@ -452,11 +450,11 @@ export function App({ core }: { core: CoreApi }) {
           await redecodePlots();
           if (endedBecause) setError(`${endedBecause} The frames captured until then are kept.`);
           // The notices while recording, such as the size warning, are done with.
-          setCaptureNotice(status.problems > 0 ? `${plural(status.problems, 'problem', 'problems')} during the capture. The last: ${status.lastProblem}` : null);
+          setCaptureNotice(status.problems > 0 ? `${formatCountOf(status.problems, 'problem', 'problems')} during the capture. The last: ${status.lastProblem}` : null);
         });
       } catch (e) {
         showNoLog();
-        setError(`The capture couldn't be finished: ${errorText(e)}`);
+        setError(`The capture couldn't be finished: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         setStopping(false);
       }
@@ -478,7 +476,7 @@ export function App({ core }: { core: CoreApi }) {
           else endedWhileStarting.message = message;
         };
         const { info, listenOnly } = await recorder.start(settings);
-        const capture: LiveCapture = { recorder, adapter: adapter.label, bitrate: settings.bitrate, listenOnly };
+        const capture: LiveCapture = { recorder };
         liveRef.current = capture;
         // The capture replaced the log and its series in the core, as opening a log does.
         plotSignals.current.clear();
@@ -488,10 +486,8 @@ export function App({ core }: { core: CoreApi }) {
         setNotKept(null);
         setSkippedDismissed(false);
         setError(null);
-        setCaptureNotice(
-          settings.listenOnly && !listenOnly ? "Listen-only mode isn't confirmed for this adapter, so it may acknowledge the frames it receives." : null,
-        );
-        setLiveAnnouncement(`Recording from ${adapter.label}${listenOnly ? ', listen only' : ''}.`);
+        setCaptureNotice(settings.listenOnly && !listenOnly ? recorder.text.listenOnlyUnconfirmed : null);
+        setLiveAnnouncement(recorder.text.started());
         setLog(info);
         setLogVersion((v) => v + 1);
         setDbcs(dbcsRef.current);
@@ -655,11 +651,11 @@ export function App({ core }: { core: CoreApi }) {
       setLiveStatus(status);
       if (status.problems > 0 && !toldOfProblem) {
         toldOfProblem = true;
-        setLiveAnnouncement(`The adapter reported a problem: ${status.lastProblem}`);
+        setLiveAnnouncement(live.recorder.text.problem(status));
       }
       if (status.nearLimit && !warnedOfSize) {
         warnedOfSize = true;
-        const warning = `This capture is getting large, so stop and save it soon. It stops by itself at ${formatCount(live.recorder.limits.maxFrames)} frames, so the app doesn't run out of memory.`;
+        const warning = live.recorder.text.sizeWarning();
         setCaptureNotice(warning);
         setLiveAnnouncement(warning);
       }
@@ -899,7 +895,7 @@ export function App({ core }: { core: CoreApi }) {
       </aside>
 
       <div className="main">
-        <header className="toolbar">
+        <header className={live ? 'toolbar recording' : 'toolbar'}>
           <div className="toolbar-leading">
             <button
               className="icon-button"
@@ -914,8 +910,8 @@ export function App({ core }: { core: CoreApi }) {
               <h1 className="doc-title">{log?.name ?? (dbcs.length > 0 ? dbcSummary : 'No log open')}</h1>
               {live && liveStatus && (
                 // Not a live region: it changes twice a second. The status below tells what matters.
-                <p className="doc-sub" title={liveTitle(live, liveStatus)}>
-                  <span className="cap-recording">Recording</span> &middot; {liveSummary(live, liveStatus)}
+                <p className="doc-sub" title={live.recorder.text.title(liveStatus)}>
+                  <span className="cap-recording">Recording</span> &middot; {live.recorder.text.summary(liveStatus)}
                 </p>
               )}
               {/* Always mounted, so screen readers hear each change, recording or not. */}
@@ -929,7 +925,7 @@ export function App({ core }: { core: CoreApi }) {
                       : restoring
                         ? 'Restoring your last session\u2026'
                         : log
-                          ? `${logFormatName(log.format)} \u00b7 ${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}${unsavedCapture ? ' \u00b7 Not saved' : ''}`
+                          ? `${unsavedCapture ? 'Not saved \u00b7 ' : ''}${logFormatName(log.format)} \u00b7 ${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
                           : dbcs.length > 0
                             ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
                             : 'Open a CAN log to begin'}
@@ -961,16 +957,19 @@ export function App({ core }: { core: CoreApi }) {
               <FileText size={16} strokeWidth={1.5} />
               <span className="label">Open DBC&hellip;</span>
             </button>
-            <button
-              ref={exportButton}
-              className="toolbar-button"
-              onClick={() => setExportOpen(true)}
-              disabled={!!busy || !log || !!live || stopping}
-              title={'Export Log\u2026'}
-            >
-              <FileDown size={16} strokeWidth={1.5} />
-              <span className="label">Export Log&hellip;</span>
-            </button>
+            {/* Recording, the status line needs the room more than buttons that can't be used. */}
+            {!live && (
+              <button
+                ref={exportButton}
+                className="toolbar-button"
+                onClick={() => setExportOpen(true)}
+                disabled={!!busy || !log || stopping}
+                title={'Export Log\u2026'}
+              >
+                <FileDown size={16} strokeWidth={1.5} />
+                <span className="label">Export Log&hellip;</span>
+              </button>
+            )}
             {live ? (
               <button className={showView && meta.hasPrimary ? 'button' : 'primary'} onClick={() => void stopCapture()} disabled={stopping}>
                 <Square size={14} strokeWidth={2} aria-hidden="true" />
@@ -995,13 +994,11 @@ export function App({ core }: { core: CoreApi }) {
                 </button>
               </>
             )}
-            <button
-              className={live || (showView && meta.hasPrimary) ? 'button' : 'primary'}
-              onClick={() => logInput.current?.click()}
-              disabled={!!busy || !!live || stopping}
-            >
-              Open Log&hellip;
-            </button>
+            {!live && (
+              <button className={showView && meta.hasPrimary ? 'button' : 'primary'} onClick={() => logInput.current?.click()} disabled={!!busy || stopping}>
+                Open Log&hellip;
+              </button>
+            )}
             <button
               className="icon-button"
               onClick={() => setInspectorOpen((o) => !o)}
@@ -1205,30 +1202,6 @@ export function App({ core }: { core: CoreApi }) {
       )}
     </div>
   );
-}
-
-const plural = (n: number, one: string, many: string) => `${formatCount(n)} ${n === 1 ? one : many}`;
-
-/** The recording status, what matters most first, as the toolbar may cut its end off. */
-function liveSummary(live: LiveCapture, status: CaptureStatus): string {
-  const parts = [
-    status.problems > 0 ? plural(status.problems, 'error', 'errors') : null,
-    live.listenOnly ? 'Listen only' : null,
-    plural(status.frames, 'frame', 'frames'),
-    status.rate === null ? null : `${formatCount(Math.round(status.rate))}/s`,
-    formatDuration(status.elapsedS),
-  ];
-  return parts.filter((p) => p !== null).join(' \u00b7 ');
-}
-
-/** The whole recording status, for the status line's tooltip. */
-function liveTitle(live: LiveCapture, status: CaptureStatus): string {
-  const lines = [
-    `Recording from ${live.adapter} at ${formatBitrate(live.bitrate)}, ${live.listenOnly ? 'listen only' : 'not listen only'}.`,
-    `${plural(status.frames, 'frame', 'frames')}${status.rate === null ? '' : ` at ${formatCount(Math.round(status.rate))} frames/s`} in ${formatDuration(status.elapsedS)}.`,
-  ];
-  if (status.problems > 0) lines.push(`${plural(status.problems, 'error', 'errors')}. The last: ${status.lastProblem}`);
-  return lines.join('\n');
 }
 
 /** The demo log ships gzipped. A server may already have decoded it, so check for the gzip magic first. */

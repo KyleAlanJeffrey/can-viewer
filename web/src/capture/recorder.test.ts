@@ -128,6 +128,34 @@ describe('CaptureRecorder', () => {
   });
 });
 
+describe('CaptureRecorder status text', () => {
+  it('leads with errors and listen-only, and keeps the whole status for the tooltip', async () => {
+    const { adapter, state } = fakeAdapter(true);
+    const time = clock();
+    const recorder = new CaptureRecorder(fakeCore({ startCapture: () => Promise.resolve(logInfo()) }), adapter, 'c.log', time);
+    await recorder.start(settings);
+    state.events!.onFrames(Array.from({ length: 1500 }, (_, n) => frame(n)));
+    state.events!.onProblem('bad line');
+    recorder.status();
+    time.ms += 83_000;
+    const status = recorder.status();
+    expect(recorder.text.summary(status)).toBe('1 error \u00b7 Listen only \u00b7 1,500 frames \u00b7 1:23 \u00b7 0/s');
+    expect(recorder.text.title(status)).toBe(
+      'Recording from Test adapter at 500 kbit/s, listen only.\n1,500 frames at 0 frames/s in 1 min 23 s.\n1 error. The last: bad line',
+    );
+  });
+
+  it('never says listen only for an adapter that did not confirm it', async () => {
+    const { adapter, state } = fakeAdapter(false);
+    const recorder = new CaptureRecorder(fakeCore({ startCapture: () => Promise.resolve(logInfo()) }), adapter, 'c.log', clock());
+    await recorder.start(settings);
+    state.events!.onFrames([frame(1)]);
+    const status = recorder.status();
+    expect(recorder.text.summary(status)).toBe('1 frame \u00b7 0:00');
+    expect(recorder.text.title(status)).toMatch(/, not listen only\./);
+  });
+});
+
 describe('CaptureRecorder limits', () => {
   it('warns as the capture grows, then stops it by itself, keeping the frames up to the limit', async () => {
     const { adapter, state } = fakeAdapter();

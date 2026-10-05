@@ -25,7 +25,7 @@ pub(super) fn write_blf<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
         .max()
         .unwrap_or(0)
         .div_euclid(1_000_000_000);
-    let channels = bus_numbers(store);
+    let channels = bus_numbers(store)?;
     let mut objects = buffer(CONTAINER_BYTES + MAX_FRAME_OBJECT)?;
     let mut deflater = Deflater::new(CONTAINER_BYTES + MAX_FRAME_OBJECT)?;
     let header_at = out.stream_position()?;

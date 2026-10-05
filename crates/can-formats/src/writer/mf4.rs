@@ -26,7 +26,7 @@ pub(super) fn write_mf4<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
     const BUS_EVENT: u16 = 0x02;
     const PLAIN_BUS_EVENT: u16 = 0x04;
     let start_s = start_ns(store).div_euclid(1_000_000_000);
-    let buses = bus_numbers(store);
+    let buses = bus_numbers(store)?;
     let mut scratch = Scratch {
         records: buffer(BLOCK_BYTES)?,
         transposed: buffer(BLOCK_BYTES)?,

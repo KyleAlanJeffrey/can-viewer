@@ -115,8 +115,8 @@ fn is_fd(frame: &FrameRef<'_>) -> bool {
 /// The channel number to write for each bus of the store, for the formats that number their
 /// buses. When every bus is already named `can<N>` (as those formats name them on reading),
 /// with N from 1 to 255 and no two alike, N is kept; otherwise buses are numbered from 1 in
-/// order of first appearance.
-fn bus_numbers(store: &FrameStore) -> Vec<u8> {
+/// order of first appearance. A log with more than 255 buses is an error.
+fn bus_numbers(store: &FrameStore) -> io::Result<Vec<u8>> {
     let named: Option<Vec<u8>> = store
         .channels()
         .iter()
@@ -133,11 +133,19 @@ fn bus_numbers(store: &FrameStore) -> Vec<u8> {
         sorted.sort_unstable();
         sorted.dedup();
         if sorted.len() == numbers.len() {
-            return numbers;
+            return Ok(numbers);
         }
     }
     (0..store.channels().len())
-        .map(|index| u8::try_from(index + 1).unwrap_or(u8::MAX))
+        .map(|index| {
+            u8::try_from(index + 1).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "This log has more than 255 buses, more than ASC, BLF, TRC and MF4 can \
+                     number. Export it as candump or CSV.",
+                )
+            })
+        })
         .collect()
 }
 
@@ -477,19 +485,19 @@ mod tests {
         let store = sample_log(["can0", "can1"]);
         let text = String::from_utf8(write(Format::Candump, &store)).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], "(1759190400.123456) can0 123#0102030405060708");
+        assert_eq!(lines[0], "(1759190400.123456) can0 123#0102030405060708 R");
         assert_eq!(lines[1], "(1759190400.123466) can0 0C9#FF T");
-        assert_eq!(lines[2], "(1759190400.123476) can1 7FF#R");
-        assert_eq!(lines[3], "(1759190400.123486) can0 12345678#ABCD");
+        assert_eq!(lines[2], "(1759190400.123476) can1 7FF#R R");
+        assert_eq!(lines[3], "(1759190400.123486) can0 12345678#ABCD R");
         assert_eq!(
             lines[4],
-            format!("(1759190400.123496) can1 321##1{}", "5A".repeat(12))
+            format!("(1759190400.123496) can1 321##1{} R", "5A".repeat(12))
         );
         assert!(lines[5].starts_with("(1759190400.123506) can1 18DAF100##2C3C3"));
-        assert_eq!(lines[6], "(1759190400.123516) can0 456#");
+        assert_eq!(lines[6], "(1759190400.123516) can0 456# R");
         assert_eq!(
             lines[7],
-            "(1759190400.123526) can0 20000080#0000080000000000"
+            "(1759190400.123526) can0 20000080#0000080000000000 R"
         );
     }
 
@@ -510,6 +518,43 @@ mod tests {
             let inflated = miniz_oxide::inflate::decompress_to_vec_zlib(&compressed).unwrap();
             assert_eq!(inflated, input);
         }
+    }
+
+    #[test]
+    fn candump_marks_direction_only_when_a_frame_was_transmitted() {
+        let mut store = FrameStore::new();
+        push(&mut store, 0, "can0", 0x123, 0, &[1]);
+        let text = String::from_utf8(write(Format::Candump, &store)).unwrap();
+        assert_eq!(text, "(1759190400.123456) can0 123#01\n");
+    }
+
+    #[test]
+    fn numbered_formats_refuse_more_than_255_buses() {
+        let mut store = FrameStore::new();
+        for bus in 0..256 {
+            push(&mut store, bus, &format!("vcan{bus}"), 0x100, 0, &[]);
+        }
+        assert_eq!(store.channels().len(), 256);
+        for format in [Format::Asc, Format::Trc, Format::Blf, Format::Mf4] {
+            let mut out = Cursor::new(Vec::new());
+            let error = write_log(format, &store, LocalTime::UTC, &mut out).unwrap_err();
+            assert!(
+                error.to_string().contains("more than 255 buses"),
+                "{format:?}"
+            );
+        }
+        let copy = read(Format::Candump, &write(Format::Candump, &store));
+        assert_eq!(copy.channels().len(), 256);
+    }
+
+    #[test]
+    fn trc_pads_a_can_fd_frame_to_the_length_of_its_dlc() {
+        let mut store = FrameStore::new();
+        push(&mut store, 0, "can1", 0x123, flags::FD, &[0xAA; 10]);
+        let copy = read(Format::Trc, &write(Format::Trc, &store));
+        let mut padded = vec![0xAA; 10];
+        padded.extend_from_slice(&[0, 0]);
+        assert_eq!(copy.frame(0).data, padded);
     }
 
     #[test]
@@ -534,7 +579,7 @@ mod tests {
             for name in names {
                 store.channel_index(name.as_bytes());
             }
-            bus_numbers(&store)
+            bus_numbers(&store).unwrap()
         };
         assert_eq!(numbers(&["can2", "can1"]), [2, 1]);
         assert_eq!(numbers(&["can0", "can1"]), [1, 2]);

@@ -4,6 +4,7 @@ use std::io::{self, Write};
 
 use can_core::{flags, FrameRef, FrameStore, EXT_FLAG};
 
+use crate::text::dlc_to_len;
 use crate::LocalTime;
 
 use super::{
@@ -12,12 +13,13 @@ use super::{
 };
 
 /// candump log lines (`candump -l`), as the candump parser and can-utils' `canplayer` read
-/// them: Unix seconds with microseconds, the bus name, and ` T` after transmitted frames as
-/// `candump -x` marks them.
+/// them: Unix seconds with microseconds and the bus name. When any frame was transmitted,
+/// every frame ends in ` T` or ` R`, as `candump -x` marks them.
 pub(super) fn write_candump(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
     const CANFD_BRS: u8 = 0x1;
     const CANFD_ESI: u8 = 0x2;
     let names: Vec<_> = store.channels().iter().map(|n| plain_name(n)).collect();
+    let marks_direction = log_frames(store).any(|frame| frame.flags & flags::TX != 0);
     let mut line = Vec::with_capacity(256);
     for frame in log_frames(store) {
         line.clear();
@@ -46,8 +48,13 @@ pub(super) fn write_candump(store: &FrameStore, out: &mut impl Write) -> io::Res
             line.push(b'#');
             write_packed_hex(&mut line, frame.data)?;
         }
-        if frame.flags & flags::TX != 0 {
-            line.extend_from_slice(b" T");
+        if marks_direction {
+            let direction: &[u8] = if frame.flags & flags::TX != 0 {
+                b" T"
+            } else {
+                b" R"
+            };
+            line.extend_from_slice(direction);
         }
         line.push(b'\n');
         out.write_all(&line)?;
@@ -63,7 +70,7 @@ pub(super) fn write_asc(
     out: &mut impl Write,
 ) -> io::Result<()> {
     let start_s = start_ns(store).div_euclid(1_000_000_000);
-    let channels = bus_numbers(store);
+    let channels = bus_numbers(store)?;
     let date = asc_date(local_time.to_local(start_s));
     writeln!(out, "date {date}")?;
     writeln!(out, "base hex  timestamps absolute")?;
@@ -116,11 +123,12 @@ pub(super) fn write_asc(
 }
 
 /// PEAK TRC 2.1 with a bus column, offsets in milliseconds from the UTC midnight before the
-/// first frame so that `$STARTTIME` is a whole number of days.
+/// first frame so that `$STARTTIME` is a whole number of days. The length column is a DLC, so
+/// a CAN FD frame whose length no DLC gives is padded with zeros to the next one that does.
 pub(super) fn write_trc(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
     const NS_PER_DAY: i64 = 86_400 * 1_000_000_000;
     let start_day = start_ns(store).div_euclid(NS_PER_DAY);
-    let buses = bus_numbers(store);
+    let buses = bus_numbers(store)?;
     writeln!(out, ";$FILEVERSION=2.1")?;
     writeln!(out, ";$STARTTIME={}", start_day + 25_569)?;
     writeln!(out, ";$COLUMNS=N,O,T,B,I,d,R,L,D")?;
@@ -138,6 +146,7 @@ pub(super) fn write_trc(store: &FrameStore, out: &mut impl Write) -> io::Result<
             "Rx"
         };
         let fd = is_fd(&frame);
+        let dlc = len_to_dlc(frame.data.len());
         let kind = match frame.flags & (flags::BRS | flags::ESI | flags::RTR | flags::ERROR) {
             f if f & flags::ERROR != 0 => "ER",
             f if f & flags::RTR != 0 && !fd => "RR",
@@ -161,16 +170,20 @@ pub(super) fn write_trc(store: &FrameStore, out: &mut impl Write) -> io::Result<
             offset_ns / 1_000_000,
             offset_ns % 1_000_000 / 1000,
             buses[usize::from(frame.channel)],
-            len_to_dlc(frame.data.len())
+            dlc
         )?;
         write_hex_bytes(out, frame.data)?;
+        for _ in frame.data.len()..dlc_to_len(dlc) {
+            write!(out, " 00")?;
+        }
         writeln!(out)?;
     }
     Ok(())
 }
 
-/// CSV in python-can's column order plus bus, CAN FD and direction columns, with Unix seconds
-/// and hex data, so that every frame of a log survives the trip.
+/// CSV with a column for everything a frame holds (bus, flags, direction), Unix seconds and
+/// hex data, so that every frame of a log survives the trip. It is for spreadsheets and this
+/// app: python-can's CSVReader expects its own columns with base64 data and cannot read it.
 pub(super) fn write_csv(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
     let names: Vec<_> = store.channels().iter().map(|n| plain_name(n)).collect();
     writeln!(

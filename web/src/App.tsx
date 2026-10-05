@@ -4,6 +4,7 @@ import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type Lo
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
+import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
@@ -731,6 +732,7 @@ export function App({ core }: { core: CoreApi }) {
 
         <div className={`body${showInspector && inspectorOpen ? '' : ' inspector-hidden'}`}>
           <section className={`content view-${view}`} aria-label={showView ? meta.label : 'Welcome'}>
+            <UpdateBanner />
             {error && (
               <div className="banner" role="alert">
                 <AlertTriangle size={16} strokeWidth={1.75} />

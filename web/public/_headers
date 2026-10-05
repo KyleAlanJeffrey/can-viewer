@@ -10,3 +10,10 @@
 # Vite fingerprints everything under /assets, so it never changes under the same name.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# The browser must check these on every visit, or a new deploy would reach users only slowly.
+/sw.js
+  Cache-Control: no-cache
+
+/manifest.webmanifest
+  Cache-Control: no-cache

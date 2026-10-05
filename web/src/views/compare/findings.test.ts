@@ -1,0 +1,91 @@
+import { describe, expect, it } from 'vitest';
+import type { IdComparison } from '../../core/api';
+import { logInfo } from '../../test/fixtures';
+import { bitList, findingsCsv, formatRate, groupOf, looksTheSame, matchesQuery, rowKey, stem } from './findings';
+
+function comparison(fields: Partial<IdComparison> = {}): IdComparison {
+  return {
+    bus: 'can0',
+    id: 0x450,
+    extended: false,
+    keyA: 0x450,
+    keyB: 0x450,
+    presence: 'both',
+    name: null,
+    framesA: 100,
+    framesB: 100,
+    rateA: 10,
+    rateB: 10,
+    score: 0,
+    reason: 'No significant changes',
+    bytes: [],
+    ...fields,
+  };
+}
+
+describe('groupOf', () => {
+  it('splits IDs in both logs at a score of 10', () => {
+    expect(groupOf(comparison({ score: 9 }))).toBe('same');
+    expect(groupOf(comparison({ score: 10 }))).toBe('different');
+    expect(groupOf(comparison({ presence: 'onlyA', score: 100 }))).toBe('onlyA');
+    expect(groupOf(comparison({ presence: 'onlyB', score: 100 }))).toBe('onlyB');
+  });
+
+  it('calls the logs the same only when no ID differs', () => {
+    expect(looksTheSame([comparison(), comparison({ id: 0x451, score: 5 })])).toBe(true);
+    expect(looksTheSame([comparison(), comparison({ presence: 'onlyB', score: 100 })])).toBe(false);
+  });
+});
+
+describe('rowKey', () => {
+  it('names a row by bus and ID, not by the keys a swap changes', () => {
+    expect(rowKey(comparison({ keyA: 1, keyB: 2 }))).toBe(rowKey(comparison({ keyA: 2, keyB: 1 })));
+    expect(rowKey(comparison())).not.toBe(rowKey(comparison({ extended: true })));
+    expect(rowKey(comparison())).not.toBe(rowKey(comparison({ bus: 'can1' })));
+  });
+});
+
+describe('matchesQuery', () => {
+  it('matches the ID or the name, ignoring case', () => {
+    const c = comparison({ name: 'BODY' });
+    expect(matchesQuery(c, '')).toBe(true);
+    expect(matchesQuery(c, '45')).toBe(true);
+    expect(matchesQuery(c, 'bod')).toBe(true);
+    expect(matchesQuery(c, '7DF')).toBe(false);
+  });
+});
+
+describe('formatting', () => {
+  it('rounds rates to what a reader can compare', () => {
+    expect(formatRate(100.4)).toBe('100');
+    expect(formatRate(2.04)).toBe('2.0');
+    expect(formatRate(0.25)).toBe('0.25');
+    expect(formatRate(0)).toBe('0');
+  });
+
+  it('lists bits as ranges', () => {
+    expect(bitList([7, 0, 1, 2, 5])).toBe('0-2, 5, 7');
+    expect(bitList([3])).toBe('3');
+  });
+
+  it('drops only the last extension from a file name', () => {
+    expect(stem('door.lock.log')).toBe('door.lock');
+    expect(stem('.hidden')).toBe('.hidden');
+  });
+});
+
+describe('findingsCsv', () => {
+  it('writes the logs, the rules and one quoted row per ID', () => {
+    const csv = findingsCsv(
+      [comparison({ name: 'BODY', score: 100, reason: 'Byte 3 takes new values', bytes: [3, 4] }), comparison({ id: 0x7df, presence: 'onlyB', keyA: null, reason: 'Rate up, "a lot"' })],
+      logInfo({ name: 'idle.log', durationS: 60 }),
+      logInfo({ name: 'lock.log', durationS: 30 }),
+      { ignoreCounters: true, ignoreChangesWithinA: false },
+    );
+    const lines = csv.trimEnd().split('\n');
+    expect(lines.slice(0, 3)).toEqual(['log A,idle.log,60.0 s', 'log B,lock.log,30.0 s', 'rules,counters and checksums ignored']);
+    expect(lines[4]).toBe('bus,id,name,in,a_frames_per_s,b_frames_per_s,score,reason,bytes');
+    expect(lines[5]).toBe('can0,450,BODY,both,10.000,10.000,100,Byte 3 takes new values,3 4');
+    expect(lines[6]).toBe('can0,7DF,,only B,10.000,10.000,0,"Rate up, ""a lot""",');
+  });
+});

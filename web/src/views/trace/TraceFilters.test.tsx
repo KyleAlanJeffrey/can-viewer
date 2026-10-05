@@ -1,9 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
+import { useState, type ComponentType } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FILTERED_ROWS, type CoreApi, type FrameFilter } from '../../core/api';
 import { fakeCore, logInfo, makeRowBatch, summary } from '../../test/fixtures';
 import { renderInShell } from '../../test/shell';
+import type { ViewProps } from '../types';
 import { TraceView } from './TraceView';
 
 const HEADER_H = 28;
@@ -50,14 +52,27 @@ function filterCore(matches: (filter: FrameFilter) => number = () => MATCHES) {
   return { core, rows, setTraceFilter, countFilterMatches };
 }
 
-function renderFilters(matches?: (filter: FrameFilter) => number) {
+function renderFilters(matches?: (filter: FrameFilter) => number, { view = TraceView, durationS = 100 }: { view?: ComponentType<ViewProps>; durationS?: number } = {}) {
   const fake = filterCore(matches);
-  const shell = renderInShell(TraceView, {
+  const shell = renderInShell(view, {
     core: fake.core,
     ids: [engine, brakes, radar],
-    log: logInfo({ frames: FRAMES, channels: ['can0', 'can1'], durationS: 100 }),
+    log: logInfo({ frames: FRAMES, channels: ['can0', 'can1'], durationS }),
   });
   return { ...shell, ...fake };
+}
+
+/** The Trace view, with a button that leaves it for another view and comes back. */
+function Switcher(props: ViewProps) {
+  const [shown, setShown] = useState(true);
+  return (
+    <>
+      <button type="button" onClick={() => setShown((s) => !s)}>
+        Switch view
+      </button>
+      {shown && <TraceView {...props} />}
+    </>
+  );
 }
 
 const sheet = () => screen.getByRole('dialog', { name: 'Trace filters' });
@@ -72,9 +87,15 @@ const applied = (setTraceFilter: ReturnType<typeof filterCore>['setTraceFilter']
 
 const NONE: FrameFilter = { channels: null, keys: null, kinds: null, rules: [], combine: 'all', t0: null, t1: null };
 
+/** The sheet loads on first use. */
+async function openSheet(user: UserEvent) {
+  await user.click(screen.getByRole('button', { name: /^(Edit filters|Filters)/ }));
+  await screen.findByRole('dialog', { name: 'Trace filters' });
+}
+
 /** Opens the sheet and adds a "byte 2 equals `value`" rule. */
 async function addByteRule(user: UserEvent, value: string) {
-  await user.click(screen.getByRole('button', { name: /^(Edit filters|Filters)/ }));
+  await openSheet(user);
   await user.click(within(sheet()).getByRole('button', { name: 'Add rule' }));
   const rules = within(sheet()).getAllByRole('group', { name: /^Rule \d+$/ });
   const rule = rules[rules.length - 1];
@@ -87,7 +108,7 @@ async function addByteRule(user: UserEvent, value: string) {
 describe('Trace filters', () => {
   it('previews the count, applies the filters in the core and shows them as chips', async () => {
     const { user, rows, setTraceFilter, countFilterMatches } = renderFilters();
-    await user.click(screen.getByRole('button', { name: 'Filters…' }));
+    await openSheet(user);
     expect(preview()).toBe('Preview: 1,000 of 1,000 frames match');
     expect(countFilterMatches).not.toHaveBeenCalled();
 
@@ -120,7 +141,8 @@ describe('Trace filters', () => {
     };
     await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith(expected));
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(chips()).toEqual(['can0', '300', 'Data, Error, J1939 reassembled', 'Byte 2 = 1F']);
+    // 300 is on both buses, so its chip names the bus.
+    expect(chips()).toEqual(['can0', '300 on can0', 'Data, Error, J1939 reassembled', 'Byte 2 = 1F']);
     await waitFor(() => expect(countLine()).toBe(`${MATCHES} of 1,000 frames match`));
     await waitFor(() => expect(rows).toHaveBeenLastCalledWith(FILTERED_ROWS, 0, VISIBLE + 1));
 
@@ -142,12 +164,12 @@ describe('Trace filters', () => {
     await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, rules: [{ type: 'byteEquals', byte: 2, value: 0x1f }] }));
     expect(chips()).toEqual(['Byte 2 = 1F']);
     // The removed chip's button is gone, so focus moves to the button that opens the sheet.
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit filters…' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit filters\u2026' }));
 
     await user.click(screen.getByRole('button', { name: 'Clear all' }));
     await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith(null));
     expect(screen.queryByRole('list', { name: 'Applied filters' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Filters…' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Filters\u2026' })).toBeTruthy();
     expect(countLine()).toBe('');
   });
 
@@ -180,7 +202,7 @@ describe('Trace filters', () => {
 
   it('narrows the filters to the ID picked in the sidebar', async () => {
     const { user, setTraceFilter } = renderFilters((f) => (f.keys?.length === 0 ? 0 : MATCHES));
-    await user.click(screen.getByRole('button', { name: 'Filters…' }));
+    await openSheet(user);
     await user.type(within(sheet()).getByRole('combobox', { name: 'Search IDs or names' }), 'engine{Enter}');
     await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
     await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, keys: [engine.key] }));
@@ -252,7 +274,7 @@ describe('Trace filters', () => {
 
   it('sets the time range by typing, or from the strip with the keyboard', async () => {
     const { user, countFilterMatches, setTraceFilter } = renderFilters();
-    await user.click(screen.getByRole('button', { name: 'Filters…' }));
+    await openSheet(user);
     await user.type(within(sheet()).getByRole('textbox', { name: 'From' }), '12');
     await user.type(within(sheet()).getByRole('textbox', { name: 'To' }), '18.5');
     await waitFor(() => expect(countFilterMatches).toHaveBeenLastCalledWith({ ...NONE, t0: 12, t1: 18.5 }));
@@ -270,5 +292,88 @@ describe('Trace filters', () => {
     await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
     await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, t1: 18.5 }));
     expect(chips()).toEqual(['Until 18.500 s']);
+  });
+
+  it('shows the filtered rows again at once on returning to the view', async () => {
+    const { user, rows, setTraceFilter } = renderFilters(undefined, { view: Switcher });
+    await addByteRule(user, '1F');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    await waitFor(() => expect(countLine()).toBe(`${MATCHES} of 1,000 frames match`));
+
+    await user.click(screen.getByRole('button', { name: 'Switch view' }));
+    expect(screen.queryByRole('grid')).toBeNull();
+    rows.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Switch view' }));
+    // The core still holds the rows, so nothing is filtered again, and every frame is never shown.
+    expect(screen.getByRole('grid', { name: 'Frame trace' })).toBeTruthy();
+    expect(countLine()).toBe(`${MATCHES} of 1,000 frames match`);
+    await waitFor(() => expect(rows).toHaveBeenCalled());
+    expect(rows.mock.calls.every(([key]) => key === FILTERED_ROWS)).toBe(true);
+    expect(applied(setTraceFilter)).toHaveLength(1);
+  });
+
+  it('shows no frames while the filters are applied, rather than every frame', async () => {
+    const { user, rows, setTraceFilter } = renderFilters();
+    let finish: (count: number) => void = () => {};
+    setTraceFilter.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    await addByteRule(user, '1F');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    expect(await screen.findByText('Filtering\u2026', { selector: '.tv-empty-lede' })).toBeTruthy();
+    expect(screen.queryByRole('grid')).toBeNull();
+    rows.mockClear();
+
+    finish(MATCHES);
+    expect(await screen.findByRole('grid', { name: 'Frame trace' })).toBeTruthy();
+    await waitFor(() => expect(rows).toHaveBeenCalled());
+    expect(rows.mock.calls.every(([key]) => key === FILTERED_ROWS)).toBe(true);
+  });
+
+  it('drops the filters and says why when the core rejects them', async () => {
+    const { user, state, setTraceFilter } = renderFilters();
+    setTraceFilter.mockRejectedValueOnce(new Error('not enough memory to filter this log'));
+    await addByteRule(user, '1F');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    await waitFor(() => expect(state.error).toBe("The filters couldn't be applied: not enough memory to filter this log"));
+    expect(screen.queryByRole('list', { name: 'Applied filters' })).toBeNull();
+    expect(countLine()).toBe('');
+    expect(await screen.findByRole('grid', { name: 'Frame trace' })).toBeTruthy();
+  });
+
+  it("keeps the range open to the log's end when End takes the strip there", async () => {
+    // The end is between two milliseconds, so rounding it would leave out the last frames.
+    const { user, setTraceFilter } = renderFilters(undefined, { durationS: 12.3454 });
+    await openSheet(user);
+    await user.type(within(sheet()).getByRole('textbox', { name: 'To' }), '5');
+    within(sheet()).getByRole('slider', { name: 'To' }).focus();
+    await user.keyboard('{End}');
+    expect((within(sheet()).getByRole('textbox', { name: 'To' }) as HTMLInputElement).value).toBe('');
+    await user.type(within(sheet()).getByRole('textbox', { name: 'From' }), '1.23456');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, t0: 1.23456 }));
+
+    // Reopened, the field shows the time as it was typed, not rounded.
+    await openSheet(user);
+    expect((within(sheet()).getByRole('textbox', { name: 'From' }) as HTMLInputElement).value).toBe('1.23456');
+  });
+
+  it('finds IDs typed with 0x, moves with Home and End, and never submits on Enter', async () => {
+    const { user, setTraceFilter } = renderFilters();
+    await openSheet(user);
+    const search = within(sheet()).getByRole('combobox', { name: 'Search IDs or names' });
+    search.focus();
+    await user.keyboard('{Enter}');
+    expect(sheet()).toBeTruthy();
+    expect(setTraceFilter).not.toHaveBeenCalled();
+
+    await user.type(search, '0x3');
+    const options = within(sheet()).getAllByRole('option');
+    expect(options.map((o) => o.textContent)).toEqual(['300Brakescan0', '300Radarcan1']);
+    await user.keyboard('{End}');
+    expect(options[1].getAttribute('aria-selected')).toBe('true');
+    await user.keyboard('{Home}');
+    expect(options[0].getAttribute('aria-selected')).toBe('true');
+    await user.keyboard('{End}{Enter}');
+    expect(within(sheet()).getByRole('button', { name: 'Remove 300 Radar on can1' })).toBeTruthy();
+    expect(setTraceFilter).not.toHaveBeenCalled();
   });
 });

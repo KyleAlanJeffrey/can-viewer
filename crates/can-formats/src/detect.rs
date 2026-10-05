@@ -27,6 +27,30 @@ impl Format {
         }
     }
 
+    /// The format [`Format::name`] names.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Format::Candump,
+            Format::Asc,
+            Format::Trc,
+            Format::Csv,
+            Format::Blf,
+            Format::Mf4,
+        ]
+        .into_iter()
+        .find(|format| format.name() == name)
+    }
+
+    /// The usual file extension, without the dot.
+    #[must_use]
+    pub fn extension(self) -> &'static str {
+        match self {
+            Format::Candump => "log",
+            other => other.name(),
+        }
+    }
+
     /// The format a file name's extension suggests, if it is one we know.
     #[must_use]
     pub fn from_file_name(name: &str) -> Option<Self> {
@@ -120,6 +144,19 @@ mod tests {
         assert_eq!(Format::from_file_name("drive.bin"), None);
         assert_eq!(Format::from_file_name("drive"), None);
         assert_eq!(Format::from_file_name(""), None);
+    }
+
+    #[test]
+    fn names_and_extensions_lead_back_to_the_format() {
+        for name in ["candump", "asc", "trc", "csv", "blf", "mf4"] {
+            let format = Format::from_name(name).unwrap();
+            assert_eq!(format.name(), name);
+            assert_eq!(
+                Format::from_file_name(&format!("x.{}", format.extension())),
+                Some(format)
+            );
+        }
+        assert_eq!(Format::from_name("log"), None);
     }
 
     #[test]

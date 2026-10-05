@@ -131,7 +131,7 @@ LC_ALL=C grep -n '[^[:print:][:space:]]' <files>
 Views live in `web/src/views/<view>/` with their own CSS file and class prefix: `overview/overview.css` uses `ov-`, `plot/plot.css` uses `pv-`, `reverse/reverse.css` uses `re-`, `compare/compare.css` uses `cmp-` and `database/database.css` uses `db-`. To add a view:
 
 1. Create `web/src/views/<view>/` with its component and stylesheet, using a new class prefix.
-2. Register it in `VIEWS` in `web/src/views/index.ts`. A view most sessions never open can load on first use with `lazyView` (`web/src/views/lazyView.tsx`), as Compare does, which keeps the main bundle under Vite's 500 kB warning; `ChunkBoundary` offers a reload if its chunk fails to load.
+2. Register it in `VIEWS` in `web/src/views/index.ts`. A view most sessions never open can load on first use with `lazyView` (`web/src/views/lazyView.tsx`), as Compare and Database do, which keeps the main bundle under Vite's 500 kB warning; `ChunkBoundary` offers a reload if its chunk fails to load.
 3. Read and change app state through `ViewContext` (`web/src/views/types.ts`), and render sidebar and inspector content through `SidebarSlot` and `InspectorSlot` (`web/src/views/slots.tsx`).
 
 ## Product rules

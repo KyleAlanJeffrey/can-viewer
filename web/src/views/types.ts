@@ -2,7 +2,7 @@ import type { ComponentType } from 'react';
 import type { CoreApi, Database, IdSummary, LogInfo, MessageDef } from '../core/api';
 import type { PlotSpec } from '../components/Plots';
 
-export type ViewId = 'overview' | 'trace' | 'plot' | 'reverse' | 'database';
+export type ViewId = 'overview' | 'trace' | 'plot' | 'reverse' | 'database' | 'compare';
 
 /** Everything a view can read or change. The app shell owns all of it; views keep only local UI state. */
 export interface ViewContext {
@@ -55,6 +55,10 @@ export interface ViewContext {
   setView(view: ViewId): void;
   /** Hide the inspector pane for a mode of the view that has none; the shell resets it on a view change. */
   setInspectorHidden(hidden: boolean): void;
+  /** Open `file` as the log, as Open Log... does but staying in this view. Resolves false if it failed. */
+  openLog(file: Blob, name: string): Promise<boolean>;
+  /** Make the Compare view's second log the open log, and the open log the second log. Resolves false if it failed. */
+  swapCompareLog(): Promise<boolean>;
   openLogPicker(): void;
   openDbcPicker(): void;
 }

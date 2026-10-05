@@ -260,8 +260,27 @@ export function App({ core }: { core: CoreApi }) {
     [decodePlot],
   );
 
+  /** Show `info` as the open log, which the core has just read or swapped in. */
+  const showOpenedLog = useCallback(
+    async (info: LogInfo) => {
+      const nextIds = await core.idSummary();
+      // The new log's series replaced the old ones in the core.
+      plotSignals.current.clear();
+      setPlots([]);
+      setSelected(ALL_IDS);
+      setNotKept(null);
+      setLog(info);
+      setLogVersion((v) => v + 1);
+      setDbcs(dbcsRef.current);
+      setIds(nextIds);
+      return nextIds;
+    },
+    [core],
+  );
+
+  /** `stay` keeps the current view rather than going to Overview, for a log opened from within a view. */
   const openLog = useCallback(
-    (file: Blob, name: string, restore?: SavedUi) =>
+    (file: Blob, name: string, restore?: SavedUi, stay = false) =>
       run(`Reading ${name}\u2026`, () =>
         serially(async () => {
           setSkippedDismissed(false);
@@ -276,22 +295,15 @@ export function App({ core }: { core: CoreApi }) {
             showNoLog();
             throw e;
           }
-          const nextIds = await core.idSummary();
-          // The new log's series replaced the old ones in the core.
-          plotSignals.current.clear();
-          setPlots([]);
-          setSelected(ALL_IDS);
-          setNotKept(null);
-          setLog(info);
-          setLogVersion((v) => v + 1);
-          setDbcs(dbcsRef.current);
-          setIds(nextIds);
+          const nextIds = await showOpenedLog(info);
           if (restore) {
             await restoreUi(restore, nextIds);
             return;
           }
           viewState.clearScope('log');
-          setView('overview');
+          if (!stay) setView('overview');
+          // The core dropped the comparison log with the old log.
+          void forget('compare');
           // Kept so a reload reopens it. A copy this browser can't store just isn't restored.
           void save('log', { name, blob: file } satisfies SavedLog).then((kept) => {
             if (!kept) {
@@ -301,7 +313,26 @@ export function App({ core }: { core: CoreApi }) {
           });
         }),
       ),
-    [core, run, serially, showNoLog, setView, restoreUi, viewState],
+    [core, run, serially, showNoLog, showOpenedLog, setView, restoreUi, viewState],
+  );
+
+  const swapCompareLog = useCallback(
+    () =>
+      run('Swapping the logs\u2026', () =>
+        serially(async () => {
+          const info = await core.swapCompareLog();
+          await showOpenedLog(info);
+          viewState.clearScope('log');
+          // The saved copies trade places too, so a reload reopens each log where it now is.
+          const [a, b] = await Promise.all([loadSaved<SavedLog>('log'), loadSaved<SavedLog>('compare')]);
+          if (!b || !(await save('log', b))) {
+            setNotKept(info.name);
+            await forget('log');
+          }
+          if (!a || !(await save('compare', a))) await forget('compare');
+        }),
+      ),
+    [core, run, serially, showOpenedLog, viewState],
   );
 
   const openDbc = useCallback(
@@ -339,7 +370,7 @@ export function App({ core }: { core: CoreApi }) {
         // The core has no close; an empty log releases the old one's memory.
         await core.openLog(new Blob([]), '', () => {});
         showNoLog();
-        await forget('log');
+        await Promise.all([forget('log'), forget('compare')]);
         if (dbcsRef.current.length > 0) setView('database');
       }),
     );
@@ -377,7 +408,10 @@ export function App({ core }: { core: CoreApi }) {
       // A saved log other than the demo would only be replaced by it, so it isn't parsed first.
       if (savedLog && (!demoRequested.current || savedLog.name === 'demo.log')) {
         const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
-        if (!(await openLog(savedLog.blob, savedLog.name, ui))) void forget('log');
+        if (!(await openLog(savedLog.blob, savedLog.name, ui))) {
+          void forget('log');
+          void forget('compare');
+        }
       } else if (savedUi && savedDbcs?.length && !viewMeta(savedUi.view).needsLog) {
         setViewState(savedUi.view);
       }
@@ -581,6 +615,8 @@ export function App({ core }: { core: CoreApi }) {
     run,
     setError,
     setView,
+    openLog: (file, name) => openLog(file, name, undefined, true),
+    swapCompareLog,
     openLogPicker: () => logInput.current?.click(),
     openDbcPicker: () => dbcInput.current?.click(),
     setInspectorHidden,

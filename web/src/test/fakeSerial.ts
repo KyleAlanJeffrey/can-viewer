@@ -11,6 +11,8 @@ export class FakeSerialPort implements SerialPortLike {
   readonly commands: string[] = [];
   opened = false;
   closed = false;
+  /** Set by `canable()`'s firmware when it took M1. */
+  silentMode = false;
   /** What the adapter answers to a command, or null for no answer. */
   answer: (command: string) => string | null = (command) => (command === 'V' ? 'V1013\r' : '\r');
   /** Set to make `open` fail, as when another program holds the port. */
@@ -52,9 +54,25 @@ export class FakeSerialPort implements SerialPortLike {
     });
   }
 
-  /** The adapter answers no command, as CANable's slcan firmware doesn't. */
+  /** The adapter answers no command at all. */
   silence() {
     this.answer = () => null;
+  }
+
+  /**
+   * CANable's slcan firmware (canable-fw, canable2-fw): it answers `V` with a version line and
+   * nothing else, ignores `L`, and takes `M1` as silent mode only while the channel is closed.
+   */
+  canable() {
+    let busOpen = false;
+    this.answer = (command) => {
+      if (command === 'V') return 'b2c4e1f canable2-fw\r';
+      if (command === 'O') busOpen = true;
+      if (command === 'C') busOpen = false;
+      if (command === 'M1' && !busOpen) this.silentMode = true;
+      if (command === 'M0' && !busOpen) this.silentMode = false;
+      return null;
+    };
   }
 
   send(text: string | Uint8Array) {

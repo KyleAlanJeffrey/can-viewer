@@ -1,8 +1,9 @@
 /**
  * slcan (Lawicel) adapters over Web Serial: CANable and its clones with slcan firmware, USBtin,
- * Lawicel CANUSB and others. Commands and frames are ASCII lines ending in CR. Most adapters
- * answer a command with CR (done) or BEL (refused), but CANable's slcan firmware answers
- * nothing, so only a BEL or a failed write counts as a failure, as with slcand and python-can.
+ * Lawicel CANUSB and others. Commands and frames are ASCII lines ending in CR. Lawicel adapters
+ * answer every command with CR (done) or BEL (refused). CANable's slcan firmware answers only
+ * `V`, with a version line, and nothing else, so for it only a failed write counts as a failure,
+ * as with slcand and python-can.
  */
 
 import { FLAG_BRS, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
@@ -48,7 +49,7 @@ export type SlcanEvent =
   | { kind: 'ok' }
   /** BEL: the last command was refused. */
   | { kind: 'error' }
-  /** Any other line, such as `V1013` in answer to `V`. */
+  /** Any other line that isn't a frame, such as `V1013` in answer to `V`, or an echo. */
   | { kind: 'reply'; text: string }
   | { kind: 'bad'; reason: string };
 
@@ -148,11 +149,11 @@ interface Waiter {
 }
 
 export interface SlcanTiming {
-  /** How long to wait for an answer from an adapter that answers commands. */
+  /** How long to wait for an answer to `S<n>`, and to later commands on an adapter that answers. */
   commandMs: number;
   /**
    * A pause after the first command, so a late answer to it can't be taken for the next one's;
-   * also how long to wait for a BEL from an adapter that answers nothing.
+   * also how long to wait between commands to an adapter that answers nothing.
    */
   settleMs: number;
 }
@@ -162,11 +163,12 @@ const DEFAULT_TIMING: SlcanTiming = { commandMs: 1000, settleMs: 100 };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Opens the CAN channel with `C` (in case it was left open), `V` (to learn whether the adapter
- * answers commands at all), `S<n>`, then `O`, or for listen only `L`, else `M1` (CANable's
- * silent mode) and `O`. Listen-only counts as confirmed only when an answering adapter accepts
- * `L` or `M1`. Frames are stamped with the host clock when their bytes arrive, not with the
- * adapter's `Z1` timestamps.
+ * Opens the CAN channel with `C` (in case it was left open), `S<n>`, then `O`, or for listen
+ * only `L`, else `M1` (CANable's silent mode, which it takes only while off the bus) and `O`.
+ * Whether the adapter answers commands at all is learnt from `S<n>`, which every Lawicel adapter
+ * answers. Listen-only counts as confirmed only when an adapter answers `L` or `M1` with CR.
+ * Frames are stamped with the host clock when their bytes arrive, not with the adapter's `Z1`
+ * timestamps, and are read only once `O` or `L` has been sent.
  */
 export class SlcanAdapter implements CaptureAdapter {
   readonly label: string;
@@ -177,6 +179,8 @@ export class SlcanAdapter implements CaptureAdapter {
   private stopping: Promise<void> | null = null;
   private events: CaptureEvents | null = null;
   private clock: () => number = () => 0;
+  /** Set as `O` or `L` is sent. Until then a line that looks like a frame is a reply or stale. */
+  private busOpen = false;
 
   constructor(
     private readonly port: SerialPortLike,
@@ -193,6 +197,7 @@ export class SlcanAdapter implements CaptureAdapter {
     this.parser = new SlcanParser();
     this.waiters = [];
     this.stopping = null;
+    this.busOpen = false;
     this.events = events;
     this.clock = clock;
     try {
@@ -205,27 +210,36 @@ export class SlcanAdapter implements CaptureAdapter {
       await this.expect('C', this.timing.settleMs, null);
       await sleep(this.timing.settleMs);
       this.answerAll('no answer');
-      const answers = (await this.expect('V', this.timing.commandMs, null)) !== 'no answer';
+      const bitrate = await this.expect(`S${code}`, this.timing.commandMs, 'The adapter refused the bitrate. Check that it runs slcan firmware.');
+      const answers = bitrate !== 'no answer';
       const wait = answers ? this.timing.commandMs : this.timing.settleMs;
-      await this.expect(`S${code}`, wait, 'The adapter refused the bitrate. Check that it runs slcan firmware.');
-      const open = () => this.expect('O', wait, 'The adapter refused to open the CAN channel.');
+      const open = () => {
+        this.busOpen = true;
+        return this.expect('O', wait, 'The adapter refused to open the CAN channel.');
+      };
       if (!settings.listenOnly) {
         await open();
         return { listenOnly: false };
       }
-      if (answers && (await this.expect('L', wait, null)) === 'ok') return { listenOnly: true };
-      const confirmed = answers && (await this.expect('M1', wait, null)) === 'ok';
-      if (!confirmed && !settings.allowUnconfirmedListenOnly) {
+      // CANable ignores L, so a silent adapter gets only M1, which CANable takes as silent mode.
+      let listenOnly: Answer | null = null;
+      if (answers) {
+        // Frames can follow the answer to L in the same chunk.
+        this.busOpen = true;
+        listenOnly = await this.expect('L', wait, null);
+        if (listenOnly === 'ok') return { listenOnly: true };
+        this.busOpen = false;
+      }
+      const silent = await this.expect('M1', wait, null);
+      if (silent !== 'ok' && !settings.allowUnconfirmedListenOnly) {
         throw new ListenOnlyUnconfirmedError(
-          answers
+          silent === 'refused' && listenOnly !== 'no answer'
             ? "This adapter can't listen only, so it would acknowledge frames on the bus."
-            : "This adapter can't confirm listen-only mode, so it may acknowledge frames on the bus.",
+            : "This adapter didn't confirm listen-only mode. Silent mode (M1) was sent, which CANable firmware follows, but another adapter may still acknowledge frames on the bus.",
         );
       }
-      // An adapter that answers nothing gets M1 too: CANable's firmware takes it as silent mode.
-      if (!answers) await this.expect('M1', wait, null);
       await open();
-      return { listenOnly: confirmed };
+      return { listenOnly: silent === 'ok' };
     } catch (e) {
       await this.stop();
       throw e;
@@ -333,17 +347,18 @@ export class SlcanAdapter implements CaptureAdapter {
     for (const event of this.parser.push(chunk)) {
       switch (event.kind) {
         case 'frame':
-          frames.push({ ...event.frame, timeNs });
+          if (this.busOpen) frames.push({ ...event.frame, timeNs });
           break;
         case 'ok':
-        case 'reply':
           this.answer('ok');
+          break;
+        case 'reply':
           break;
         case 'error':
           if (!this.answer('refused')) this.events?.onProblem('The adapter reported an error.');
           break;
         case 'bad':
-          this.events?.onProblem(`A line from the adapter wasn't a CAN frame (${event.reason}).`);
+          if (this.busOpen) this.events?.onProblem(`A line from the adapter wasn't a CAN frame (${event.reason}).`);
           break;
       }
     }

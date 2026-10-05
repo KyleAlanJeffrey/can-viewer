@@ -122,7 +122,7 @@ describe('App live capture', () => {
     await userEvent.click(within(sheet).getByRole('button', { name: 'Choose Adapter\u2026' }));
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
     await screen.findByRole('button', { name: 'Stop Capture' });
-    expect(port.commands).toEqual(['C', 'V', 'S6', 'L']);
+    expect(port.commands).toEqual(['C', 'S6', 'L']);
   }
 
   it('records from an slcan adapter, shows the frames as they come, and saves them as a candump log', async () => {
@@ -313,10 +313,10 @@ describe('App live capture', () => {
     expect(leave()).toBe(false);
   });
 
-  it('asks before recording from an adapter that answers nothing, and never claims listen-only for it', async () => {
+  it('asks before recording from a CANable, which confirms nothing, and never claims listen-only for it', async () => {
     const App = await freshApp();
     const port = new FakeSerialPort();
-    port.silence();
+    port.canable();
     withSerialPort(port);
     const { core, frames } = captureCore();
     render(<App core={core} />);
@@ -324,14 +324,15 @@ describe('App live capture', () => {
     const sheet = await screen.findByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Choose Adapter\u2026' }));
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
-    // A silent adapter takes its full wait for V.
-    expect((await within(sheet).findByRole('alert', {}, { timeout: 3000 })).textContent).toMatch(/can't confirm listen-only mode.*Start anyway\?$/);
+    // A silent adapter takes its full wait for S6.
+    expect((await within(sheet).findByRole('alert', {}, { timeout: 3000 })).textContent).toMatch(/didn't confirm listen-only mode\. Silent mode \(M1\) was sent.*Start anyway\?$/);
     expect(core.startCapture).not.toHaveBeenCalled();
     expect(port.commands).not.toContain('O');
 
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Anyway' }));
     await screen.findByRole('button', { name: 'Stop Capture' }, { timeout: 3000 });
     expect(port.commands.slice(-2)).toEqual(['M1', 'O']);
+    expect(port.silentMode).toBe(true);
     expect(screen.getByText(/Listen-only mode isn't confirmed for this adapter/)).toBeTruthy();
     expect(toolbarStatus()).toBe('Recording from USB serial device 16D0:117E.');
     port.send('t1230\r');

@@ -15,6 +15,8 @@ export const NO_BYTE = 0xffff;
 
 /** A log file format the engine reads, or `capture` for frames recorded live (`startCapture`). */
 export type LogFormat = 'candump' | 'asc' | 'trc' | 'csv' | 'blf' | 'mf4' | 'capture';
+/** A format `exportLog` writes: every file format, not `capture`. */
+export type ExportFormat = Exclude<LogFormat, 'capture'>;
 
 export interface LogInfo {
   name: string;
@@ -255,11 +257,6 @@ export interface CoreApi {
   appendFrames(frames: CaptureFrame[]): Promise<LogInfo>;
   /** End the running capture, putting its frames in time order if they are not. Returns it. */
   endCapture(): Promise<LogInfo>;
-  /**
-   * The log as a `candump -l` file (UTF-8 text), every frame but those reassembled from J1939
-   * transport protocol packets, with times to the microsecond.
-   */
-  exportCandump(): Promise<Uint8Array>;
   idSummary(): Promise<IdSummary[]>;
   rowCount(key: number): Promise<number>;
   rows(key: number, start: number, count: number): Promise<RowBatch>;
@@ -325,6 +322,14 @@ export interface CoreApi {
   setDatabases(dbs: ScopedDatabase[]): Promise<void>;
   /** `db` as DBC text. */
   exportDbc(db: Database): Promise<string>;
+  /**
+   * The open log written as a file in `format`, leaving out the frames reassembled from J1939
+   * transfers (`FLAG_REASSEMBLED`), which reading the file again reassembles. What each format
+   * keeps is in COMPATIBILITY.md. The engine builds the whole file in its memory before handing
+   * it over, so a log needs about the file's size on top of itself; a log too large for that
+   * rejects, and stays open.
+   */
+  exportLog(format: ExportFormat): Promise<Blob>;
   /**
    * Called after the engine stopped and was started again: the log and every series are gone,
    * calls in flight were rejected, and the databases were set again. Returns an unsubscribe.

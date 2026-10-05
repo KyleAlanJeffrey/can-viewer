@@ -118,7 +118,6 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     startCapture: notInFake('startCapture'),
     appendFrames: notInFake('appendFrames'),
     endCapture: notInFake('endCapture'),
-    exportCandump: notInFake('exportCandump'),
     idSummary: notInFake('idSummary'),
     rowCount: notInFake('rowCount'),
     rows: notInFake('rows'),
@@ -139,6 +138,7 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     findSignal: notInFake('findSignal'),
     setDatabases: () => Promise.resolve(),
     exportDbc: notInFake('exportDbc'),
+    exportLog: notInFake('exportLog'),
     ...overrides,
   };
 }

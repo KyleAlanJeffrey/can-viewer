@@ -24,6 +24,8 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
 - [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
+- [x] Export log as other formats (Export Log...: candump, ASC, BLF, TRC, MF4, CSV)
+- [x] Works offline and installable: a web app manifest with icons, and a service worker that precaches the app shell, keeps the demo after its first run and offers Reload when a new version is ready
 
 ## Landing page
 

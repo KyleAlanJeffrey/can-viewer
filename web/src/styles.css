@@ -484,6 +484,11 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* An update is news, not a warning. */
+.update-banner > svg:first-child {
+  color: var(--slate);
+}
+
 .banner .button {
   flex: none;
   height: 28px;
@@ -1292,6 +1297,65 @@ input[type='checkbox'] {
   border-top: 1px solid var(--hairline);
 }
 
+/* Export Log: one row per format, its note under the name. */
+.export-formats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.export-format {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.export-format:hover {
+  background: var(--hover-wash);
+}
+
+.export-format:has(input:checked) {
+  background: var(--selected-row);
+  border-color: var(--hairline);
+}
+
+.export-format input {
+  margin: 1px 0 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ochre-control);
+}
+
+.export-format-name {
+  font-weight: 500;
+}
+
+.export-format-extension {
+  margin-left: 4px;
+  color: var(--slate);
+  font-weight: 400;
+}
+
+.export-format-note {
+  grid-column: 2;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.export-note {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
 /* Narrow windows: the side panes float over the content instead of squeezing it. */
 .scrim {
   display: none;
@@ -1331,35 +1395,9 @@ input[type='checkbox'] {
   }
 }
 
-/* The capture buttons go icon-only before Open DBC, Save Capture first, so the log name keeps its room. */
+/* The toolbar holds the view switcher and up to five buttons, so their labels go well before the
+   log name's room does. */
 @media (max-width: 1599px) {
-  .toolbar-button.hide-label-below-1600 .label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-@media (max-width: 1439px) {
-  .toolbar-button.hide-label-below-1440 .label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-/* The view switcher needs the toolbar's middle, so Open DBC goes icon-only well before phone widths. */
-@media (max-width: 1279px) {
-  .toolbar-button {
-    padding: 0 8px;
-  }
-
   .toolbar-button .label {
     position: absolute;
     width: 1px;
@@ -1367,6 +1405,13 @@ input[type='checkbox'] {
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+}
+
+/* The view switcher needs the toolbar's middle, so it tightens too well before phone widths. */
+@media (max-width: 1279px) {
+  .toolbar-button {
+    padding: 0 8px;
   }
 
   .view-switcher button {

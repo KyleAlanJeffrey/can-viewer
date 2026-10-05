@@ -1,7 +1,7 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { Database, FindRule, RawSignalSpec, ScopedDatabase } from './api';
+import type { Database, ExportFormat, FindRule, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 
 const CHUNK_BYTES = 8 << 20;
@@ -85,7 +85,6 @@ const handlers = {
   },
   appendFrames: (packed: Uint8Array) => logInfo(session.push_frames(packed), 0),
   endCapture: () => logInfo(session.finish_capture(), 0),
-  exportCandump: () => transfer(session.export_candump()),
   idSummary: () => JSON.parse(session.id_summary()),
   rowCount: (key: number) => session.row_count(key),
   rows: (key: number, start: number, count: number) => transfer(session.rows(key, start, count)),
@@ -116,9 +115,21 @@ const handlers = {
     databasesJson = json;
   },
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
+  exportLog(format: ExportFormat) {
+    session.export_log(format);
+    // Taken a chunk at a time, so the core frees each as it is copied out, and added to the
+    // Blob at once, so each copy can be collected rather than all being held to the end. A
+    // Blob made from a Blob shares its data, and so does posting the result to the page.
+    let file = new Blob([]);
+    for (let part = session.export_chunk(); part; part = session.export_chunk()) {
+      // wasm-bindgen copies each chunk into an ArrayBuffer of its own, never a shared one.
+      file = new Blob([file, part as Uint8Array<ArrayBuffer>]);
+    }
+    return file;
+  },
 };
 
-const withTransfer = new Set(['exportCandump', 'rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
+const withTransfer = new Set(['rows', 'frameData', 'rowBytes', 'bitFlips', 'seriesView', 'busLoad', 'bitFlipsBetween', 'changeActivity', 'byteLanes']);
 
 // Requests run one at a time so a request never observes a half-parsed log.
 let initError: unknown = null;

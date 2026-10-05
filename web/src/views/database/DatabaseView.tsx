@@ -4,7 +4,7 @@ import { ALL_IDS, dbcId, formatId, isErrorFrame, type Database, type IdSummary, 
 import { Sheet } from '../../components/Sheet';
 import { cssVar, formatPeriod } from '../../format';
 import { InspectorSlot, SidebarSlot } from '../slots';
-import { startFileSave } from '../shared/saveFile';
+import { startTextSave } from '../shared/saveFile';
 import { useViewState } from '../shared/viewState';
 import type { LoadedDbc, ViewProps } from '../types';
 import { DLC_SIZES, UNTITLED_DBC, dbcFileName, firstFreeRun, messageIdText, messageMatches, newSignal, overriddenMessages, uniqueName } from './dbcModel';
@@ -220,7 +220,7 @@ export function DatabaseView({ ctx }: ViewProps) {
 
   const exportDbc = (of: LoadedDbc) => {
     // The save dialog must open straight from the click, before the text is ready.
-    const write = startFileSave(dbcFileName(of.db.name), DBC_FILE);
+    const write = startTextSave(dbcFileName(of.db.name), DBC_FILE);
     void ctx.run('Exporting\u2026', async () => {
       // Read in queue order, so the file holds the version every edit in flight lands on.
       let exported = null as Database | null;

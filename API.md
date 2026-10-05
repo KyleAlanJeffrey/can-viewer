@@ -313,6 +313,29 @@ const log = await core.openLog(file, file.name, (p) => {
 console.log(`${log.frames} frames on ${log.channels.join(', ')}; ${log.rejected} lines skipped`);
 ```
 
+### exportLog
+
+```ts
+exportLog(format: ExportFormat): Promise<Blob>
+```
+
+Writes the current log as a file in `format`, so it can be saved in another format. The frames are written in time order, leaving out the J1939 transfers the engine reassembled (`FLAG_REASSEMBLED`): their packets are written, and opening the file reassembles them again. It neither reads nor changes anything else; the log stays open. What each format keeps and loses is under "Log export" in [COMPATIBILITY.md](COMPATIBILITY.md#log-export).
+
+The engine builds the whole file in its memory, in chunks of at most 8 MiB, then hands the chunks over one at a time, freeing each, and each is added to the Blob as it is handed over, without one large copy. So the call needs memory for the file on top of the log; COMPATIBILITY.md gives sizes. With no log open, the file holds only the format's header (nothing, for candump; an empty data frame group, for MF4).
+
+**Parameters**
+
+- **`format`** `ExportFormat` - The format to write: `'candump'`, `'asc'`, `'trc'`, `'csv'`, `'blf'` or `'mf4'`, as in `LogInfo.format`. `ExportFormat` is `LogFormat` without `'capture'`, which names no file format; a capture is exported like any log, usually as `'candump'`.
+
+**Returns** the file as a `Blob` with no type.
+
+**Errors** Rejects with `There isn't enough memory to build the exported file.` when the file, or the few MB of buffers a BLF or MF4 writer needs, does not fit in the engine's memory; the log stays open. Rejects if `format` is not one of the names above.
+
+```ts
+const file = await core.exportLog('blf');
+downloadBlob(log.name.replace(/\.[^.]*$/, '') + '.blf', file); // web/src/download.ts
+```
+
 ### busLoad
 
 ```ts
@@ -386,26 +409,11 @@ const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: f
 endCapture(): Promise<LogInfo>
 ```
 
-Ends the running capture and puts its frames in time order. The capture stays the current log, so it can be viewed and exported; `appendFrames` rejects from then on.
+Ends the running capture and puts its frames in time order. The capture stays the current log, so it can be viewed and exported with [`exportLog`](#exportlog) (the web app's Save Capture... writes `'candump'`); `appendFrames` rejects from then on.
 
 **Returns** the finished capture.
 
 **Errors** Rejects with `no capture is running`.
-
-### exportCandump
-
-```ts
-exportCandump(): Promise<Uint8Array>
-```
-
-The current log as a `candump -l` file in UTF-8, one line per frame: `(seconds.microseconds) bus ID#data`, with `##<flags>` for CAN FD frames, `#R` for remote frames and a trailing ` T` for transmitted frames. Frames reassembled from J1939 transport protocol packets are left out, since the packets themselves are written. It works for any log, not only a capture. Reading the file again gives the same frames, apart from times rounded to the microsecond.
-
-**Returns** the file contents. The buffer is transferred.
-
-```ts
-const bytes = await core.exportCandump();
-downloadBlob(log.name, new Blob([bytes], { type: 'text/plain' })); // web/src/download.ts
-```
 
 ## IDs and frames
 

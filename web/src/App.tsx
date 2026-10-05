@@ -1,17 +1,19 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Cable, FileText, Lock, PanelLeft, PanelRight, Save, Search, Square, X } from 'lucide-react';
+import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, PanelRight, Save, Search, Square, X } from 'lucide-react';
 import { errorText, formatBitrate, type CaptureAdapter, type CaptureSettings } from './capture/adapter';
-import { CaptureRecorder, captureName, type CaptureStatus } from './capture/recorder';
+import type { CaptureRecorder, CaptureStatus } from './capture/recorder';
 import './capture/capture.css';
 import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
+import { EXPORT_FORMATS, ExportLogSheet } from './components/ExportLogSheet';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
 import { Sheet } from './components/Sheet';
+import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
 import { VIEWS, viewMeta } from './views';
-import { startFileSave } from './views/shared/saveFile';
+import { chooseBlobFile } from './views/shared/saveFile';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
 import type { LoadedDbc, ViewContext, ViewId } from './views/types';
@@ -54,7 +56,8 @@ interface LiveCapture {
 const LIVE_REFRESH_MS = 500;
 /** Plotted signals are decoded again every this many refreshes while capturing. */
 const LIVE_PLOT_REFRESHES = 4;
-const CANDUMP_FILE = { description: 'candump log', mime: 'text/plain', extension: '.log' };
+/** Save Capture writes candump, which keeps every frame, bus name and error class. */
+const CANDUMP_FILE = EXPORT_FORMATS.find((f) => f.format === 'candump')!.kind;
 /** Loaded apart from the app, with the adapters behind it, as most visits never capture. */
 const CaptureSheet = lazy(() => import('./capture/CaptureSheet').then((m) => ({ default: m.CaptureSheet })));
 
@@ -130,6 +133,8 @@ export function App({ core }: { core: CoreApi }) {
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   /** What to do once the user agrees to discard an unsaved capture. */
   const [discardThen, setDiscardThen] = useState<(() => void) | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportEnded, setExportEnded] = useState(false);
   const [query, setQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(() => !narrow());
   const [inspectorOpen, setInspectorOpen] = useState(() => !narrow());
@@ -139,6 +144,7 @@ export function App({ core }: { core: CoreApi }) {
   const [viewState] = useState(() => new ViewStateStore());
   const logInput = useRef<HTMLInputElement>(null);
   const dbcInput = useRef<HTMLInputElement>(null);
+  const exportButton = useRef<HTMLButtonElement>(null);
 
   // Async tasks read these rather than a render's closure, so queued DBC edits never undo each other.
   const dbcsRef = useRef<LoadedDbc[]>([]);
@@ -186,6 +192,17 @@ export function App({ core }: { core: CoreApi }) {
       setBusy(null);
     }
   }, []);
+
+  // The Export Log button is disabled while the export runs, so focus fell to the page (or was
+  // left in the closed sheet); give it back once the button is enabled again, unless the user
+  // has moved on.
+  useEffect(() => {
+    if (!exportEnded || busy) return;
+    setExportEnded(false);
+    const focused = document.activeElement;
+    const lost = !focused || focused === document.body || focused.closest('dialog:not([open])') !== null;
+    if (lost || focused === exportButton.current) exportButton.current?.focus();
+  }, [exportEnded, busy]);
 
   const setView = useCallback((next: ViewId) => {
     setViewState(next);
@@ -446,6 +463,8 @@ export function App({ core }: { core: CoreApi }) {
   const startCapture = useCallback(
     (adapter: CaptureAdapter, settings: CaptureSettings) =>
       serially(async () => {
+        // Loaded with the Capture sheet rather than with the app.
+        const { CaptureRecorder, captureName } = await import('./capture/recorder');
         const recorder = new CaptureRecorder(core, adapter, captureName(new Date()));
         const { info, listenOnly } = await recorder.start(settings);
         const capture: LiveCapture = { recorder, adapter: adapter.label, bitrate: settings.bitrate, listenOnly };
@@ -480,18 +499,24 @@ export function App({ core }: { core: CoreApi }) {
   const saveCapture = () => {
     if (!log) return;
     const name = log.name;
-    // Opens the save dialog now, while the click still counts as the user's.
-    const write = startFileSave(name, CANDUMP_FILE);
-    void run('Saving the capture\u2026', async () => {
-      const blob = new Blob([(await core.exportCandump()) as BlobPart], { type: 'text/plain' });
-      if (!(await write(blob))) return;
-      setUnsavedCapture(false);
-      // Kept like an opened log, so a reload reopens it.
-      if (!(await save('log', { name, blob } satisfies SavedLog))) {
-        setNotKept(name);
-        void forget('log');
-      }
-    });
+    const label = 'Saving the capture\u2026';
+    // The save dialog must open straight from the click, as Export Log's does.
+    void chooseBlobFile(name, CANDUMP_FILE).then(
+      async (write) => {
+        if (!write) return;
+        await run(label, async () => {
+          const blob = await core.exportLog('candump');
+          await write(blob);
+          setUnsavedCapture(false);
+          // Kept like an opened log, so a reload reopens it.
+          if (!(await save('log', { name, blob } satisfies SavedLog))) {
+            setNotKept(name);
+            void forget('log');
+          }
+        });
+      },
+      (error: unknown) => run(label, () => Promise.reject(error)),
+    );
   };
 
   /** Runs `action`, first asking to discard the open capture if it was never saved. */
@@ -891,9 +916,19 @@ export function App({ core }: { core: CoreApi }) {
             />
           )}
           <div className="toolbar-actions">
-            <button className="toolbar-button" onClick={() => dbcInput.current?.click()} disabled={!!busy}>
+            <button className="toolbar-button" onClick={() => dbcInput.current?.click()} disabled={!!busy} title={'Open DBC\u2026'}>
               <FileText size={16} strokeWidth={1.5} />
               <span className="label">Open DBC&hellip;</span>
+            </button>
+            <button
+              ref={exportButton}
+              className="toolbar-button"
+              onClick={() => setExportOpen(true)}
+              disabled={!!busy || !log || !!live || stopping}
+              title={'Export Log\u2026'}
+            >
+              <FileDown size={16} strokeWidth={1.5} />
+              <span className="label">Export Log&hellip;</span>
             </button>
             {live ? (
               <button className={showView && meta.hasPrimary ? 'button' : 'primary'} onClick={() => void stopCapture()} disabled={stopping}>
@@ -903,13 +938,13 @@ export function App({ core }: { core: CoreApi }) {
             ) : (
               <>
                 {log?.format === 'capture' && (
-                  <button className="toolbar-button hide-label-below-1600" onClick={saveCapture} disabled={!!busy || stopping} title={'Save Capture\u2026'}>
+                  <button className="toolbar-button" onClick={saveCapture} disabled={!!busy || stopping} title={'Save Capture\u2026'}>
                     <Save size={16} strokeWidth={1.5} />
                     <span className="label">Save Capture&hellip;</span>
                   </button>
                 )}
                 <button
-                  className="toolbar-button hide-label-below-1440"
+                  className="toolbar-button"
                   onClick={() => unlessUnsavedCapture(() => setCaptureOpen(true))}
                   disabled={!!busy || stopping}
                   title={'Capture\u2026'}
@@ -969,6 +1004,7 @@ export function App({ core }: { core: CoreApi }) {
 
         <div className={`body${showInspector && inspectorOpen ? '' : ' inspector-hidden'}`}>
           <section className={`content view-${view}`} aria-label={showView ? meta.label : 'Welcome'}>
+            <UpdateBanner />
             {error && (
               <div className="banner" role="alert">
                 <AlertTriangle size={16} strokeWidth={1.75} />
@@ -1097,6 +1133,16 @@ export function App({ core }: { core: CoreApi }) {
       >
         <p>{log?.name} hasn&rsquo;t been saved. Save Capture&hellip; keeps it in a candump log file.</p>
       </Sheet>
+      {log && (
+        <ExportLogSheet
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+          core={core}
+          log={log}
+          run={run}
+          onDone={() => setExportEnded(true)}
+        />
+      )}
     </div>
   );
 }

@@ -15,33 +15,61 @@ export interface FileKind {
   extension: string;
 }
 
-/**
- * Starts saving a file. Where the browser has a save dialog it opens at once, so call this
- * straight from the click, before awaiting anything, or the browser refuses it. The returned
- * function writes the contents once they're ready and resolves false if the dialog was cancelled.
- * Elsewhere it falls back to a download, which has no completion signal and never resolves false.
- */
-export function startFileSave(name: string, kind: FileKind): (contents: string | Blob) => Promise<boolean> {
+/** Whether saving opens the browser's save dialog, rather than downloading. */
+export function hasSaveDialog(): boolean {
+  return typeof (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker === 'function';
+}
+
+/** Opens the save dialog, resolving to the chosen file or null if cancelled; null at once without one. */
+function pickFile(name: string, kind: FileKind): Promise<WritableHandle | null> | null {
   const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
-  if (!picker) {
-    return async (contents) => {
-      if (typeof contents === 'string') downloadText(name, contents, kind.mime);
-      else downloadBlob(name, contents);
-      return true;
-    };
-  }
-  const handle = picker({ suggestedName: name, types: [{ description: kind.description, accept: { [kind.mime]: [kind.extension] } }] }).catch(
+  if (!picker) return null;
+  return picker({ suggestedName: name, types: [{ description: kind.description, accept: { [kind.mime]: [kind.extension] } }] }).catch(
     (e: unknown) => {
       if (e instanceof DOMException && e.name === 'AbortError') return null;
       throw e;
     },
   );
-  return async (contents) => {
+}
+
+async function writeFile(file: WritableHandle, data: string | Blob) {
+  const writable = await file.createWritable();
+  await writable.write(data);
+  await writable.close();
+}
+
+/**
+ * Starts saving a text file. Where the browser has a save dialog it opens at once, so call this
+ * straight from the click, before awaiting anything, or the browser refuses it. The returned
+ * function writes the text once it's ready and resolves false if the dialog was cancelled.
+ * Elsewhere it falls back to a download, which has no completion signal and never resolves false.
+ */
+export function startTextSave(name: string, kind: FileKind): (text: string) => Promise<boolean> {
+  const handle = pickFile(name, kind);
+  if (!handle) {
+    return async (text) => {
+      downloadText(name, text, kind.mime);
+      return true;
+    };
+  }
+  return async (text) => {
     const file = await handle;
     if (!file) return false;
-    const writable = await file.createWritable();
-    await writable.write(contents);
-    await writable.close();
+    await writeFile(file, text);
     return true;
   };
+}
+
+/**
+ * Starts saving a file that takes a while to make. Like `startTextSave`, call it straight from
+ * the click. It resolves once a file is chosen, to a function that writes the file there, or to
+ * null if the dialog was cancelled, so nothing is made for a cancelled dialog. Without a save
+ * dialog it resolves at once, to a function that downloads the file.
+ */
+export async function chooseBlobFile(name: string, kind: FileKind): Promise<((data: Blob) => Promise<void>) | null> {
+  const handle = pickFile(name, kind);
+  if (!handle) return async (data) => downloadBlob(name, data);
+  const file = await handle;
+  if (!file) return null;
+  return (data) => writeFile(file, data);
 }

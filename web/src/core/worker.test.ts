@@ -19,13 +19,18 @@ class FakeSession {
   finish_capture() {
     return this.log_info();
   }
-  export_candump() {
-    return Uint8Array.of(0x28);
-  }
   row_count(key: number): number {
     if (key === 1) throw new WebAssembly.RuntimeError('unreachable');
     if (key === 2) throw new Error('No such ID');
     return 7;
+  }
+  private chunks: Uint8Array[] = [];
+  export_log(format: string) {
+    if (format !== 'csv') throw new Error('Not a format');
+    this.chunks = [new Uint8Array([1, 2]), new Uint8Array([3])];
+  }
+  export_chunk(): Uint8Array | undefined {
+    return this.chunks.shift();
   }
 }
 
@@ -81,6 +86,15 @@ describe('core worker', () => {
     expect(() => vi.runAllTimers()).toThrow(WebAssembly.RuntimeError);
   });
 
+  it('hands over an exported log as one Blob of every chunk', async () => {
+    const port = await startWorker();
+    const reply = new Promise<{ result: Blob }>((resolve) => port.postMessage.mockImplementationOnce(resolve));
+    port.onmessage?.({ data: { id: 1, method: 'exportLog', args: ['csv'] } });
+    const { result } = await reply;
+    expect(result).toBeInstanceOf(Blob);
+    expect([...new Uint8Array(await result.arrayBuffer())]).toEqual([1, 2, 3]);
+  });
+
   it('answers an ordinary error without rethrowing it, and keeps answering', async () => {
     const port = await startWorker();
     expect(await ask(port, 1, 2)).toEqual({ id: 1, error: 'No such ID' });
@@ -88,7 +102,7 @@ describe('core worker', () => {
     expect(await ask(port, 2, 3)).toEqual({ id: 2, result: 7 });
   });
 
-  it('runs a capture in a fresh session and transfers the candump export', async () => {
+  it('runs a capture in a fresh session', async () => {
     const port = await startWorker();
     const [started] = await request(port, 1, 'startCapture', ['can0', 1000]);
     expect(started).toEqual({ id: 1, result: { format: 'capture', frames: 0, parseMs: 0, wasmBytes: 0 } });
@@ -97,8 +111,5 @@ describe('core worker', () => {
     expect(appended).toMatchObject({ id: 2, result: { frames: 1 } });
     const [ended] = await request(port, 3, 'endCapture', []);
     expect(ended).toMatchObject({ id: 3, result: { frames: 1 } });
-    const [exported, transfer] = await request(port, 4, 'exportCandump', []);
-    expect(exported).toEqual({ id: 4, result: Uint8Array.of(0x28) });
-    expect(transfer).toEqual([(exported as { result: Uint8Array }).result.buffer]);
   });
 });

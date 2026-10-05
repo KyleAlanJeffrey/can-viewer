@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CaptureFrame } from './core/api';
+import type { CaptureFrame, CoreApi } from './core/api';
 import { FakeSerialPort } from './test/fakeSerial';
 import { fakeCore, logInfo, summary } from './test/fixtures';
 
@@ -44,6 +44,33 @@ describe('App', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('No CAN frames in x.mf4 (MF4): data larger than 1 GiB.');
   });
 
+  it('offers Export Log once a log is open, and shows why an export failed', async () => {
+    const App = await freshApp();
+    const exportLog = vi.fn<CoreApi['exportLog']>(() => Promise.reject(new Error("There isn't enough memory to build the exported file.")));
+    const core = fakeCore({
+      openLog: () => Promise.resolve(logInfo({ name: 'x.blf', format: 'blf' })),
+      idSummary: () => Promise.resolve([]),
+      exportLog,
+    });
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    const exportButton = screen.getByRole('button', { name: 'Export Log\u2026' }) as HTMLButtonElement;
+    expect(exportButton.disabled).toBe(true);
+
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
+    await userEvent.upload(input, new File(['LOGG'], 'x.blf'));
+    await screen.findByText(/^BLF/);
+    expect(exportButton.disabled).toBe(false);
+    await userEvent.click(exportButton);
+    expect(screen.getByRole('dialog', { name: 'Export Log' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }));
+    expect(exportLog).toHaveBeenCalledWith('candump');
+    expect((await screen.findByRole('alert')).textContent).toContain("There isn't enough memory to build the exported file.");
+    // Disabled while the export ran, the button gets focus back once enabled.
+    await waitFor(() => expect(document.activeElement).toBe(exportButton));
+    expect(exportButton.disabled).toBe(false);
+  });
+
   it('shows the format of an open log next to its frame count', async () => {
     const App = await freshApp();
     const core = fakeCore({
@@ -80,14 +107,15 @@ describe('App live capture', () => {
       }),
       endCapture: vi.fn(() => Promise.resolve(info())),
       idSummary: () => Promise.resolve(frames.length > 0 ? [summary({ id: 0x123, count: frames.length })] : []),
-      exportCandump: vi.fn(() => Promise.resolve(new TextEncoder().encode('(1.000000) can0 123#DEAD\n'))),
+      exportLog: vi.fn(() => Promise.resolve(new Blob(['(1.000000) can0 123#DEAD\n']))),
     });
     return { core, frames };
   }
 
   async function startCapture(port: FakeSerialPort) {
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
+    // The sheet loads on its own the first time.
+    const sheet = await screen.findByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Choose Adapter\u2026' }));
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
     await screen.findByRole('button', { name: 'Stop Capture' });
@@ -104,6 +132,7 @@ describe('App live capture', () => {
 
     expect(screen.getByText('Recording')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Open Log\u2026' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Export Log\u2026' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole('radio', { name: 'Trace' }).getAttribute('aria-checked')).toBe('true');
 
     port.send('t1232DEAD\rt1232BEEF\r');
@@ -128,8 +157,57 @@ describe('App live capture', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save Capture\u2026' }));
     await waitFor(() => expect(written).toHaveLength(1));
     expect(picker).toHaveBeenCalledWith(expect.objectContaining({ suggestedName: expect.stringMatching(/^capture-\d{8}-\d{6}\.log$/) }));
+    expect(core.exportLog).toHaveBeenCalledWith('candump');
     expect(await (written[0] as Blob).text()).toBe('(1.000000) can0 123#DEAD\n');
     await waitFor(() => expect(screen.queryByText(/Not saved/)).toBeNull());
+    // Once stopped, the capture exports like any log.
+    expect((screen.getByRole('button', { name: 'Export Log\u2026' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('reopens a saved capture after a reload, as the candump file it was saved as', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    const { unmount } = render(<App core={core} />);
+    await startCapture(port);
+    port.send('t1232DEAD\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await screen.findByText(/Not saved/);
+    vi.stubGlobal('showSaveFilePicker', async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {} }) }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save Capture\u2026' }));
+    await waitFor(() => expect(screen.queryByText(/Not saved/)).toBeNull());
+    const name = (core.startCapture as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    unmount();
+
+    const Reloaded = await freshApp();
+    const openLog = vi.fn<CoreApi['openLog']>(async (_file, logName) => logInfo({ name: logName, format: 'candump' }));
+    render(<Reloaded core={fakeCore({ openLog, idSummary: () => Promise.resolve([]) })} />);
+    await waitFor(() => expect(openLog).toHaveBeenCalled());
+    // fake-indexeddb can't clone jsdom's Blobs, so only the name is checked.
+    expect(openLog.mock.calls[0][1]).toBe(name);
+    expect(await screen.findByText(name)).toBeTruthy();
+  });
+
+  it('forgets an unsaved capture after a reload', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    const { unmount } = render(<App core={core} />);
+    await startCapture(port);
+    port.send('t1232DEAD\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await screen.findByText(/Not saved/);
+    unmount();
+
+    const Reloaded = await freshApp();
+    const openLog = vi.fn<CoreApi['openLog']>();
+    render(<Reloaded core={fakeCore({ openLog })} />);
+    expect(await screen.findByRole('heading', { name: 'Open a CAN log to get started' })).toBeTruthy();
+    expect(openLog).not.toHaveBeenCalled();
   });
 
   it('asks before an unsaved capture is replaced', async () => {
@@ -185,6 +263,6 @@ describe('App live capture', () => {
     const App = await freshApp();
     render(<App core={fakeCore()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    expect(within(screen.getByRole('dialog', { name: 'Live Capture' })).getByText(/needs Chrome or Edge/)).toBeTruthy();
+    expect(within(await screen.findByRole('dialog', { name: 'Live Capture' })).getByText(/needs Chrome or Edge/)).toBeTruthy();
   });
 });

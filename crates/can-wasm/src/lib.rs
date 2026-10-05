@@ -3,18 +3,23 @@
 //!
 //! Bulk data crosses the boundary as typed arrays; small structured results as JSON strings.
 
+mod clock;
+mod export;
 mod find;
 mod series;
+
+use std::collections::VecDeque;
 
 use can_core::{
     flags, tp::MAX_TRANSFER, FrameRef, FrameSink, FrameStore, IdKey, ERR_FLAG, EXT_FLAG,
     MAX_PAYLOAD,
 };
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
-use can_formats::{candump, mf4, AnyParser, Format, LogParser, ParseStats};
+use can_formats::{mf4, writer, AnyParser, Format, LogParser, ParseStats};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
+use export::ChunkedFile;
 use find::Behaviour;
 use series::Series;
 
@@ -61,6 +66,8 @@ pub struct Session {
     capture: Option<Capture>,
     databases: Vec<ScopedDatabase>,
     series: Vec<Option<Series>>,
+    /// The chunks of the last `export_log` not yet taken by `export_chunk`.
+    export: VecDeque<Vec<u8>>,
 }
 
 /// A live capture: frames pushed by the page as an adapter receives them.
@@ -109,6 +116,7 @@ impl LogInput {
             self.reserve(format, store);
         }
         let mut parser = AnyParser::new(format);
+        parser.set_local_time(clock::local_time());
         parser.expect_bytes(self.total_bytes as u64);
         parser.push(&self.head, store);
         self.head = Vec::new();
@@ -325,11 +333,6 @@ impl Session {
         capture.finished = true;
         self.store.sort_by_time();
         Ok(self.log_info())
-    }
-
-    /// The log as a `candump -l` file; see [`candump::write_log`].
-    pub fn export_candump(&self) -> Vec<u8> {
-        candump::write_log(&self.store)
     }
 
     pub fn log_info(&self) -> String {
@@ -575,6 +578,23 @@ impl Session {
         Ok(add_series(&mut self.series, series, &name, ""))
     }
 
+    /// Write the log in `format` (a `LogInfo.format` name), without the frames reassembled from
+    /// J1939 transfers, and keep the file for `export_chunk` to hand over. The whole file is
+    /// built before the first chunk is taken, so it needs its own size in memory on top of the
+    /// log; running out is an error, and the log stays open.
+    pub fn export_log(&mut self, format: &str) -> Result<(), JsError> {
+        let format = Format::from_name(format)
+            .ok_or_else(|| js_err(format!("{format:?} is not a log format")))?;
+        self.export = self.export(format).map_err(js_err)?;
+        Ok(())
+    }
+
+    /// The next chunk of the last `export_log`, at most 8 MiB, or none once all were taken. Each
+    /// chunk is freed as it is taken.
+    pub fn export_chunk(&mut self) -> Option<Vec<u8>> {
+        self.export.pop_front()
+    }
+
     /// Replace the databases with a JSON array of `ScopedDatabase`. A frame's message comes from
     /// the first database whose `channel` is null or names the frame's bus and that defines the
     /// ID; failing that, from the first such database with a J1939 message for the frame's PGN.
@@ -743,6 +763,14 @@ impl Session {
         out
     }
 
+    /// Drops the chunks of an earlier export first, to make room.
+    fn export(&mut self, format: Format) -> std::io::Result<VecDeque<Vec<u8>>> {
+        self.export = VecDeque::new();
+        let mut file = ChunkedFile::default();
+        writer::write_log(format, &self.store, clock::local_time(), &mut file)?;
+        Ok(file.into_chunks())
+    }
+
     /// Times cross the boundary as seconds from the first frame, as in [`Session::rows`].
     fn origin_ns(&self) -> i64 {
         self.store.first_ts_ns().unwrap_or(0)
@@ -885,6 +913,35 @@ mod tests {
         id_key(0, 0x123) as f64
     }
 
+    fn exported(s: &mut Session, format: &str) -> Vec<u8> {
+        s.export_log(format).unwrap();
+        let mut file = Vec::new();
+        while let Some(chunk) = s.export_chunk() {
+            assert!(!chunk.is_empty() && chunk.len() <= export::CHUNK_BYTES);
+            file.extend_from_slice(&chunk);
+        }
+        file
+    }
+
+    #[test]
+    fn exports_the_log_in_any_format_a_chunk_at_a_time() {
+        let mut s = session();
+        assert_eq!(exported(&mut s, "candump"), LOG.as_bytes());
+        assert_eq!(s.export_chunk(), None);
+
+        let blf = exported(&mut s, "blf");
+        let mut copy = Session::new();
+        copy.set_file_name("copy.blf");
+        copy.push_chunk(&blf);
+        let info = json(&copy.finish());
+        assert_eq!(info["format"], "blf");
+        assert_eq!(info["rejected"], 0);
+        assert_eq!(info["frames"], 6);
+        assert_eq!(copy.store.frame(0), s.store.frame(0));
+        // Still open after exporting.
+        assert_eq!(s.row_count(-1.0), 6);
+    }
+
     fn json(text: &str) -> Value {
         serde_json::from_str(text).unwrap()
     }
@@ -972,7 +1029,7 @@ mod tests {
             Err("the capture has ended")
         );
         assert_eq!(
-            String::from_utf8(s.export_candump()).unwrap(),
+            String::from_utf8(exported(&mut s, "candump")).unwrap(),
             "(1700000000.000000) slcan0 123#0102\n\
              (1700000000.001500) slcan0 12345678#R\n\
              (1700000000.002000) slcan0 321##1070707070707070707070707\n\

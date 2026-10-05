@@ -1,10 +1,12 @@
-import { CompareView } from './compare/CompareView';
 import { DatabaseView } from './database/DatabaseView';
 import { OverviewView } from './overview/OverviewView';
 import { PlotView } from './plot/PlotView';
 import { ReverseView } from './reverse/ReverseView';
 import { TraceView } from './trace/TraceView';
+import { lazyView } from './lazyView';
 import type { ViewId, ViewMeta } from './types';
+
+const CompareView = lazyView(() => import('./compare/CompareView').then((m) => m.CompareView));
 
 export const VIEWS: ViewMeta[] = [
   { id: 'overview', label: 'Overview', Component: OverviewView, search: 'Filter IDs and signals', hasInspector: false, hasPrimary: false, needsLog: true },

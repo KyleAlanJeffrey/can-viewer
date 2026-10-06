@@ -381,7 +381,7 @@ One bus/ID pair of the open log (A) or the comparison log (B). Returned by [`com
 - **`framesB`** `number` - Frames in log B; 0 when only in A.
 - **`rateA`** `number | null` - Frames per second of log A's duration, so logs of different lengths compare. Null when log A has no duration (all its frames have one timestamp); the rate then plays no part in the score.
 - **`rateB`** `number | null` - The same for log B.
-- **`score`** `number` - From 0 to 100, how differently the ID behaves. Below 10 is no significant difference. See [`compareLogs`](#comparelogs).
+- **`score`** `number` - From 0 to 100, how differently the ID behaves. Below 10 is no significant difference; the reason and `bytes` follow this rounded score. See [`compareLogs`](#comparelogs).
 - **`reason`** `string` - Why, in a few words: `Appears only in A`, `Appears only in B`, `Byte 3 takes new values`, `Byte 3 has values only in A`, `Byte 3 holds a different value`, `Byte 3 changes more often`, `Byte 3 changes less often`, `Byte 3 values shift`, `Small value changes`, `Length changes from 8 to 6 bytes`, `Changes from classic CAN to CAN FD`, `Changes from CAN FD to classic CAN`, `Rate doubled`, `Rate halved`, `Rate up 3.1x`, `Rate down 3.1x`, `Too few frames to compare`, `Too few frames to compare; payloads differ`, `Also changes within A` or `No significant changes`.
 - **`bytes`** `number[]` - Payload bytes scoring 10 or more, most different first.
 - **`tooFewFrames`** `boolean` - True when either log has fewer than 8 frames of the ID, so it is not scored. The reason then adds `; payloads differ` when the logs' payloads take different values or lengths.

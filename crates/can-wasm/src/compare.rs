@@ -1031,9 +1031,9 @@ fn judge(
     }
 
     let within_a =
-        raw.is_some() && raw_best >= SIGNIFICANT && best.is_none_or(|(s, _)| s < SIGNIFICANT);
+        raw.is_some() && significant(raw_best) && best.is_none_or(|(s, _)| !significant(s));
     let (score, reason) = match best {
-        Some((score, finding)) if score >= SIGNIFICANT => (
+        Some((score, finding)) if significant(score) => (
             score,
             match finding {
                 Finding::Byte(k, reason) => byte_reason_text(k, reason, score),
@@ -1065,6 +1065,12 @@ fn judge(
 
 fn percent(score: f64) -> u8 {
     (score.clamp(0.0, 1.0) * 100.0).round() as u8
+}
+
+/// Decided on the rounded percent the app shows, so a score shown as 10 is never "No
+/// significant changes".
+fn significant(score: f64) -> bool {
+    percent(score) >= percent(SIGNIFICANT)
 }
 
 fn duration_s(store: &FrameStore) -> f64 {
@@ -1244,7 +1250,7 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                         .iter()
                         .copied()
                         .enumerate()
-                        .filter(|&(_, s)| s >= SIGNIFICANT)
+                        .filter(|&(_, s)| significant(s))
                         .collect();
                     bytes.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
                     (
@@ -1314,7 +1320,7 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
                 continue;
             }
             bit_scores[k * 8..k * 8 + 8].copy_from_slice(&d.bits);
-            byte_reasons[k] = if score >= SIGNIFICANT {
+            byte_reasons[k] = if significant(score) {
                 byte_reason_text(k, verdict.byte_reasons[k], score)
             } else {
                 "No significant changes".to_owned()
@@ -2058,6 +2064,36 @@ mod tests {
         assert_eq!(found.reason, "Too few frames to compare");
         assert!(found.too_few_frames);
         assert!(!found.payloads_differ);
+    }
+
+    #[test]
+    fn a_score_shown_as_10_is_significant() {
+        let log = store(&periodic(0x300, 10.0, 10.0, quiet));
+        let profile = whole(first_id(&log).unwrap(), 1);
+        let components = |score: f64| Components {
+            rate: 0.0,
+            ratio: None,
+            length: 0.0,
+            fd: 0.0,
+            bytes: vec![Some(ByteDiff {
+                parts: [
+                    (score, ByteReason::Shift),
+                    (0.0, ByteReason::NewValues),
+                    (0.0, ByteReason::ValuesOnlyInA),
+                ],
+                bits: [0.0; 8],
+                new_values: vec![],
+            })],
+        };
+        let raw = components(0.3);
+        let verdict = judge(&components(0.0996), Some(&raw), &profile, &profile, None);
+        assert_eq!(percent(verdict.score), 10);
+        assert_eq!(verdict.reason, "Small value changes");
+        assert!(!verdict.within_a);
+
+        let verdict = judge(&components(0.094), Some(&raw), &profile, &profile, None);
+        assert_eq!(percent(verdict.score), 9);
+        assert_eq!(verdict.reason, "Also changes within A");
     }
 
     #[test]

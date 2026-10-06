@@ -3,6 +3,7 @@ import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, Save, Search
 // Type-only, so the adapters stay out of the main chunk.
 import type { CaptureAdapter, CaptureSettings } from './capture/adapter';
 import type { CaptureRecorder, CaptureStatus } from './capture/recorder';
+import { availableKinds } from './capture/support';
 import './capture/capture.css';
 import { ALL_IDS, EXT_FLAG, type CaptureFrame, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
 import { unpackFrames } from './core/captureFrames';
@@ -38,6 +39,7 @@ import { BUS_BITRATES_KEY, type BusBitrates } from './views/shared/busBitrates';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
 import type { LoadedDbc, ViewContext, ViewId } from './views/types';
+import { Welcome, type WelcomeSource, type WelcomeStep } from './welcome/Welcome';
 
 const SERIES_SLOTS = 6;
 const seriesColor = (slot: number) => cssVar(`--series-${(slot % SERIES_SLOTS) + 1}`);
@@ -127,6 +129,7 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 /** Loaded apart from the app, with the adapters behind it, as most visits never capture. */
 const CaptureSheet = lazy(() => import('./capture/CaptureSheet').then((m) => ({ default: m.CaptureSheet })));
+const LiveSetup = lazy(() => import('./capture/LiveSetup').then((m) => ({ default: m.LiveSetup })));
 
 // Keep these in step with the media queries in styles.css.
 /** The sidebar floats over the content. */
@@ -235,6 +238,8 @@ export function App({ core }: { core: CoreApi }) {
   const [liveAnnouncement, setLiveAnnouncement] = useState('');
   /** What to do once the user agrees to discard an unsaved capture. */
   const [discardThen, setDiscardThen] = useState<(() => void) | null>(null);
+  const [welcomeStep, setWelcomeStep] = useState<WelcomeStep>('source');
+  const [welcomeSource, setWelcomeSource] = useState<WelcomeSource>('file');
   const [exportOpen, setExportOpen] = useState(false);
   const [exportEnded, setExportEnded] = useState(false);
   const [query, setQuery] = useState('');
@@ -359,7 +364,8 @@ export function App({ core }: { core: CoreApi }) {
     if (!focusAfterCancel || (busy && busy.readingLog === undefined) || stopping) return;
     setFocusAfterCancel(false);
     const focused = document.activeElement;
-    if (!focused || focused === document.body) (cancelElement.current ?? openLogButton.current)?.focus();
+    // With no log left, the welcome has no Open Log, so its heading takes focus.
+    if (!focused || focused === document.body) (cancelElement.current ?? openLogButton.current ?? document.querySelector<HTMLElement>('.wel-title'))?.focus();
   }, [focusAfterCancel, busy, stopping]);
 
   const setView = useCallback((next: ViewId) => {
@@ -507,6 +513,8 @@ export function App({ core }: { core: CoreApi }) {
     setLogVersion((v) => v + 1);
     setDbcs(dbcsRef.current);
     setIds(nextIds);
+    // The next time nothing is open, the welcome starts over.
+    setWelcomeStep('source');
   }, []);
 
   /** The log read under way, until it ends or is stopped. */
@@ -929,6 +937,7 @@ export function App({ core }: { core: CoreApi }) {
         setLive(capture);
         setLiveStatus(recorder.status());
         setUnsavedCapture(true);
+        setWelcomeStep('source');
         viewState.clearScope('log');
         viewState.set(BUS_BITRATES_KEY, { [recorder.bus]: settings.bitrate }, 'log');
         setView('trace');
@@ -1379,6 +1388,8 @@ export function App({ core }: { core: CoreApi }) {
 
   const skipped = log && log.rejected > 0 && !skippedDismissed;
   const readingLog = busy?.readingLog !== undefined;
+  // With nothing open, nor a log being read, the welcome takes the window in place of the workspace.
+  const welcome = !showView && !readingLog;
   const dbcSummary = dbcs.length === 1 ? dbcs[0].db.name : `${dbcs.length} DBCs`;
 
   // On narrow windows the panes float over the content; a tap outside or Escape puts them away.
@@ -1409,7 +1420,7 @@ export function App({ core }: { core: CoreApi }) {
     toolbar,
     spare,
     (live ? FIXED_WIDTH.stopCapture : FIXED_WIDTH.openLog) + (readingLog ? FIXED_WIDTH.cancel : 0) + FIXED_WIDTH.more,
-    !!log || dbcs.length > 0,
+    !welcome && (!!log || dbcs.length > 0),
   );
   // Recording, the status line gets the first row to itself.
   const oneRow = layout.oneRow && !live;
@@ -1434,7 +1445,7 @@ export function App({ core }: { core: CoreApi }) {
     });
   }
   const viewSwitcher =
-    log || dbcs.length > 0 ? (
+    !welcome && (log || dbcs.length > 0) ? (
       <Segmented
         label="View"
         className="view-switcher"
@@ -1444,114 +1455,156 @@ export function App({ core }: { core: CoreApi }) {
       />
     ) : null;
 
+  /** Opens a log the user picked, unless a capture or another task is in the way. */
+  const openPickedLog = (file: File) => {
+    // The picker may have opened before the app got busy, as when log B is restored.
+    if (busyRef.current && busyRef.current.readingLog === undefined) setError(`Wait for "${busyRef.current.label}" to finish, then open the log again.`);
+    else if (liveRef.current) setError('Stop the capture before opening a log.');
+    else if (stoppingRef.current) setError('Wait for the capture to stop, then open the log again.');
+    else unlessUnsavedCapture(() => void openLog(file, file.name));
+  };
+
+  const addDbcs = async (files: File[]) => {
+    for (const f of files) await openDbc(f, f.name);
+  };
+
+  const buses = [...new Set(dbcs.flatMap((d) => (d.channel === null ? [] : [d.channel])))];
+  const liveKinds = welcome ? availableKinds() : [];
+  const status = live
+    ? liveAnnouncement
+    : busy
+      ? busy.label
+      : stopping
+        ? 'Stopping the capture\u2026'
+        : restoring
+          ? 'Restoring your last session\u2026'
+          : log
+            ? `${unsavedCapture ? 'Not saved \u00b7 ' : ''}${log.format === 'capture' ? '' : `${logFormatName(log.format)} \u00b7 `}${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
+            : dbcs.length > 0
+              ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
+              : 'Open a CAN log to begin';
+  const progress = busy?.fraction != null && (
+    <div className="progress" aria-hidden="true">
+      <span style={{ transform: `scaleX(${busy.fraction})` }} />
+    </div>
+  );
+
   return (
-    <div className={`app${sidebarOpen ? '' : ' sidebar-hidden'}`} data-busy={busy ? '' : undefined}>
-      <aside className="sidebar" aria-label="Sidebar">
-        <div className="brand">
-          <Logo size={40} />
-          <span className="wordmark">
-            <b>FreeCAN</b> Studio
-          </span>
-        </div>
-        {showView && (
-          <label className="search">
-            <Search size={16} strokeWidth={1.5} aria-hidden="true" />
-            <span className="sr-only">{meta.search}</span>
-            <input type="search" placeholder={meta.search} value={query} onChange={(e) => setQuery(e.target.value)} />
-          </label>
-        )}
-        <div className="sidebar-scroll">
-          <div ref={setSidebarSlot} className="sidebar-slot" />
-          {!showView && !restoring && <p className="sidebar-empty">Message IDs appear here once a log is open.</p>}
-        </div>
-        <p className="sidebar-foot">
-          <Lock size={13} strokeWidth={1.75} aria-hidden="true" />
-          Processed on your computer
-        </p>
-      </aside>
+    <div className={`app${welcome ? ' welcome-mode' : sidebarOpen ? '' : ' sidebar-hidden'}`} data-busy={busy ? '' : undefined}>
+      {!welcome && (
+        <aside className="sidebar" aria-label="Sidebar">
+          <div className="brand">
+            <Logo size={40} />
+            <span className="wordmark">
+              <b>FreeCAN</b> Studio
+            </span>
+          </div>
+          {showView && (
+            <label className="search">
+              <Search size={16} strokeWidth={1.5} aria-hidden="true" />
+              <span className="sr-only">{meta.search}</span>
+              <input type="search" placeholder={meta.search} value={query} onChange={(e) => setQuery(e.target.value)} />
+            </label>
+          )}
+          <div className="sidebar-scroll">
+            <div ref={setSidebarSlot} className="sidebar-slot" />
+            {!showView && !restoring && <p className="sidebar-empty">Message IDs appear here once a log is open.</p>}
+          </div>
+          <p className="sidebar-foot">
+            <Lock size={13} strokeWidth={1.75} aria-hidden="true" />
+            Processed on your computer
+          </p>
+        </aside>
+      )}
 
       <div className="main">
+        {/* The same element in the welcome, so its status line and progress bar carry on into the workspace. */}
         <header
           ref={toolbar}
-          className={`toolbar${live ? ' recording' : ''}${oneRow ? ' one-row' : viewSwitcher ? ' two-rows' : ''}`}
+          className={welcome ? 'toolbar welcome-bar' : `toolbar${live ? ' recording' : ''}${oneRow ? ' one-row' : viewSwitcher ? ' two-rows' : ''}`}
           data-reading-log={readingLog ? '' : undefined}
         >
           <div className="toolbar-leading">
-            <button
-              className="icon-button"
-              onClick={() => setSidebarOpen((o) => !o)}
-              aria-pressed={sidebarOpen}
-              aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-            >
-              <PanelLeft size={18} strokeWidth={1.5} />
-            </button>
-            <span className="toolbar-divider" />
+            {welcome ? (
+              <div className="wel-brand">
+                <Logo size={32} />
+                <span className="wordmark">
+                  <b>FreeCAN</b> Studio
+                </span>
+              </div>
+            ) : (
+              <>
+                <button
+                  className="icon-button"
+                  onClick={() => setSidebarOpen((o) => !o)}
+                  aria-pressed={sidebarOpen}
+                  aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+                >
+                  <PanelLeft size={18} strokeWidth={1.5} />
+                </button>
+                <span className="toolbar-divider" />
+              </>
+            )}
             <div className="doc" title={log && log.format !== 'capture' ? parseStats(log) : undefined}>
-              <h1 className="doc-title">{log?.name ?? (dbcs.length > 0 ? dbcSummary : 'No log open')}</h1>
+              {!welcome && <h1 className="doc-title">{log?.name ?? (dbcs.length > 0 ? dbcSummary : 'No log open')}</h1>}
               {live && liveStatus && (
                 // Not a live region: it changes twice a second. The status below tells what matters.
                 <p className="doc-sub" title={live.recorder.text.title(liveStatus)}>
                   <span className="cap-recording">Recording</span> &middot; {live.recorder.text.summary(liveStatus)}
                 </p>
               )}
-              {/* Always mounted, so screen readers hear each change, recording or not. */}
-              <p className={live ? 'sr-only' : 'doc-sub'} role="status" title={live ? undefined : dbcs.map((d) => d.db.name).join(', ') || undefined}>
-                {live
-                  ? liveAnnouncement
-                  : busy
-                    ? busy.label
-                    : stopping
-                      ? 'Stopping the capture\u2026'
-                      : restoring
-                        ? 'Restoring your last session\u2026'
-                        : log
-                          ? `${unsavedCapture ? 'Not saved \u00b7 ' : ''}${log.format === 'capture' ? '' : `${logFormatName(log.format)} \u00b7 `}${formatCount(log.frames)} frames \u00b7 ${formatDuration(log.durationS)}${dbcs.length > 0 ? ` \u00b7 ${dbcSummary}` : ''}`
-                          : dbcs.length > 0
-                            ? `${formatCount(dbcs.reduce((n, d) => n + d.db.messages.length, 0))} messages`
-                            : 'Open a CAN log to begin'}
+              {/* Always mounted, so screen readers hear each change, recording or not. The welcome shows only a task's. */}
+              <p
+                className={live || (welcome && !busy && !restoring) ? 'sr-only' : 'doc-sub'}
+                role="status"
+                title={live || welcome ? undefined : dbcs.map((d) => d.db.name).join(', ') || undefined}
+              >
+                {status}
               </p>
             </div>
           </div>
-          <div className="toolbar-actions">
-            {spare.filter((id) => layout.inline.has(id)).map((id) => {
-              const action = spareActions[id];
-              return (
-                <button key={id} ref={id === 'export-log' ? exportButton : undefined} className={`toolbar-button ${id}`} onClick={action.onSelect} disabled={action.disabled}>
-                  {action.icon}
-                  <span className="label">{action.label}</span>
+          {!welcome && (
+            <div className="toolbar-actions">
+              {spare.filter((id) => layout.inline.has(id)).map((id) => {
+                const action = spareActions[id];
+                return (
+                  <button key={id} ref={id === 'export-log' ? exportButton : undefined} className={`toolbar-button ${id}`} onClick={action.onSelect} disabled={action.disabled}>
+                    {action.icon}
+                    <span className="label">{action.label}</span>
+                  </button>
+                );
+              })}
+              {live && (
+                <button className={hasPrimary ? 'button' : 'primary'} onClick={() => void stopCapture()} disabled={stopping}>
+                  <Square size={14} strokeWidth={2} aria-hidden="true" />
+                  Stop Capture
                 </button>
-              );
-            })}
-            {live && (
-              <button className={hasPrimary ? 'button' : 'primary'} onClick={() => void stopCapture()} disabled={stopping}>
-                <Square size={14} strokeWidth={2} aria-hidden="true" />
-                Stop Capture
-              </button>
-            )}
-            {readingLog && (
-              <button
-                ref={cancelButton}
-                className="button cancel-read"
-                onClick={cancelReading}
-                aria-label={`Cancel reading ${busy?.readingLog}`}
-                title={`Cancel reading ${busy?.readingLog}`}
-              >
-                <X size={14} strokeWidth={2} aria-hidden="true" />
-                <span className="label">Cancel</span>
-              </button>
-            )}
-            {!live && (
-              <button
-                ref={openLogButton}
-                className={hasPrimary ? 'button' : 'primary'}
-                onClick={() => logInput.current?.click()}
-                disabled={(!!busy && !readingLog) || stopping}
-              >
-                Open Log&hellip;
-              </button>
-            )}
-            <MenuButton label="More actions" items={menuItems} buttonRef={moreButton} />
-          </div>
+              )}
+              {readingLog && (
+                <button
+                  ref={cancelButton}
+                  className="button cancel-read"
+                  onClick={cancelReading}
+                  aria-label={`Cancel reading ${busy?.readingLog}`}
+                  title={`Cancel reading ${busy?.readingLog}`}
+                >
+                  <X size={14} strokeWidth={2} aria-hidden="true" />
+                  <span className="label">Cancel</span>
+                </button>
+              )}
+              {!live && (
+                <button
+                  ref={openLogButton}
+                  className={hasPrimary ? 'button' : 'primary'}
+                  onClick={() => logInput.current?.click()}
+                  disabled={(!!busy && !readingLog) || stopping}
+                >
+                  Open Log&hellip;
+                </button>
+              )}
+              <MenuButton label="More actions" items={menuItems} buttonRef={moreButton} />
+            </div>
+          )}
           {/* Last, as on two rows, and always this element, so a focused tab keeps focus as the
               views move between rows; on one row CSS places them between the log and its actions. */}
           {viewSwitcher && <div className="toolbar-views">{viewSwitcher}</div>}
@@ -1562,12 +1615,7 @@ export function App({ core }: { core: CoreApi }) {
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = '';
-              if (!file) return;
-              // The picker may have opened before the app got busy, as when log B is restored.
-              if (busyRef.current && busyRef.current.readingLog === undefined) setError(`Wait for "${busyRef.current.label}" to finish, then open the log again.`);
-              else if (liveRef.current) setError('Stop the capture before opening a log.');
-              else if (stoppingRef.current) setError('Wait for the capture to stop, then open the log again.');
-              else unlessUnsavedCapture(() => void openLog(file, file.name));
+              if (file) openPickedLog(file);
             }}
           />
           <input
@@ -1579,16 +1627,10 @@ export function App({ core }: { core: CoreApi }) {
             onChange={(e) => {
               const files = [...(e.target.files ?? [])];
               e.target.value = '';
-              void (async () => {
-                for (const f of files) await openDbc(f, f.name);
-              })();
+              void addDbcs(files);
             }}
           />
-          {busy?.fraction != null && (
-            <div className="progress" aria-hidden="true">
-              <span style={{ transform: `scaleX(${busy.fraction})` }} />
-            </div>
-          )}
+          {progress}
         </header>
 
         <div className={`body${showInspector && inspectorOpen ? '' : ' inspector-hidden'}`}>
@@ -1704,30 +1746,42 @@ export function App({ core }: { core: CoreApi }) {
                   <meta.Component key={view} ctx={ctx} />
                 </ViewStateContext.Provider>
               </SlotContext.Provider>
-            ) : restoring ? null : (
-              <div className="empty">
-                <div className="empty-inner">
-                  <Logo size={64} background="var(--paper)" />
-                  <h2 className="empty-title">Open a CAN log to get started</h2>
-                  <p className="lede">
-                    Drop a CAN log (candump, Vector ASC or BLF, PEAK TRC, MF4 or CSV) anywhere in this window, or choose Open Log&hellip; above. Add DBC files to decode its signals.
-                  </p>
-                  <button className="button" onClick={loadDemo} disabled={!!busy && busy.readingLog === undefined}>
-                    Try the Demo
-                  </button>
-                  <p className="privacy">
-                    <Lock size={14} strokeWidth={1.75} aria-hidden="true" />
-                    Files are processed on your computer and never uploaded. Open files stay in this browser until you close them.
-                  </p>
-                </div>
-              </div>
-            )}
+            ) : welcome && !restoring ? (
+              <Welcome
+                step={welcomeStep}
+                source={welcomeSource}
+                onChange={(step, source) => {
+                  setWelcomeStep(step);
+                  setWelcomeSource(source);
+                }}
+                busy={!!busy}
+                dbcNames={dbcs.map((d) => d.db.name)}
+                onExplore={openPickedLog}
+                onAddDbcs={(files) => void addDbcs(files)}
+                onOpenDbcs={(files) =>
+                  void addDbcs(files).then(() => {
+                    // A DBC that failed to load leaves nothing to edit.
+                    if (!logRef.current && dbcsRef.current.length > 0) setView('database');
+                  })
+                }
+                onEditDbcs={dbcs.length > 0 ? () => setView('database') : null}
+                onDemo={() => void loadDemo()}
+                liveKinds={liveKinds}
+                liveSetup={
+                  <ChunkBoundary message="Couldn't load capture." frame={(fallback) => <div className="wel-panel">{fallback}</div>}>
+                    <Suspense fallback={<p className="wel-hint">Loading&hellip;</p>}>
+                      <LiveSetup onStart={startCapture} kinds={liveKinds} buses={buses} busy={!!busy} />
+                    </Suspense>
+                  </ChunkBoundary>
+                }
+              />
+            ) : null}
           </section>
 
           <aside ref={setInspectorSlot} id="inspector" className="inspector" aria-label="Inspector" />
         </div>
       </div>
-      {(sidebarOpen || (showInspector && inspectorOpen)) && (
+      {!welcome && (sidebarOpen || (showInspector && inspectorOpen)) && (
         <div
           className={`scrim${showInspector && inspectorOpen ? ' under-inspector' : ''}`}
           aria-hidden="true"
@@ -1744,7 +1798,7 @@ export function App({ core }: { core: CoreApi }) {
               open={captureOpen}
               onClose={() => setCaptureOpen(false)}
               onStart={startCapture}
-              buses={[...new Set(dbcs.flatMap((d) => (d.channel === null ? [] : [d.channel])))]}
+              buses={buses}
             />
           </Suspense>
         </ChunkBoundary>

@@ -122,6 +122,9 @@ interface Stamp {
   hostNs: number;
 }
 
+/** A frame timed `aheadNs` past its arrival, negative when before it. */
+type OffFrame = Stamp & { aheadNs: number };
+
 /**
  * An adapter's own timestamps, from a counter that wraps every `wrapNs`, as capture times:
  * anchored to the host clock, and unwrapped by taking the number of wraps that brings the time
@@ -145,8 +148,8 @@ export class DeviceClock {
   private window = { sinceHostNs: 0, latestAnchorNs: Infinity };
   /** How far the anchor is still to move forward, from the last window. */
   private forwardNs = 0;
-  /** While frames keep being timed past the bounds the same way: which way, since when, how many, and the least late. */
-  private off: { ahead: boolean; sinceHostNs: number; frames: number; best: Stamp & { aheadNs: number } } | null = null;
+  /** While frames keep being timed past the bounds by about the same: the first, how many, and the least late. */
+  private off: { first: OffFrame; frames: number; best: OffFrame } | null = null;
   private lastTimeNs = -Infinity;
   /** Set by a re-anchor, until times pass the last one given out before it. */
   private catchingUp = false;
@@ -175,6 +178,7 @@ export class DeviceClock {
     const aheadNs = anchor.hostNs + elapsedNs - hostNs;
     const best = this.keptOff({ deviceNs, hostNs, aheadNs });
     if (best) {
+      // This clears `off`, so the frame timed again below can't re-anchor again.
       this.sync(best.deviceNs, best.hostNs);
       this.catchingUp = true;
       const seconds = (Math.abs(best.aheadNs) / 1e9).toFixed(1);
@@ -184,6 +188,7 @@ export class DeviceClock {
     if (aheadNs > MAX_AHEAD_OF_HOST_NS) return this.givenOut(hostNs + MAX_AHEAD_OF_HOST_NS);
     const advanceNs = Math.max(0, elapsedNs - this.lastElapsedNs);
     this.lastElapsedNs = Math.max(this.lastElapsedNs, elapsedNs);
+    // Held frames returned above; frames further behind are left out, as they are a jump or a stall.
     if (aheadNs >= -MAX_BEHIND_HOST_NS) {
       this.window.latestAnchorNs = Math.min(this.window.latestAnchorNs, hostNs - elapsedNs);
       if (hostNs - this.window.sinceHostNs >= SLEW_WINDOW_NS) {
@@ -203,20 +208,21 @@ export class DeviceClock {
   }
 
   /**
-   * The least late of the frames, this one included, timed past the bounds the same way for
-   * `REANCHOR_FRAMES` and `REANCHOR_AFTER_NS`, or null while they haven't been.
+   * The least late of the frames, this one included, timed past the bounds for
+   * `REANCHOR_FRAMES` and `REANCHOR_AFTER_NS`, or null while they haven't been. Frames of one
+   * jump are off by the same, give or take their latency, so a frame off by more than
+   * `MAX_AHEAD_OF_HOST_NS` more or less than the first, such as a glitch, starts over.
    */
-  private keptOff(frame: Stamp & { aheadNs: number }): (Stamp & { aheadNs: number }) | null {
+  private keptOff(frame: OffFrame): OffFrame | null {
     if (frame.aheadNs <= MAX_AHEAD_OF_HOST_NS && frame.aheadNs >= -MAX_BEHIND_HOST_NS) {
       this.off = null;
       return null;
     }
-    const ahead = frame.aheadNs > 0;
-    if (this.off?.ahead !== ahead) this.off = { ahead, sinceHostNs: frame.hostNs, frames: 0, best: frame };
+    if (!this.off || Math.abs(frame.aheadNs - this.off.first.aheadNs) > MAX_AHEAD_OF_HOST_NS) this.off = { first: frame, frames: 0, best: frame };
     const off = this.off;
     off.frames += 1;
     if (frame.aheadNs > off.best.aheadNs) off.best = frame;
-    return off.frames >= REANCHOR_FRAMES && frame.hostNs - off.sinceHostNs >= REANCHOR_AFTER_NS ? off.best : null;
+    return off.frames >= REANCHOR_FRAMES && frame.hostNs - off.first.hostNs >= REANCHOR_AFTER_NS ? off.best : null;
   }
 
   /**

@@ -7,16 +7,17 @@ function rising(times: number[]): boolean {
 }
 
 /**
- * An slcan capture of a frame every 10 ms, each arriving 1 ms after it was sent, where the
- * computer sleeps at 100 s while the adapter counts on for `sleptS`.
+ * A capture of a frame every 10 ms, each arriving 1 ms after it was sent, where the computer
+ * sleeps at 100 s while the adapter counts on for `sleptS`. slcan's counter wraps every 60 s,
+ * gs_usb's every 2^32 us. `glitches` maps a frame's send time in ms to a glitch in its stamp, in s.
  */
-function captureAcrossSleep(sleptS: number) {
+function captureAcrossSleep(sleptS: number, wrapNs = 60e9, glitches = new Map<number, number>()) {
   const messages: string[] = [];
-  const clock = new DeviceClock(60e9, (message) => messages.push(message));
+  const clock = new DeviceClock(wrapNs, (message) => messages.push(message));
   clock.sync(0, 0);
   const frames: { hostNs: number; timeNs: number }[] = [];
   for (let ms = 10; ms <= 110_000; ms += 10) {
-    const deviceNs = (ms * 1e6 + (ms > 100_000 ? sleptS * 1e9 : 0)) % 60e9;
+    const deviceNs = (ms * 1e6 + (ms > 100_000 ? sleptS * 1e9 : 0) + (glitches.get(ms) ?? 0) * 1e9) % wrapNs;
     const hostNs = ms * 1e6 + 1e6;
     frames.push({ hostNs, timeNs: clock.time(deviceNs, hostNs) });
   }
@@ -154,6 +155,16 @@ describe('DeviceClock', () => {
     expect(held.every((f) => f.timeNs === f.hostNs + MAX_AHEAD_OF_HOST_NS)).toBe(true);
     // Once past the last held frame's time, frames follow the adapter's clock from their arrival.
     expect(furthestFromArrival(frames, 100.001e9 + REANCHOR_AFTER_NS + MAX_AHEAD_OF_HOST_NS + 0.1e9)).toBeLessThanOrEqual(1e6);
+    expect(rising(frames.map((f) => f.timeNs))).toBe(true);
+  });
+
+  it('re-anchors at the frames of a jump rather than a glitch among them', () => {
+    const { frames, messages } = captureAcrossSleep(10, 2 ** 32 * 1e3, new Map([[101_000, 25]]));
+    expect(messages).toEqual(["The adapter's clock was 10.0 s ahead of the computer's, so it was anchored to the computer's clock again."]);
+    // Frames timed a nanosecond apart, past the held frames, span no more than the second they were held ahead.
+    const squeezed = frames.filter((f, i) => i > 0 && f.timeNs - frames[i - 1].timeNs < 1e3);
+    expect(squeezed.at(-1)!.hostNs - squeezed[0].hostNs).toBeLessThanOrEqual(MAX_AHEAD_OF_HOST_NS);
+    expect(furthestFromArrival(frames, squeezed.at(-1)!.hostNs + 0.1e9)).toBeLessThanOrEqual(1e6);
     expect(rising(frames.map((f) => f.timeNs))).toBe(true);
   });
 

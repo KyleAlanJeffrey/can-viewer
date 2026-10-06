@@ -74,6 +74,11 @@ describe('isolatedPoints', () => {
     expect(isolatedPoints([1, undefined, 2])).toBeNull();
   });
 
+  it('marks only values in the given range, with values outside it still neighbours', () => {
+    expect(isolatedPoints([1, null, 2, 3, null], 1, 3)).toBeNull();
+    expect(isolatedPoints([1, null, 2, null, 4], 1, 3)).toEqual([2]);
+  });
+
   it('is null when every value is part of a line', () => {
     expect(isolatedPoints(Float64Array.from([1, 2, 3]))).toBeNull();
     expect(isolatedPoints([])).toBeNull();

@@ -19,9 +19,11 @@ function gapIfNotFinite(v: number): number | null {
 /**
  * Indices of drawable values with nothing drawable either side, which a line can't show: for
  * uPlot's `points.filter`, so each gets a dot. Undefined values (times only another trace has)
- * are skipped over. Null when there are none, as uPlot then draws no points.
+ * are skipped over. Only indices from `from` to `to` are given: values outside them still count
+ * as neighbours, but a view's neighbour outside the plot isn't marked. Null when there are none,
+ * as uPlot then draws no points.
  */
-export function isolatedPoints(y: ArrayLike<number | null | undefined>): number[] | null {
+export function isolatedPoints(y: ArrayLike<number | null | undefined>, from = 0, to = y.length - 1): number[] | null {
   const found: number[] = [];
   let previousDrawable = false;
   // A drawable index after one that isn't, until the next value says whether it is isolated.
@@ -30,17 +32,17 @@ export function isolatedPoints(y: ArrayLike<number | null | undefined>): number[
     const v = y[i];
     if (v === undefined) continue;
     const drawable = v !== null;
-    if (candidate >= 0 && !drawable) found.push(candidate);
+    if (candidate >= from && candidate <= to && !drawable) found.push(candidate);
     candidate = drawable && !previousDrawable ? i : -1;
     previousDrawable = drawable;
   }
-  if (candidate >= 0) found.push(candidate);
+  if (candidate >= from && candidate <= to) found.push(candidate);
   return found.length > 0 ? found : null;
 }
 
 /** uPlot points that show only the isolated values of a line, as dots in its colour. */
 export function isolatedDots(color: string): uPlot.Series.Points {
-  return { show: false, fill: color, filter: (u, seriesIdx) => isolatedPoints(u.data[seriesIdx]) };
+  return { show: false, fill: color, filter: (u, seriesIdx) => isolatedPoints(u.data[seriesIdx], ...(u.series[seriesIdx].idxs ?? [])) };
 }
 
 /** The lowest and highest finite values; `lo > hi` when there are none. */

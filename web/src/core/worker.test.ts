@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOG_SUPERSEDED } from './api';
 import type { Request } from './worker';
 
 class FakeSession {
@@ -8,6 +9,7 @@ class FakeSession {
   pushed: Uint8Array[] = [];
   hasB = false;
   freed = false;
+  finished = false;
   /** Bytes given to `push_chunk`. */
   read = 0;
   constructor() {
@@ -52,8 +54,11 @@ class FakeSession {
   }
   set_file_name() {}
   reserve_for_bytes() {}
+  /** Called after each chunk is pushed. */
+  static onPush: (() => void) | null = null;
   push_chunk(chunk: Uint8Array) {
     this.read += chunk.length;
+    FakeSession.onPush?.();
   }
   segment_format() {
     return 'candump';
@@ -62,6 +67,7 @@ class FakeSession {
     return true;
   }
   finish() {
+    this.finished = true;
     return JSON.stringify({ frames: 10, durationS: 30 });
   }
   compare_begin(name: string) {
@@ -221,6 +227,108 @@ describe('core worker', () => {
         vi.mocked(console.warn).mockRestore();
       });
     }
+  });
+
+  describe('replacing a log that is still being read', () => {
+    const size = 33 << 20;
+    const bigLog = () => new Blob([new Uint8Array(size).fill(10)]);
+    const superseded = (id: number) => ({ id, error: LOG_SUPERSEDED, aborted: true });
+
+    /** A part worker that loads, then reads its part until it is terminated. */
+    class BusyPartWorker {
+      static made: BusyPartWorker[] = [];
+      onmessage: ((e: { data: unknown }) => void) | null = null;
+      tasks = 0;
+      terminated = false;
+      constructor() {
+        BusyPartWorker.made.push(this);
+        queueMicrotask(() => this.onmessage?.({ data: { ready: true } }));
+      }
+      postMessage() {
+        this.tasks += 1;
+      }
+      terminate() {
+        this.terminated = true;
+      }
+    }
+
+    /** A worker whose replies, but not its progress events, land in `replies`. */
+    async function startRecording() {
+      const port = await startWorker();
+      Object.assign(port, { location: 'http://localhost/assets/worker.js' });
+      vi.stubGlobal('Worker', BusyPartWorker);
+      const replies: unknown[] = [];
+      port.postMessage.mockImplementation((message: { event?: string }) => message.event || replies.push(message));
+      const send = (id: number, method: Request['method'], ...args: unknown[]) => port.onmessage?.({ data: { id, method, args } });
+      return { replies, send };
+    }
+
+    const reading = (from: number) => () => BusyPartWorker.made.length === from + 3 && BusyPartWorker.made.slice(from).every((worker) => worker.tasks === 1);
+
+    beforeEach(() => {
+      BusyPartWorker.made = [];
+      FakeSession.made = [];
+      FakeSession.onPush = null;
+      vi.stubGlobal('navigator', { hardwareConcurrency: 4 });
+    });
+
+    it('stops a read in parts at once, terminating its part workers, when another log is opened or a capture starts', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { replies, send } = await startRecording();
+
+      send(1, 'openLog', bigLog(), 'drive.log');
+      await vi.waitUntil(reading(0));
+      // The worker made one session as it loaded.
+      const stale = FakeSession.made[1];
+      send(2, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      await vi.waitUntil(() => replies.length === 2);
+      expect(replies[0]).toEqual(superseded(1));
+      expect(replies[1]).toMatchObject({ id: 2, result: { name: 'idle.log', frames: 10 } });
+      expect(BusyPartWorker.made.every((worker) => worker.terminated)).toBe(true);
+      expect(stale.freed).toBe(true);
+      expect(stale.finished).toBe(false);
+
+      // Stopping them is no failure, so the next large log is read in parts again.
+      send(3, 'openLog', bigLog(), 'drive.log');
+      await vi.waitUntil(reading(3));
+      send(4, 'startCapture', 'capture-1.log', 'can0', 1000);
+      await vi.waitUntil(() => replies.length === 4);
+      expect(replies[2]).toEqual(superseded(3));
+      expect(replies[3]).toMatchObject({ id: 4, result: { name: 'capture-1.log', format: 'capture' } });
+      expect(BusyPartWorker.made.every((worker) => worker.terminated)).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('never starts an openLog that a newer one follows in the queue', async () => {
+      const { replies, send } = await startRecording();
+      send(1, 'openLog', bigLog(), 'drive.log');
+      await vi.waitUntil(reading(0));
+      send(2, 'openLog', bigLog(), 'drive2.log');
+      send(3, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      await vi.waitUntil(() => replies.length === 3);
+      expect(replies).toEqual([superseded(1), superseded(2), expect.objectContaining({ id: 3, result: expect.objectContaining({ name: 'idle.log' }) })]);
+      // Only the first read started part workers.
+      expect(BusyPartWorker.made).toHaveLength(3);
+    });
+
+    it('stops a read in one worker between chunks', async () => {
+      vi.stubGlobal('navigator', { hardwareConcurrency: 1 });
+      const { replies, send } = await startRecording();
+      // Sent as the first chunk is read, as the page's message would arrive between chunks.
+      FakeSession.onPush = () => {
+        FakeSession.onPush = null;
+        send(2, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      };
+      send(1, 'openLog', bigLog(), 'drive.log');
+      await vi.waitUntil(() => replies.length === 2);
+      const stale = FakeSession.made[1];
+      expect(replies[0]).toEqual(superseded(1));
+      expect(replies[1]).toMatchObject({ id: 2, result: { name: 'idle.log' } });
+      expect(stale.read).toBe(8 << 20);
+      expect(stale.finished).toBe(false);
+      expect(BusyPartWorker.made).toHaveLength(0);
+    });
   });
 
   it('answers a call that trapped, then rethrows the trap outside the call for the page to restart it', async () => {

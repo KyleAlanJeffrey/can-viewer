@@ -61,7 +61,7 @@ export class WebCore implements CoreApi {
       const p = this.pending.get(msg.id);
       if (!p) return;
       this.pending.delete(msg.id);
-      if ('error' in msg) p.reject(new Error(msg.error));
+      if ('error' in msg) p.reject(msg.aborted ? new DOMException(msg.error, 'AbortError') : new Error(msg.error));
       else p.resolve(msg.result);
     };
     this.worker = worker;

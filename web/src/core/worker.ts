@@ -1,7 +1,8 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { CompareOptions, Database, DiscoveryHints, ExportFormat, FindRule, FrameFilter, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
+import { LOG_SUPERSEDED, type CompareOptions, type Database, type DiscoveryHints, type ExportFormat, type FindRule, type FrameFilter, type LogInfo, type RawSignalSpec, type ScopedDatabase } from './api';
+import { isAbort } from './discovery';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 import { readChunks as readChunksFrom, readInParts, type PartTask, type PartWorker } from './readInParts';
 
@@ -57,6 +58,13 @@ function progressOf(file: Blob): (bytes: number) => void {
     }
   };
 }
+
+/** The newest request that replaces the log: an `openLog` sent before it stops, or never starts. */
+let latestLogRequest = 0;
+/** Aborted when a request that replaces the log arrives while `openLog` reads one. */
+let reading: AbortController | null = null;
+
+const superseded = () => new DOMException(LOG_SUPERSEDED, 'AbortError');
 
 /** Reads `file` in chunks through `push`, reporting progress. */
 function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress = progressOf(file)) {
@@ -161,6 +169,11 @@ function halves(xy: Float64Array): [[Float64Array, Float64Array], Transferable[]
 
 const handlers = {
   async openLog(file: Blob, name: string) {
+    // A newer request that replaces the log is already queued behind this one.
+    if (currentId !== latestLogRequest) throw superseded();
+    const thisRead = new AbortController();
+    reading = thisRead;
+    const { signal } = thisRead;
     session.free();
     session = freshSession();
     compareMeta = null;
@@ -173,7 +186,7 @@ const handlers = {
       const onStalled = () => {
         partWorkersFailed = true;
       };
-      const read = workers > 0 && (await readInParts(file, session, { workers, startWorker: startPartWorker, onStalled }, progress));
+      const read = workers > 0 && (await readInParts(file, session, { workers, startWorker: startPartWorker, onStalled, signal }, progress));
       if (!read) {
         if (workers > 0) {
           // It holds part of the log.
@@ -182,8 +195,10 @@ const handlers = {
           session.set_file_name(name);
           session.reserve_for_bytes(file.size);
         }
-        await readChunks(file, (chunk) => session.push_chunk(chunk), progress);
+        await readChunksFrom(file, (chunk) => session.push_chunk(chunk), progress, 0, signal);
       }
+      // Finishing can't be stopped part way, so a log superseded by now isn't finished at all.
+      signal.throwIfAborted();
       const json = session.finish();
       logMeta = { name, parseMs: performance.now() - started };
       return withMemory(json, logMeta);
@@ -196,6 +211,8 @@ const handlers = {
       }
       session = freshSession();
       throw err;
+    } finally {
+      if (reading === thisRead) reading = null;
     }
   },
   startCapture(name: string, channel: string, startedAtMs: number) {
@@ -317,7 +334,9 @@ function enqueue(task: () => Promise<void>) {
 }
 
 function answerError(id: number, err: unknown) {
-  port.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
+  const message = err instanceof Error || err instanceof DOMException ? err.message : String(err);
+  // The page gets only the message, so it is told which errors to rebuild as an AbortError.
+  port.postMessage(isAbort(err) ? { id, error: message, aborted: true } : { id, error: message });
   // A trapped instance can't be trusted afterwards. Thrown uncaught, it reaches the page's
   // worker.onerror, which starts a new worker.
   if (err instanceof WebAssembly.RuntimeError) {
@@ -379,6 +398,11 @@ async function countStep(id: number, filter: FrameFilter) {
 
 port.onmessage = (e) => {
   const { id, method, args } = e.data;
+  // Handled on arrival, not in the queue, so a read in progress stops now.
+  if (method === 'openLog' || method === 'startCapture') {
+    latestLogRequest = id;
+    reading?.abort(superseded());
+  }
   if (method === 'countFilterMatches' || method === 'setTraceFilter') latestCount = id;
   if (method === 'countFilterMatches') enqueue(() => countStep(id, args[0] as FrameFilter));
   else enqueue(() => run(id, method, args));

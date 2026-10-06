@@ -16,6 +16,8 @@ export const FLAG_REASSEMBLED = 1 << 6;
 export const EXT_FLAG = 0x8000_0000;
 /** What `CoreApi.rowBytes` gives for a byte past the end of a frame. */
 export const NO_BYTE = 0xffff;
+/** The message of the `AbortError` an `openLog` rejects with when a newer one replaced it. */
+export const LOG_SUPERSEDED = 'Another log was opened, or a capture started, before this log was read.';
 
 /** A log file format the engine reads, or `capture` for frames recorded live (`startCapture`). */
 export type LogFormat = 'candump' | 'asc' | 'trc' | 'csv' | 'blf' | 'mf4' | 'capture';
@@ -425,6 +427,11 @@ export interface ByteComparison {
  * natively.
  */
 export interface CoreApi {
+  /**
+   * Read `file` as the log, in place of the one open. An `openLog` or `startCapture` sent before
+   * this one is read supersedes it: it stops, or never starts, and rejects with an `AbortError`
+   * whose message is `LOG_SUPERSEDED`.
+   */
   openLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>;
   /**
    * Start a live capture of one bus, named `channel`, in place of the log, as `openLog` replaces

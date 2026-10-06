@@ -229,8 +229,19 @@ A bit range of one message, decoded without a database entry. Passed to [`decode
 - **`size`** `number` - Width in bits, 1 to 64.
 - **`byteOrder`** `'intel' | 'motorola'` - Byte order.
 - **`signed`** `boolean` - Read the raw value as two's complement.
+- **`float`** `boolean`, optional - Read the raw value as an IEEE 754 single float, before the scale; `size` must then be 32 and `signed` is ignored. Absent means false, and it is left out when false. `decodeRaw` rejects a float that isn't 32 bits.
 - **`factor`** `number` - Scale: value = raw * factor + offset.
 - **`offset`** `number` - Offset added after scaling.
+- **`mux`** [`MuxSpec`](#the-muxspec-object), optional - Read the range only from frames whose multiplexer selector holds `mux.value`, as for a signal on one page of a multiplexed message; other frames give no point. Absent means every frame, and it is left out when absent.
+
+### The MuxSpec object
+
+A multiplexed bit range's selector, and the selector's value on the range's page. Part of a [`RawSignalSpec`](#the-rawsignalspec-object).
+
+**Attributes**
+
+- **`startBit`**, **`size`**, **`byteOrder`** - The selector's bits, as in `RawSignalSpec`. The selector is read unsigned.
+- **`value`** `number` - The selector's raw value on the page.
 
 ### The FindRule object
 
@@ -267,13 +278,13 @@ A likely signal in one message: a guess from how its bits change, for a person t
 
 **Attributes**
 
-- **`kind`** `'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed'` - What it looks like: a counter that steps by a fixed amount each frame, a checksum byte, a single bit that switches rarely or toggles on up to 30% of frames, a field with a few values, a smoothly changing unsigned value, or a two's complement value that crosses zero.
-- **`spec`** [`RawSignalSpec`](#the-rawsignalspec-object) - The bit range. `factor` and `offset` come from `fit` when there is one, and are otherwise 1 and 0. Pass it to `decodeRaw` to plot it.
+- **`kind`** `'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed' | 'float' | 'multiplexor'` - What it looks like: a counter that steps by a fixed amount each frame, a checksum byte, a single bit that switches rarely or toggles on up to 30% of frames, a field with a few values, a smoothly changing unsigned value, a two's complement value that crosses zero, a 32-bit IEEE 754 float (its `spec` has `float: true`), or a multiplexer selector (a DBC `M` signal).
+- **`spec`** [`RawSignalSpec`](#the-rawsignalspec-object) - The bit range. `factor` and `offset` come from `fit` when there is one, and are otherwise 1 and 0. A signal found on one page of a multiplexed message has `mux`, naming the `multiplexor` suggestion's bits and the page (a DBC `m<value>` signal); several pages' signals may share bits. Pass it to `decodeRaw` to plot it.
 - **`confidence`** `number` - From 0 to 1, to two decimals: how sure the guess is.
 - **`level`** `'high' | 'medium' | 'low'` - `confidence` in words: high from 0.85, medium from 0.6.
 - **`reason`** `string` - One line on why, such as `Increments by 1 each frame; wraps at 255` or `Matches CRC-8 SAE J1850 over bytes 0-6`. A counter with at most 8 values ends `: a counter or multiplexer selector`. For a sampled log, a continuous value's range (`Changes smoothly from 0 to 1023`) is over the whole log.
 - **`unconfirmed`** `boolean` - True for a checksum whose rule held on only most frames (90% or more), or that matched no rule and only looks random.
-- **`sparkline`** `{ t: number[]; v: number[] }` - About 64 values evenly spaced across the whole log, scaled by `spec`, with their times in seconds.
+- **`sparkline`** `{ t: number[]; v: number[] }` - About 64 values evenly spaced across the whole log, or across its page's frames for a signal with `mux`, scaled by `spec`, with their times in seconds.
 - **`fit`** [`SignalFit`](#the-signalfit-object)` | null` - The scale fitted to the hints' reference, or null.
 
 ### The SignalFit object
@@ -297,7 +308,7 @@ The suggested signals for one message. Returned by [`suggestSignals`](#suggestsi
 - **`key`** `number` - ID key of the message.
 - **`frames`** `number` - Frames of the ID in the log.
 - **`sampledFrames`** `number` - Frames read to judge the candidates: all of them up to 20,000, or 20 blocks of 1,000 consecutive frames spread across the log, plus a block around each event marker. Payloads longer than 8 bytes get proportionally fewer: 2,500 for 64 bytes. Fields that rarely change are also read wherever they change across the whole log, within a fixed budget of frames per ID.
-- **`suggestions`** [`Suggestion[]`](#the-suggestion-object) - At most 16, or one per payload byte when that is more, best first. Their bit ranges never overlap.
+- **`suggestions`** [`Suggestion[]`](#the-suggestion-object) - Best first: at most 16, or one per payload byte when that is more, then each page's signals of a `multiplexor`, up to as many again per page. Bit ranges never overlap, except between signals with `mux` on different pages.
 
 ### The FrameFilter object
 
@@ -907,12 +918,14 @@ Decodes any bit range of one ID across the log, for signals not (yet) in a datab
 - **`key`** `number` - An ID key. `ALL_IDS` is not accepted.
 - **`spec`** [`RawSignalSpec`](#the-rawsignalspec-object) - The bit range and scaling.
 
-**Returns** a [`SeriesInfo`](#the-seriesinfo-object) named after the range, such as `bits 7|16@0+`.
+**Returns** a [`SeriesInfo`](#the-seriesinfo-object) named after the range, such as `bits 7|16@0+`, `bits 0|32@1- float` for a float, or `bits 8|16@1+ m2` for page 2 of a multiplexor.
 
 **Errors**
 
 - `unknown ID` - the key is `ALL_IDS` or not in the log.
 - `the bit range must be 1 to 64 bits and fit in this ID's frames` - the range must fit the ID's longest frame.
+- `a float must be 32 bits` - `float` is set on a range of another size.
+- `the selector must be 1 to 64 bits and fit in this ID's frames` - the same, for `mux`.
 - A JSON error if `spec` is malformed, for example an unknown `byteOrder`.
 
 ```ts
@@ -1253,10 +1266,12 @@ if (found.length > 0) {
 ### suggestSignals
 
 ```ts
-suggestSignals(key: number, hints?: DiscoveryHints): Promise<MessageSuggestions>
+suggestSignals(key: number, hints?: DiscoveryHints, signal?: AbortSignal): Promise<MessageSuggestions>
 ```
 
-Proposes likely signals in one message from how its bits change: counters, checksums, flags, enums, and unsigned and signed values. Every suggestion is a guess to check against the log, not a decode. The result is the same each time for the same log, databases and hints.
+Proposes likely signals in one message from how its bits change: counters, checksums, flags, enums, unsigned and signed values, floats, and multiplexer selectors with the signals on their pages. Every suggestion is a guess to check against the log, not a decode. The result is the same each time for the same log, databases and hints.
+
+The worker does the work in steps of a few milliseconds each, every step a request of its own, so other calls run between them and a long payload never holds the worker for long: one step samples the frames, the next ones score about 200,000 sampled frame reads' worth of candidates each, and the last picks the suggestions, looking at a multiplexed message's pages then (see `Job` in `crates/can-wasm/src/discover.rs`, and `suggest_begin`, `suggest_step` and `suggest_drop` in `crates/can-wasm/src/suggest.rs`).
 
 How it works (see `suggest` in `crates/can-wasm/src/discover.rs`):
 
@@ -1264,18 +1279,20 @@ How it works (see `suggest` in `crates/can-wasm/src/discover.rs`):
 - The bits are split into fields by how often each changes over the whole log: within a counter or a value, each more significant bit changes less often than the one below it. Both byte orders are tried, and neighbouring fields are joined, so a value's busy low bits stay with it.
 - Each field, its pieces and its whole-byte widths are read over a sample of frames (see `sampledFrames`) and tested as a counter (the same step on 90% or more of frames), a signed or unsigned value (small steps on 85% or more of changes, with the low bits carrying into the high ones), or an enum (2 to 16 values, changing on at most 20% of frames, and not just separate bits that almost never change on the same frame). A single bit that changes on fewer than 5% of frames is a flag, and on fewer than 30% a toggle, also suggested as a flag, unless it mostly changes along with a neighbouring bit. A signed value with constant bits above it is suggested at its own width, not as a wider unsigned value.
 - Each byte that changes on most frames is tested as a checksum over the message's other bytes: CRC-8 with the polynomials 0x1D (SAE J1850), 0x2F (AUTOSAR), 0x07 and 0x9B with any start value or final XOR, XOR, sum, sum plus a constant, and the complemented sum.
-- 32-bit words that read as smoothly changing floats, across more than one exponent, get no suggestions, since a `RawSignalSpec` can't describe a float. A word that overlaps a counter or checksum is not a float.
-- When a counter with at most 8 values looks like a multiplexer selector, bytes that change much more from frame to frame than from one frame of a page to the next one of that page get no suggestions.
+- A 32-bit word, in either byte order, is a float when read as an IEEE 754 single it takes plausible values (0, or 1e-6 to 1e6 in size, on 99% of frames), at least 16 of them, changing smoothly, and either crosses an exponent or has a mantissa that carries as one number. Nothing else is suggested inside such a word. It is suggested as a `float` only on stricter evidence: it overlaps no counter or checksum, keeps within six decades (bar the smallest 5% of values), and its low 16 bits don't change smoothly on their own unless they carry into the bits above, as a second value packed beside the first would. Overlapping float words give way to the smoother one.
+- When a counter with at most 8 values looks like a multiplexer selector, bytes that change much more from frame to frame than from one frame of a page to the next one of that page are its cells, and get no suggestions over the whole log. Instead each page's frames are looked at on their own, as above but without checksums, for values within the cells (and bits that page never changes) that take in each cell byte they touch and score at least 0.6. When at least half the pages have one, the counter becomes a `multiplexor`, widened as a value would be, and the pages' signals are suggested with `spec.mux`. Otherwise it stays a counter: one that merely increments beside bytes that jump with it is not taken for a selector.
 - The best-scoring candidates are kept, with no two overlapping. A candidate that straddles two others gives way when they and a range inside it score about as well.
+- An unsigned value whose next more significant bits are 0 in every frame, and taken by no other suggestion, is widened over them to the end of a nibble, or of a byte when the value starts on one: a value that never reaches its top bits in the log would otherwise read narrower than its field. Its `reason` then says the width was inferred. Constant bits that aren't 0 are left alone, as they may be another field.
 
 **Parameters**
 
 - **`key`** `number` - The ID key. Any ID works, decoded or not; the UI asks about IDs no DBC describes.
 - **`hints`** [`DiscoveryHints`](#the-discoveryhints-object), optional - Event markers and a reference signal.
+- **`signal`** `AbortSignal`, optional - Aborting it gives the work up at the next step.
 
 **Returns** a [`MessageSuggestions`](#the-messagesuggestions-object). An ID whose bits never change, or with a single frame, has no suggestions.
 
-**Errors** Rejects with `unknown ID` for an unknown key, `unknown reference ID` or `unknown reference signal` for a reference the log doesn't have, and `no loaded DBC defines the reference's message` for a reference no DBC decodes.
+**Errors** Rejects with `unknown ID` for an unknown key, `unknown reference ID` or `unknown reference signal` for a reference the log doesn't have, `no loaded DBC defines the reference's message` for a reference no DBC decodes, `the log changed` when the frames changed between steps (a capture took more frames, was trimmed or ended, or another log opened or was swapped in), and a `DOMException` named `AbortError` when aborted.
 
 ```ts
 const { suggestions } = await core.suggestSignals(summary.key, { markers: [{ t: 12 }] });
@@ -1295,14 +1312,14 @@ scanSignals(
 ): Promise<MessageSuggestions[]>
 ```
 
-Runs [`suggestSignals`](#suggestsignals) for each ID in turn, so a scan of many messages shows progress and can be cancelled. Other calls can run between the messages.
+Runs [`suggestSignals`](#suggestsignals) for each ID in turn, so a scan of many messages shows progress and can be cancelled. Other calls can run between the messages, and between the steps of each.
 
 **Parameters**
 
 - **`keys`** `number[]` - The ID keys to scan, in order. The UI passes the IDs no DBC describes.
 - **`hints`** [`DiscoveryHints`](#the-discoveryhints-object) - Applied to every message.
 - **`onProgress`** `(done: number, total: number, latest: MessageSuggestions | null) => void` - Called after each message with its suggestions, so a cancelled scan keeps what it found, and with `null` for a key passed over.
-- **`signal`** `AbortSignal`, optional - Aborting it stops the scan once the message in hand is done.
+- **`signal`** `AbortSignal`, optional - Aborting it stops the scan at the next step of the message in hand, whose suggestions are then not reported.
 - **`skip`** `(key: number) => boolean`, optional - Asked as each key's turn comes; a key it returns true for is passed over but counts towards `done`, and `onProgress` is called for it with `null`. The UI skips a message it suggested for meanwhile, such as one opened during the scan.
 
 **Returns** one [`MessageSuggestions`](#the-messagesuggestions-object) per key scanned, in the order given.

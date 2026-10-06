@@ -1533,6 +1533,7 @@ impl Session {
         };
         std::mem::swap(&mut self.store, &mut log.store);
         std::mem::swap(&mut self.input, &mut log.input);
+        self.discovery.store_changed();
         self.series.clear();
         self.filtered = None;
         self.count = None;

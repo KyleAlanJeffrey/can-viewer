@@ -127,7 +127,12 @@ const handlers = {
   decodeRaw: (key: number, spec: RawSignalSpec) => JSON.parse(session.decode_raw(key, JSON.stringify(spec))),
   findSignal: (rules: FindRule[], keys: number[], limit: number) =>
     JSON.parse(session.find_signal(JSON.stringify(rules), Float64Array.from(keys), limit)),
-  suggestSignals: (key: number, hints: DiscoveryHints) => JSON.parse(session.suggest_signals(key, JSON.stringify(hints ?? {}))),
+  suggestBegin: (key: number, hints: DiscoveryHints) => session.suggest_begin(key, JSON.stringify(hints ?? {})),
+  suggestStep(job: number) {
+    const json = session.suggest_step(job);
+    return json === undefined ? null : JSON.parse(json);
+  },
+  suggestDrop: (job: number) => session.suggest_drop(job),
   setDatabases(dbs: ScopedDatabase[]) {
     const json = JSON.stringify(dbs);
     session.set_databases(json);

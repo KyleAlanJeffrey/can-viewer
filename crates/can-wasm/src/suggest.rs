@@ -1,11 +1,11 @@
 //! The [`Session`] binding for Suggested signals ([`discover`]).
 
-use can_core::IdKey;
+use can_core::{IdKey, IdStats};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use crate::discover::{self, Hints, Kind, Marker, Reference};
-use crate::{js_err, to_json, RawSignalSpec, Session};
+use crate::discover::{self, Findings, Hints, Job, Kind, Marker, Reference, STEP_WORK};
+use crate::{js_err, to_json, MuxSpec, RawSignalSpec, Session};
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -80,6 +80,33 @@ fn level(score: f64) -> Level {
     }
 }
 
+/// Suggestions being made a step at a time, by job id; see [`Session::suggest_begin`].
+#[derive(Default)]
+pub(crate) struct PendingSuggestions {
+    next_id: u32,
+    jobs: Vec<Pending>,
+    /// Ids below this were begun before the store last changed.
+    stale_below: u32,
+}
+
+impl PendingSuggestions {
+    /// Lets every job go: they read frames by their place in the store, which any change to it
+    /// (frames added, sorted or trimmed, or another log) can move. Their next step says so.
+    pub(crate) fn store_changed(&mut self) {
+        self.jobs.clear();
+        self.stale_below = self.next_id;
+    }
+}
+
+struct Pending {
+    id: u32,
+    key: f64,
+    job: Job,
+    /// For the result: the reference's name and unit.
+    reference: Option<String>,
+    unit: String,
+}
+
 #[wasm_bindgen]
 impl Session {
     /// Suggested signals for ID `key`, given hints as a JSON `DiscoveryHints`; see
@@ -87,17 +114,93 @@ impl Session {
     pub fn suggest_signals(&self, key: f64, hints: &str) -> Result<String, JsError> {
         self.suggestions(key, hints).map_err(js_err)
     }
+
+    /// Starts [`Session::suggest_signals`] as a job to run with `suggest_step`, so other calls
+    /// can run between its steps. Returns the job's id. A job keeps its sampled frames until it
+    /// is stepped to the end, dropped, or the log changes, so callers see each one through.
+    pub fn suggest_begin(&mut self, key: f64, hints: &str) -> Result<u32, JsError> {
+        self.begin_suggestions(key, hints).map_err(js_err)
+    }
+
+    /// Does the next part of job `job`: `undefined` while there is more to do, else the JSON
+    /// `MessageSuggestions`, and the job is over. Fails for an unknown job, or one whose log
+    /// changed under it, which is then over too.
+    pub fn suggest_step(&mut self, job: u32) -> Result<Option<String>, JsError> {
+        self.step_suggestions(job).map_err(js_err)
+    }
+
+    /// Gives up job `job`, if it is still going.
+    pub fn suggest_drop(&mut self, job: u32) {
+        self.discovery.jobs.retain(|p| p.id != job);
+    }
 }
 
 impl Session {
     fn suggestions(&self, key: f64, hints: &str) -> Result<String, String> {
+        let (stats, hints, unit) = self.suggestion_inputs(key, hints)?;
+        let reference = hints.reference.as_ref().map(|r| r.name.clone());
+        let findings = discover::suggest(&self.store, stats, &hints);
+        Ok(self.suggestions_json(stats, findings, reference, &unit))
+    }
+
+    fn begin_suggestions(&mut self, key: f64, hints: &str) -> Result<u32, String> {
+        let (stats, hints, unit) = self.suggestion_inputs(key, hints)?;
+        let reference = hints.reference.as_ref().map(|r| r.name.clone());
+        let job = Job::new(&self.store, stats, hints);
+        let pending = &mut self.discovery;
+        let id = pending.next_id;
+        pending.next_id = pending.next_id.wrapping_add(1);
+        pending.jobs.push(Pending {
+            id,
+            key,
+            job,
+            reference,
+            unit,
+        });
+        Ok(id)
+    }
+
+    fn step_suggestions(&mut self, id: u32) -> Result<Option<String>, String> {
+        let Some(at) = self.discovery.jobs.iter().position(|p| p.id == id) else {
+            return Err(if id < self.discovery.stale_below {
+                "the log changed"
+            } else {
+                "unknown suggestion job"
+            }
+            .into());
+        };
+        let mut pending = self.discovery.jobs.remove(at);
+        let stats = self
+            .filter(pending.key)
+            .ok()
+            .flatten()
+            .ok_or("the log changed")?;
+        if !pending.job.scored_all() {
+            pending.job.step(&self.store, stats, STEP_WORK);
+            self.discovery.jobs.insert(at, pending);
+            return Ok(None);
+        }
+        let findings = pending.job.finish(&self.store, stats);
+        Ok(Some(self.suggestions_json(
+            stats,
+            findings,
+            pending.reference,
+            &pending.unit,
+        )))
+    }
+
+    /// The ID's stats, the hints as [`discover`] takes them, and the reference's unit.
+    fn suggestion_inputs(
+        &self,
+        key: f64,
+        hints: &str,
+    ) -> Result<(&IdStats, Hints, String), String> {
         let parsed: HintsJson = if hints.trim().is_empty() {
             HintsJson::default()
         } else {
             serde_json::from_str(hints).map_err(|e| e.to_string())?
         };
         let stats = self.filter(key).ok().flatten().ok_or("unknown ID")?;
-        let origin = self.origin_ns();
         let mut unit = String::new();
         let reference = match &parsed.reference {
             None => None,
@@ -140,7 +243,17 @@ impl Session {
                 .collect(),
             reference,
         };
-        let findings = discover::suggest(&self.store, stats, &hints);
+        Ok((stats, hints, unit))
+    }
+
+    fn suggestions_json(
+        &self,
+        stats: &IdStats,
+        findings: Findings,
+        reference: Option<String>,
+        unit: &str,
+    ) -> String {
+        let origin = self.origin_ns();
         let seconds = |ns: i64| (ns - origin) as f64 / 1e9;
         let suggestions = findings
             .suggestions
@@ -154,8 +267,15 @@ impl Session {
                         size: s.range.size,
                         byte_order: s.range.byte_order,
                         signed: s.signed,
+                        float: s.kind == Kind::Float,
                         factor,
                         offset,
+                        mux: s.page.map(|(selector, value)| MuxSpec {
+                            start_bit: selector.start_bit,
+                            size: selector.size,
+                            byte_order: selector.byte_order,
+                            value,
+                        }),
                     },
                     confidence: (s.score * 100.0).round() / 100.0,
                     level: level(s.score),
@@ -166,11 +286,8 @@ impl Session {
                         v: s.spark.iter().map(|&(_, v)| v).collect(),
                     },
                     fit: s.fit.map(|f| FitJson {
-                        reference: hints
-                            .reference
-                            .as_ref()
-                            .map_or_else(String::new, |r| r.name.clone()),
-                        unit: unit.clone(),
+                        reference: reference.clone().unwrap_or_default(),
+                        unit: unit.to_owned(),
                         r: (f.r * 1000.0).round() / 1000.0,
                         factor: f.factor,
                         offset: f.offset,
@@ -178,12 +295,12 @@ impl Session {
                 }
             })
             .collect();
-        Ok(to_json(&MessageSuggestions {
+        to_json(&MessageSuggestions {
             key: stats.key(),
             frames: stats.frames.len(),
             sampled_frames: findings.sampled_frames,
             suggestions,
-        }))
+        })
     }
 }
 
@@ -239,6 +356,98 @@ mod tests {
     }
 
     #[test]
+    fn a_job_run_in_steps_gives_the_same_suggestions() {
+        let mut s = session();
+        let key = id_key(0, 0x100) as f64;
+        let hints = json!({ "markers": [{ "t": 2.5 }] }).to_string();
+        let whole = s.suggestions(key, &hints).unwrap();
+        let id = s.begin_suggestions(key, &hints).unwrap();
+        let other = s.begin_suggestions(id_key(0, 0x200) as f64, "").unwrap();
+        let mut steps = 0;
+        let stepped = loop {
+            steps += 1;
+            if let Some(json) = s.step_suggestions(id).unwrap() {
+                break json;
+            }
+        };
+        assert_eq!(stepped, whole);
+        assert!(steps >= 2);
+        assert_eq!(
+            s.step_suggestions(id).unwrap_err(),
+            "unknown suggestion job"
+        );
+        s.suggest_drop(other);
+        assert_eq!(
+            s.step_suggestions(other).unwrap_err(),
+            "unknown suggestion job"
+        );
+    }
+
+    /// A batch of `push_frames` records for ID 0x100: a counter and a slow value, from frame
+    /// `from`, 10 ms apart, with every other pair of frames swapped as an adapter might.
+    fn capture_batch(from: u32, count: u32) -> Vec<u8> {
+        let mut batch = Vec::new();
+        for i in from..from + count {
+            let at = if i % 2 == 0 { i + 1 } else { i - 1 };
+            let data = [i as u8, (i / 50) as u8, 0, 0];
+            batch.extend_from_slice(&(f64::from(at) * 1e7).to_le_bytes());
+            batch.extend_from_slice(&0x100u32.to_le_bytes());
+            batch.extend_from_slice(&[0, data.len() as u8]);
+            batch.extend_from_slice(&data);
+        }
+        batch
+    }
+
+    #[test]
+    fn a_job_ends_when_the_store_changes_under_it() {
+        let key = id_key(0, 0x100) as f64;
+        let mut s = Session::new();
+        s.start_capture("can0", 1_700_000_000_000.0);
+        s.push_frames(&capture_batch(0, 2000)).unwrap();
+        let changes: [fn(&mut Session); 5] = [
+            |s| drop(s.push_frames(&capture_batch(2000, 10))),
+            |s| drop(s.trim_capture(5e9)),
+            |s| drop(s.finish_capture()),
+            |s| s.start_capture("can0", 1_700_000_000_000.0),
+            |s| s.push_chunk(b"(0.000000) can0 100#00\n"),
+        ];
+        for change in changes {
+            if s.filter(key).ok().flatten().is_none() {
+                s.start_capture("can0", 1_700_000_000_000.0);
+                s.push_frames(&capture_batch(0, 2000)).unwrap();
+            }
+            let job = s.begin_suggestions(key, "").unwrap();
+            assert_eq!(s.step_suggestions(job).unwrap(), None);
+            change(&mut s);
+            assert_eq!(s.step_suggestions(job).unwrap_err(), "the log changed");
+            assert_eq!(s.step_suggestions(job).unwrap_err(), "the log changed");
+        }
+        // A job begun after the change runs to the end.
+        s.start_capture("can0", 1_700_000_000_000.0);
+        s.push_frames(&capture_batch(0, 2000)).unwrap();
+        s.finish_capture().unwrap();
+        let job = s.begin_suggestions(key, "").unwrap();
+        let stepped = loop {
+            if let Some(json) = s.step_suggestions(job).unwrap() {
+                break json;
+            }
+        };
+        assert_eq!(stepped, s.suggestions(key, "").unwrap());
+    }
+
+    #[test]
+    fn many_jobs_can_be_under_way_at_once() {
+        let mut s = session();
+        let key = id_key(0, 0x100) as f64;
+        let jobs: Vec<u32> = (0..40)
+            .map(|_| s.begin_suggestions(key, "").unwrap())
+            .collect();
+        for job in jobs {
+            while s.step_suggestions(job).unwrap().is_none() {}
+        }
+    }
+
+    #[test]
     fn hints_are_checked() {
         let s = session();
         let key = id_key(0, 0x100) as f64;
@@ -257,6 +466,70 @@ mod tests {
                 .unwrap_err(),
             "no loaded DBC defines the reference's message"
         );
+    }
+
+    #[test]
+    fn a_float_suggestion_decodes_as_a_float() {
+        let mut log = String::new();
+        for i in 0..3000u32 {
+            let v = (f64::from(i) / 300.0).sin() as f32 * 10.0;
+            let hex: String = v.to_le_bytes().iter().map(|b| format!("{b:02X}")).collect();
+            log += &format!("({:.6}) can0 100#{hex}00000000\n", f64::from(i) / 100.0);
+        }
+        let mut s = Session::new();
+        s.push_chunk(log.as_bytes());
+        s.finish();
+        let key = id_key(0, 0x100) as f64;
+        let found: Value = serde_json::from_str(&s.suggest_signals(key, "").unwrap()).unwrap();
+        let first = &found["suggestions"][0];
+        assert_eq!(first["kind"], "float");
+        assert_eq!(
+            first["spec"],
+            json!({ "startBit": 0, "size": 32, "byteOrder": "intel", "signed": false, "float": true, "factor": 1.0, "offset": 0.0 })
+        );
+        let info: Value =
+            serde_json::from_str(&s.decode_raw(key, &first["spec"].to_string()).unwrap()).unwrap();
+        assert!(
+            (info["max"].as_f64().unwrap() - 10.0).abs() < 1e-3,
+            "{info}"
+        );
+        assert!(
+            (info["min"].as_f64().unwrap() + 10.0).abs() < 1e-3,
+            "{info}"
+        );
+    }
+
+    #[test]
+    fn a_page_suggestion_decodes_only_its_page() {
+        let mut log = String::new();
+        for i in 0..4000u32 {
+            let page = i % 2;
+            let base = [1000.0, 40_000.0][page as usize];
+            let v = (base + (f64::from(i) / 200.0).sin() * 800.0) as u16;
+            let [lo, hi] = v.to_le_bytes();
+            let t = f64::from(i) / 100.0;
+            log += &format!("({t:.6}) can0 100#{page:02X}{lo:02X}{hi:02X}0000000000\n");
+        }
+        let mut s = Session::new();
+        s.push_chunk(log.as_bytes());
+        s.finish();
+        let key = id_key(0, 0x100) as f64;
+        let found: Value = serde_json::from_str(&s.suggest_signals(key, "").unwrap()).unwrap();
+        let all = found["suggestions"].as_array().unwrap();
+        assert_eq!(all[0]["kind"], "multiplexor");
+        let page1 = all
+            .iter()
+            .find(|g| g["spec"]["mux"]["value"] == 1)
+            .expect("a page 1 cell");
+        assert_eq!(
+            page1["spec"]["mux"],
+            json!({ "startBit": 0, "size": 8, "byteOrder": "intel", "value": 1 })
+        );
+        let info: Value =
+            serde_json::from_str(&s.decode_raw(key, &page1["spec"].to_string()).unwrap()).unwrap();
+        assert_eq!(info["count"], 2000);
+        assert!(info["min"].as_f64().unwrap() >= 39_000.0, "{info}");
+        assert!(info["name"].as_str().unwrap().ends_with(" m1"), "{info}");
     }
 
     #[test]

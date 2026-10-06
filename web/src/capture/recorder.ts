@@ -221,8 +221,7 @@ export class CaptureRecorder {
       bytes += captureFrameBytes(frame);
     }
     this.sent.push({ firstNs, lastNs, bytes });
-    // Adapters already hold their times to this (see `DeviceClock`); held here too, so no frame
-    // timed far ahead can move the window past the frames still in it.
+    // Backstop for `DeviceClock`'s cap.
     const hostNs = (this.clock.now() - this.origin) * 1e6;
     this.latestNs = Math.max(this.latestNs, Math.min(lastNs, hostNs + MAX_AHEAD_OF_HOST_NS));
     const cutoff = this.latestNs - keepNs;

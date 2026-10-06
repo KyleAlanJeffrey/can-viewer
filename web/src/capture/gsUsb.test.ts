@@ -270,7 +270,8 @@ describe('GsUsbAdapter', () => {
     device.receive(hostFrame(0x123, 1, [1], { timestampUs: 1000 }));
     device.receive(hostFrame(0x123, 1, [2], { timestampUs: 1250 }));
     await tick();
-    expect(frames.map((f) => f.timeNs)).toEqual([9_000_000, 9_250_000]);
+    // Timed after it arrived, the second frame moves the anchor back 1000 ppm of 250 us.
+    expect(frames.map((f) => f.timeNs)).toEqual([9_000_000, 9_249_750]);
     await adapter.stop();
   });
 

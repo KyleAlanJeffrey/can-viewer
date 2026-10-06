@@ -62,6 +62,8 @@ function bytes(fields: Partial<ByteComparison> = {}): ByteComparison {
     payloadsB: 500,
     flipsA: Array(64).fill(0),
     flipsB: Array(64).fill(0),
+    pairsA: Array(8).fill(999),
+    pairsB: Array(8).fill(499),
     bitScores,
     byteScores,
     byteReasons: byteScores.map((s, k) => (s > 0 ? `Byte ${k} takes new values` : 'No significant changes')),
@@ -306,7 +308,7 @@ describe('results', () => {
   });
 
   it('says an ID of remote frames only has no payload bytes to show', async () => {
-    const empty = { len: 0, payloadsA: 0, payloadsB: 0, flipsA: [], flipsB: [], bitScores: [], byteScores: [], byteReasons: [], newValues: [], firstOnlyInA: [] };
+    const empty = { len: 0, payloadsA: 0, payloadsB: 0, flipsA: [], flipsB: [], pairsA: [], pairsB: [], bitScores: [], byteScores: [], byteReasons: [], newValues: [], firstOnlyInA: [] };
     renderInShell(CompareView, { core: compareCore(RESULTS, { compareBytes: async () => bytes(empty) }) });
     expect(await screen.findByText('No payload bytes in log A.')).toBeTruthy();
     expect(screen.getByText('No payload bytes in log B.')).toBeTruthy();

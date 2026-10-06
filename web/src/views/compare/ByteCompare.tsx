@@ -102,8 +102,8 @@ export function ByteCompare({ ctx, comparison: c, logA, logB, options, onOpenInR
       <div className="cmp-section">
         <h3 className="section-title">Byte comparison</h3>
         <div className="cmp-grids">
-          <Grid letter="A" log={logA} flips={detail?.flipsA} payloads={detail?.payloadsA ?? 0} len={len} marked={marked} present={c.keyA !== null} />
-          <Grid letter="B" log={logB} flips={detail?.flipsB} payloads={detail?.payloadsB ?? 0} len={len} marked={marked} present={c.keyB !== null} />
+          <Grid letter="A" log={logA} flips={detail?.flipsA} pairs={detail?.pairsA} payloads={detail?.payloadsA ?? 0} len={len} marked={marked} present={c.keyA !== null} />
+          <Grid letter="B" log={logB} flips={detail?.flipsB} pairs={detail?.pairsB} payloads={detail?.payloadsB ?? 0} len={len} marked={marked} present={c.keyB !== null} />
         </div>
         {detail && both && (
           <ul className="cmp-findings">
@@ -210,6 +210,8 @@ interface GridProps {
   letter: 'A' | 'B';
   log: LogInfo;
   flips: number[] | undefined;
+  /** Per byte, the pairs of frames `flips` were counted over. */
+  pairs: number[] | undefined;
   /** Frames that carry a payload, the frames `flips` pairs up. */
   payloads: number;
   len: number;
@@ -217,7 +219,7 @@ interface GridProps {
   present: boolean;
 }
 
-function Grid({ letter, log, flips, payloads, len, marked, present }: GridProps) {
+function Grid({ letter, log, flips, pairs, payloads, len, marked, present }: GridProps) {
   const counts = useMemo(() => Uint32Array.from(flips ?? []), [flips]);
   return (
     <div className="cmp-grid">
@@ -231,7 +233,7 @@ function Grid({ letter, log, flips, payloads, len, marked, present }: GridProps)
       ) : flips ? (
         <BitHeatmap
           flips={counts}
-          frames={payloads}
+          pairs={pairs ?? []}
           bytes={len}
           signals={NO_SIGNALS}
           colors={NO_SIGNALS}

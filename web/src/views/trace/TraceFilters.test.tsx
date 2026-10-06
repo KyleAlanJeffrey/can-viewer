@@ -3,7 +3,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import { useState, type ComponentType } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FILTERED_ROWS, type CoreApi, type FrameFilter } from '../../core/api';
-import { fakeCore, logInfo, makeRowBatch, summary } from '../../test/fixtures';
+import { bitFlips, fakeCore, logInfo, makeRowBatch, summary } from '../../test/fixtures';
 import { renderInShell } from '../../test/shell';
 import type { ViewProps } from '../types';
 import { TraceView } from './TraceView';
@@ -48,7 +48,7 @@ function filterCore(matches: (filter: FrameFilter) => number = () => MATCHES) {
   });
   const setTraceFilter = vi.fn<CoreApi['setTraceFilter']>(async (filter) => (filter ? matches(filter) : 0));
   const countFilterMatches = vi.fn<CoreApi['countFilterMatches']>(async (filter) => matches(filter));
-  const core = fakeCore({ rows, setTraceFilter, countFilterMatches, bitFlips: async () => new Uint32Array(64) });
+  const core = fakeCore({ rows, setTraceFilter, countFilterMatches, bitFlips: async () => bitFlips(8, 99) });
   return { core, rows, setTraceFilter, countFilterMatches };
 }
 

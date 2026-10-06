@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { formatId, type CoreApi, type IdSummary, type MessageDef } from '../core/api';
+import { formatId, type BitFlips, type CoreApi, type IdSummary, type MessageDef } from '../core/api';
 import { formatPeriod } from '../format';
 import { signalLayout } from '../signalBits';
 import { BitHeatmap } from './BitHeatmap';
@@ -18,15 +18,15 @@ interface Props {
 }
 
 export function DetailPanel({ core, summary, channels, message, logVersion, signalColors, plotted, onTogglePlot }: Props) {
-  const [flips, setFlips] = useState<Uint32Array | null>(null);
+  const [counts, setCounts] = useState<BitFlips | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
 
   useEffect(() => {
-    setFlips(null);
+    setCounts(null);
     if (!summary) return;
     let stale = false;
-    core.bitFlips(summary.key).then((f) => {
-      if (!stale) setFlips(f);
+    core.bitFlips(summary.key).then((c) => {
+      if (!stale) setCounts(c);
     });
     return () => {
       stale = true;
@@ -62,11 +62,11 @@ export function DetailPanel({ core, summary, channels, message, logVersion, sign
             Bit Activity
           </h3>
         </div>
-        {flips && summary.maxLen > 0 ? (
+        {counts && summary.maxLen > 0 ? (
           <>
             <BitHeatmap
-              flips={flips}
-              frames={summary.count}
+              flips={counts.flips}
+              pairs={counts.pairs}
               bytes={summary.maxLen}
               signals={message?.signals ?? []}
               colors={signalColors}

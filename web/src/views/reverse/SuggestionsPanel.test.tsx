@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { CoreApi, MessageSuggestions, Suggestion, SuggestionKind } from '../../core/api';
-import { fakeCore, lane, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
+import { bitFlips, fakeCore, lane, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
 import { renderInShell } from '../../test/shell';
 import type { LoadedDbc } from '../types';
 import { ReverseView } from './ReverseView';
@@ -37,8 +37,8 @@ function discoveryCore(overrides: Partial<CoreApi> = {}) {
   const scan = { keys: [] as number[], progress: (() => {}) as Progress, finish: () => {} };
   const core = fakeCore({
     byteLanes: async (_key, _first, count, t0, t1) => Array.from({ length: count }, () => lane([1, 2, 3], t0, t1)),
-    bitFlips: async () => new Uint32Array(64),
-    bitFlipsBetween: async () => new Uint32Array(64),
+    bitFlips: async () => bitFlips(8, 99),
+    bitFlipsBetween: async () => bitFlips(8, 99),
     rowCountBetween: async () => 5,
     rowAtTime: async () => 1,
     rows: async (key, start) => makeRowBatch(key, start, [{ t: 0, id: 0x200, index: 0, data: [4, 0x80, 0xbb, 0x14, 0xff, 0xff, 0xff, 0xff] }]),

@@ -93,6 +93,18 @@ export interface IdSummary {
   messageId: number | null;
 }
 
+/** How often each payload bit of one ID changed, with the pairs of frames each byte was compared in. */
+export interface BitFlips {
+  /** Toggles per bit, indexed `byte * 8 + bit`, bit 0 the least significant bit of the byte. */
+  flips: Uint32Array;
+  /**
+   * Per byte, the pairs of frames its bits were compared in: each frame with the previous frame
+   * of the ID and kind, counted for the bytes both payloads have. A bit's share of changes is its
+   * flips over its byte's pairs.
+   */
+  pairs: Uint32Array;
+}
+
 export interface SignalDef {
   name: string;
   startBit: number;
@@ -408,6 +420,9 @@ export interface ByteComparison {
   /** Bit toggles from the previous frame of the same kind in each log, indexed `byte * 8 + bit` and counted as in `bitFlips`. */
   flipsA: number[];
   flipsB: number[];
+  /** Per byte, the pairs of frames `flipsA` were counted over, as in `bitFlips`: those of the same kind that both have the byte. */
+  pairsA: number[];
+  pairsB: number[];
   /** 0 to 1 per bit, indexed the same way: how differently the bit behaves. 0 for ignored bits. */
   bitScores: number[];
   /** 0 to 100 per byte, after the ignore rules. */
@@ -469,8 +484,8 @@ export interface CoreApi {
    * Empty when `byteCount` is above 1785, the longest payload.
    */
   rowBytes(key: number, start: number, count: number, first: number, byteCount: number): Promise<Uint16Array>;
-  /** Per-bit change counts of one ID, each frame compared with the previous frame of its kind. */
-  bitFlips(key: number): Promise<Uint32Array>;
+  /** Per-bit change counts of one ID, each frame compared with the previous frame of its kind, with the pairs compared per byte. */
+  bitFlips(key: number): Promise<BitFlips>;
   /** Parse a DBC file. Nothing changes until it is passed to `setDatabases`. */
   parseDbc(file: Blob, name: string): Promise<Database>;
   decodeSignal(key: number, signal: string): Promise<SeriesInfo>;
@@ -495,8 +510,8 @@ export interface CoreApi {
    * its timestamp, so very short buckets can read high; loads are capped at 1.
    */
   busLoad(channel: number, t0: number, t1: number, buckets: number, bitrate: number): Promise<[Float64Array, Float64Array]>;
-  /** Like `bitFlips`, counting only changes between consecutive frames inside [t0, t1] seconds. */
-  bitFlipsBetween(key: number, t0: number, t1: number): Promise<Uint32Array>;
+  /** Like `bitFlips`, counting only pairs of frames both inside [t0, t1] seconds. */
+  bitFlipsBetween(key: number, t0: number, t1: number): Promise<BitFlips>;
   /**
    * Payload bits that changed, per bucket, for one ID across [t0, t1] seconds: an activity strip.
    * Each frame is compared with the previous frame of the ID and kind, even if that one is before t0.

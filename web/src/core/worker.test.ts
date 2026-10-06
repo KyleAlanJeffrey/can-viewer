@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LOG_SUPERSEDED } from './api';
+import { LOG_SUPERSEDED, type BitFlips } from './api';
 import type { Request } from './worker';
 
 class FakeSession {
@@ -118,6 +118,13 @@ class FakeSession {
   }
   export_chunk(): Uint8Array | undefined {
     return this.chunks.shift();
+  }
+  /** Two bytes: 16 flips, then a pair count per byte. */
+  bit_flips_between(): Uint32Array {
+    const packed = new Uint32Array(18);
+    packed[6] = 3;
+    packed.set([3, 1], 16);
+    return packed;
   }
 }
 
@@ -375,6 +382,17 @@ describe('core worker', () => {
     const { result } = await reply;
     expect(result).toBeInstanceOf(Blob);
     expect([...new Uint8Array(await result.arrayBuffer())]).toEqual([1, 2, 3]);
+  });
+
+  it("splits a window's bit flips from their pairs per byte, handing over their one buffer", async () => {
+    const port = await startWorker();
+    const reply = new Promise<{ result: BitFlips }>((resolve) => port.postMessage.mockImplementationOnce(resolve));
+    port.onmessage?.({ data: { id: 1, method: 'bitFlipsBetween', args: [9, 0, 10] } });
+    const { result } = await reply;
+    expect(result.flips).toHaveLength(16);
+    expect(result.flips[6]).toBe(3);
+    expect([...result.pairs]).toEqual([3, 1]);
+    expect(port.postMessage.mock.calls[0][1]).toEqual([result.flips.buffer]);
   });
 
   it('answers an ordinary error without rethrowing it, and keeps answering', async () => {

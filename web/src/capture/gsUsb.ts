@@ -182,7 +182,7 @@ export class GsUsbAdapter implements CaptureAdapter {
   }
 
   start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
-    if (this.starting) return Promise.reject(new Error('The adapter is still being released from the last try. Wait a moment, or choose it again.'));
+    if (this.starting) return Promise.reject(new Error('The adapter is still busy with the last try. Unplug it, plug it back in, then choose it again.'));
     const starting = this.open(settings, events, clock);
     this.starting = starting;
     const settled = () => {
@@ -241,7 +241,8 @@ export class GsUsbAdapter implements CaptureAdapter {
         await this.stop();
         throw e;
       }
-      // The stop found the device not yet set up, or the start part way through; release it now.
+      // After the stop's own teardown, which may have found the device not yet set up.
+      await this.stopping;
       await this.teardown();
       throw new Error(START_CANCELLED);
     }

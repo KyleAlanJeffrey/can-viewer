@@ -21,6 +21,8 @@ export class FakeSerialPort implements SerialPortLike {
   writeError: Error | null = null;
   /** Set to make writes never finish, as when the USB serial link has hung; abort ends them. */
   hangWrites = false;
+  /** Set to make each write take this long, as over a slow link. */
+  writeDelayMs = 0;
   private opening: Promise<void> | null = null;
   private controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   private written = '';
@@ -53,8 +55,9 @@ export class FakeSerialPort implements SerialPortLike {
       },
     });
     this.writable = new WritableStream<Uint8Array>({
-      write: (chunk) => {
+      write: async (chunk) => {
         if (this.hangWrites) return new Promise<void>(() => {});
+        if (this.writeDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.writeDelayMs));
         if (this.writeError) throw this.writeError;
         this.written += new TextDecoder().decode(chunk);
         let end: number;

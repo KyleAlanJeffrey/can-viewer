@@ -279,7 +279,7 @@ describe('GsUsbAdapter', () => {
     const { frames, events } = recordingEvents();
     const starting = adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => 0);
     await adapter.stop();
-    await expect(adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => 0)).rejects.toThrow('The adapter is still being released from the last try.');
+    await expect(adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => 0)).rejects.toThrow('The adapter is still busy with the last try.');
 
     opened();
     await expect(starting).rejects.toThrow('The capture was stopped while the adapter started.');

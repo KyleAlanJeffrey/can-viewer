@@ -204,7 +204,7 @@ export class SlcanAdapter implements CaptureAdapter {
   }
 
   start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
-    if (this.starting) return Promise.reject(new Error('The adapter is still being released from the last try. Wait a moment, or choose it again.'));
+    if (this.starting) return Promise.reject(new Error('The adapter is still busy with the last try. Unplug it, plug it back in, then choose it again.'));
     const starting = this.open(settings, events, clock);
     this.starting = starting;
     const settled = () => {
@@ -233,6 +233,10 @@ export class SlcanAdapter implements CaptureAdapter {
       await this.port.open({ baudRate: SERIAL_BAUD_RATE });
     } catch (e) {
       if (this.cancelled) throw new Error(START_CANCELLED);
+      // As when an earlier try's open never finished.
+      if ((e as { name?: unknown } | null)?.name === 'InvalidStateError') {
+        throw new Error(`The adapter is still busy with an earlier try (${errorText(e)}). Unplug it, plug it back in, then choose it again.`);
+      }
       throw new Error(`The adapter couldn't be opened (${errorText(e)}). Close any other program or tab using it, then try again.`);
     }
     try {
@@ -278,8 +282,9 @@ export class SlcanAdapter implements CaptureAdapter {
         await this.stop();
         throw e;
       }
-      // The stop found the port not yet open, or the start part way through; close it now.
-      await this.teardown();
+      // After the stop's own teardown, which may have found the port not yet open.
+      await this.stopping;
+      if (this.port.readable) await this.teardown();
       throw new Error(START_CANCELLED);
     }
   }
@@ -301,8 +306,12 @@ export class SlcanAdapter implements CaptureAdapter {
         void hung.abort().catch(() => undefined);
         hung.releaseLock();
       } else if (this.port.readable && this.port.writable && !this.port.writable.locked) {
-        // So the adapter stops sending. A lost device has no stream left, and nothing to tell.
-        await this.command('C', this.timing.settleMs);
+        // So the adapter stops sending; closing the port could drop a C not yet written. A lost
+        // device has no stream left, and nothing to tell.
+        const writer = this.port.writable.getWriter();
+        await settleWithin(writer.write(new TextEncoder().encode('C\r')), this.timing.commandMs);
+        writer.releaseLock();
+        await sleep(this.timing.settleMs);
       }
       await this.reader?.cancel().catch(() => undefined);
       await this.reading;
@@ -358,10 +367,13 @@ export class SlcanAdapter implements CaptureAdapter {
       () => true,
       () => false,
     );
+    // Let go of the stream as soon as the write settles, so a stop then sees it free for C.
+    void written.then(() => {
+      if (this.writer === writer) this.writer = null;
+      writer.releaseLock();
+    });
     const stopped = this.stopped.then(() => false);
     if (!(await Promise.race([written, stopped]))) this.answerAll('write failed');
-    if (this.writer === writer) this.writer = null;
-    writer.releaseLock();
     return answered;
   }
 

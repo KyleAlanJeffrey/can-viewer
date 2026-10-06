@@ -402,7 +402,7 @@ describe('SlcanAdapter', () => {
     const starting = adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0);
     await adapter.stop();
     await expect(adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
-      'The adapter is still being released from the last try.',
+      'The adapter is still busy with the last try.',
     );
 
     opened();
@@ -424,6 +424,31 @@ describe('SlcanAdapter', () => {
     await starting;
     expect(problems).toEqual([]);
     await adapter.stop();
+  });
+
+  it('writes C before closing the port on a stop, even over a slow link', async () => {
+    const port = new FakeSerialPort();
+    const adapter = new SlcanAdapter(port, timing);
+    await adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0);
+    port.writeDelayMs = 20;
+    const close = port.close.bind(port);
+    let commandsAtClose: string[] = [];
+    port.close = async () => {
+      commandsAtClose = [...port.commands];
+      await close();
+    };
+    await adapter.stop();
+    expect(commandsAtClose).toEqual(['C', 'S6', 'O', 'C']);
+    expect(port.closed).toBe(true);
+  });
+
+  it('says an adapter whose earlier open never finished is still busy', async () => {
+    const port = new FakeSerialPort();
+    port.openError = new DOMException('A call to open() is already in progress.', 'InvalidStateError');
+    const adapter = new SlcanAdapter(port, timing);
+    await expect(adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
+      'The adapter is still busy with an earlier try (A call to open() is already in progress.). Unplug it, plug it back in, then choose it again.',
+    );
   });
 
   it('stops only once, however often it is asked', async () => {

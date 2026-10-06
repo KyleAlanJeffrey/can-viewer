@@ -316,6 +316,57 @@ describe('Video sync', () => {
     expect(spaceIsTaken(document.body)).toBe(false);
   });
 
+  it('plays and pauses on a click on the video, but not on a click whose press it never saw', async () => {
+    const { user } = await renderWorkspace({ cursor: 20 });
+    loadMetadata(60);
+    await user.click(videoEl());
+    expect(mediaState().paused).toBe(false);
+    await user.click(videoEl());
+    expect(mediaState().paused).toBe(true);
+
+    // Firefox's "Pop out this video" button keeps the press from the page but can let the click through.
+    act(() => {
+      videoEl().dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    });
+    expect(mediaState().paused).toBe(true);
+  });
+
+  it('forgets a press on the video that never became a click on it', async () => {
+    const { user } = await renderWorkspace({ cursor: 20 });
+    loadMetadata(60);
+    const strayClick = () =>
+      act(() => {
+        videoEl().dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      });
+    const press = (pointerType: string) =>
+      act(() => {
+        videoEl().dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType }));
+      });
+
+    // A touch press is kept even as the pointer leaves, since touch leaves before its click.
+    press('touch');
+    act(() => {
+      videoEl().dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'touch', relatedTarget: document.body }));
+    });
+    strayClick();
+    expect(mediaState().paused).toBe(false);
+    await user.click(videoEl());
+    expect(mediaState().paused).toBe(true);
+
+    // Pressed on the video, dragged off and released elsewhere.
+    await user.pointer([{ keys: '[MouseLeft>]', target: videoEl() }, { target: document.body }, { keys: '[/MouseLeft]' }]);
+    strayClick();
+    expect(mediaState().paused).toBe(true);
+
+    // A touch that turned into a pan.
+    press('touch');
+    act(() => {
+      videoEl().dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerType: 'touch' }));
+    });
+    strayClick();
+    expect(mediaState().paused).toBe(true);
+  });
+
   it('steps and scrubs with the keyboard', async () => {
     const { user } = await renderWorkspace({ cursor: 20 });
     loadMetadata(60);

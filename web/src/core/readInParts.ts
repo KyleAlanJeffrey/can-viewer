@@ -334,8 +334,9 @@ export async function readInParts(file: Blob, session: ReadSession, options: Par
  * Reads the frames of a log the session planned in `count` parts (MF4), each by a worker from the
  * bytes of `file` it needs, and joins each as soon as the session asks for it: the session merges
  * the parts' frames by time, so it asks for them in no fixed order. The workers read ahead in the
- * plan's order, at most two parts per worker beyond those joined, but the part the session waits
- * for is read next, so the read never stalls. Returns false, and rejects on abort, as `readInParts`.
+ * plan's order, which is about the order the session will ask for them in (by when each part
+ * starts), at most two parts per worker beyond those joined, but the part the session waits for is
+ * read next, so the read never stalls. Returns false, and rejects on abort, as `readInParts`.
  */
 async function readFrameParts(file: Blob, session: ReadSession, count: number, options: PartOptions): Promise<boolean> {
   const { signal } = options;

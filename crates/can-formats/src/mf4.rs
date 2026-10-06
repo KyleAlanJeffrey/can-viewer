@@ -1413,6 +1413,19 @@ struct RecordFields {
     data_length: Option<u64>,
 }
 
+/// The time of the `index`th record of a channel group, in seconds from the file's start time.
+fn record_seconds(time: &Time, record: &[u8], index: usize) -> Result<f64, &'static str> {
+    Ok(match time {
+        Time::None => 0.0,
+        Time::Virtual { offset, factor } => offset + factor * index as f64,
+        Time::Field {
+            field,
+            offset,
+            factor,
+        } => offset + factor * field_f64(record, field).ok_or("bad time value")?,
+    })
+}
+
 /// Where a frame record's payload is.
 enum Payload<'r> {
     Bytes(&'r [u8]),
@@ -1426,16 +1439,7 @@ fn record_fields<'r>(
     index: usize,
     start_ns: i64,
 ) -> Result<(RecordFields, Payload<'r>), &'static str> {
-    let seconds = match &bus.time {
-        Time::None => 0.0,
-        Time::Virtual { offset, factor } => offset + factor * index as f64,
-        Time::Field {
-            field,
-            offset,
-            factor,
-        } => offset + factor * field_f64(record, field).ok_or("bad time value")?,
-    };
-    let offset_ns = seconds * 1e9;
+    let offset_ns = record_seconds(&bus.time, record, index)? * 1e9;
     if !offset_ns.is_finite() || offset_ns.abs() > 9e18 {
         return Err("time out of range");
     }
@@ -2564,6 +2568,175 @@ mod tests {
                 }
                 None => assert!(!planned),
             }
+        }
+    }
+
+    /// The parts that reading `input` in parts of `part_bytes` asks for, in turn.
+    fn join_order(input: &[u8], part_bytes: u64) -> Vec<usize> {
+        let mut parser = Mf4Parser::new();
+        let mut sink = VecSink::default();
+        parser.push(input, &mut sink);
+        let count = parser.plan_parts(part_bytes).expect("planned");
+        let mut order = vec![0];
+        while let Joined::Needs(next) = {
+            let index = *order.last().unwrap();
+            let task = parser.part_task(index).unwrap();
+            let fetched: Vec<u8> = task
+                .ranges
+                .iter()
+                .flat_map(|&(at, end)| input[at as usize..end as usize].iter().copied())
+                .collect();
+            let part = read_part(&task.task, &fetched).unwrap();
+            parser.join_part(index, &part, &mut sink).unwrap()
+        } {
+            order.push(next);
+        }
+        assert_eq!(order.len(), count, "every part is asked for once");
+        order
+    }
+
+    /// How a data group's records are stored.
+    #[derive(Clone, Copy, Debug)]
+    enum Stored {
+        /// Sorted, in DT blocks of `records` each.
+        Plain(usize),
+        /// Sorted, in DZ blocks of `records` each, transposed in `columns` (or not, for 0).
+        Compressed(usize, u32),
+        /// Unsorted, with 1-byte record IDs, in one DT block.
+        WithIds,
+    }
+
+    /// A data group of `count` data frames on `bus`, `step_ms` apart from `first_ms`.
+    fn timed_group(
+        b: &mut Builder,
+        bus: u8,
+        first_ms: u32,
+        step_ms: u32,
+        count: u32,
+        stored: Stored,
+    ) -> u64 {
+        let sd = b.variable_data(&[&[1, 2]]);
+        let id = u8::from(matches!(stored, Stored::WithIds));
+        let records: Vec<u8> = (0..count)
+            .flat_map(|i| {
+                let t = f64::from(first_ms + i * step_ms) / 1000.0;
+                let mut record = vec![id; usize::from(id)];
+                record.extend(data_record(t, bus, 0x100, false, (2, 2), 0, [false; 4]));
+                record
+            })
+            .collect();
+        let record_len = DATA_RECORD_LEN as usize + usize::from(id);
+        let data = match stored {
+            Stored::Plain(per_block) | Stored::Compressed(per_block, _) => {
+                let blocks: Vec<u64> = records
+                    .chunks(per_block * record_len)
+                    .map(|chunk| match stored {
+                        Stored::Compressed(_, columns) => b.compressed_block(b"DT", chunk, columns),
+                        _ => b.data_block(chunk),
+                    })
+                    .collect();
+                b.data_list(&blocks)
+            }
+            Stored::WithIds => b.data_block(&records),
+        };
+        let structure = b.structure("CAN_DataFrame", &data_frame_members(sd));
+        let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+        let cg = b.channel_group(u64::from(id), 0, DATA_RECORD_LEN, time, 0);
+        b.data_group(id, cg, data)
+    }
+
+    /// A file of data groups of `count` frames each, the first linked last: one after another
+    /// in time when `in_turn`, else side by side, the one linked first sending twice as often.
+    fn timed_groups(groups: u32, count: u32, in_turn: bool, stored: Stored) -> Vec<u8> {
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let mut previous = hd;
+        for g in (0..groups).rev() {
+            let (first_ms, step_ms) = match (in_turn, g) {
+                (true, _) => (g * count, 1),
+                (false, 0) => (0, 1),
+                (false, _) => (g, 2),
+            };
+            let dg = timed_group(&mut b, g as u8 + 1, first_ms, step_ms, count, stored);
+            b.set_link(previous, 0, dg);
+            previous = dg;
+        }
+        b.bytes
+    }
+
+    #[test]
+    fn parts_are_planned_in_the_order_the_merge_asks_for_them() {
+        let stored = [
+            Stored::Plain(1000),
+            Stored::Plain(7),
+            Stored::Compressed(10, 0),
+            Stored::Compressed(10, DATA_RECORD_LEN),
+            Stored::WithIds,
+        ];
+        for stored in stored {
+            for in_turn in [true, false] {
+                let input = timed_groups(3, 60, in_turn, stored);
+                let (sink, stats) = parse(&input);
+                assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+                assert!(times(&sink).is_sorted(), "{stored:?}, in turn {in_turn}");
+                // The merge asks for each data group's first part first, then for the others
+                // as it reaches the times they start at, each after the parts read before it.
+                // Side by side, a part is asked for once the part before it in its data
+                // group is read to its end, a little before the time it starts at, so parts
+                // of the groups that start at about the same time can come a little early.
+                let order = join_order(&input, 250);
+                assert!(order.len() > 9, "{stored:?}: {order:?}");
+                assert_eq!(order[..3], [0, 1, 2], "{stored:?}, in turn {in_turn}");
+                let early = if in_turn { 0 } else { 2 };
+                for (i, &part) in order.iter().enumerate().skip(1) {
+                    let furthest = order[..i].iter().max().unwrap();
+                    assert!(
+                        part + early >= *furthest,
+                        "{stored:?}, in turn {in_turn}: {order:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finding_when_parts_start_inflates_no_more_than_a_quarter_of_the_file() {
+        // Each data group's first part starts in a compressed block, whose times are in the
+        // first of 28 columns of 2,000 rows.
+        for groups in [2, 64] {
+            let mut b = Builder::new();
+            let hd = b.header(0);
+            let records: Vec<u8> = (0..2000)
+                .flat_map(|i| data_record(f64::from(i), 1, 0x100, false, (0, 0), 0, [false; 4]))
+                .collect();
+            let dz = b.compressed_block(b"DT", &records, DATA_RECORD_LEN);
+            // Bytes no data group reads, so that the file allows inflating some times.
+            let noise: Vec<u8> = (0u32..1 << 16)
+                .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+                .collect();
+            b.data_block(&noise);
+            let mut previous = hd;
+            for _ in 0..groups {
+                let mut members = data_frame_members(0);
+                members[5].cn_type = 0;
+                let structure = b.structure("CAN_DataFrame", &members);
+                let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+                let cg = b.channel_group(0, 0, DATA_RECORD_LEN, time, 0);
+                let dg = b.data_group(0, cg, dz);
+                b.set_link(previous, 0, dg);
+                previous = dg;
+            }
+            parts::TIME_INFLATED.with(|inflated| inflated.set(0));
+            let planned = plan_of(&b.bytes, 1 << 20, MAX_PARTS);
+            assert_eq!(planned, groups);
+            let inflated = parts::TIME_INFLATED.with(|inflated| inflated.get());
+            assert!(inflated > 0, "{groups} groups");
+            assert!(
+                inflated <= b.bytes.len() as u64 / 4,
+                "{groups} groups: inflated {inflated} for {} bytes",
+                b.bytes.len()
+            );
+            parse(&b.bytes);
         }
     }
 

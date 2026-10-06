@@ -60,7 +60,7 @@ class RecordingSession implements ReadSession {
  */
 class FrameSession extends RecordingSession {
   constructor(
-    private readonly order: number[],
+    readonly order: number[],
     private readonly refuseNth = -1,
     /** Parts planned, when the log ends at a limit before the session asks for them all. */
     private readonly count = order.length,
@@ -95,6 +95,8 @@ class FrameSession extends RecordingSession {
 class FrameWorker implements PartWorker {
   static reading = 0;
   static mostReading = 0;
+  /** The parts read, in the order their reads started, each with the part the session awaited then. */
+  static starts: { part: number; awaited: number }[] = [];
   closed = false;
   /** The parts whose reads got past their delay. */
   partsRead: number[] = [];
@@ -111,6 +113,7 @@ class FrameWorker implements PartWorker {
     // Parts read or reading but not yet joined, which the session last asked for counted out.
     const held = FrameWorker.reading - (this.session?.joined.length ?? 0);
     FrameWorker.mostReading = Math.max(FrameWorker.mostReading, held);
+    if (this.session) FrameWorker.starts.push({ part: task.task[0], awaited: this.session.order[this.session.joined.length] });
     const body = text(await rangeBytes(task.file, task.ranges));
     // Closing stops a read at once, as terminating the real worker does.
     await new Promise((resolve, reject) => {
@@ -648,6 +651,33 @@ describe('reading a log in parts', () => {
       expect(workers.every((worker) => worker.closed)).toBe(true);
       // Two per worker read ahead, and the part the session waits for.
       expect(FrameWorker.mostReading).toBeLessThanOrEqual(2 * 2 + 1);
+    });
+
+    it('reads ahead in plan order, the part the session waits for first, so a plan in the order the session asks keeps ahead', async () => {
+      // Two data groups one after another in time: the session asks for the first part of each, then
+      // for the rest of the first group's parts before the second's.
+      const asked = [0, 1, 2, 4, 6, 8, 10, 12, 3, 5, 7, 9, 11, 13];
+      // Planned by when each part starts, as the core plans them, and by place in each group's stream.
+      const byTime = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+      const waits: number[] = [];
+      for (const order of [byTime, asked]) {
+        FrameWorker.starts = [];
+        const session = new FrameSession(order);
+        const startWorker = () => new FrameWorker((index) => 2 + ((index * 7) % 5), -1, session);
+        expect(await readInParts(new Blob([content]), session, { workers: 2, startWorker }, () => undefined)).toBe(true);
+        expect(session.joined).toEqual(order);
+        const started = new Set<number>();
+        for (const { part, awaited } of FrameWorker.starts) {
+          let nextInPlan = 0;
+          while (started.has(nextInPlan)) nextInPlan++;
+          expect([awaited, nextInPlan]).toContain(part);
+          started.add(part);
+        }
+        // Reads started only once the session waited for them, part 0 among them.
+        waits.push(FrameWorker.starts.filter(({ part, awaited }) => part === awaited).length);
+      }
+      expect(waits[0]).toBe(1);
+      expect(waits[1]).toBeGreaterThan(2);
     });
 
     it('starts no more workers than there are parts', async () => {

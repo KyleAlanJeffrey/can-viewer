@@ -219,6 +219,22 @@ describe('Byte Values', () => {
   });
 });
 
+describe('Pinned references', () => {
+  it('stay on top, outside the scroller, in Byte Values and in Advanced', async () => {
+    const user = renderView([engine]);
+    const onTop = () => {
+      const refs = screen.getByRole('region', { name: 'Pinned references' });
+      expect(refs.closest('.content-scroll')).toBeNull();
+      return refs.closest('.re-docked');
+    };
+    expect(onTop()).toBe(screen.getByRole('table').closest('.content-scroll')?.parentElement);
+
+    await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(onTop()).toBe(screen.getByRole('heading', { name: 'Bit History' }).closest('.content-scroll')?.parentElement);
+  });
+});
+
 describe('Advanced', () => {
   it('hides the inspector until a message is picked, then lets Details toggle it', async () => {
     const user = renderView();

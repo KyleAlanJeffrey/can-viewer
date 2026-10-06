@@ -7,6 +7,46 @@
   padding: 16px 20px 24px;
 }
 
+/* The message heading and Pinned references stay on top, outside the scroller, while the content beneath them scrolls. */
+.re-docked {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding-top: 16px;
+}
+
+.re-docked > .re-message-head,
+.re-docked > .re-refs {
+  margin: 0 20px 12px;
+}
+
+.re-docked > .re-scroll {
+  padding-top: 0;
+}
+
+/* Never most of the view: past this the reference rows scroll inside the card, and in a very short
+   view, where even one row won't fit, the whole card scrolls. */
+.re-docked > .re-refs {
+  display: flex;
+  flex-direction: column;
+  max-height: 40%;
+  overflow-y: auto;
+}
+
+.re-docked > .re-refs > * {
+  flex: none;
+}
+
+.re-docked > .re-refs > .re-ref-rows {
+  flex: 0 1 auto;
+  /* The first row's plot, under its cursor time. */
+  min-height: 74px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .re-card {
   flex: none;
   min-width: 0;
@@ -897,10 +937,6 @@
   display: flex;
   min-width: 0;
   min-height: 0;
-}
-
-.re-split-body > .re-bytes {
-  min-width: 0;
 }
 
 .re-sugpanel {

@@ -313,7 +313,7 @@ export function Workspace(props: Props) {
 
   return (
     <>
-      <div className="content-scroll re-scroll">
+      <div className="re-docked">
         <div className="re-message-head">
           <h2 className="content-title re-title">
             <span className="mono">{formatId(summary.id, summary.extended)}</span>
@@ -334,117 +334,119 @@ export function Workspace(props: Props) {
           onPinSignal={onPinSignal}
         />
 
-        <section className="card re-card" aria-labelledby="re-bytes-title">
-          <div className="re-card-head">
-            <h3 className="section-title" id="re-bytes-title">
-              Byte values
-            </h3>
-            <span className="re-card-note">
-              {bytes > LANES ? `Bytes ${laneStart} to ${laneStart + laneCount - 1} \u00b7 ` : ''}
-              selected time range {'\u00b7'} raw values 0 to 255 {'\u00b7'} click one to select its bits
-            </span>
-          </div>
-          {bytes === 0 ? (
-            <p className="hint">These frames carry no payload.</p>
-          ) : lanesError ? (
-            <p className="re-quiet">Byte values: {lanesError}</p>
-          ) : (
-            <ByteStrip
-              lanes={lanes}
-              firstByte={laneStart}
-              count={laneCount}
-              window={settled}
-              cursor={cursor}
-              frame={frame}
-              selectedBytes={wholeBytes}
-              onSelectByte={selectByte}
-              onHover={onHover}
-              onPark={onPark}
-            />
-          )}
-        </section>
-
-        <div className="re-pair">
-          <section className="card re-card" aria-labelledby="re-activity-title">
+        <div className="content-scroll re-scroll">
+          <section className="card re-card" aria-labelledby="re-bytes-title">
             <div className="re-card-head">
-              <h3 className="section-title" id="re-activity-title">
-                Bit Activity
+              <h3 className="section-title" id="re-bytes-title">
+                Byte values
               </h3>
               <span className="re-card-note">
-                {activity && (activity.wholeLog ? 'Whole log; window counts are not available yet' : `${formatCount(activity.frames)} ${activity.frames === 1 ? 'frame' : 'frames'} in the window`)}
+                {bytes > LANES ? `Bytes ${laneStart} to ${laneStart + laneCount - 1} \u00b7 ` : ''}
+                selected time range {'\u00b7'} raw values 0 to 255 {'\u00b7'} click one to select its bits
               </span>
             </div>
             {bytes === 0 ? (
               <p className="hint">These frames carry no payload.</p>
-            ) : activity ? (
-              <>
-                <BitGrid
-                  flips={activity.counts.flips}
-                  bytes={bytes}
-                  pairs={activity.counts.pairs}
-                  seconds={activity.seconds}
-                  selected={selected}
-                  owners={owners}
-                  dimmed={baselineFlips}
-                  onSelect={(a, b) => setRange(coveringRange(rectBits(a, b), form.byteOrder))}
-                  onClear={() => patch({ startBit: '', size: '', fromGrid: true, limits: null })}
-                  regions={regions}
-                  activeRegion={activeSuggestion}
-                  onRegionHover={setActiveSuggestion}
-                  onRegionActivate={(id) => {
-                    const s = shown.find((x) => x.id === id);
-                    if (s) selectSuggestion(s);
-                  }}
-                />
-                <HeatLegend
-                  baseline={baselineFlips ? `${formatSeconds(b0)} to ${formatSeconds(b1)}` : null}
-                  baselineNote={baselineCounts && !baselineFlips ? 'Too few frames in the baseline to compare' : null}
-                  selection={range ? `${range.size} ${range.size === 1 ? 'bit' : 'bits'} selected \u00b7 ${layout}` : null}
-                />
-              </>
+            ) : lanesError ? (
+              <p className="re-quiet">Byte values: {lanesError}</p>
             ) : (
-              <p className={activityError ? 're-quiet' : 'hint'}>{activityError ?? 'Counting bit changes\u2026'}</p>
+              <ByteStrip
+                lanes={lanes}
+                firstByte={laneStart}
+                count={laneCount}
+                window={settled}
+                cursor={cursor}
+                frame={frame}
+                selectedBytes={wholeBytes}
+                onSelectByte={selectByte}
+                onHover={onHover}
+                onPark={onPark}
+              />
             )}
-            <div className="re-subhead">
-              <WindowStrip compact core={core} idKey={summary.key} logVersion={logVersion} duration={duration} window={win} onChange={onWindowChange} />
-            </div>
           </section>
 
-          <ChunkBoundary message="Couldn't load the suggestions.">
-            <Suspense fallback={<p className="hint re-sug-loading">Loading suggestions&hellip;</p>}>
-              <Suggestions
-                ctx={ctx}
-                summary={summary}
-                discovery={discovery}
-                unknown={unknown}
-                shown={shown}
-                dismissedCount={dismissedCount}
-                showDismissed={showDismissed}
-                onShowDismissed={setShowDismissed}
-                active={activeSuggestion}
-                onActive={setActiveSuggestion}
-                selected={selectedSuggestion}
-                onSelect={(s) => selectSuggestion(s)}
-                message={message}
-                onAccept={acceptSuggestion}
-                onUndone={() => setFormEpoch((n) => n + 1)}
-                plotted={plotted}
-                onPlot={(s) => onTogglePin(suggestionPin(summary.key, s))}
-                parked={parked}
-              />
-            </Suspense>
-          </ChunkBoundary>
-        </div>
+          <div className="re-pair">
+            <section className="card re-card" aria-labelledby="re-activity-title">
+              <div className="re-card-head">
+                <h3 className="section-title" id="re-activity-title">
+                  Bit Activity
+                </h3>
+                <span className="re-card-note">
+                  {activity && (activity.wholeLog ? 'Whole log; window counts are not available yet' : `${formatCount(activity.frames)} ${activity.frames === 1 ? 'frame' : 'frames'} in the window`)}
+                </span>
+              </div>
+              {bytes === 0 ? (
+                <p className="hint">These frames carry no payload.</p>
+              ) : activity ? (
+                <>
+                  <BitGrid
+                    flips={activity.counts.flips}
+                    bytes={bytes}
+                    pairs={activity.counts.pairs}
+                    seconds={activity.seconds}
+                    selected={selected}
+                    owners={owners}
+                    dimmed={baselineFlips}
+                    onSelect={(a, b) => setRange(coveringRange(rectBits(a, b), form.byteOrder))}
+                    onClear={() => patch({ startBit: '', size: '', fromGrid: true, limits: null })}
+                    regions={regions}
+                    activeRegion={activeSuggestion}
+                    onRegionHover={setActiveSuggestion}
+                    onRegionActivate={(id) => {
+                      const s = shown.find((x) => x.id === id);
+                      if (s) selectSuggestion(s);
+                    }}
+                  />
+                  <HeatLegend
+                    baseline={baselineFlips ? `${formatSeconds(b0)} to ${formatSeconds(b1)}` : null}
+                    baselineNote={baselineCounts && !baselineFlips ? 'Too few frames in the baseline to compare' : null}
+                    selection={range ? `${range.size} ${range.size === 1 ? 'bit' : 'bits'} selected \u00b7 ${layout}` : null}
+                  />
+                </>
+              ) : (
+                <p className={activityError ? 're-quiet' : 'hint'}>{activityError ?? 'Counting bit changes\u2026'}</p>
+              )}
+              <div className="re-subhead">
+                <WindowStrip compact core={core} idKey={summary.key} logVersion={logVersion} duration={duration} window={win} onChange={onWindowChange} />
+              </div>
+            </section>
 
-        <section className="card re-card" aria-labelledby="re-history-title">
-          <div className="re-card-head">
-            <h3 className="section-title" id="re-history-title">
-              Bit History
-            </h3>
-            <span className="re-card-note">Newest frame on the right</span>
+            <ChunkBoundary message="Couldn't load the suggestions.">
+              <Suspense fallback={<p className="hint re-sug-loading">Loading suggestions&hellip;</p>}>
+                <Suggestions
+                  ctx={ctx}
+                  summary={summary}
+                  discovery={discovery}
+                  unknown={unknown}
+                  shown={shown}
+                  dismissedCount={dismissedCount}
+                  showDismissed={showDismissed}
+                  onShowDismissed={setShowDismissed}
+                  active={activeSuggestion}
+                  onActive={setActiveSuggestion}
+                  selected={selectedSuggestion}
+                  onSelect={(s) => selectSuggestion(s)}
+                  message={message}
+                  onAccept={acceptSuggestion}
+                  onUndone={() => setFormEpoch((n) => n + 1)}
+                  plotted={plotted}
+                  onPlot={(s) => onTogglePin(suggestionPin(summary.key, s))}
+                  parked={parked}
+                />
+              </Suspense>
+            </ChunkBoundary>
           </div>
-          <BitHistory core={core} summary={summary} duration={duration} window={settled} logVersion={logVersion} selected={selected} />
-        </section>
+
+          <section className="card re-card" aria-labelledby="re-history-title">
+            <div className="re-card-head">
+              <h3 className="section-title" id="re-history-title">
+                Bit History
+              </h3>
+              <span className="re-card-note">Newest frame on the right</span>
+            </div>
+            <BitHistory core={core} summary={summary} duration={duration} window={settled} logVersion={logVersion} selected={selected} />
+          </section>
+        </div>
       </div>
 
       <InspectorSlot>

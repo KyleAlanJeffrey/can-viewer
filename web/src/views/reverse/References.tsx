@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Pin as PinIcon, Plus, X } from 'lucide-react';
 import type { CoreApi } from '../../core/api';
 import { cssVar } from '../../format';
@@ -37,6 +37,8 @@ export function References({ core, references, window: win, cursor, candidate, o
   const ownRow = candidate && !candidate.overlayOn ? candidate : null;
   const rows = references.length + (ownRow ? 1 : 0);
   const unitOf = (unit: string) => (unit ? ` ${unit}` : '');
+  // A canvas can't resolve CSS variables; read once rather than on every hover.
+  const candidateColor = useMemo(() => cssVar('--graphite'), []);
 
   return (
     <section className={`card re-card re-refs${rows === 0 ? ' collapsed' : ''}`} aria-label="Pinned references">
@@ -88,8 +90,7 @@ export function References({ core, references, window: win, cursor, candidate, o
           </div>
           <ReferencePlot
             trace={ownRow.trace}
-            // A canvas can't resolve CSS variables.
-            color={cssVar('--graphite')}
+            color={candidateColor}
             dashed
             window={win}
             cursor={cursor}

@@ -37,11 +37,11 @@
 
 .re-docked > .re-scroll {
   padding-top: 0;
-  /* Never more than the dock has left under the message heading (58px), the card's head (56px) and the gaps. */
+  /* Never more than the dock has left under the message heading, the card's head (56px) and the gaps. */
   min-height: min(max(150px, 28cqh), 100cqh - 130px);
 }
 
-/* Room for three rows and the selection footer on a phone; there is no message heading here. */
+/* Room for a few rows and the selection footer; there is no message heading here. */
 .re-docked > .re-bytes {
   min-height: min(max(230px, 35cqh), 100cqh - 68px);
 }

@@ -51,7 +51,7 @@ export function References({ core, references, window: win, cursor, candidate, o
         </button>
       </div>
       {rows === 0 ? (
-        <p className="hint re-refs-empty">Pin a decoded signal to compare it with raw bytes on the same timeline. Pins stay while you change messages.</p>
+        <p className="hint re-refs-empty">Pin a signal or plot a suggestion to compare it with raw bytes on the same timeline. Pins stay while you change messages.</p>
       ) : (
         <div className="re-ref-rows">
           {references.map((ref, i) => (

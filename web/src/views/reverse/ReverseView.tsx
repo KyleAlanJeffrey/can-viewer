@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Search } from 'lucide-react';
 import { ALL_IDS, formatId, isErrorFrame, type Candidate, type FindRule } from '../../core/api';
+import { ChunkBoundary } from '../../components/ChunkBoundary';
 import { formatCount } from '../../format';
 import { IdListSidebar } from '../shared/IdListSidebar';
 import { useViewState } from '../shared/viewState';
@@ -8,7 +9,7 @@ import { InspectorSlot } from '../slots';
 import type { ViewProps } from '../types';
 import { AnalysisWindow } from './AnalysisWindow';
 import { BaselineSheet } from './BaselineSheet';
-import { ByteMatrix, type SelectedByte } from './ByteMatrix';
+import { ByteMatrix, onSuggestion, type SelectedByte, type SuggestionMark } from './ByteMatrix';
 import { FindSignalSheet } from './FindSignalSheet';
 import { PinSignalSheet } from './PinSignalSheet';
 import { References } from './References';
@@ -16,6 +17,16 @@ import { initialForm, useCandidateForms } from './SignalForm';
 import { Workspace } from './Workspace';
 import { clampTime, clampWindow, defaultWindow, describeId, matchesQuery, windowFits, type TimeWindow } from './bits';
 import { pinId, useReferences, type Pin } from './pins';
+import {
+  PANEL_WIDTH,
+  describeBits,
+  shownSuggestions,
+  suggestionBytes,
+  suggestionForm,
+  suggestionPin,
+  type ShownSuggestion,
+  type SuggestionScope,
+} from './suggestionList';
 import { useDiscovery } from './useDiscovery';
 import './reverse.css';
 
@@ -23,6 +34,10 @@ type Mode = 'bytes' | 'advanced';
 
 /** The Byte Values scroll position, restored when coming back to it from Advanced or another view. */
 let savedScroll = 0;
+/** A CAN FD payload's bits. */
+const MAX_BITS = 512;
+// Loaded on first use to keep the main bundle small.
+const SuggestionsPanel = lazy(() => import('./SuggestionsPanel').then((m) => ({ default: m.SuggestionsPanel })));
 
 /**
  * Byte Values compares every message's bytes with pinned references; Advanced works out one
@@ -44,8 +59,16 @@ export function ReverseView({ ctx }: ViewProps) {
   const [findOpen, setFindOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [baselineOpen, setBaselineOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useViewState('re.suggestionsOpen', true);
+  const [panelScope, setPanelScope] = useViewState<SuggestionScope>('re.suggestionsScope', 'selected');
+  const [panelWidth, setPanelWidth] = useViewState('re.suggestionsWidth', PANEL_WIDTH.initial);
+  const [pickedId, setPickedId] = useViewState<string | null>('re.suggestion', null, 'log');
+  const [, setExpanded] = useViewState<number[]>('re.expanded', [], 'log');
+  const [focusName, setFocusName] = useState(false);
+  const nameFocused = useCallback(() => setFocusName(false), []);
   const [, setForms] = useCandidateForms();
   const scroller = useRef<HTMLDivElement>(null);
+  const panelSwitch = useRef<HTMLInputElement>(null);
   const references = useReferences(ctx, pins);
 
   useEffect(() => {
@@ -86,11 +109,27 @@ export function ReverseView({ ctx }: ViewProps) {
   const unknown = useMemo(() => messages.filter((s) => !messageOf(s.key)), [messages, messageOf]);
   const unknownKeys = useMemo(() => unknown.map((s) => s.key), [unknown]);
   const discovery = useDiscovery(ctx, unknownKeys);
-
-  if (!log) return null;
+  const { results, dismissed, accepted } = discovery;
 
   const summary = selected === ALL_IDS ? null : (ids.find((s) => s.key === selected) ?? null);
   const message = summary ? messageOf(summary.key) : null;
+  const listed = useMemo(
+    () => (summary ? shownSuggestions({ results, dismissed, accepted }, summary.key, message, summary.maxLen * 8) : []),
+    [results, dismissed, accepted, summary, message],
+  );
+  // Across every message scanned when none is selected.
+  const suggestionCount = useMemo(() => {
+    if (summary) return results[summary.key] ? listed.length : null;
+    const scanned = Object.values(results);
+    if (scanned.length === 0) return null;
+    return scanned.reduce((n, found) => n + shownSuggestions({ results, dismissed, accepted }, found.key, messageOf(found.key), MAX_BITS).length, 0);
+  }, [summary, listed, results, dismissed, accepted, messageOf]);
+
+  if (!log) return null;
+
+  const picked = panelOpen ? (listed.find((s) => s.id === pickedId) ?? null) : null;
+  const mark: SuggestionMark | null =
+    summary && picked ? { key: summary.key, number: picked.number, bytes: suggestionBytes(picked), bits: describeBits(picked.suggestion.spec) } : null;
 
   const togglePin = (pin: Pin) => {
     const id = pinId(pin);
@@ -107,8 +146,27 @@ export function ReverseView({ ctx }: ViewProps) {
     if (b.key !== selected) ctx.select(b.key);
   };
 
+  const selectSuggestion = (key: number, s: ShownSuggestion) => {
+    const bytes = suggestionBytes(s);
+    setPickedId(s.id);
+    setSelectedByte({ key, byte: bytes[0] });
+    // Bytes past B7 show only in the message's further rows.
+    if (bytes[bytes.length - 1] >= 8) setExpanded((keys) => (keys.includes(key) ? keys : [...keys, key]));
+    if (key !== selected) ctx.select(key);
+  };
+  const acceptSuggestion = (key: number, s: ShownSuggestion, name: string) => {
+    setForms((all) => ({ ...all, [key]: { ...(all[key] ?? initialForm(null)), ...suggestionForm(s.suggestion), name } }));
+    if (key !== selected) ctx.select(key);
+    setFocusName(true);
+    ctx.openInspector();
+    setMode('advanced');
+  };
+
   const openAdvanced = () => {
-    if (summary && selectedByte?.key === summary.key) {
+    if (summary && picked && mark && onSuggestion(mark, selectedByte)) {
+      const form = suggestionForm(picked.suggestion);
+      setForms((all) => ({ ...all, [summary.key]: { ...(all[summary.key] ?? initialForm(null)), ...form } }));
+    } else if (summary && selectedByte?.key === summary.key) {
       const byte = selectedByte.byte;
       setForms((all) => ({
         ...all,
@@ -158,7 +216,13 @@ export function ReverseView({ ctx }: ViewProps) {
         </div>
         <div className="content-actions">
           {mode === 'bytes' ? (
-            <span className="re-scope-note">{scope}</span>
+            <>
+              <span className="re-scope-note">{scope}</span>
+              <label className="re-sug-toggle">
+                <input ref={panelSwitch} type="checkbox" role="switch" className="switch" checked={panelOpen} onChange={(e) => setPanelOpen(e.target.checked)} />
+                Suggested signals{suggestionCount !== null && ` \u00b7 ${formatCount(suggestionCount)}`}
+              </label>
+            </>
           ) : (
             <>
               <button type="button" className="button" onClick={() => setMode('bytes')}>
@@ -178,43 +242,81 @@ export function ReverseView({ ctx }: ViewProps) {
       </header>
 
       {mode === 'bytes' ? (
-        <div
-          ref={scroller}
-          className="content-scroll re-scroll re-bytes"
-          role="tabpanel"
-          aria-label="Byte Values"
-          onScroll={(e) => {
-            savedScroll = e.currentTarget.scrollTop;
-          }}
-        >
-          <References
-            core={ctx.core}
-            references={references}
-            window={win}
-            cursor={cursor}
-            onHover={setHover}
-            onPark={park}
-            onUnpin={unpin}
-            onPinSignal={() => setPinOpen(true)}
-          >
-            <AnalysisWindow window={win} duration={duration} onChange={setWin} />
-          </References>
-          <ByteMatrix
-            ctx={ctx}
-            rows={rows}
-            window={win}
-            cursor={cursor}
-            bus={bus}
-            onBus={setBus}
-            selectedByte={selectedByte}
-            pins={pins}
-            onSelectRow={selectRow}
-            onSelectByte={selectByte}
-            onHover={setHover}
-            onPark={park}
-            onTogglePin={togglePin}
-            onOpenAdvanced={openAdvanced}
-          />
+        <div className="re-split">
+          <div className="re-split-body">
+            <div
+              ref={scroller}
+              className="content-scroll re-scroll re-bytes"
+              role="tabpanel"
+              aria-label="Byte Values"
+              onScroll={(e) => {
+                savedScroll = e.currentTarget.scrollTop;
+              }}
+            >
+              <References
+                core={ctx.core}
+                references={references}
+                window={win}
+                cursor={cursor}
+                onHover={setHover}
+                onPark={park}
+                onUnpin={unpin}
+                onPinSignal={() => setPinOpen(true)}
+              >
+                <AnalysisWindow window={win} duration={duration} onChange={setWin} />
+              </References>
+              <ByteMatrix
+                ctx={ctx}
+                rows={rows}
+                window={win}
+                cursor={cursor}
+                bus={bus}
+                onBus={setBus}
+                selectedByte={selectedByte}
+                suggestion={mark}
+                pins={pins}
+                onSelectRow={selectRow}
+                onSelectByte={selectByte}
+                onHover={setHover}
+                onPark={park}
+                onTogglePin={togglePin}
+                onOpenAdvanced={openAdvanced}
+              />
+            </div>
+            {panelOpen && (
+              <ChunkBoundary message="Couldn't load the suggestions." frame={(fallback) => <div className="re-sugpanel">{fallback}</div>}>
+                <Suspense
+                  fallback={
+                    <div className="re-sugpanel">
+                      <p className="hint re-sugpanel-loading">Loading suggestions&hellip;</p>
+                    </div>
+                  }
+                >
+                  <SuggestionsPanel
+                    ctx={ctx}
+                    discovery={discovery}
+                    unknown={unknown}
+                    summary={summary}
+                    scope={panelScope}
+                    onScope={setPanelScope}
+                    selected={picked?.id ?? null}
+                    onSelect={selectSuggestion}
+                    onAccept={acceptSuggestion}
+                    pins={pins}
+                    onPlot={(key, s) => togglePin(suggestionPin(key, s))}
+                    onPick={selectRow}
+                    onHide={() => {
+                      setPanelOpen(false);
+                      // The panel took its focused button with it.
+                      requestAnimationFrame(() => panelSwitch.current?.focus());
+                    }}
+                    width={panelWidth}
+                    onWidth={setPanelWidth}
+                  />
+                </Suspense>
+              </ChunkBoundary>
+            )}
+          </div>
         </div>
       ) : summary ? (
         <Workspace
@@ -236,6 +338,8 @@ export function ReverseView({ ctx }: ViewProps) {
           pins={pins}
           onTogglePin={togglePin}
           parked={parked}
+          focusName={focusName}
+          onNameFocused={nameFocused}
         />
       ) : (
         <div className="content-scroll re-scroll" role="tabpanel" aria-label="Advanced">

@@ -400,14 +400,15 @@ describe('SlcanAdapter', () => {
     now += 40_000_000;
     port.send('t1230000E\rt1230\r');
     await tick();
-    expect(frames.map((f) => f.timeNs)).toEqual([5_000_000, 12_000_000, 29_000_000, 45_000_000]);
+    // The second frame is timed after the chunk arrived, so the anchor moves back 7 us (1000 ppm of 7 ms).
+    expect(frames.map((f) => f.timeNs)).toEqual([5_000_000, 11_993_000, 28_993_000, 45_000_000]);
     expect(frames.every((f) => !('timestampMs' in f))).toBe(true);
 
     // A minute and more later, the counter has wrapped again.
     now += 61_000_000_000;
     port.send('t1230001E\r');
     await tick();
-    expect(frames.at(-1)!.timeNs).toBe(5_000_000 + 60_000_000_000 + 40_000_000);
+    expect(frames.at(-1)!.timeNs).toBe(5_000_000 - 7_000 + 60_000_000_000 + 40_000_000);
     await adapter.stop();
   });
 

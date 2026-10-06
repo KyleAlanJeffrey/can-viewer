@@ -551,7 +551,7 @@ const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: f
 trimCapture(beforeNs: number): Promise<LogInfo>
 ```
 
-Drops the oldest frames of the running capture, for a rolling capture that keeps only the last few minutes. Frames are dropped from the front of the store up to the first frame timed at or after `beforeNs`, so a frame that arrived late stays with its neighbours. The per-ID statistics (counts, periods, jitter, bit flips) are redone from the frames kept, so the call takes time in proportion to them; the web app calls it only once the oldest frame is a tenth of the window, or 10 s, past it. Row numbers and times shift with the frames dropped: times count from the oldest frame kept, as for any log, and the trace filter is cleared. Decoded series are not touched; decode them again.
+Drops the oldest frames of the running capture, for a rolling capture that keeps only the last few minutes. Frames are dropped from the front of the store up to the first frame timed at or after `beforeNs`, so a frame that arrived late stays with its neighbours, and a frame timed ahead of those after it keeps them until `beforeNs` passes its time (the web app holds adapter timestamps to at most a second past the computer's clock for this reason). The per-ID statistics (counts, periods, jitter, bit flips) are redone from the frames kept, so the call takes time in proportion to them; the web app calls it only once the oldest frame is a tenth of the window, or 10 s, past it. Row numbers and times shift with the frames dropped: times count from the oldest frame kept, as for any log, and the trace filter is cleared. Decoded series are not touched; decode them again.
 
 **Parameters**
 

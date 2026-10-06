@@ -222,6 +222,25 @@ describe('Trace filters', () => {
     await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, channels: [0] }));
   });
 
+  it('says when a filter matched only bytes of a long transfer past those the trace shows', async () => {
+    const { user, rows } = renderFilters();
+    const long = (key: number, start: number) =>
+      makeRowBatch(key, start, [{ t: 0, id: 0x18feca00, index: 0, data: Array.from({ length: 64 }, () => 0), fullLength: 100 }]);
+    rows.mockImplementation(async (key, start) => long(key, start));
+    await openSheet(user);
+    await user.click(within(sheet()).getByRole('button', { name: 'Add rule' }));
+    const byte = within(sheet()).getByRole('textbox', { name: 'Rule 1 byte' });
+    await user.clear(byte);
+    await user.type(byte, '70');
+    await user.type(within(sheet()).getByRole('textbox', { name: 'Rule 1 value, hex' }), '1F');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+
+    const grid = screen.getByRole('grid', { name: 'Frame trace' });
+    await waitFor(() => expect(within(grid).getAllByRole('row').length).toBeGreaterThan(1));
+    const dataCell = within(within(grid).getAllByRole('row')[1]).getAllByRole('gridcell').at(-1);
+    expect(dataCell?.textContent).toMatch(/\u2026 \(100 bytes, filter matched past byte 63\)$/);
+  });
+
   it('narrows the filters to the ID picked in the sidebar', async () => {
     const { user, setTraceFilter } = renderFilters((f) => (f.keys?.length === 0 ? 0 : MATCHES));
     await openSheet(user);

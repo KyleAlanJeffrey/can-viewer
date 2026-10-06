@@ -175,10 +175,21 @@ describe('core worker', () => {
           onerror: ((e: { message: string; preventDefault(): void }) => void) | null = null;
           constructor() {
             started();
-          }
-          postMessage() {
             queueMicrotask(() => this.onerror?.({ message: 'An unknown error occurred when fetching the script', preventDefault() {} }));
           }
+          postMessage() {}
+          terminate() {}
+        },
+      ],
+      [
+        'cannot load the wasm',
+        class {
+          onmessage: ((e: { data: unknown }) => void) | null = null;
+          constructor() {
+            started();
+            queueMicrotask(() => this.onmessage?.({ data: { startError: 'WebAssembly.instantiate(): Out of memory' } }));
+          }
+          postMessage() {}
           terminate() {}
         },
       ],

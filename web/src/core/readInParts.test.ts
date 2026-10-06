@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FIRST_REPLY_MS, lineStart, partBytes, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
+import { READY_MS, lineStart, partBytes, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const realSetTimeout = globalThis.setTimeout;
@@ -42,6 +42,7 @@ class RecordingSession implements ReadSession {
 class EchoWorker implements PartWorker {
   static tasks: PartTask[] = [];
   closed = false;
+  ready = Promise.resolve();
   constructor(
     private readonly partSize: number,
     private readonly delay: (task: PartTask) => number = () => 0,
@@ -203,21 +204,26 @@ describe('reading a log in parts', () => {
     }
   });
 
-  describe('with a worker that never answers', () => {
+  describe('with a worker that loads slowly or never', () => {
     afterEach(() => {
       vi.useRealTimers();
       vi.restoreAllMocks();
     });
 
-    it(`gives up once a worker has not answered its first part in ${FIRST_REPLY_MS / 1000} s`, async () => {
+    it(`gives up once a worker has not loaded in ${READY_MS / 1000} s`, async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const onStalled = vi.fn();
       const workers: PartWorker[] = [];
       const startWorker = () => {
+        let closed = (_: Error) => {};
         const worker = {
+          // Never loads, as a part worker whose script never arrives; closing it rejects.
+          ready: new Promise<void>((_, reject) => {
+            closed = reject;
+          }),
           read: vi.fn(() => new Promise<Uint8Array>(() => undefined)),
-          close: vi.fn(),
+          close: vi.fn(() => closed(new Error('closed'))),
         };
         workers.push(worker);
         return worker;
@@ -227,31 +233,42 @@ describe('reading a log in parts', () => {
         settled = read;
       });
       // Not vi.waitUntil, which would run the fake timers.
-      while (!(workers.length === 2 && workers.every((worker) => vi.mocked(worker.read).mock.calls.length === 1))) {
+      while (workers.length < 2) {
         await new Promise((resolve) => realSetTimeout(resolve, 0));
       }
-      await vi.advanceTimersByTimeAsync(FIRST_REPLY_MS - 1);
+      await vi.advanceTimersByTimeAsync(READY_MS - 1);
       expect(settled).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1);
       expect(settled).toBe(false);
       expect(onStalled).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(workers.every((worker) => vi.mocked(worker.close).mock.calls.length > 0)).toBe(true);
+      expect(workers.every((worker) => vi.mocked(worker.read).mock.calls.length === 0)).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
     });
 
-    it('waits as long as a part takes once a worker has answered', async () => {
+    it('gives up without calling it a stall when a worker reports it could not start', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const onStalled = vi.fn();
+      const startWorker = () => {
+        const worker = new EchoWorker(250);
+        worker.ready = Promise.reject(new Error("couldn't load the wasm"));
+        return worker;
+      };
+      expect(await readInParts(new Blob([log(400)]), new RecordingSession('candump'), { workers: 2, partSize: 250, startWorker, onStalled }, () => undefined)).toBe(false);
+      expect(onStalled).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits as long as a part takes once a worker has loaded, the first part too', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const onStalled = vi.fn();
       EchoWorker.tasks = [];
       const session = new RecordingSession('candump');
       const content = log(60);
       const partSize = 400;
-      // The second part each worker reads takes far longer than the first-reply limit.
-      const startWorker = () => {
-        let reads = 0;
-        return new EchoWorker(partSize, () => (++reads === 2 ? 2 * FIRST_REPLY_MS : 0));
-      };
+      // Parts take far longer than a worker has to load, as on a slow network share.
+      const startWorker = () => new EchoWorker(partSize, () => 2 * READY_MS);
       const reading = readInParts(new Blob([content]), session, { workers: 1, partSize, startWorker, onStalled }, () => undefined);
       await vi.runAllTimersAsync();
       expect(await reading).toBe(true);

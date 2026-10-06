@@ -14,8 +14,8 @@ export const PART_BYTES = 2 << 20;
 const HEAD_BYTES = 64 << 10;
 /** Bytes searched at a time for the line break that ends a part. */
 const SCAN_BYTES = 64 << 10;
-/** A part worker that hasn't answered its first part by then is taken to have failed to start. */
-export const FIRST_REPLY_MS = 15_000;
+/** A part worker that hasn't loaded its script and wasm by then is taken to have failed to start. */
+export const READY_MS = 15_000;
 
 /** The `Session` calls a read uses. */
 export interface ReadSession {
@@ -36,6 +36,8 @@ export interface PartTask {
 
 /** A worker that reads parts, one at a time. */
 export interface PartWorker {
+  /** Resolves once the worker has loaded; rejects when it can't start or is closed first. */
+  ready: Promise<void>;
   /** The part read by `parse_segment`; rejects when the worker fails or is closed. */
   read(task: PartTask): Promise<Uint8Array>;
   close(): void;
@@ -46,19 +48,19 @@ export interface PartOptions {
   startWorker: () => PartWorker;
   /** Bytes in the first chunk and in each part, `PART_BYTES` unless set. */
   partSize?: number;
-  /** Called when a part worker doesn't answer its first part within `FIRST_REPLY_MS`. */
+  /** Called when a part worker hasn't loaded within `READY_MS`. */
   onStalled?: () => void;
 }
 
 class Stalled extends Error {}
 
-/** `reply`, or a `Stalled` rejection once `ms` have passed without it. */
-function withDeadline<T>(reply: Promise<T>, ms: number): Promise<T> {
+/** `ready`, or a `Stalled` rejection once `ms` have passed without it. */
+function withDeadline(ready: Promise<void>, ms: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Stalled(`a part worker didn't answer in ${ms / 1000} s`)), ms);
+    timer = setTimeout(() => reject(new Stalled(`a part worker didn't start in ${ms / 1000} s`)), ms);
   });
-  return Promise.race([reply, late]).finally(() => clearTimeout(timer));
+  return Promise.race([ready, late]).finally(() => clearTimeout(timer));
 }
 
 async function bytesOf(file: Blob, start: number, end: number): Promise<Uint8Array> {
@@ -100,9 +102,8 @@ export async function partBytes(file: Blob, start: number, end: number, scanByte
  * parts of about `PART_BYTES` by `workers` workers, and each joined as soon as the parts before it
  * are. Otherwise the rest is read here in chunks.
  *
- * Returns false when a part was refused or a worker failed or didn't answer its first part in
- * `FIRST_REPLY_MS`: the session then holds part of the log, and the log must be read again in a
- * new session.
+ * Returns false when a part was refused or a worker failed or didn't load in `READY_MS`: the
+ * session then holds part of the log, and the log must be read again in a new session.
  */
 export async function readInParts(file: Blob, session: ReadSession, options: PartOptions, onProgress: (bytes: number) => void): Promise<boolean> {
   const partSize = options.partSize ?? PART_BYTES;
@@ -154,8 +155,21 @@ export async function readInParts(file: Blob, session: ReadSession, options: Par
     wake = [];
   };
 
+  const giveUp = (err: unknown) => {
+    if (!failed) {
+      console.warn(`Reading the log in parts failed, so it is read again in one worker: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof Stalled) options.onStalled?.();
+    }
+    fail();
+  };
+
   const lane = async (worker: PartWorker) => {
-    let answered = false;
+    try {
+      await withDeadline(worker.ready, READY_MS);
+    } catch (err) {
+      giveUp(err);
+      return;
+    }
     while (!failed && next < starts.length) {
       const index = next++;
       while (!failed && index - joined >= ahead) await new Promise<void>((resume) => wake.push(resume));
@@ -163,15 +177,9 @@ export async function readInParts(file: Blob, session: ReadSession, options: Par
       const start = starts[index];
       const end = Math.min(start + partSize, file.size);
       try {
-        const reply = worker.read({ file, format, head, start, end });
-        done.set(index, await (answered ? reply : withDeadline(reply, FIRST_REPLY_MS)));
-        answered = true;
+        done.set(index, await worker.read({ file, format, head, start, end }));
       } catch (err) {
-        if (!failed) {
-          console.warn(`Reading the log in parts failed, so it is read again in one worker: ${err instanceof Error ? err.message : String(err)}`);
-          if (err instanceof Stalled) options.onStalled?.();
-        }
-        fail();
+        giveUp(err);
         return;
       }
       join();

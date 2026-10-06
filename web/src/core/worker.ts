@@ -64,9 +64,9 @@ function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress = 
 }
 
 /**
- * Set when a part worker can't start (it can't be created, its script fails, or it doesn't answer
- * its first part), so later logs are read in this worker alone. Some browsers, Electron's among
- * them, start no workers from a worker.
+ * Set when a part worker can't start (it can't be created, its script or wasm fails to load, or it
+ * doesn't load in `READY_MS`), so later logs are read in this worker alone. Some browsers,
+ * Electron's among them, start no workers from a worker.
  */
 let partWorkersFailed = false;
 
@@ -77,21 +77,42 @@ function partWorkerCount(file: Blob): number {
   return workers > 1 ? workers : 0;
 }
 
+/** What a part worker posts: that it loaded or couldn't, then a part or the error reading it. */
+type PartReply = { ready: true } | { startError: string } | { segment: Uint8Array } | { error: string };
+
 function startPartWorker(): PartWorker {
   let worker: Worker;
   try {
     worker = new Worker(new URL('./partWorker.ts', import.meta.url), { type: 'module' });
   } catch (err) {
     partWorkersFailed = true;
-    const message = err instanceof Error ? err.message : String(err);
-    return { read: () => Promise.reject(new Error(`a part worker couldn't start: ${message}`)), close() {} };
+    const failure = new Error(`a part worker couldn't start: ${err instanceof Error ? err.message : String(err)}`);
+    return { ready: Promise.reject(failure), read: () => Promise.reject(failure), close() {} };
   }
+  let started: { resolve: () => void; reject: (err: Error) => void } | null = null;
+  const ready = new Promise<void>((resolve, reject) => {
+    started = { resolve, reject };
+  });
+  const cannotStart = (message: string) => {
+    started?.reject(new Error(message));
+    started = null;
+  };
   let pending: { resolve: (segment: Uint8Array) => void; reject: (err: Error) => void } | null = null;
   const fail = (message: string) => {
     pending?.reject(new Error(message));
     pending = null;
   };
-  worker.onmessage = (e: MessageEvent<{ segment: Uint8Array } | { error: string }>) => {
+  worker.onmessage = (e: MessageEvent<PartReply>) => {
+    if ('ready' in e.data) {
+      started?.resolve();
+      started = null;
+      return;
+    }
+    if ('startError' in e.data) {
+      partWorkersFailed = true;
+      cannotStart(e.data.startError);
+      return;
+    }
     if ('error' in e.data) fail(e.data.error);
     else pending?.resolve(e.data.segment);
     pending = null;
@@ -100,10 +121,13 @@ function startPartWorker(): PartWorker {
     // Handled here, so it doesn't reach the page as a failure of this worker.
     e.preventDefault();
     partWorkersFailed = true;
-    fail(e.message || 'a part worker stopped');
+    const message = e.message || 'a part worker stopped';
+    cannotStart(message);
+    fail(message);
   };
   worker.onmessageerror = () => fail("a part worker's reply couldn't be read");
   return {
+    ready,
     read(task: PartTask) {
       return new Promise<Uint8Array>((resolve, reject) => {
         pending = { resolve, reject };
@@ -112,6 +136,7 @@ function startPartWorker(): PartWorker {
     },
     close() {
       worker.terminate();
+      cannotStart('closed');
       fail('closed');
     },
   };

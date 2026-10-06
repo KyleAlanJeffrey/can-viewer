@@ -135,6 +135,8 @@ export function App({ core }: { core: CoreApi }) {
   const [live, setLive] = useState<LiveCapture | null>(null);
   const [liveStatus, setLiveStatus] = useState<CaptureStatus | null>(null);
   const [stopping, setStopping] = useState(false);
+  // Set at once, as the state isn't seen by a drop until the next render.
+  const stoppingRef = useRef(false);
   /** The open log is a capture not yet saved to a file, which a reload would lose. */
   const [unsavedCapture, setUnsavedCapture] = useState(false);
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
@@ -301,6 +303,8 @@ export function App({ core }: { core: CoreApi }) {
     setNotKept(null);
     setUnsavedCapture(false);
     setCaptureNotice(null);
+    // A discard prompt left open would name no capture.
+    setDiscardThen(null);
     setLogVersion((v) => v + 1);
     viewState.clearScope('log');
     videoSession.close();
@@ -483,6 +487,7 @@ export function App({ core }: { core: CoreApi }) {
       const capture = liveRef.current;
       if (!capture) return;
       liveRef.current = null;
+      stoppingRef.current = true;
       setStopping(true);
       try {
         await serially(async () => {
@@ -511,6 +516,7 @@ export function App({ core }: { core: CoreApi }) {
         showNoLog();
         setError(`The capture couldn't be finished: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
+        stoppingRef.current = false;
         setStopping(false);
       }
     },
@@ -580,7 +586,8 @@ export function App({ core }: { core: CoreApi }) {
       async (write) => {
         if (!write) return;
         const saved = await run(label, async () => {
-          const blob = await core.exportLog('candump');
+          // Queued, so it comes after the last frames and the end of a capture still stopping.
+          const blob = await serially(() => core.exportLog('candump'));
           await write(blob);
           await keepSavedCapture(name, blob);
         });
@@ -799,6 +806,10 @@ export function App({ core }: { core: CoreApi }) {
       const isDbc = (f: File) => f.name.toLowerCase().endsWith('.dbc');
       if (liveRef.current && files.some((f) => !isDbc(f))) {
         setError('Stop the capture before opening a log or a video.');
+        return;
+      }
+      if (stoppingRef.current && files.some((f) => !isDbc(f))) {
+        setError('Wait for the capture to stop, then drop the files again.');
         return;
       }
       // A video goes with the open log, so only a log replaces the capture.
@@ -1090,6 +1101,7 @@ export function App({ core }: { core: CoreApi }) {
               e.target.value = '';
               if (!file) return;
               if (liveRef.current) setError('Stop the capture before opening a log.');
+              else if (stoppingRef.current) setError('Wait for the capture to stop, then open the log again.');
               else unlessUnsavedCapture(() => void openLog(file, file.name));
             }}
           />

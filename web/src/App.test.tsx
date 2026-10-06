@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -339,6 +339,45 @@ describe('App live capture', () => {
     await waitFor(() => expect(frames).toHaveLength(1));
     await screen.findByText(/1 frame \u00b7/);
     expect(screen.getByText('Recording').parentElement!.textContent).not.toMatch(/listen only/i);
+  });
+
+  /** Drops `files` on the window, as the browser does when files are dragged in. */
+  function drop(files: File[]) {
+    const event = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'dataTransfer', { value: { files } });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+  }
+
+  it('refuses a dropped log while the capture is stopping, then asks about the stopped capture', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    const stop = { finish: () => {} };
+    const finished = new Promise<void>((resolve) => (stop.finish = resolve));
+    const endCapture = core.endCapture;
+    core.endCapture = vi.fn<CoreApi['endCapture']>(async () => {
+      await finished;
+      return endCapture();
+    });
+    render(<App core={core} />);
+    await startCapture(port);
+    port.send('t1230\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await waitFor(() => expect(core.endCapture).toHaveBeenCalled());
+    drop([new File(['(1.0) can0 123#00\n'], 'other.log')]);
+    expect((await screen.findByRole('alert')).textContent).toBe('Wait for the capture to stop, then drop the files again.');
+    expect(screen.queryByRole('dialog', { name: 'Discard the capture?' })).toBeNull();
+
+    stop.finish();
+    await screen.findByText(/Not saved/);
+    drop([new File(['(1.0) can0 123#00\n'], 'other.log')]);
+    const confirm = await screen.findByRole('dialog', { name: 'Discard the capture?' });
+    expect(confirm.textContent).toMatch(/capture-\d{8}-\d{6}\.log hasn\u2019t been saved/);
   });
 
   it('keeps no log when no frames came, and says what to check', async () => {

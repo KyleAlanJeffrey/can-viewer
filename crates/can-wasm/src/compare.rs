@@ -139,6 +139,10 @@ pub struct ByteComparison {
     /// `bitFlips` gives them.
     pub flips_a: Vec<u32>,
     pub flips_b: Vec<u32>,
+    /// Per byte, the pairs of frames its bits' flips were counted over: those that both have
+    /// the byte, as `bitFlips` gives them.
+    pub pairs_a: Vec<u32>,
+    pub pairs_b: Vec<u32>,
     /// 0 to 1 per bit, before the log A baseline; 0 for ignored bits.
     pub bit_scores: Vec<f64>,
     pub byte_scores: Vec<u8>,
@@ -1348,6 +1352,15 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
         }
         out
     };
+    let pairs = |p: &Option<Profile>| -> Vec<u32> {
+        let mut out = vec![0; len];
+        if let Some(p) = p {
+            for (k, b) in p.bytes.iter().enumerate() {
+                out[k] = b.pairs();
+            }
+        }
+        out
+    };
     let mut bit_scores = vec![0.0; len * 8];
     let mut byte_scores = vec![0u8; len];
     let mut byte_reasons = vec![String::new(); len];
@@ -1382,6 +1395,8 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
         payloads_b: analysis.b.as_ref().map_or(0, |p| p.payloads),
         flips_a: flips(&analysis.a),
         flips_b: flips(&analysis.b),
+        pairs_a: pairs(&analysis.a),
+        pairs_b: pairs(&analysis.b),
         bit_scores,
         byte_scores,
         byte_reasons,
@@ -2677,6 +2692,7 @@ mod tests {
         assert_eq!(found.bytes[0].pairs(), 299);
 
         let detail = compare_bytes(first_id(&polled), first_id(&polled), COUNTERS_ONLY);
+        assert_eq!(detail.pairs_a, [299; 4]);
         assert_eq!(
             detail.ignored,
             vec![Ignored {
@@ -2759,5 +2775,10 @@ mod tests {
         let detail = compare_bytes(Some(dm1), Some(dm1), NO_RULES);
         assert_eq!(detail.flips_a, dm1.stats.bit_flips);
         assert!(detail.flips_a.iter().all(|&n| n == 0));
+        // 19 pairs of single frames over 8 bytes, 19 pairs of transfers over 20.
+        let mut pairs = vec![19; 20];
+        pairs[..8].fill(38);
+        assert_eq!(detail.pairs_a, pairs);
+        assert_eq!(detail.pairs_a, dm1.stats.flip_counts().pairs);
     }
 }

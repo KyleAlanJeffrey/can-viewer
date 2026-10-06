@@ -1,4 +1,4 @@
-import { dbcId, type ByteLane, type CoreApi, type IdSummary, type LogInfo, type MessageDef, type SeriesInfo, type SignalDef } from '../core/api';
+import { dbcId, type BitFlips, type ByteLane, type CoreApi, type IdSummary, type LogInfo, type MessageDef, type SeriesInfo, type SignalDef } from '../core/api';
 import { ROW_STRIDE, RowBatch } from '../core/rows';
 
 export interface RowSpec {
@@ -60,6 +60,13 @@ export function summary(fields: Partial<IdSummary> & Pick<IdSummary, 'id'>): IdS
     messageId: null,
     ...fields,
   };
+}
+
+/** Bit flips over `bytes` bytes, each compared in `pairs` pairs of frames, with `flips` changes of the bits it lists (`byte * 8 + bit`). */
+export function bitFlips(bytes: number, pairs: number, flips: Record<number, number> = {}): BitFlips {
+  const counts = new Uint32Array(bytes * 8);
+  for (const [bit, n] of Object.entries(flips)) counts[Number(bit)] = n;
+  return { flips: counts, pairs: new Uint32Array(bytes).fill(pairs) };
 }
 
 export function signal(name: string, fields: Partial<SignalDef> = {}): SignalDef {

@@ -1,7 +1,9 @@
 /// Reading a log file into the core's session: in chunks, or, for a large text or BLF log, in
 /// parts parsed by a pool of workers and joined by the session in file order. The session checks
 /// that each part was read as it would be in the whole file, so a log read in parts is the same
-/// log, with the same `LogInfo`, as one read in chunks (see `crates/can-wasm/src/parts.rs`).
+/// log, with the same `LogInfo`, as one read in chunks (see `crates/can-wasm/src/parts.rs`). An
+/// MF4 log is read whole into the session, which then plans reading its frames in parts that the
+/// workers read and the session merges (see `crates/can-formats/src/mf4/parts.rs`).
 
 /** Bytes read at a time when a log is read in one worker. */
 export const CHUNK_BYTES = 8 << 20;
@@ -16,6 +18,8 @@ const HEAD_BYTES = 64 << 10;
 const SCAN_BYTES = 64 << 10;
 /** A part worker that hasn't loaded its script and wasm by then is taken to have failed to start. */
 export const READY_MS = 15_000;
+/** Bytes of an MF4 log's data, inflated, in each part of its frames. */
+export const FRAME_PART_BYTES = 4 << 20;
 
 /** The `Session` calls a read uses. */
 export interface ReadSession {
@@ -23,6 +27,10 @@ export interface ReadSession {
   segment_format(): string | undefined;
   push_segment(segment: Uint8Array): boolean;
   object_cuts(chunk: Uint8Array, partBytes: number): Float64Array | undefined;
+  plan_parts(partBytes: number): number | undefined;
+  part_task(index: number): Uint8Array | undefined;
+  part_ranges(index: number): Float64Array | undefined;
+  join_part(index: number, part: Uint8Array): number;
 }
 
 /**
@@ -39,12 +47,22 @@ export interface PartTask {
   exact: boolean;
 }
 
+/**
+ * A part of an MF4 log's frames for a worker: `task`, from `part_task`, to read with the bytes of
+ * `file` in `ranges` (`[start, end, ...]`, from `part_ranges`) joined.
+ */
+export interface FramePartTask {
+  file: Blob;
+  task: Uint8Array;
+  ranges: Float64Array;
+}
+
 /** A worker that reads parts, one at a time. */
 export interface PartWorker {
   /** Resolves once the worker has loaded; rejects when it can't start or is closed first. */
   ready: Promise<void>;
-  /** The part read by `parse_segment`; rejects when the worker fails or is closed. */
-  read(task: PartTask): Promise<Uint8Array>;
+  /** The part read by `parse_segment` or `read_mf4_part`; rejects when the worker fails or is closed. */
+  read(task: PartTask | FramePartTask): Promise<Uint8Array>;
   close(): void;
 }
 
@@ -110,6 +128,20 @@ export async function partBytes(file: Blob, start: number, end: number, scanByte
 /** The bytes a part worker reads for `task`. */
 export function taskBytes(task: PartTask): Promise<Uint8Array> {
   return task.exact ? bytesOf(task.file, task.start, task.end) : partBytes(task.file, task.start, task.end);
+}
+
+/** The bytes of `file` in `ranges`, `[start, end, ...]`, joined. */
+export async function rangeBytes(file: Blob, ranges: Float64Array): Promise<Uint8Array> {
+  const pieces: Promise<Uint8Array>[] = [];
+  for (let i = 0; i + 1 < ranges.length; i += 2) pieces.push(bytesOf(file, ranges[i], ranges[i + 1]));
+  const parts = await Promise.all(pieces);
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
 }
 
 /** The parts after the start of the log, `[start, end)` each, in file order. */
@@ -206,7 +238,8 @@ export async function readInParts(file: Blob, session: ReadSession, options: Par
     session.push_chunk(first.subarray(cut));
     onProgress(first.length);
     await readChunks(file, (chunk) => session.push_chunk(chunk), onProgress, first.length, signal);
-    return true;
+    const count = session.plan_parts(FRAME_PART_BYTES);
+    return count === undefined ? true : readFrameParts(file, session, count, options);
   }
   onProgress(cut);
 
@@ -295,4 +328,110 @@ export async function readInParts(file: Blob, session: ReadSession, options: Par
   }
   signal?.throwIfAborted();
   return !failed && joined === ranges.count();
+}
+
+/**
+ * Reads the frames of a log the session planned in `count` parts (MF4), each by a worker from the
+ * bytes of `file` it needs, and joins each as soon as the session asks for it: the session merges
+ * the parts' frames by time, so it asks for them in no fixed order. The workers read ahead in the
+ * plan's order, at most two parts per worker beyond those joined, but the part the session waits
+ * for is read next, so the read never stalls. Returns false, and rejects on abort, as `readInParts`.
+ */
+async function readFrameParts(file: Blob, session: ReadSession, count: number, options: PartOptions): Promise<boolean> {
+  const { signal } = options;
+  const ahead = 2 * options.workers;
+  const done = new Map<number, Uint8Array>();
+  const started = new Uint8Array(count);
+  let next = 0;
+  let needs = 0;
+  let reading = 0;
+  let failed = false;
+  let wake: (() => void)[] = [];
+  const workers: PartWorker[] = [];
+
+  const wakeAll = () => {
+    for (const resume of wake) resume();
+    wake = [];
+  };
+
+  const fail = () => {
+    failed = true;
+    for (const worker of workers) worker.close();
+    wakeAll();
+  };
+
+  const giveUp = (err: unknown) => {
+    if (!failed) {
+      console.warn(`Reading the log in parts failed, so it is read again in one worker: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof Stalled) options.onStalled?.();
+    }
+    fail();
+  };
+
+  /** The part to read next, -1 when none is left, or undefined to wait for a part to be joined. */
+  const pick = (): number | undefined => {
+    if (needs >= 0 && !started[needs]) return needs;
+    while (next < count && started[next]) next++;
+    if (next === count) return -1;
+    return reading + done.size < ahead ? next : undefined;
+  };
+
+  const join = () => {
+    for (let part = done.get(needs); part && !failed; part = done.get(needs)) {
+      done.delete(needs);
+      let joined = -2;
+      try {
+        joined = session.join_part(needs, part);
+      } finally {
+        if (joined === -2) fail();
+      }
+      if (joined === -2) return;
+      needs = joined;
+    }
+    wakeAll();
+  };
+
+  const lane = async (worker: PartWorker) => {
+    try {
+      await withDeadline(worker.ready, READY_MS);
+    } catch (err) {
+      giveUp(err);
+      return;
+    }
+    while (!failed && needs >= 0) {
+      let index = pick();
+      while (index === undefined && !failed) {
+        await new Promise<void>((resume) => wake.push(resume));
+        index = pick();
+      }
+      if (failed || needs < 0 || index === undefined || index < 0) return;
+      started[index] = 1;
+      reading += 1;
+      try {
+        const task = session.part_task(index);
+        const ranges = session.part_ranges(index);
+        if (!task || !ranges) throw new Error(`part ${index} of the log isn't planned`);
+        done.set(index, await worker.read({ file, task, ranges }));
+      } catch (err) {
+        giveUp(err);
+        return;
+      } finally {
+        reading -= 1;
+      }
+      join();
+    }
+  };
+
+  // Failing first means the parts the closed workers no longer read draw no warning.
+  const stop = () => fail();
+  signal?.addEventListener('abort', stop);
+  try {
+    for (let i = 0; i < Math.min(options.workers, count); i++) workers.push(options.startWorker());
+    await Promise.all(workers.map(lane));
+  } finally {
+    signal?.removeEventListener('abort', stop);
+    for (const worker of workers) worker.close();
+  }
+  signal?.throwIfAborted();
+  return !failed && needs === -1;
 }

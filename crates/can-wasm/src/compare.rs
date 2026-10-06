@@ -1436,11 +1436,11 @@ pub struct LogB {
 #[wasm_bindgen]
 impl Session {
     /// Drop log B, then start reading a new one: the file's name and size, as for the open log.
-    /// Push its bytes with [`Session::compare_push_chunk`] and end with
-    /// [`Session::compare_finish`]. Log B may take what the open log leaves of
-    /// [`COMPARE_MEMORY_BUDGET`]; a file likely to need more is refused once its format is
-    /// known, and one that turns out to need more once it does, with an error from the next
-    /// call.
+    /// Push its bytes with [`Session::compare_push_chunk`], and perhaps its parts with
+    /// [`Session::compare_push_segment`], and end with [`Session::compare_finish`]. Log B may
+    /// take what the open log leaves of [`COMPARE_MEMORY_BUDGET`]; a file likely to need more
+    /// is refused once its format is known, and one that turns out to need more once it does,
+    /// with an error from the next call.
     pub fn compare_begin(&mut self, name: &str, total_bytes: f64) {
         self.log_b = None;
         let mut log = LogB::default();
@@ -1459,6 +1459,19 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// Like [`Session::segment_format`], for log B.
+    #[must_use]
+    pub fn compare_segment_format(&self) -> Option<String> {
+        self.log_b.as_ref()?.input.segment_format()
+    }
+
+    /// Like [`Session::push_segment`], for log B: false when the part can't be joined, and log B
+    /// must be read again from [`Session::compare_begin`]. Fails as
+    /// [`Session::compare_push_chunk`] does once log B outgrows its memory budget.
+    pub fn compare_push_segment(&mut self, segment: &[u8]) -> Result<bool, JsError> {
+        self.push_segment_of_b(segment).map_err(js_err)
     }
 
     /// Flush log B's parser and return its JSON `LogInfo`.
@@ -1590,6 +1603,18 @@ impl Session {
         self.preview = None;
         self.export = VecDeque::new();
         Ok(())
+    }
+
+    fn push_segment_of_b(&mut self, segment: &[u8]) -> Result<bool, String> {
+        let Some(log) = &mut self.log_b else {
+            return Ok(false);
+        };
+        let joined = log.input.push_part(segment, &mut log.store).is_ok();
+        if log.input.refused {
+            log.store = FrameStore::default();
+            return Err(too_large(&log.input.file_name));
+        }
+        Ok(joined)
     }
 
     fn finished_b(&self) -> Option<&LogB> {
@@ -2396,6 +2421,34 @@ mod tests {
         session.compare_begin("small.log", log.len() as f64);
         assert!(session.compare_push_chunk(log.as_bytes()).is_ok());
         assert!(session.compare_finish().is_ok());
+    }
+
+    #[test]
+    fn a_log_b_read_in_parts_is_refused_once_it_outgrows_its_budget() {
+        let mut s = session();
+        let chunk = candump(100, 10, "0C9").repeat(50);
+        // Its size suggests it fits.
+        s.compare_begin("short.log", 0.0);
+        s.log_b.as_mut().unwrap().input.limit = Some(256 << 10);
+        assert!(s.compare_push_chunk(chunk.as_bytes()).is_ok());
+        let format = s.compare_segment_format().unwrap();
+        let mut parts = 0;
+        let refused = loop {
+            let part = crate::parse_segment(&format, chunk.as_bytes(), chunk.as_bytes()).unwrap();
+            match s.push_segment_of_b(&part) {
+                Ok(joined) => assert!(joined),
+                Err(message) => break message,
+            }
+            parts += 1;
+            assert!(parts < 100, "never refused");
+        };
+        assert!(parts > 0);
+        assert_eq!(refused, too_large("short.log"));
+        let log = s.log_b.as_ref().unwrap();
+        assert!(log.store.is_empty(), "its frames are dropped");
+        assert_eq!(s.compare_segment_format(), None);
+        assert_eq!(s.push_segment_of_b(b"FCP1"), Err(too_large("short.log")));
+        assert_eq!(s.store.len(), 11, "log A stays");
     }
 
     #[test]

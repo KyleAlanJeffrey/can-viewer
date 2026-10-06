@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 mod flips;
 mod segment;
 
-pub use segment::SegmentError;
+pub use segment::{SegmentError, TimeShift};
 
 use flips::FlipTally;
 

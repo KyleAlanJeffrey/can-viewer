@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CircleCheck } from 'lucide-react';
-import type { CompareOptions, IdComparison, LogInfo } from '../../core/api';
+import { isAbort, type CompareOptions, type IdComparison, type LogInfo } from '../../core/api';
 import { formatCount, formatDuration, noFramesMessage } from '../../format';
 import { forget, loadSaved, save } from '../../session';
 import type { SelectedByte } from '../reverse/ByteMatrix';
@@ -95,6 +95,9 @@ function CompareLogs({ ctx }: ViewProps) {
           throw new Error(empty);
         }
         info = read;
+      } catch (e) {
+        // A log opened or a capture started meanwhile replaced it; that call reports its own outcome.
+        if (!isAbort(e)) throw e;
       } finally {
         setReading(null);
       }

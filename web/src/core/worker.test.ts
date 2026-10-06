@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BitFlips } from './api';
+import { LOG_SUPERSEDED, type BitFlips } from './api';
 import type { Request } from './worker';
 
 class FakeSession {
@@ -9,6 +9,7 @@ class FakeSession {
   pushed: Uint8Array[] = [];
   hasB = false;
   freed = false;
+  finished = false;
   /** Bytes given to `push_chunk`. */
   read = 0;
   constructor() {
@@ -53,8 +54,11 @@ class FakeSession {
   }
   set_file_name() {}
   reserve_for_bytes() {}
+  /** Called after each chunk is pushed. */
+  static onPush: (() => void) | null = null;
   push_chunk(chunk: Uint8Array) {
     this.read += chunk.length;
+    FakeSession.onPush?.();
   }
   segment_format() {
     return 'candump';
@@ -63,12 +67,36 @@ class FakeSession {
     return true;
   }
   finish() {
+    this.finished = true;
     return JSON.stringify({ frames: 10, durationS: 30 });
   }
+  /** Calls to `compare_begin`. */
+  compareBegun = 0;
   compare_begin(name: string) {
     if (name === 'broken.log') throw new Error('No CAN frames');
+    this.compareBegun += 1;
   }
-  compare_push_chunk() {}
+  /** Bytes given to `compare_push_chunk`. */
+  compareRead = 0;
+  compare_push_chunk(chunk: Uint8Array) {
+    this.compareRead += chunk.length;
+    FakeSession.onPush?.();
+  }
+  compare_segment_format() {
+    return 'candump';
+  }
+  /** The part of log B `compare_push_segment` refuses, counted from 0. */
+  static refusePart = -1;
+  /** The part of log B that takes it over its memory budget, counted from 0. */
+  static throwPart = -1;
+  /** Parts of log B joined. */
+  compareParts = 0;
+  compare_push_segment() {
+    if (this.compareParts === FakeSession.refusePart) return false;
+    if (this.compareParts === FakeSession.throwPart) throw new Error('door-lock.log is too large to read beside the open log in this browser\'s memory.');
+    this.compareParts += 1;
+    return true;
+  }
   compare_finish() {
     this.hasB = true;
     return JSON.stringify({ frames: 3, durationS: 28 });
@@ -76,8 +104,11 @@ class FakeSession {
   compare_log_info() {
     return this.hasB ? JSON.stringify({ frames: 3, durationS: 28 }) : undefined;
   }
+  /** Calls to `close_compare_log`. */
+  compareClosed = 0;
   close_compare_log() {
     this.hasB = false;
+    this.compareClosed += 1;
   }
   swap_compare_log() {
     return JSON.stringify({ frames: 3, durationS: 28 });
@@ -228,7 +259,263 @@ describe('core worker', () => {
         expect(FakeSession.made[0].read).toBe(size);
         vi.mocked(console.warn).mockRestore();
       });
+
+      it(`reads log B again in one worker when a part worker ${how}, and later logs in one worker`, async () => {
+        FakeSession.made = [];
+        const port = await startWorker();
+        Object.assign(port, { location: 'http://localhost/assets/worker.js' });
+        vi.stubGlobal('navigator', { hardwareConcurrency: 4 });
+        vi.stubGlobal('Worker', PartWorker);
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        started.mockClear();
+
+        expect(await call(port, 1, 'openCompareLog', bigLog(), 'door-lock.log')).toMatchObject({ id: 1, result: { name: 'door-lock.log', frames: 3 } });
+        expect(started).toHaveBeenCalledTimes(3);
+        // Log B is read in the session the worker made as it loaded.
+        const [withB] = FakeSession.made;
+        expect(FakeSession.made).toHaveLength(1);
+        expect(withB.compareBegun).toBe(2);
+        expect(withB.compareRead).toBe((2 << 20) + size);
+        expect(withB.hasB).toBe(true);
+
+        expect(await call(port, 2, 'openLog', bigLog(), 'drive.log')).toMatchObject({ id: 2, result: { name: 'drive.log' } });
+        expect(started).toHaveBeenCalledTimes(3);
+        expect(FakeSession.made[1].read).toBe(size);
+        vi.mocked(console.warn).mockRestore();
+      });
     }
+
+    describe('log B', () => {
+      /** A part worker that loads, then answers each part with a segment. */
+      class AnsweringPartWorker {
+        static made = 0;
+        onmessage: ((e: { data: unknown }) => void) | null = null;
+        constructor() {
+          AnsweringPartWorker.made += 1;
+          queueMicrotask(() => this.onmessage?.({ data: { ready: true } }));
+        }
+        postMessage() {
+          queueMicrotask(() => this.onmessage?.({ data: { segment: new Uint8Array(1) } }));
+        }
+        terminate() {}
+      }
+      /** The 2 MiB parts after the first, which the core worker reads itself. */
+      const parts = Math.ceil((size - (2 << 20)) / (2 << 20));
+
+      async function startAnswering() {
+        FakeSession.made = [];
+        const port = await startWorker();
+        Object.assign(port, { location: 'http://localhost/assets/worker.js' });
+        vi.stubGlobal('navigator', { hardwareConcurrency: 4 });
+        vi.stubGlobal('Worker', AnsweringPartWorker);
+        AnsweringPartWorker.made = 0;
+        return port;
+      }
+
+      afterEach(() => {
+        FakeSession.refusePart = -1;
+        FakeSession.throwPart = -1;
+      });
+
+      it('is read in parts, each joined into log B, beside the open log', async () => {
+        const port = await startAnswering();
+        await call(port, 1, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+        const withA = FakeSession.made[1];
+        const read = withA.read;
+
+        expect(await call(port, 2, 'openCompareLog', bigLog(), 'door-lock.log')).toMatchObject({ id: 2, result: { name: 'door-lock.log', frames: 3 } });
+        expect(AnsweringPartWorker.made).toBe(3);
+        expect(FakeSession.made).toHaveLength(2);
+        expect(withA.compareBegun).toBe(1);
+        expect(withA.compareRead).toBe(2 << 20);
+        expect(withA.compareParts).toBe(parts);
+        expect(withA.read).toBe(read);
+        expect(withA.hasB).toBe(true);
+      });
+
+      it('is read again in one worker when a part is refused, and later logs still in parts', async () => {
+        const port = await startAnswering();
+        FakeSession.refusePart = 3;
+        expect(await call(port, 1, 'openCompareLog', bigLog(), 'door-lock.log')).toMatchObject({ id: 1, result: { name: 'door-lock.log' } });
+        const [withB] = FakeSession.made;
+        expect(withB.compareBegun).toBe(2);
+        expect(withB.compareRead).toBe((2 << 20) + size);
+        expect(withB.compareParts).toBe(3);
+
+        FakeSession.refusePart = -1;
+        expect(await call(port, 2, 'openCompareLog', bigLog(), 'door-lock.log')).toMatchObject({ id: 2, result: { name: 'door-lock.log' } });
+        expect(AnsweringPartWorker.made).toBe(6);
+        expect(withB.compareParts).toBe(3 + parts);
+      });
+
+      it('is not read again when it outgrows its memory budget in parts, and later logs are still read in parts', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const port = await startAnswering();
+        FakeSession.throwPart = 2;
+        const reply = (await call(port, 1, 'openCompareLog', bigLog(), 'door-lock.log')) as { error?: string };
+        expect(reply.error).toContain('too large');
+        const [withB] = FakeSession.made;
+        expect(withB.compareBegun).toBe(1);
+        expect(withB.compareRead).toBe(2 << 20);
+        expect(withB.compareClosed).toBe(1);
+        expect(warn).not.toHaveBeenCalled();
+
+        FakeSession.throwPart = -1;
+        expect(await call(port, 2, 'openCompareLog', bigLog(), 'door-lock.log')).toMatchObject({ id: 2, result: { name: 'door-lock.log' } });
+        expect(AnsweringPartWorker.made).toBe(6);
+        warn.mockRestore();
+      });
+    });
+  });
+
+  describe('replacing a log that is still being read', () => {
+    const size = 33 << 20;
+    const bigLog = () => new Blob([new Uint8Array(size).fill(10)]);
+    const superseded = (id: number) => ({ id, error: LOG_SUPERSEDED, aborted: true });
+
+    /** A part worker that loads, then reads its part until it is terminated. */
+    class BusyPartWorker {
+      static made: BusyPartWorker[] = [];
+      onmessage: ((e: { data: unknown }) => void) | null = null;
+      tasks = 0;
+      terminated = false;
+      constructor() {
+        BusyPartWorker.made.push(this);
+        queueMicrotask(() => this.onmessage?.({ data: { ready: true } }));
+      }
+      postMessage() {
+        this.tasks += 1;
+      }
+      terminate() {
+        this.terminated = true;
+      }
+    }
+
+    /** A worker whose replies, but not its progress events, land in `replies`. */
+    async function startRecording() {
+      const port = await startWorker();
+      Object.assign(port, { location: 'http://localhost/assets/worker.js' });
+      vi.stubGlobal('Worker', BusyPartWorker);
+      const replies: unknown[] = [];
+      port.postMessage.mockImplementation((message: { event?: string }) => message.event || replies.push(message));
+      const send = (id: number, method: Request['method'], ...args: unknown[]) => port.onmessage?.({ data: { id, method, args } });
+      return { replies, send };
+    }
+
+    const reading = (from: number) => () => BusyPartWorker.made.length === from + 3 && BusyPartWorker.made.slice(from).every((worker) => worker.tasks === 1);
+
+    beforeEach(() => {
+      BusyPartWorker.made = [];
+      FakeSession.made = [];
+      FakeSession.onPush = null;
+      vi.stubGlobal('navigator', { hardwareConcurrency: 4 });
+    });
+
+    it('stops a read in parts at once, terminating its part workers, when another log is opened or a capture starts', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { replies, send } = await startRecording();
+
+      send(1, 'openLog', bigLog(), 'drive.log');
+      await vi.waitUntil(reading(0));
+      // The worker made one session as it loaded.
+      const stale = FakeSession.made[1];
+      send(2, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      await vi.waitUntil(() => replies.length === 2);
+      expect(replies[0]).toEqual(superseded(1));
+      expect(replies[1]).toMatchObject({ id: 2, result: { name: 'idle.log', frames: 10 } });
+      expect(BusyPartWorker.made.every((worker) => worker.terminated)).toBe(true);
+      expect(stale.freed).toBe(true);
+      expect(stale.finished).toBe(false);
+      // The stale read's, an empty one left in its place, and the new log's: no read again in one worker.
+      expect(FakeSession.made).toHaveLength(4);
+
+      // Stopping them is no failure, so the next large log is read in parts again.
+      send(3, 'openLog', bigLog(), 'drive.log');
+      await vi.waitUntil(reading(3));
+      send(4, 'startCapture', 'capture-1.log', 'can0', 1000);
+      await vi.waitUntil(() => replies.length === 4);
+      expect(replies[2]).toEqual(superseded(3));
+      expect(replies[3]).toMatchObject({ id: 4, result: { name: 'capture-1.log', format: 'capture' } });
+      expect(BusyPartWorker.made.every((worker) => worker.terminated)).toBe(true);
+      expect(FakeSession.made).toHaveLength(7);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('never starts an openLog that a newer one follows in the queue', async () => {
+      const { replies, send } = await startRecording();
+      send(1, 'openLog', bigLog(), 'drive.log');
+      await vi.waitUntil(reading(0));
+      send(2, 'openLog', bigLog(), 'drive2.log');
+      send(3, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      await vi.waitUntil(() => replies.length === 3);
+      expect(replies).toEqual([superseded(1), superseded(2), expect.objectContaining({ id: 3, result: expect.objectContaining({ name: 'idle.log' }) })]);
+      // Only the first read started part workers.
+      expect(BusyPartWorker.made).toHaveLength(3);
+    });
+
+    it('stops reading log B in parts when another log is opened, terminating its part workers', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { replies, send } = await startRecording();
+      send(1, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      await vi.waitUntil(() => replies.length === 1);
+      send(2, 'openCompareLog', bigLog(), 'door-lock.log');
+      await vi.waitUntil(reading(0));
+      send(3, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle2.log');
+      await vi.waitUntil(() => replies.length === 3);
+      expect(replies[1]).toEqual(superseded(2));
+      expect(replies[2]).toMatchObject({ id: 3, result: { name: 'idle2.log' } });
+      expect(BusyPartWorker.made.every((worker) => worker.terminated)).toBe(true);
+      const withB = FakeSession.made[1];
+      expect(withB.compareBegun).toBe(1);
+      expect(withB.compareRead).toBe(2 << 20);
+      expect(withB.compareClosed).toBe(1);
+      send(4, 'compareLogInfo');
+      await vi.waitUntil(() => replies.length === 4);
+      expect(replies[3]).toEqual({ id: 4, result: null });
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('stops reading log B in one worker between chunks when another log is opened', async () => {
+      vi.stubGlobal('navigator', { hardwareConcurrency: 1 });
+      const { replies, send } = await startRecording();
+      send(1, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      await vi.waitUntil(() => replies.length === 1);
+      FakeSession.onPush = () => {
+        FakeSession.onPush = null;
+        send(3, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle2.log');
+      };
+      send(2, 'openCompareLog', bigLog(), 'door-lock.log');
+      await vi.waitUntil(() => replies.length === 3);
+      expect(replies[1]).toEqual(superseded(2));
+      expect(replies[2]).toMatchObject({ id: 3, result: { name: 'idle2.log' } });
+      const withB = FakeSession.made[1];
+      expect(withB.compareRead).toBe(8 << 20);
+      expect(withB.compareClosed).toBe(1);
+      expect(BusyPartWorker.made).toHaveLength(0);
+      send(4, 'compareLogInfo');
+      await vi.waitUntil(() => replies.length === 4);
+      expect(replies[3]).toEqual({ id: 4, result: null });
+    });
+
+    it('stops a read in one worker between chunks', async () => {
+      vi.stubGlobal('navigator', { hardwareConcurrency: 1 });
+      const { replies, send } = await startRecording();
+      // Sent as the first chunk is read, as the page's message would arrive between chunks.
+      FakeSession.onPush = () => {
+        FakeSession.onPush = null;
+        send(2, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      };
+      send(1, 'openLog', bigLog(), 'drive.log');
+      await vi.waitUntil(() => replies.length === 2);
+      const stale = FakeSession.made[1];
+      expect(replies[0]).toEqual(superseded(1));
+      expect(replies[1]).toMatchObject({ id: 2, result: { name: 'idle.log' } });
+      expect(stale.read).toBe(8 << 20);
+      expect(stale.finished).toBe(false);
+      expect(BusyPartWorker.made).toHaveLength(0);
+    });
   });
 
   it('answers a call that trapped, then rethrows the trap outside the call for the page to restart it', async () => {

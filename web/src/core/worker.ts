@@ -1,9 +1,10 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
-/// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
+/// answered with `{ id, result }` or `{ id, error }`, plus `aborted: true` for an `AbortError`;
+/// parse progress is pushed as events.
 
-import type { BitFlips, CompareOptions, Database, DiscoveryHints, ExportFormat, FindRule, FrameFilter, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
+import { LOG_SUPERSEDED, isAbort, type BitFlips, type CompareOptions, type Database, type DiscoveryHints, type ExportFormat, type FindRule, type FrameFilter, type LogInfo, type RawSignalSpec, type ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
-import { readChunks as readChunksFrom, readInParts, type PartTask, type PartWorker } from './readInParts';
+import { readChunks, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 /** Smaller logs are read in this worker alone: starting part workers would cost more than they save. */
 const PARTS_MIN_BYTES = 32 << 20;
@@ -58,9 +59,25 @@ function progressOf(file: Blob): (bytes: number) => void {
   };
 }
 
-/** Reads `file` in chunks through `push`, reporting progress. */
-function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress = progressOf(file)) {
-  return readChunksFrom(file, push, onProgress);
+/**
+ * The newest request that replaces the log: an `openLog` or `openCompareLog` sent before it
+ * stops, or never starts.
+ */
+let latestLogRequest = 0;
+/** Aborted when a request that replaces the log arrives while `openLog` or `openCompareLog` reads. */
+let reading: AbortController | null = null;
+
+const superseded = () => new DOMException(LOG_SUPERSEDED, 'AbortError');
+
+/** Starts a read that a newer `openLog` or `startCapture` stops; throws when one is already queued. */
+function startReading(): AbortController {
+  if (currentId < latestLogRequest) throw superseded();
+  reading = new AbortController();
+  return reading;
+}
+
+function endReading(read: AbortController) {
+  if (reading === read) reading = null;
 }
 
 /**
@@ -69,6 +86,10 @@ function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress = 
  * Electron's among them, start no workers from a worker.
  */
 let partWorkersFailed = false;
+
+const onStalled = () => {
+  partWorkersFailed = true;
+};
 
 /** How many part workers to read `file` with, or 0 to read it here. One core is left for this worker. */
 function partWorkerCount(file: Blob): number {
@@ -142,6 +163,33 @@ function startPartWorker(): PartWorker {
   };
 }
 
+/**
+ * Reads `file` into `log`, in parts when it is large enough. When the parts fail, `restart` leaves
+ * `log` empty, as it was before the read, and the file is read again in this worker alone.
+ */
+async function readLog(file: Blob, log: ReadSession, restart: () => void, signal: AbortSignal) {
+  const workers = partWorkerCount(file);
+  const progress = progressOf(file);
+  const read = workers > 0 && (await readInParts(file, log, { workers, startWorker: startPartWorker, onStalled, signal }, progress));
+  if (read) return;
+  // It holds part of the log.
+  if (workers > 0) restart();
+  await readChunks(file, (chunk) => log.push_chunk(chunk), progress, 0, signal);
+}
+
+/** The open log, in whichever session is current. */
+const openLogInput: ReadSession = {
+  push_chunk: (chunk) => session.push_chunk(chunk),
+  segment_format: () => session.segment_format(),
+  push_segment: (segment) => session.push_segment(segment),
+};
+
+const logBInput: ReadSession = {
+  push_chunk: (chunk) => session.compare_push_chunk(chunk),
+  segment_format: () => session.compare_segment_format(),
+  push_segment: (segment) => session.compare_push_segment(segment),
+};
+
 function freshSession(): Session {
   const next = new Session();
   if (databasesJson) next.set_databases(databasesJson);
@@ -167,29 +215,24 @@ function flipCounts(packed: Uint32Array): [BitFlips, Transferable[]] {
 
 const handlers = {
   async openLog(file: Blob, name: string) {
+    const thisRead = startReading();
+    const { signal } = thisRead;
     session.free();
     session = freshSession();
     compareMeta = null;
     const started = performance.now();
     try {
-      session.set_file_name(name);
-      session.reserve_for_bytes(file.size);
-      const workers = partWorkerCount(file);
-      const progress = progressOf(file);
-      const onStalled = () => {
-        partWorkersFailed = true;
+      const begin = () => {
+        session.set_file_name(name);
+        session.reserve_for_bytes(file.size);
       };
-      const read = workers > 0 && (await readInParts(file, session, { workers, startWorker: startPartWorker, onStalled }, progress));
-      if (!read) {
-        if (workers > 0) {
-          // It holds part of the log.
-          session.free();
-          session = freshSession();
-          session.set_file_name(name);
-          session.reserve_for_bytes(file.size);
-        }
-        await readChunks(file, (chunk) => session.push_chunk(chunk), progress);
-      }
+      begin();
+      const restart = () => {
+        session.free();
+        session = freshSession();
+        begin();
+      };
+      await readLog(file, openLogInput, restart, signal);
       const json = session.finish();
       logMeta = { name, parseMs: performance.now() - started };
       return withMemory(json, logMeta);
@@ -202,6 +245,8 @@ const handlers = {
       }
       session = freshSession();
       throw err;
+    } finally {
+      endReading(thisRead);
     }
   },
   startCapture(name: string, channel: string, startedAtMs: number) {
@@ -252,11 +297,13 @@ const handlers = {
   },
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
   async openCompareLog(file: Blob, name: string) {
+    const thisRead = startReading();
     compareMeta = null;
     const started = performance.now();
     try {
-      session.compare_begin(name, file.size);
-      await readChunks(file, (chunk) => session.compare_push_chunk(chunk));
+      const begin = () => session.compare_begin(name, file.size);
+      begin();
+      await readLog(file, logBInput, begin, thisRead.signal);
       const json = session.compare_finish();
       compareMeta = { name, parseMs: performance.now() - started };
       return withMemory(json, compareMeta);
@@ -267,6 +314,8 @@ const handlers = {
         // A session that trapped mid-call is replaced anyway.
       }
       throw err;
+    } finally {
+      endReading(thisRead);
     }
   },
   compareLogInfo() {
@@ -323,7 +372,9 @@ function enqueue(task: () => Promise<void>) {
 }
 
 function answerError(id: number, err: unknown) {
-  port.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
+  const message = err instanceof Error || err instanceof DOMException ? err.message : String(err);
+  // The page gets only the message, so it is told which errors to rebuild as an AbortError.
+  port.postMessage(isAbort(err) ? { id, error: message, aborted: true } : { id, error: message });
   // A trapped instance can't be trusted afterwards. Thrown uncaught, it reaches the page's
   // worker.onerror, which starts a new worker.
   if (err instanceof WebAssembly.RuntimeError) {
@@ -385,6 +436,11 @@ async function countStep(id: number, filter: FrameFilter) {
 
 port.onmessage = (e) => {
   const { id, method, args } = e.data;
+  // Handled on arrival, not in the queue, so a read in progress stops now.
+  if (method === 'openLog' || method === 'startCapture') {
+    latestLogRequest = id;
+    reading?.abort(superseded());
+  }
   if (method === 'countFilterMatches' || method === 'setTraceFilter') latestCount = id;
   if (method === 'countFilterMatches') enqueue(() => countStep(id, args[0] as FrameFilter));
   else enqueue(() => run(id, method, args));

@@ -23,7 +23,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use can_core::{flags, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
+use can_core::{flags, FrameKind, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -132,7 +132,11 @@ pub struct ByteComparison {
     pub len: usize,
     pub frames_a: u32,
     pub frames_b: u32,
-    /// Toggles between consecutive frames, indexed `byte * 8 + bit`, as `bitFlips` gives them.
+    /// Data frames and reassembled transfers, the frames `flips_a` and `flips_b` pair up.
+    pub payloads_a: u32,
+    pub payloads_b: u32,
+    /// Toggles from the previous frame of the same kind, indexed `byte * 8 + bit`, as
+    /// `bitFlips` gives them.
     pub flips_a: Vec<u32>,
     pub flips_b: Vec<u32>,
     /// 0 to 1 per bit, before the log A baseline; 0 for ignored bits.
@@ -157,12 +161,13 @@ pub struct Side<'a> {
 
 /// How one payload byte behaved over a stretch of frames.
 #[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct ByteProfile {
     /// Frames per value.
     values: [u32; 256],
-    /// Consecutive frame pairs per XOR of their values.
+    /// Consecutive frame pairs of the same kind per XOR of their values.
     xors: [u32; 256],
-    /// Consecutive frame pairs per difference, later minus earlier, modulo 256.
+    /// The same pairs per difference, later minus earlier, modulo 256.
     steps: [u32; 256],
     /// The same for the high nibble, modulo 16.
     high_steps: [u32; 16],
@@ -194,8 +199,13 @@ impl ByteProfile {
     }
 }
 
+/// Every frame counts towards `frames`, for the rate. The rest describes payloads, so leaves
+/// out remote frames, which carry none, and error frames.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct Profile {
     frames: u32,
+    /// Data frames and reassembled transfers.
+    payloads: u32,
     /// Seconds the frames were taken from, to turn counts into rates.
     span_s: f64,
     max_len: usize,
@@ -222,10 +232,21 @@ fn sum_where(hist: &[u32], keep: impl Fn(usize) -> bool) -> u32 {
         .sum()
 }
 
-/// The first `len` bytes of each of `frames`.
-fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profile {
+fn carries_payload(frame_flags: u8) -> bool {
+    matches!(
+        FrameKind::of(frame_flags),
+        FrameKind::Data | FrameKind::Reassembled
+    )
+}
+
+/// The first `len` bytes of each of `frames` that carries a payload, each paired with the
+/// previous one of its kind as [`IdStats::bit_flips`] pairs them: a data frame with a data
+/// frame and a reassembled transfer with a transfer, whatever remote frames come between.
+fn profile(side: Side<'_>, frames: &[u32], len: usize, span_s: f64) -> Profile {
+    let store = side.store;
     let mut p = Profile {
-        frames: 0,
+        frames: frames.len() as u32,
+        payloads: 0,
         span_s,
         max_len: 0,
         lengths: 0,
@@ -236,13 +257,25 @@ fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profi
         sum_last: [0; 256],
         xor_all: [0; 256],
     };
-    let mut prev: &[u8] = &[];
-    let stretches = frames.len().min(STRETCHES);
-    for (i, &index) in frames.iter().enumerate() {
-        let stretch = 1u64 << (i * stretches / frames.len());
-        let frame = store.frame(index as usize);
+    let with_payload = || {
+        frames
+            .iter()
+            .map(|&index| store.frame(index as usize))
+            .filter(|frame| carries_payload(frame.flags))
+    };
+    // Counting takes a second pass over the frames, so only for an ID that needs it.
+    let payloads = if side.stats.flags & (flags::RTR | flags::ERROR) == 0 {
+        frames.len()
+    } else {
+        with_payload().count()
+    };
+    p.payloads = payloads as u32;
+    let stretches = payloads.min(STRETCHES);
+    let mut prev_of_kind: [&[u8]; 4] = [&[]; 4];
+    for (i, frame) in with_payload().enumerate() {
+        let stretch = 1u64 << (i * stretches / payloads);
         let data = &frame.data[..frame.data.len().min(len)];
-        p.frames += 1;
+        let prev = &mut prev_of_kind[FrameKind::of(frame.flags) as usize];
         p.max_len = p.max_len.max(data.len());
         p.lengths |= 1 << data.len().min(127);
         if frame.flags & flags::FD != 0 {
@@ -267,7 +300,7 @@ fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profi
             p.sum_last[usize::from(data[len - 1].wrapping_mul(2).wrapping_sub(sum))] += 1;
             p.xor_all[usize::from(xor)] += 1;
         }
-        prev = data;
+        *prev = data;
     }
     p
 }
@@ -1095,7 +1128,7 @@ fn len_of(side: Option<Side<'_>>) -> usize {
 }
 
 fn whole(side: Side<'_>, len: usize) -> Profile {
-    profile(side.store, &side.stats.frames, len, duration_s(side.store))
+    profile(side, &side.stats.frames, len, duration_s(side.store))
 }
 
 /// The ID's frames in the first and second half of the log's time span.
@@ -1106,8 +1139,8 @@ fn halves(side: Side<'_>, len: usize) -> (Profile, Profile) {
     let split = side.store.first_of_id_at_or_after(side.stats, mid);
     let (early, late) = side.stats.frames.split_at(split);
     (
-        profile(side.store, early, len, span / 2.0),
-        profile(side.store, late, len, span / 2.0),
+        profile(side, early, len, span / 2.0),
+        profile(side, late, len, span / 2.0),
     )
 }
 
@@ -1345,6 +1378,8 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
         len,
         frames_a: analysis.a.as_ref().map_or(0, |p| p.frames),
         frames_b: analysis.b.as_ref().map_or(0, |p| p.frames),
+        payloads_a: analysis.a.as_ref().map_or(0, |p| p.payloads),
+        payloads_b: analysis.b.as_ref().map_or(0, |p| p.payloads),
         flips_a: flips(&analysis.a),
         flips_b: flips(&analysis.b),
         bit_scores,
@@ -1593,6 +1628,11 @@ mod tests {
             store,
             stats: &store.ids()[0],
         })
+    }
+
+    fn side(store: &FrameStore, id: u32) -> Option<Side<'_>> {
+        let stats = store.ids().iter().find(|s| s.id == id)?;
+        Some(Side { store, stats })
     }
 
     fn find(found: &[IdComparison], id: u32) -> &IdComparison {
@@ -2526,5 +2566,198 @@ mod tests {
         let late = find(&found, 0x10F);
         assert_eq!(late.reason, "Length changes from 8 to 6 bytes");
         assert_eq!(late.score, 90);
+    }
+
+    /// A log of data frames only: a counter and checksum beside a noisy reading and `state`, an
+    /// ID that takes turns between two lengths, one sent at `hz`, and one with too few frames.
+    fn data_frames_only(seed: u64, seconds: f64, state: u8, hz: f64) -> FrameStore {
+        let mut frames = periodic(0x0C9, 50.0, seconds, |i, _| {
+            let mut p = vec![(i % 16) as u8, noise(i, seed), state, 0];
+            p[3] = p[..3].iter().fold(0x5A, |x, &v| x ^ v);
+            p
+        });
+        frames.extend(periodic(0x1A0, 10.0, seconds, |i, _| {
+            let p = [(i / 20 % 3) as u8, noise(i, seed) & 3, 0, 0, 0, 0, 0, 0];
+            p[..if i % 2 == 0 { 8 } else { 4 }].to_vec()
+        }));
+        frames.extend(periodic(0x2B0, hz, seconds, quiet));
+        frames.extend(periodic(0x3C0, 1.0, 5.0, move |_, _| vec![state]));
+        store(&frames)
+    }
+
+    #[test]
+    fn data_only_logs_score_as_pinned_here() {
+        let a = data_frames_only(1, 60.0, 0, 20.0);
+        let b = data_frames_only(2, 40.0, 1, 40.0);
+        let mut found = Vec::new();
+        for options in [NO_RULES, COUNTERS_ONLY, DEFAULTS] {
+            for c in compare_logs(&a, &b, options) {
+                let detail = compare_bytes(side(&a, c.id), side(&b, c.id), options);
+                let flips: u32 = detail.flips_a.iter().chain(&detail.flips_b).sum();
+                let bits: f64 = detail.bit_scores.iter().sum();
+                found.push(format!(
+                    "{:X} {} {}; bytes {:?} {:?}; flips {flips}; bits {bits:.6}",
+                    c.id, c.score, c.reason, c.bytes, detail.byte_scores
+                ));
+            }
+        }
+        // A golden test: a change to this output changes how logs without remote frames score.
+        let pinned = [
+            "C9 95 Byte 2 holds a different value; bytes [2] [0, 1, 95, 1]; flips 32744; bits 1.028563",
+            "2B0 80 Rate doubled; bytes [] [0, 0, 0, 0, 0, 0, 0, 0]; flips 0; bits 0.000000",
+            "1A0 3 No significant changes; bytes [] [1, 3, 0, 0, 0, 0, 0, 0]; flips 1045; bits 0.053974",
+            "3C0 0 Too few frames to compare; payloads differ; bytes [] [0]; flips 0; bits 0.000000",
+            "C9 95 Byte 2 holds a different value; bytes [2] [0, 1, 95, 0]; flips 32744; bits 0.986977",
+            "2B0 80 Rate doubled; bytes [] [0, 0, 0, 0, 0, 0, 0, 0]; flips 0; bits 0.000000",
+            "1A0 3 No significant changes; bytes [] [1, 3, 0, 0, 0, 0, 0, 0]; flips 1045; bits 0.053974",
+            "3C0 0 Too few frames to compare; payloads differ; bytes [] [0]; flips 0; bits 0.000000",
+            "C9 95 Byte 2 holds a different value; bytes [2] [0, 0, 95, 0]; flips 32744; bits 0.986977",
+            "2B0 80 Rate doubled; bytes [] [0, 0, 0, 0, 0, 0, 0, 0]; flips 0; bits 0.000000",
+            "1A0 1 No significant changes; bytes [] [1, 0, 0, 0, 0, 0, 0, 0]; flips 1045; bits 0.053974",
+            "3C0 0 Too few frames to compare; payloads differ; bytes [] [0]; flips 0; bits 0.000000",
+        ];
+        assert_eq!(found, pinned);
+    }
+
+    /// `frames` on can0, each with its flags.
+    fn of_kinds(frames: &[(f64, u32, u8, Vec<u8>)]) -> FrameStore {
+        let mut store = FrameStore::new();
+        let channel = store.channel_index(b"can0");
+        for (t, id, frame_flags, data) in frames {
+            store.push(FrameRef {
+                ts_ns: 100 * S + (t * 1e9) as i64,
+                channel,
+                id: *id,
+                flags: *frame_flags,
+                data,
+            });
+        }
+        store.sort_by_time();
+        store
+    }
+
+    /// Data frames of `payload` at 10 Hz for 30 s, each after `before` sent 1 ms earlier.
+    fn interleaved(
+        payload: impl Fn(usize) -> Vec<u8>,
+        before: Option<(u8, Vec<u8>)>,
+    ) -> FrameStore {
+        let mut frames = Vec::new();
+        for i in 0..300 {
+            let t = i as f64 / 10.0;
+            if let Some((frame_flags, data)) = &before {
+                frames.push((t - 0.001, 0x7E8, *frame_flags, data.clone()));
+            }
+            frames.push((t, 0x7E8, 0, payload(i)));
+        }
+        of_kinds(&frames)
+    }
+
+    /// The profile of the store's only ID, with its frame count apart.
+    fn payload_profile(store: &FrameStore) -> (u32, Profile) {
+        let side = first_id(store).unwrap();
+        let len = len_of(Some(side));
+        let p = profile(side, &side.stats.frames, len, 30.0);
+        (p.frames, Profile { frames: 0, ..p })
+    }
+
+    fn counter_and_reading(i: usize) -> Vec<u8> {
+        vec![(i % 16) as u8, 0x40 + (i / 25 % 4) as u8, 0, 0]
+    }
+
+    #[test]
+    fn a_polled_id_profiles_as_its_data_frames_alone() {
+        let alone = interleaved(counter_and_reading, None);
+        let polled = interleaved(counter_and_reading, Some((flags::RTR, vec![])));
+        let (frames, expected) = payload_profile(&alone);
+        let (polled_frames, found) = payload_profile(&polled);
+        assert_eq!((frames, polled_frames), (300, 600));
+        assert_eq!(found, expected);
+        assert_eq!(found.payloads, 300);
+        assert_eq!(found.lengths, 1 << 4, "a remote frame adds no length");
+        assert_eq!(found.bytes[0].pairs(), 299);
+
+        let detail = compare_bytes(first_id(&polled), first_id(&polled), COUNTERS_ONLY);
+        assert_eq!(
+            detail.ignored,
+            vec![Ignored {
+                byte: 0,
+                mask: 0x0F,
+                kind: IgnoredKind::Counter
+            }]
+        );
+        assert_eq!(detail.flips_a[..8], [299, 149, 74, 37, 0, 0, 0, 0]);
+        assert_eq!((detail.frames_a, detail.payloads_a), (600, 300));
+    }
+
+    /// Defensive: no parser puts error frames on a normal ID, as they have IDs of their own.
+    #[test]
+    fn error_frames_on_an_id_leave_its_payloads_alone() {
+        let alone = interleaved(counter_and_reading, None);
+        let with_errors = interleaved(counter_and_reading, Some((flags::ERROR, vec![0xFF; 4])));
+        let (_, expected) = payload_profile(&alone);
+        let (frames, found) = payload_profile(&with_errors);
+        assert_eq!(frames, 600);
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn a_polled_id_of_mixed_lengths_pairs_its_data_frames() {
+        let mixed = |i: usize| {
+            let p = [(i % 16) as u8, 0x20, 0, 0, 0, 0, 0, 0];
+            p[..if i.is_multiple_of(3) { 8 } else { 4 }].to_vec()
+        };
+        let alone = interleaved(mixed, None);
+        let polled = interleaved(mixed, Some((flags::RTR, vec![])));
+        let (_, expected) = payload_profile(&alone);
+        let (_, found) = payload_profile(&polled);
+        assert_eq!(found, expected);
+        assert_eq!(found.lengths, 1 << 4 | 1 << 8);
+        assert_eq!((found.max_len, found.full_frames), (8, 100));
+        assert_eq!(found.bytes[0].pairs(), 299);
+        assert_eq!(
+            found.bytes[7].pairs(),
+            0,
+            "no two 8-byte frames are consecutive"
+        );
+
+        let a = interleaved(mixed, None);
+        let found = &compare_logs(&a, &polled, NO_RULES)[0];
+        assert_eq!(found.reason, "Rate doubled");
+        assert!(found.bytes.is_empty(), "{found:?}");
+    }
+
+    /// DM1 goes out as one frame while it fits, and as a BAM transfer when it doesn't.
+    #[test]
+    fn single_frames_and_transfers_of_one_id_pair_apart() {
+        let mut store = FrameStore::new();
+        let channel = store.channel_index(b"can0");
+        let mut push = |ts_ns: i64, id: u32, data: &[u8]| {
+            store.push(FrameRef {
+                ts_ns,
+                channel,
+                id: id | EXT_FLAG,
+                flags: 0,
+                data,
+            });
+        };
+        for i in 0..20 {
+            let t = 100 * S + i * S;
+            push(t, 0x18FE_CA00, &[0x11; 8]);
+            push(
+                t + S / 2,
+                0x18EC_FF00,
+                &[0x20, 20, 0, 3, 0xFF, 0xCA, 0xFE, 0],
+            );
+            for packet in 1..=3 {
+                let mut p = [0x22; 8];
+                p[0] = packet;
+                push(t + S / 2 + i64::from(packet), 0x18EB_FF00, &p);
+            }
+        }
+        let dm1 = side(&store, 0x18FE_CA00 | EXT_FLAG).unwrap();
+        assert_eq!(store.reassembled_frames(), 20);
+        let detail = compare_bytes(Some(dm1), Some(dm1), NO_RULES);
+        assert_eq!(detail.flips_a, dm1.stats.bit_flips);
+        assert!(detail.flips_a.iter().all(|&n| n == 0));
     }
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerE
 import type { CoreApi } from '../../core/api';
 import type { PlotSpec } from '../../components/Plots';
 import { cssVar, formatDuration } from '../../format';
+import { finiteRange } from '../../plotGaps';
 import { clampRange, formatSeconds, formatTick, niceStep, type Marker, type PlotArea, type Range } from './model';
 
 const TRACK_H = 32;
@@ -49,7 +50,7 @@ export function Minimap({ core, spec, duration, range, cursorA, cursorB, markers
   const fetchedFor = useRef<number | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const width = area ? Math.max(0, Math.round(area.width)) : 0;
-  const { handle, min, max } = spec.info;
+  const { handle } = spec.info;
   const [t0, t1] = range;
 
   useEffect(() => {
@@ -82,16 +83,39 @@ export function Minimap({ core, spec, duration, range, cursorA, cursorB, markers
     ctx.fillRect(0, 0, width, TRACK_H);
     const xOf = (t: number) => (t / duration) * width;
 
-    if (overview && overview.handle === handle && overview.x.length > 0 && min !== null && max !== null) {
-      const lo = min;
-      const hi = max > min ? max : min + 1;
-      const yOf = (v: number) => TRACK_H - 4 - ((v - lo) / (hi - lo)) * (TRACK_H - 8);
+    if (overview && overview.handle === handle) {
+      const { lo, hi } = finiteRange(overview.y);
+      const span = hi > lo ? hi - lo : 1;
+      const yOf = (v: number) => TRACK_H - 4 - ((v - lo) / span) * (TRACK_H - 8);
       ctx.strokeStyle = spec.color;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(xOf(overview.x[0]), yOf(overview.y[0]));
-      for (let i = 1; i < overview.x.length; i++) ctx.lineTo(xOf(overview.x[i]), yOf(overview.y[i]));
+      // NaN and infinite values break the line, as they do in the lanes. A run of one value
+      // gets a dot, as a canvas drops zero-length segments.
+      const dots: [number, number][] = [];
+      let runLength = 0;
+      let lastX = 0;
+      let lastY = 0;
+      const endRun = () => {
+        if (runLength === 1) dots.push([lastX, lastY]);
+        runLength = 0;
+      };
+      for (let i = 0; i < overview.x.length; i++) {
+        const v = overview.y[i];
+        if (!Number.isFinite(v)) {
+          endRun();
+          continue;
+        }
+        lastX = xOf(overview.x[i]);
+        lastY = yOf(v);
+        if (runLength === 0) ctx.moveTo(lastX, lastY);
+        else ctx.lineTo(lastX, lastY);
+        runLength++;
+      }
+      endRun();
       ctx.stroke();
+      ctx.fillStyle = spec.color;
+      for (const [px, py] of dots) ctx.fillRect(px - 1, py - 1, 2, 2);
     }
 
     ctx.strokeStyle = cssVar('--slate');
@@ -116,7 +140,7 @@ export function Minimap({ core, spec, duration, range, cursorA, cursorB, markers
       ctx.fillRect(x, 0, 2, TICK_LEN);
       ctx.fillRect(x, TRACK_H - TICK_LEN, 2, TICK_LEN);
     }
-  }, [overview, handle, min, max, spec.color, width, duration, cursorA, cursorB, markers]);
+  }, [overview, handle, spec.color, width, duration, cursorA, cursorB, markers]);
 
   const axis = useMemo(() => {
     if (width === 0 || duration <= 0) return { step: 1, ticks: [] as number[] };

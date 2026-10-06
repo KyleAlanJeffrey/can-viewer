@@ -158,6 +158,7 @@ export interface WindowStats {
   frames: number;
   /** Points whose value differs from the point before. */
   changes: number;
+  /** The lowest and highest values other than NaN; `min > max` when every value is NaN. */
   min: number;
   max: number;
   last: number | null;
@@ -173,10 +174,13 @@ export function windowStats(x: Float64Array, y: Float64Array, [t0, t1]: TimeWind
   for (let i = 0; i < x.length; i++) {
     if (x[i] < t0 || x[i] > t1) continue;
     const v = y[i];
-    if (last !== null && v !== last) changes++;
+    // Neither NaN to NaN nor 0 to -0 is a change.
+    if (last !== null && !Object.is(v, last) && v !== last) changes++;
     frames++;
-    min = Math.min(min, v);
-    max = Math.max(max, v);
+    if (!Number.isNaN(v)) {
+      min = Math.min(min, v);
+      max = Math.max(max, v);
+    }
     last = v;
   }
   return { frames, changes, min, max, last };

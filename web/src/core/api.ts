@@ -7,6 +7,8 @@ export const FILTERED_ROWS = -2;
 
 export const FLAG_FD = 1 << 0;
 export const FLAG_BRS = 1 << 1;
+/** CAN FD error state indicator: the sender was error passive. */
+export const FLAG_ESI = 1 << 2;
 export const FLAG_RTR = 1 << 3;
 export const FLAG_ERROR = 1 << 4;
 /** Not from the log: a J1939 parameter group reassembled from its transport protocol packets. */
@@ -41,6 +43,11 @@ export interface LogInfo {
    * counted in `frames` as well.
    */
   reassembledFrames: number;
+  /**
+   * For a live capture, the frames a rolling capture dropped from its start so far: the frames
+   * kept have moved down that many places since it started.
+   */
+  droppedFrames?: number;
 }
 
 /** One frame received by a live capture adapter. See `CoreApi.appendFrames`. */
@@ -50,10 +57,12 @@ export interface CaptureFrame {
   /** The ID without flags: 11 or 29 bits. For an error frame, its error class. */
   id: number;
   extended: boolean;
-  /** `FLAG_FD`, `FLAG_BRS`, `FLAG_RTR` and `FLAG_ERROR`, as received. */
+  /** `FLAG_FD`, `FLAG_BRS`, `FLAG_ESI`, `FLAG_RTR` and `FLAG_ERROR`, as received. */
   flags: number;
   /** The payload, at most 64 bytes; empty for a remote frame. */
   data: Uint8Array;
+  /** For a remote frame, the DLC it asks for (0 to 15). */
+  dlc?: number;
 }
 
 export interface Progress {
@@ -426,6 +435,13 @@ export interface CoreApi {
    * this resolves. Returns the capture so far. Rejects when no capture is running.
    */
   appendFrames(frames: CaptureFrame[]): Promise<LogInfo>;
+  /**
+   * For a rolling capture: drop the running capture's frames timed before `beforeNs`
+   * nanoseconds since it started, from the front of the store up to the first frame at or after
+   * it. Per-ID statistics are redone from the frames kept, so this takes time in proportion to
+   * them. Returns the capture so far. Rejects when no capture is running.
+   */
+  trimCapture(beforeNs: number): Promise<LogInfo>;
   /** End the running capture, putting its frames in time order if they are not. Returns it. */
   endCapture(): Promise<LogInfo>;
   idSummary(): Promise<IdSummary[]>;

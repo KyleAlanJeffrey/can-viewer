@@ -207,6 +207,7 @@ export function TraceView({ ctx }: ViewProps) {
           filterKey={result ? FILTERED_ROWS : selected}
           rowCount={result ? result.count : total}
           logVersion={logVersion}
+          droppedFrames={log.droppedFrames}
           follow={ctx.capturing}
           channels={log.channels}
           nameOf={nameOf}

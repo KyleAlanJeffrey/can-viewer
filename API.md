@@ -38,6 +38,7 @@ Exported from `web/src/core/api.ts`:
 | `FILTERED_ROWS` | `-2` | Pass as a key to mean the frames the last [`setTraceFilter`](#settracefilter) kept |
 | `FLAG_FD` | `1 << 0` | CAN FD frame |
 | `FLAG_BRS` | `1 << 1` | CAN FD bit rate switch |
+| `FLAG_ESI` | `1 << 2` | CAN FD error state indicator (the sender was error passive) |
 | `FLAG_RTR` | `1 << 3` | Remote frame |
 | `FLAG_ERROR` | `1 << 4` | Error frame |
 | `FLAG_REASSEMBLED` | `1 << 6` | Not from the log: a J1939 parameter group reassembled from its transport protocol packets (see "J1939 transport protocol" in COMPATIBILITY.md) |
@@ -48,7 +49,7 @@ Exported from `web/src/core/api.ts`:
 | `formatId(id, extended)` | function | Upper-case hex: 3 digits for standard IDs, 8 for extended |
 | `idLabel(s)` | function | What an ID list shows for an `IdSummary`: `formatId` text, or for error frames their class under the error flag, such as `Error 080` (`Error frames` when the class is 0) |
 
-Frame flags can also carry bits with no constant in `api.ts`: ESI (`1 << 2`) and transmitted (`1 << 5`, from `candump -x`). See `flags` in `crates/can-core/src/lib.rs`.
+Frame flags can also carry a bit with no constant in `api.ts`: transmitted (`1 << 5`, from `candump -x`). See `flags` in `crates/can-core/src/lib.rs`.
 
 ## Types
 
@@ -62,7 +63,7 @@ Describes the current log, or the comparison log. Returned by [`openLog`](#openl
 - **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md). `'capture'` for frames recorded live with [`startCapture`](#startcapture).
 - **`frames`** `number` - Frames stored.
 - **`bytes`** `number` - Bytes read from the file. 0 for a capture.
-- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records. For a capture, the frames received.
+- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records. For a capture, the frames received and still kept (see [`trimCapture`](#trimcapture)).
 - **`rejected`** `number` - Lines or records that did not parse as a frame.
 - **`firstRejection`** `[number, string] | null` - The 1-based line number (for a binary format, record number) and reason of the first rejected line or record, or null if none.
 - **`durationS`** `number` - Seconds from the first frame to the last.
@@ -72,6 +73,7 @@ Describes the current log, or the comparison log. Returned by [`openLog`](#openl
 - **`wasmBytes`** `number` - Size of the wasm memory after parsing, in bytes.
 - **`errorFrames`** `number` - Frames flagged as CAN error frames.
 - **`reassembledFrames`** `number` - J1939 transport protocol transfers that were reassembled into frames of their own (flag `FLAG_REASSEMBLED`). They are counted in `frames` too.
+- **`droppedFrames`** `number`, optional - For a live capture only: the frames [`trimCapture`](#trimcapture) dropped from its start so far. Every frame kept has moved down that many places in the log since the capture started, so a view holding a frame's index shifts it by the change.
 
 ### The CaptureFrame object
 
@@ -82,8 +84,9 @@ One frame received by a live capture adapter. Passed to [`appendFrames`](#append
 - **`timeNs`** `number` - Nanoseconds since the capture started (`startedAtMs` of [`startCapture`](#startcapture)).
 - **`id`** `number` - The ID without flags: 11 or 29 bits. For an error frame, its error class.
 - **`extended`** `boolean` - Whether the ID is a 29-bit extended ID.
-- **`flags`** `number` - `FLAG_FD`, `FLAG_BRS`, `FLAG_RTR` and `FLAG_ERROR`, as received. `FLAG_REASSEMBLED` is ignored: the engine reassembles J1939 transfers itself.
+- **`flags`** `number` - `FLAG_FD`, `FLAG_BRS`, `FLAG_ESI`, `FLAG_RTR` and `FLAG_ERROR`, as received. `FLAG_REASSEMBLED` is ignored: the engine reassembles J1939 transfers itself.
 - **`data`** `Uint8Array` - The payload, at most 64 bytes; empty for a remote frame.
+- **`dlc`** `number`, optional - For a remote frame, the DLC it asks for (0 to 15), kept for export. Without it the frame's DLC is 0.
 
 ### The Progress object
 
@@ -538,6 +541,26 @@ Adds frames to the running capture, in the order received, and those that match 
 
 ```ts
 const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xde, 0xad) }]);
+```
+
+### trimCapture
+
+```ts
+trimCapture(beforeNs: number): Promise<LogInfo>
+```
+
+Drops the oldest frames of the running capture, for a rolling capture that keeps only the last few minutes. Frames are dropped from the front of the store up to the first frame timed at or after `beforeNs`, so a frame that arrived late stays with its neighbours. The per-ID statistics (counts, periods, jitter, bit flips) are redone from the frames kept, so the call takes time in proportion to them; the web app calls it only once the oldest frame is a tenth of the window, or 10 s, past it. Row numbers and times shift with the frames dropped: times count from the oldest frame kept, as for any log, and the trace filter is cleared. Decoded series are not touched; decode them again.
+
+**Parameters**
+
+- **`beforeNs`** `number` - Nanoseconds since the capture started, as in `CaptureFrame.timeNs`.
+
+**Returns** the capture so far, its `frames` and `lines` counting only the frames kept.
+
+**Errors** Rejects with `no capture is running` or `the capture has ended`.
+
+```ts
+const log = await core.trimCapture(latestNs - 5 * 60e9);
 ```
 
 ### endCapture

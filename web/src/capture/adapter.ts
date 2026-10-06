@@ -3,9 +3,27 @@ import type { CaptureFrame } from '../core/api';
 /** The bitrates adapters are opened at, in bit/s: the nine slcan `S0` to `S8` offers. */
 export const BITRATES = [10_000, 20_000, 50_000, 100_000, 125_000, 250_000, 500_000, 800_000, 1_000_000] as const;
 
+/** CAN FD data phase bitrates offered, in bit/s: the five that CANable 2 slcan firmware sets with `Y`. */
+export const DATA_BITRATES = [1_000_000, 2_000_000, 4_000_000, 5_000_000, 8_000_000] as const;
+
 export interface CaptureSettings {
   /** One of `BITRATES`. */
   bitrate: number;
+  /** The CAN FD data phase bitrate, one of `DATA_BITRATES`; not given for classic CAN. */
+  dataBitrate?: number;
+  /** Keep only about the last this many minutes, dropping older frames; every frame when not given. Adapters ignore it. */
+  keepMinutes?: number;
+  /** gs_usb: the device channel to capture, from 0; the first when not given. */
+  channel?: number;
+  /** The bus name the frames are stored under, `can0` when not given. Adapters ignore it. */
+  bus?: string;
+  /** slcan: the serial port's baud rate, 115200 when not given. USB CDC adapters ignore it. */
+  serialBaudRate?: number;
+  /**
+   * slcan: SJA1000 bit timing registers BTR0 and BTR1 as four hex digits, sent with `s` in
+   * place of `S<n>`. `bitrate` should then be the rate they give (see `sja1000Bitrate`).
+   */
+  btr?: string;
   /** Ask the adapter to only listen: it then never acknowledges, sends or disturbs a frame. */
   listenOnly: boolean;
   /**
@@ -29,7 +47,7 @@ export function isListenOnlyUnconfirmed(e: unknown): e is ListenOnlyUnconfirmedE
 
 /** What an adapter reports while it runs. */
 export interface CaptureEvents {
-  /** Frames as received, timed with the clock given to `start`. */
+  /** Frames as received, timed with the clock given to `start` or the adapter's own, anchored to it. */
   onFrames(frames: CaptureFrame[]): void;
   /** Something went wrong but frames keep coming, such as a line that didn't parse. */
   onProblem(message: string): void;
@@ -71,6 +89,32 @@ export interface CaptureAdapter {
  */
 export const START_CANCELLED = 'The capture was stopped while the adapter started.';
 
+/**
+ * An adapter's own timestamps, from a counter that wraps every `wrapNs`, as capture times:
+ * anchored to the host clock once, and unwrapped by taking the number of wraps that brings the
+ * time counted nearest to what the host clock says has passed. Times stay absolute, and the
+ * host's USB and scheduling jitter is left out.
+ */
+export class DeviceClock {
+  private anchor: { deviceNs: number; hostNs: number } | null = null;
+
+  constructor(private readonly wrapNs: number) {}
+
+  /** The device read `deviceNs` at host time `hostNs`. Without it, the first frame anchors. */
+  sync(deviceNs: number, hostNs: number) {
+    this.anchor = { deviceNs, hostNs };
+  }
+
+  /** The capture time of a frame the device stamped `deviceNs`, which arrived at host time `hostNs`. */
+  time(deviceNs: number, hostNs: number): number {
+    if (!this.anchor) this.sync(deviceNs, hostNs);
+    const { deviceNs: deviceAnchor, hostNs: hostAnchor } = this.anchor!;
+    const counted = deviceNs - deviceAnchor;
+    const wraps = Math.round((hostNs - hostAnchor - counted) / this.wrapNs);
+    return hostAnchor + counted + wraps * this.wrapNs;
+  }
+}
+
 /** Waits for `promise` to settle, but no longer than `ms`, as a hung device may never answer. Never rejects. */
 export function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -86,6 +130,14 @@ export function settleWithin(promise: Promise<unknown>, ms: number): Promise<voi
 export function errorText(e: unknown): string {
   const message = (e as { message?: unknown } | null)?.message;
   return typeof message === 'string' ? message : String(e);
+}
+
+/** Why `name` can't name a bus, or null if it can: log formats split lines on spaces. */
+export function busNameProblem(name: string): string | null {
+  if (name === '') return 'Enter a bus name, such as can0.';
+  if (/\s/.test(name)) return 'A bus name has no spaces.';
+  if (name.length > 32) return 'A bus name has at most 32 characters.';
+  return null;
 }
 
 export function formatBitrate(bitrate: number): string {

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
+import { BITRATES, formatBitrate } from '../../capture/adapter';
 import type { CoreApi, LogInfo } from '../../core/api';
 import { cssVar, formatDuration, useFontsReady } from '../../format';
+import { bitrateOf, useBusBitrates } from '../shared/busBitrates';
 
-const BITRATE = 500_000;
 const MAX_BUCKETS = 600;
 /** Shorter buckets hold only a frame or two, so the line would jump between 0 and 100%. */
 const MIN_BUCKET_S = 0.1;
@@ -41,6 +42,10 @@ interface Props {
 export function BusLoadCard({ core, log, logVersion }: Props) {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const { channels, durationS } = log;
+  const [bitrates, setBitrate] = useBusBitrates();
+  // Compared as text, as an unset value is a fresh object every render.
+  const ratesKey = channels.map((bus) => bitrateOf(bitrates, bus)).join(',');
+  const rates = useMemo(() => ratesKey.split(',').map(Number), [ratesKey]);
   // A live capture redraws as it grows without going back to loading in between.
   const shownLog = useRef(logVersion);
 
@@ -55,7 +60,7 @@ export function BusLoadCard({ core, log, logVersion }: Props) {
     }
     let stale = false;
     const buckets = Math.max(1, Math.min(MAX_BUCKETS, Math.floor(durationS / MIN_BUCKET_S)));
-    Promise.all(channels.map((_, channel) => core.busLoad(channel, 0, durationS, buckets, BITRATE)))
+    Promise.all(channels.map((_, channel) => core.busLoad(channel, 0, durationS, buckets, rates[channel])))
       .then((results) => {
         if (!stale) setState({ status: 'ready', x: results[0][0], loads: results.map(([, load]) => load) });
       })
@@ -65,7 +70,7 @@ export function BusLoadCard({ core, log, logVersion }: Props) {
     return () => {
       stale = true;
     };
-  }, [core, channels, durationS, logVersion]);
+  }, [core, channels, durationS, logVersion, rates]);
 
   const buses = useMemo<Bus[]>(() => {
     if (state.status !== 'ready') return [];
@@ -89,14 +94,15 @@ export function BusLoadCard({ core, log, logVersion }: Props) {
         <h2 id="ov-load-title" className="ov-card-title">
           Bus load
         </h2>
-        <span className="ov-card-note">Estimated at 500 kbit/s, before bit stuffing</span>
+        <span className="ov-card-note">Estimated before bit stuffing</span>
         {hasData && (
           <ul className="ov-legend" aria-label="Average load per bus">
-            {buses.map((b) => (
+            {buses.map((b, i) => (
               <li key={b.name}>
                 {buses.length > 1 && <span className="ov-key" style={{ background: b.color }} aria-hidden="true" />}
                 <span className="mono">{b.name}</span>
-                <span className="ov-legend-stat">avg {formatLoad(b.mean)}</span>
+                <span className="ov-legend-stat">avg {formatLoad(b.mean)} at</span>
+                <BitrateSelect bus={b.name} bitrate={rates[i]} onChange={(bitrate) => setBitrate(b.name, bitrate)} />
               </li>
             ))}
           </ul>
@@ -116,6 +122,20 @@ export function BusLoadCard({ core, log, logVersion }: Props) {
         )}
       </div>
     </section>
+  );
+}
+
+function BitrateSelect({ bus, bitrate, onChange }: { bus: string; bitrate: number; onChange: (bitrate: number) => void }) {
+  // A capture at a rate the list lacks, such as one set by bit timing, keeps its own.
+  const options = BITRATES.includes(bitrate as (typeof BITRATES)[number]) ? BITRATES : [...BITRATES, bitrate].sort((a, b) => a - b);
+  return (
+    <select className="select ov-bitrate" aria-label={`Bitrate of ${bus}`} value={bitrate} onChange={(e) => onChange(Number(e.target.value))}>
+      {options.map((b) => (
+        <option key={b} value={b}>
+          {formatBitrate(b)}
+        </option>
+      ))}
+    </select>
   );
 }
 

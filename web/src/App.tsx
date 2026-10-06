@@ -17,6 +17,7 @@ import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbc
 import { VIEWS, viewMeta } from './views';
 import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { chooseBlobFile } from './views/shared/saveFile';
+import { BUS_BITRATES_KEY } from './views/shared/busBitrates';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
 import type { LoadedDbc, ViewContext, ViewId } from './views/types';
@@ -573,6 +574,7 @@ export function App({ core }: { core: CoreApi }) {
         setLiveStatus(recorder.status());
         setUnsavedCapture(true);
         viewState.clearScope('log');
+        viewState.set(BUS_BITRATES_KEY, { [recorder.bus]: settings.bitrate }, 'log');
         setView('trace');
         // Only a saved capture comes back after a reload. The core dropped log B with the old log.
         void forget('log');
@@ -751,7 +753,8 @@ export function App({ core }: { core: CoreApi }) {
       refreshing = true;
       const decodePlotsToo = ++refreshes % LIVE_PLOT_REFRESHES === 0;
       serially(async () => {
-        if (liveRef.current !== live || live.recorder.info?.frames === logRef.current?.frames) return;
+        const latest = live.recorder.info;
+        if (liveRef.current !== live || (latest?.frames === logRef.current?.frames && latest?.droppedFrames === logRef.current?.droppedFrames)) return;
         const nextIds = await core.idSummary();
         const info = live.recorder.info;
         if (liveRef.current !== live || !info) return;
@@ -1265,7 +1268,12 @@ export function App({ core }: { core: CoreApi }) {
       {captureSheetUsed && (
         <ChunkBoundary message="Couldn't load capture." frame={captureFrame}>
           <Suspense fallback={captureFrame(<p className="hint">Loading&hellip;</p>)}>
-            <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
+            <CaptureSheet
+              open={captureOpen}
+              onClose={() => setCaptureOpen(false)}
+              onStart={startCapture}
+              buses={[...new Set(dbcs.flatMap((d) => (d.channel === null ? [] : [d.channel])))]}
+            />
           </Suspense>
         </ChunkBoundary>
       )}

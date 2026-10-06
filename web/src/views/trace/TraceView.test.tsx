@@ -1,10 +1,11 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ALL_IDS, EXT_FLAG, FLAG_ERROR, FLAG_FD, FLAG_RTR, type CoreApi } from '../../core/api';
 import type { PlotSpec } from '../../components/Plots';
 import { fakeCore, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
 import { renderInShell, type ShellOptions } from '../../test/shell';
 import type { LoadedDbc } from '../types';
+import { TraceTable } from '../../components/TraceTable';
 import { TraceView } from './TraceView';
 
 const HEADER_H = 28;
@@ -277,5 +278,21 @@ describe('Trace', () => {
     await waitFor(() => expect(rows).toHaveBeenLastCalledWith(ALL_IDS, 500 - Math.floor(VISIBLE / 2), VISIBLE + 1));
     await waitFor(() => expect(selectedRowIndexes()).toEqual([rowIndex(500)]));
     expect(activeRowIndex()).toBe(rowIndex(500));
+  });
+
+  it('keeps the selection on its frame as a rolling capture drops the frames before it', async () => {
+    const { core, rows } = traceCore();
+    const table = (droppedFrames: number) => (
+      <TraceTable core={core} filterKey={ALL_IDS} rowCount={FRAMES} logVersion={1} droppedFrames={droppedFrames} channels={['can0']} nameOf={() => undefined} pinnedTime={null} />
+    );
+    const { rerender } = render(table(0));
+    await rowsShown(rows);
+    clickRow(3);
+    expect(selectedRowIndexes()).toEqual([rowIndex(3)]);
+    // Frame 3 is now frame 1, the second row.
+    rerender(table(2));
+    expect(selectedRowIndexes()).toEqual([rowIndex(1)]);
+    rerender(table(4));
+    expect(selectedRowIndexes()).toEqual([]);
   });
 });

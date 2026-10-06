@@ -11,6 +11,8 @@ pub(crate) type Frame = (i64, u8, u32, u8, Vec<u8>);
 pub(crate) struct VecSink {
     pub(crate) channels: Vec<Vec<u8>>,
     pub(crate) frames: Vec<Frame>,
+    /// The DLC each frame was pushed with by `push_remote`, by place in `frames`.
+    pub(crate) remote_dlcs: Vec<Option<u8>>,
 }
 
 impl FrameSink for VecSink {
@@ -25,6 +27,12 @@ impl FrameSink for VecSink {
     fn push(&mut self, f: FrameRef<'_>) {
         self.frames
             .push((f.ts_ns, f.channel, f.id, f.flags, f.data.to_vec()));
+        self.remote_dlcs.push(None);
+    }
+
+    fn push_remote(&mut self, f: FrameRef<'_>, dlc: u8) {
+        self.push(f);
+        *self.remote_dlcs.last_mut().unwrap() = Some(dlc);
     }
 }
 
@@ -53,6 +61,7 @@ pub(crate) fn assert_chunking_does_not_matter<P: LogParser>(
     for chunk in sizes {
         let (split, split_stats) = parse_chunked(new_parser(), input, chunk);
         assert_eq!(split.frames, whole.frames, "chunk size {chunk}");
+        assert_eq!(split.remote_dlcs, whole.remote_dlcs, "chunk size {chunk}");
         assert_eq!(split.channels, whole.channels, "chunk size {chunk}");
         assert_eq!(split_stats, stats, "chunk size {chunk}");
     }

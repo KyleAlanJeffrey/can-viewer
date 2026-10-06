@@ -20,7 +20,7 @@ use crate::lines::LineSplitter;
 use crate::text::{
     hex_value, parse_decimal, parse_decimal_ns, parse_hex_u32, starts_with_ignore_case, ChannelName,
 };
-use crate::{LogParser, ParseStats};
+use crate::{push_frame, LogParser, ParseStats};
 
 /// Enough for 64 byte columns and the rest.
 const MAX_COLUMNS: usize = 96;
@@ -403,13 +403,19 @@ fn row<S: FrameSink>(layout: &mut Layout, line: &[u8], sink: &mut S) -> Result<(
         },
         None => sink.channel_index(b"can1"),
     };
-    sink.push(FrameRef {
+    let remote_dlc = if frame_flags & flags::RTR != 0 {
+        length.filter(|&n| n <= 15).map(|n| n as u8)
+    } else {
+        None
+    };
+    let frame = FrameRef {
         ts_ns,
         channel,
         id,
         flags: frame_flags,
         data: &data[..len],
-    });
+    };
+    push_frame(sink, frame, remote_dlc);
     Ok(())
 }
 
@@ -627,6 +633,7 @@ mod tests {
         );
         assert_eq!(sink.frames[1].4, (0..8).collect::<Vec<u8>>());
         assert_eq!((sink.frames[2].3, sink.frames[2].4.len()), (flags::RTR, 0));
+        assert_eq!(sink.remote_dlcs[2], Some(4));
         assert_eq!(
             (sink.frames[3].2, sink.frames[3].3, sink.frames[3].4.len()),
             (ERR_FLAG | 0x80, flags::ERROR, 8)

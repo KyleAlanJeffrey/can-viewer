@@ -161,6 +161,8 @@ struct Capture {
     started_at_ns: i64,
     channel: u8,
     finished: bool,
+    /// Frames a rolling capture dropped from its start so far.
+    dropped: usize,
 }
 
 /// Bytes before the payload of each frame in a [`Session::push_frames`] batch.
@@ -356,6 +358,8 @@ struct LogInfo<'a> {
     heap_bytes: usize,
     error_frames: usize,
     reassembled_frames: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dropped_frames: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -492,10 +496,15 @@ pub fn export_dbc(json_db: &str) -> Result<String, JsError> {
 
 /// The JSON `LogInfo` of a log read into `store` through `input`.
 fn log_info_json(store: &FrameStore, input: &LogInput) -> String {
-    info_json(store, input.format().name(), input.stats())
+    info_json(store, input.format().name(), input.stats(), None)
 }
 
-fn info_json(store: &FrameStore, format: &'static str, stats: ParseStats) -> String {
+fn info_json(
+    store: &FrameStore,
+    format: &'static str,
+    stats: ParseStats,
+    dropped_frames: Option<usize>,
+) -> String {
     let duration_s = match (store.first_ts_ns(), store.last_ts_ns()) {
         (Some(a), Some(b)) => (b - a) as f64 / 1e9,
         _ => 0.0,
@@ -512,6 +521,7 @@ fn info_json(store: &FrameStore, format: &'static str, stats: ParseStats) -> Str
         heap_bytes: store.heap_bytes(),
         error_frames: store.error_frames(),
         reassembled_frames: store.reassembled_frames(),
+        dropped_frames,
     })
 }
 
@@ -621,6 +631,7 @@ impl Session {
             started_at_ns: (started_at_ms * 1e6).round() as i64,
             channel,
             finished: false,
+            dropped: 0,
         });
     }
 
@@ -634,6 +645,13 @@ impl Session {
                 self.filtered = None;
             }
         }
+        Ok(self.log_info())
+    }
+
+    /// Drop the running capture's frames timed before `before_ns` nanoseconds since it started,
+    /// for a rolling capture; see [`FrameStore::drop_before`]. Returns a JSON `LogInfo`.
+    pub fn trim_capture(&mut self, before_ns: f64) -> Result<String, JsError> {
+        self.drop_captured_before(before_ns).map_err(js_err)?;
         Ok(self.log_info())
     }
 
@@ -659,14 +677,14 @@ impl Session {
     pub fn log_info(&self) -> String {
         match &self.capture {
             // Each frame received counts as a line read.
-            Some(_) => {
+            Some(capture) => {
                 let received = (self.store.len() - self.store.reassembled_frames()) as u64;
                 let stats = ParseStats {
                     lines: received,
                     frames: received,
                     ..ParseStats::default()
                 };
-                info_json(&self.store, "capture", stats)
+                info_json(&self.store, "capture", stats, Some(capture.dropped))
             }
             None => log_info_json(&self.store, &self.input),
         }
@@ -1191,7 +1209,16 @@ impl Session {
             let offset_ns = f64::from_le_bytes(header[0..8].try_into().unwrap());
             let id = u32::from_le_bytes(header[8..12].try_into().unwrap());
             let frame_flags = header[12] & CAPTURE_FLAGS;
-            let len = usize::from(header[13]);
+            // A remote frame has no payload, and its length byte is the DLC it asks for.
+            let remote = frame_flags & flags::RTR != 0;
+            let (len, remote_dlc) = if remote {
+                if header[13] > 15 {
+                    return Err("a captured remote frame has a DLC over 15");
+                }
+                (0, header[13])
+            } else {
+                (usize::from(header[13]), 0)
+            };
             if len > MAX_PAYLOAD {
                 return Err("a captured frame is longer than 64 bytes");
             }
@@ -1202,14 +1229,43 @@ impl Session {
             if !offset_ns.is_finite() {
                 return Err("a captured frame has no time");
             }
-            self.store.push(FrameRef {
+            let frame = FrameRef {
                 ts_ns: started_at_ns.saturating_add(offset_ns.round() as i64),
                 channel,
                 id,
                 flags: frame_flags,
                 data,
-            });
+            };
+            if remote {
+                self.store.push_remote(frame, remote_dlc);
+            } else {
+                self.store.push(frame);
+            }
             packed = &packed[end..];
+        }
+        Ok(())
+    }
+
+    fn drop_captured_before(&mut self, before_ns: f64) -> Result<(), &'static str> {
+        let capture = match &mut self.capture {
+            Some(c) if !c.finished => c,
+            Some(_) => return Err("the capture has ended"),
+            None => return Err("no capture is running"),
+        };
+        let dropped = self.store.drop_before(
+            capture
+                .started_at_ns
+                .saturating_add(before_ns.round() as i64),
+        );
+        capture.dropped += dropped;
+        if dropped > 0 {
+            // Rows and counts name frames by their old places. The first frame moved, so the
+            // rows are found again as for any move of it; the worker begins a dropped count again.
+            self.count = None;
+            self.preview = None;
+            if let Some(filtered) = self.filtered.take() {
+                self.filtered = filtered.refind(&self.store).ok();
+            }
         }
         Ok(())
     }
@@ -1409,12 +1465,9 @@ mod tests {
         assert!(s.series.is_empty());
 
         let mut batch = capture_record(0.0, 0x123, 0, &[1, 2]);
-        batch.extend(capture_record(
-            1_500_000.0,
-            0x1234_5678 | EXT_FLAG,
-            flags::RTR,
-            &[],
-        ));
+        let mut remote = capture_record(1_500_000.0, 0x1234_5678 | EXT_FLAG, flags::RTR, &[]);
+        remote[13] = 8;
+        batch.extend(remote);
         s.push_capture_records(&batch).unwrap();
         let mut batch = capture_record(
             2_000_000.0,
@@ -1443,6 +1496,7 @@ mod tests {
         assert_eq!(s.store.frame(1).ts_ns, 1_700_000_000_001_500_000);
         assert_eq!(s.store.frame(1).id, 0x1234_5678 | EXT_FLAG);
         assert_eq!(s.store.frame(1).flags, flags::RTR);
+        assert_eq!(s.store.remote_dlc(1), Some(8));
         assert_eq!(
             s.store.frame(2).flags,
             flags::FD | flags::BRS,
@@ -1460,10 +1514,33 @@ mod tests {
         assert_eq!(
             String::from_utf8(exported(&mut s, "candump")).unwrap(),
             "(1700000000.000000) slcan0 123#0102\n\
-             (1700000000.001500) slcan0 12345678#R\n\
+             (1700000000.001500) slcan0 12345678#R8\n\
              (1700000000.002000) slcan0 321##1070707070707070707070707\n\
              (1700000000.003000) slcan0 20000080#0000000000000000\n"
         );
+    }
+
+    #[test]
+    fn a_rolling_capture_drops_its_oldest_frames() {
+        let mut s = Session::new();
+        assert_eq!(s.drop_captured_before(0.0), Err("no capture is running"));
+        s.start_capture("can0", 1_700_000_000_000.0);
+        let mut batch = capture_record(0.0, 0x123, 0, &[1]);
+        batch.extend(capture_record(1e9, 0x456, 0, &[2]));
+        batch.extend(capture_record(2e9, 0x123, 0, &[3]));
+        s.push_capture_records(&batch).unwrap();
+        assert_eq!(json(&s.log_info())["droppedFrames"], 0);
+        s.drop_captured_before(1.5e9).unwrap();
+        let info = json(&s.log_info());
+        assert_eq!(info["frames"], 1);
+        assert_eq!(info["droppedFrames"], 2);
+        assert_eq!(info["durationS"], 0.0);
+        let ids = json(&s.id_summary());
+        assert_eq!(ids.as_array().unwrap().len(), 1);
+        assert_eq!(ids[0]["count"], 1);
+        assert_eq!(s.store.first_ts_ns(), Some(1_700_000_002_000_000_000));
+        s.finish_capture().unwrap();
+        assert_eq!(s.drop_captured_before(3e9), Err("the capture has ended"));
     }
 
     #[test]
@@ -1493,6 +1570,12 @@ mod tests {
         assert_eq!(
             s.push_capture_records(&capture_record(f64::NAN, 0x123, 0, &[])),
             Err("a captured frame has no time")
+        );
+        let mut remote = capture_record(0.0, 0x123, flags::RTR, &[]);
+        remote[13] = 16;
+        assert_eq!(
+            s.push_capture_records(&remote),
+            Err("a captured remote frame has a DLC over 15")
         );
     }
 
@@ -2136,6 +2219,26 @@ mod tests {
 
         s.finish_capture().unwrap();
         assert_eq!(s.store.frame(0).ts_ns, 1_000_000);
+        assert_eq!(row_indices(&s, FILTERED), [1, 3]);
+    }
+
+    #[test]
+    fn a_rolling_capture_finds_its_filtered_rows_again_and_drops_a_count() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let batch: Vec<u8> = (0..6)
+            .flat_map(|i| capture_record(f64::from(i) * 1e9, 0x100 + (i % 2) as u32, 0, &[1]))
+            .collect();
+        assert!(s.push_frames(&batch).is_ok());
+        let ids = filter_json(json!({ "keys": [id_key(0, 0x100)] }));
+        assert_eq!(s.set_trace_filter(&ids).unwrap(), 3);
+        s.count_begin(&ids).unwrap();
+
+        s.drop_captured_before(3e9).unwrap();
+        // The frames at 3, 4 and 5 s are kept, 0x100's at 4 s.
+        assert_eq!(row_indices(&s, FILTERED), [1]);
+        assert!(!s.count_running());
+        assert!(s.push_frames(&capture_record(6e9, 0x100, 0, &[1])).is_ok());
         assert_eq!(row_indices(&s, FILTERED), [1, 3]);
     }
 

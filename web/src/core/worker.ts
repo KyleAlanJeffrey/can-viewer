@@ -101,6 +101,7 @@ const handlers = {
     return withMemory(session.log_info(), logMeta);
   },
   appendFrames: (packed: Uint8Array) => withMemory(session.push_frames(packed), logMeta),
+  trimCapture: (beforeNs: number) => withMemory(session.trim_capture(beforeNs), logMeta),
   endCapture: () => withMemory(session.finish_capture(), logMeta),
   idSummary: () => JSON.parse(session.id_summary()),
   rowCount: (key: number) => session.row_count(key),

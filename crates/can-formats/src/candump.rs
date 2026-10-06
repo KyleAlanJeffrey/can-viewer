@@ -9,7 +9,7 @@ use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::lines::LineSplitter;
 use crate::text::{hex_value, parse_decimal_ns, parse_hex_u32};
-use crate::{LogParser, ParseStats};
+use crate::{push_frame, LogParser, ParseStats};
 
 const CAN_EFF_MASK: u32 = 0x1FFF_FFFF;
 const CANFD_BRS: u8 = 0x1;
@@ -68,15 +68,16 @@ fn parse_line<S: FrameSink>(line: &[u8], sink: &mut S) -> Result<(), &'static st
         _ => 0,
     };
     let mut data = [0u8; MAX_PAYLOAD];
-    let (id, len) = parse_frame(frame, &mut data, &mut frame_flags)?;
+    let (id, len, remote_dlc) = parse_frame(frame, &mut data, &mut frame_flags)?;
     let channel = sink.channel_index(interface);
-    sink.push(FrameRef {
+    let frame = FrameRef {
         ts_ns,
         channel,
         id,
         flags: frame_flags,
         data: &data[..len],
-    });
+    };
+    push_frame(sink, frame, remote_dlc);
     Ok(())
 }
 
@@ -89,11 +90,12 @@ fn parse_timestamp(s: &[u8]) -> Option<i64> {
     }
 }
 
+/// The ID, the payload length and, for a remote frame that gives one, its DLC.
 fn parse_frame(
     s: &[u8],
     data: &mut [u8; MAX_PAYLOAD],
     frame_flags: &mut u8,
-) -> Result<(u32, usize), &'static str> {
+) -> Result<(u32, usize, Option<u8>), &'static str> {
     let hash = memchr::memchr(b'#', s).ok_or("missing '#' in frame")?;
     let id_hex = &s[..hash];
     let raw = parse_hex_u32(id_hex).ok_or("bad CAN ID")?;
@@ -118,18 +120,28 @@ fn parse_frame(
         if fd_flags & CANFD_ESI != 0 {
             *frame_flags |= flags::ESI;
         }
-        return Ok((id, parse_payload(payload, data)?));
+        return Ok((id, parse_payload(payload, data)?, None));
     }
-    if body.first() == Some(&b'R') {
+    if let Some(length) = body.strip_prefix(b"R") {
         *frame_flags |= flags::RTR;
-        return Ok((id, 0));
+        return Ok((id, 0, remote_dlc(length)));
     }
     let payload = memchr::memchr(b'_', body).map_or(body, |u| &body[..u]);
     let len = parse_payload(payload, data)?;
     if len > 8 {
         return Err("classic CAN payload over 8 bytes");
     }
-    Ok((id, len))
+    Ok((id, len, None))
+}
+
+/// The DLC after `R`: a length of 0 to 8, then for a length of 8 maybe `_` and a DLC of 9 to
+/// F. Anything else, a bare `R` included, gives none, as before DLCs were kept.
+fn remote_dlc(s: &[u8]) -> Option<u8> {
+    let len = hex_value(*s.first()?).filter(|&len| len <= 8)?;
+    match s.get(1..) {
+        Some([b'_', dlc]) if len == 8 => hex_value(*dlc).filter(|&dlc| dlc > 8).or(Some(len)),
+        _ => Some(len),
+    }
 }
 
 fn parse_payload(s: &[u8], out: &mut [u8; MAX_PAYLOAD]) -> Result<usize, &'static str> {
@@ -215,11 +227,21 @@ mod tests {
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(sink.frames[0].3, flags::RTR);
         assert_eq!(sink.frames[1].3, flags::RTR);
+        assert_eq!(sink.frames[1].4, vec![]);
+        assert_eq!(sink.remote_dlcs[..3], [None, Some(5), None]);
         assert_eq!(sink.frames[2].2, 0x80 | ERR_FLAG);
         assert_eq!(sink.frames[2].3, flags::ERROR);
         assert_eq!(sink.frames[3].4, vec![0x11, 0x22, 0x33]);
         assert_eq!(sink.frames[4].4.len(), 8);
         assert_eq!(sink.frames[5].3, flags::TX);
+    }
+
+    #[test]
+    fn remote_frames_keep_the_length_they_ask_for() {
+        let (sink, stats) =
+            parse("(1.0) can0 123#R0\n(1.0) can0 123#R8\n(1.0) can0 123#R8_C\n(1.0) can0 123#R9\n");
+        assert_eq!(stats.rejected, 0);
+        assert_eq!(sink.remote_dlcs, [Some(0), Some(8), Some(12), None]);
     }
 
     #[test]

@@ -24,7 +24,15 @@ pub use detect::Format;
 pub use mf4::Mf4Parser;
 pub use trc::TrcParser;
 
-use can_core::FrameSink;
+use can_core::{FrameRef, FrameSink};
+
+/// Pushes `frame`, with the DLC a remote frame asked for when the log gives one.
+fn push_frame<S: FrameSink>(sink: &mut S, frame: FrameRef<'_>, remote_dlc: Option<u8>) {
+    match remote_dlc {
+        Some(dlc) => sink.push_remote(frame, dlc),
+        None => sink.push(frame),
+    }
+}
 
 pub trait LogParser {
     /// Feed the next chunk of the file. Chunks may split lines or records anywhere.

@@ -42,7 +42,7 @@ describe('CaptureSheet', () => {
     await userEvent.click(listenOnly);
 
     await userEvent.click(start);
-    expect(onStart).toHaveBeenCalledWith(adapter, { bitrate: 250_000, listenOnly: false, allowUnconfirmedListenOnly: false });
+    expect(onStart).toHaveBeenCalledWith(adapter, { bitrate: 250_000, bus: 'can0', listenOnly: false, allowUnconfirmedListenOnly: false });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -81,7 +81,7 @@ describe('CaptureSheet', () => {
     expect(onClose).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole('button', { name: 'Start Anyway' }));
-    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), { bitrate: 500_000, listenOnly: true, allowUnconfirmedListenOnly: true });
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), { bitrate: 500_000, bus: 'can0', listenOnly: true, allowUnconfirmedListenOnly: true });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -113,6 +113,101 @@ describe('CaptureSheet', () => {
     finish();
     await screen.findByRole('button', { name: 'Start Capture' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('names the bus, offering the buses the DBCs are set to, and keeps the name for the next start', async () => {
+    const onStart = vi.fn(async () => {});
+    const { rerender } = render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} buses={['body', 'chassis']} />);
+    const name = screen.getByLabelText('Bus name') as HTMLInputElement;
+    expect(name.value).toBe('can0');
+    const options = [...document.getElementById(name.getAttribute('list')!)!.querySelectorAll('option')].map((o) => o.value);
+    expect(options).toEqual(['body', 'chassis']);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+
+    await userEvent.clear(name);
+    expect(screen.getByText('Enter a bus name, such as can0.')).toBeTruthy();
+    expect(name.getAttribute('aria-invalid')).toBe('true');
+    expect((screen.getByRole('button', { name: 'Start Capture' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.type(name, 'body two');
+    expect(screen.getByText('A bus name has no spaces.')).toBeTruthy();
+    await userEvent.clear(name);
+    await userEvent.type(name, ' body ');
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ bus: 'body' }));
+
+    rerender(<CaptureSheet open={false} onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} buses={['body', 'chassis']} />);
+    rerender(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} buses={['body', 'chassis']} />);
+    expect((screen.getByLabelText('Bus name') as HTMLInputElement).value).toBe(' body ');
+  });
+
+  it('offers a rolling capture that keeps the last minutes, every frame by default', async () => {
+    const onStart = vi.fn(async () => {});
+    render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    const keep = screen.getByLabelText('Keep') as HTMLSelectElement;
+    expect(keep.value).toBe('0');
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ keepMinutes: undefined }));
+    await userEvent.selectOptions(keep, 'Last 10 min');
+    expect(screen.getByText(/a rolling capture can run for days/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ keepMinutes: 10 }));
+  });
+
+  it('sets a CAN FD data bitrate, off by default', async () => {
+    const onStart = vi.fn(async () => {});
+    render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    const data = screen.getByLabelText('CAN FD data bitrate') as HTMLSelectElement;
+    expect(data.value).toBe('0');
+    await userEvent.selectOptions(data, '4 Mbit/s');
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ bitrate: 500_000, dataBitrate: 4_000_000 }));
+  });
+
+  it('sets a serial speed and custom bit timing for slcan under Advanced', async () => {
+    const onStart = vi.fn(async () => {});
+    render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan', 'gsusb']} request={async () => slcan()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    await userEvent.click(screen.getByText('Advanced'));
+    expect((screen.getByLabelText('Serial speed') as HTMLSelectElement).value).toBe('115200');
+    await userEvent.selectOptions(screen.getByLabelText('Serial speed'), '57,600 baud');
+
+    const timing = screen.getByLabelText('Bit timing (BTR0 BTR1)');
+    await userEvent.type(timing, '31');
+    expect(screen.getByText('Enter four hex digits, BTR0 then BTR1, such as 031C.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Start Capture' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.clear(timing);
+    await userEvent.type(timing, '031c');
+    expect(screen.getByText(/^Sent as s031C in place of the bitrate: 125 kbit\/s/)).toBeTruthy();
+    expect((screen.getByLabelText('Bitrate') as HTMLSelectElement).disabled).toBe(true);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), {
+      bitrate: 125_000,
+      bus: 'can0',
+      listenOnly: true,
+      allowUnconfirmedListenOnly: false,
+      serialBaudRate: 57_600,
+      btr: '031C',
+    });
+
+    await userEvent.click(screen.getByRole('radio', { name: 'USB (candleLight)' }));
+    expect(screen.queryByLabelText('Serial speed')).toBeNull();
+    expect(screen.getByLabelText('Channel')).toBeTruthy();
+  });
+
+  it('captures a channel other than the first of a gs_usb adapter, chosen under Advanced', async () => {
+    const usbAdapter: CaptureAdapter = { label: 'candleLight FD (1D50:606F)', start: vi.fn(), stop: vi.fn() };
+    const onStart = vi.fn(async () => {});
+    render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['gsusb']} request={async () => usbAdapter} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    await userEvent.click(screen.getByText('Advanced'));
+    expect((screen.getByLabelText('Channel') as HTMLSelectElement).value).toBe('0');
+    await userEvent.selectOptions(screen.getByLabelText('Channel'), '2');
+    await userEvent.selectOptions(screen.getByLabelText('CAN FD data bitrate'), '2 Mbit/s');
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(usbAdapter, expect.objectContaining({ channel: 1, dataBitrate: 2_000_000, serialBaudRate: undefined, btr: undefined }));
   });
 
   it('stays without an adapter when the device prompt is dismissed', async () => {

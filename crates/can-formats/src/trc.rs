@@ -28,7 +28,7 @@ use crate::lines::LineSplitter;
 use crate::text::{
     dlc_to_len, fields, parse_decimal, parse_decimal_ns, parse_hex_u32, ChannelName,
 };
-use crate::{LogParser, ParseStats};
+use crate::{push_frame, LogParser, ParseStats};
 
 /// Days from 1899-12-30, PEAK's epoch, to 1970-01-01.
 const UNIX_EPOCH_DAYS: i64 = 25_569;
@@ -237,9 +237,17 @@ fn frame_v2<S: FrameSink>(
         (None, None) => unreachable!("Columns::parse requires a length column"),
     };
     let mut data = [0u8; MAX_PAYLOAD];
+    let mut remote_dlc = None;
     let (id, len) = match kind {
         b"RR" => {
             frame_flags |= flags::RTR;
+            // A classic frame's length is its DLC.
+            remote_dlc = columns
+                .dlc
+                .or(columns.length)
+                .and_then(|index| parse_decimal(cols[index]))
+                .and_then(|n| u8::try_from(n).ok())
+                .filter(|&n| n <= 15);
             (parse_id(cols[columns.id])?, 0)
         }
         b"ER" | b"EC" | b"EB" => {
@@ -251,7 +259,7 @@ fn frame_v2<S: FrameSink>(
             read_bytes(&mut words, len, &mut data)?,
         ),
     };
-    push(sink, ts_ns, bus, id, frame_flags, &data[..len]);
+    push(sink, ts_ns, bus, id, frame_flags, &data[..len], remote_dlc);
     Ok(true)
 }
 
@@ -297,23 +305,27 @@ fn frame_v1<S: FrameSink>(start_ns: i64, line: &[u8], sink: &mut S) -> Result<bo
     finish_v1(sink, ts_ns, bus, id, frame_flags, len)
 }
 
-/// The payload bytes of a 1.x line, or `RTR` in their place.
+/// The payload bytes of a 1.x line, or `RTR` in their place; then the DLC is the remote
+/// frame's.
 fn read_bytes_or_rtr<'a>(
     words: &mut impl Iterator<Item = &'a [u8]>,
     dlc: u8,
     frame_flags: &mut u8,
-) -> Result<([u8; MAX_PAYLOAD], usize), &'static str> {
+) -> Result<V1Payload, &'static str> {
     let mut data = [0u8; MAX_PAYLOAD];
     let len = usize::from(dlc.min(8));
     let first = words.next();
     if first == Some(b"RTR") {
         *frame_flags |= flags::RTR;
-        return Ok((data, 0));
+        return Ok((data, 0, Some(dlc)));
     }
     let mut words = first.into_iter().chain(words);
     let len = read_bytes(&mut words, len, &mut data)?;
-    Ok((data, len))
+    Ok((data, len, None))
 }
+
+/// The data, its length and a remote frame's DLC.
+type V1Payload = ([u8; MAX_PAYLOAD], usize, Option<u8>);
 
 fn finish_v1<S: FrameSink>(
     sink: &mut S,
@@ -321,25 +333,42 @@ fn finish_v1<S: FrameSink>(
     bus: i64,
     id: &[u8],
     frame_flags: u8,
-    (data, len): ([u8; MAX_PAYLOAD], usize),
+    (data, len, remote_dlc): V1Payload,
 ) -> Result<bool, &'static str> {
     // PCAN-View 1.0 and 1.1 log bus status changes as frames with ID FFFFFFFF.
     if id == b"FFFFFFFF" {
         return Ok(false);
     }
-    push(sink, ts_ns, bus, parse_id(id)?, frame_flags, &data[..len]);
+    push(
+        sink,
+        ts_ns,
+        bus,
+        parse_id(id)?,
+        frame_flags,
+        &data[..len],
+        remote_dlc,
+    );
     Ok(true)
 }
 
-fn push<S: FrameSink>(sink: &mut S, ts_ns: i64, bus: i64, id: u32, frame_flags: u8, data: &[u8]) {
+fn push<S: FrameSink>(
+    sink: &mut S,
+    ts_ns: i64,
+    bus: i64,
+    id: u32,
+    frame_flags: u8,
+    data: &[u8],
+    remote_dlc: Option<u8>,
+) {
     let channel = sink.channel_index(ChannelName::new(bus as u64).as_bytes());
-    sink.push(FrameRef {
+    let frame = FrameRef {
         ts_ns,
         channel,
         id,
         flags: frame_flags,
         data,
-    });
+    };
+    push_frame(sink, frame, remote_dlc);
 }
 
 fn parse_direction(word: &[u8]) -> Option<u8> {
@@ -539,6 +568,7 @@ mod tests {
             (0x18FE_F100 | EXT_FLAG, flags::TX)
         );
         assert_eq!((sink.frames[2].2, sink.frames[2].3), (3, flags::RTR));
+        assert_eq!(sink.remote_dlcs[2], Some(4));
 
         let v1_3 = ";$FILEVERSION=1.3\n\
                     ;$STARTTIME=45930.5\n\
@@ -646,5 +676,6 @@ mod tests {
                      5 1700.000 DT 1  000G Rx -  1  00\r\n";
         let (sink, stats) = assert_chunking_does_not_matter(TrcParser::new, input.as_bytes());
         assert_eq!((sink.frames.len(), stats.rejected), (4, 1));
+        assert_eq!(sink.remote_dlcs[2], Some(4));
     }
 }

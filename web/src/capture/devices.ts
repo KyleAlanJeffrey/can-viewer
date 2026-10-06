@@ -1,10 +1,11 @@
 import type { CaptureAdapter } from './adapter';
 import { GS_USB_FILTERS, GsUsbAdapter } from './gsUsb';
 import { SlcanAdapter } from './slcan';
+import type { AdapterKind } from './support';
 import { webSerial } from './webSerial';
 import { webUsb } from './webUsb';
 
-export type AdapterKind = 'slcan' | 'gsusb';
+export { availableKinds, type AdapterKind } from './support';
 
 export const ADAPTER_KINDS: { kind: AdapterKind; label: string; detail: string }[] = [
   {
@@ -18,14 +19,6 @@ export const ADAPTER_KINDS: { kind: AdapterKind; label: string; detail: string }
     detail: 'candleLight, CANable with candleLight firmware and other gs_usb adapters, through WebUSB.',
   },
 ];
-
-/** The adapter kinds this browser can reach: none in Firefox and Safari. */
-export function availableKinds(): AdapterKind[] {
-  const kinds: AdapterKind[] = [];
-  if (webSerial()) kinds.push('slcan');
-  if (webUsb()) kinds.push('gsusb');
-  return kinds;
-}
 
 /**
  * Shows the browser's device prompt for `kind`. Call it straight from a click, or the browser

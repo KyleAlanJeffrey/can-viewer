@@ -11,6 +11,11 @@ export const CAPTURE_CHANNEL = 'can0';
  */
 const TRIM_SLACK_SHARE = 0.1;
 const MIN_TRIM_SLACK_NS = 10e9;
+/**
+ * How far past the computer's clock a frame's time may move a rolling capture's window, so one
+ * frame timed far ahead (a glitch in the adapter's clock) can't drop the frames still in it.
+ */
+const MAX_AHEAD_OF_HOST_NS = 1e9;
 /** The frame rate is averaged over about this long. */
 const RATE_WINDOW_MS = 2000;
 /**
@@ -221,7 +226,8 @@ export class CaptureRecorder {
       bytes += captureFrameBytes(frame);
     }
     this.sent.push({ firstNs, lastNs, bytes });
-    this.latestNs = Math.max(this.latestNs, lastNs);
+    const hostNs = (this.clock.now() - this.origin) * 1e6;
+    this.latestNs = Math.max(this.latestNs, Math.min(lastNs, hostNs + MAX_AHEAD_OF_HOST_NS));
     const cutoff = this.latestNs - keepNs;
     const slack = Math.max(MIN_TRIM_SLACK_NS, keepNs * TRIM_SLACK_SHARE);
     if (this.sent[0].firstNs >= cutoff - slack) return;

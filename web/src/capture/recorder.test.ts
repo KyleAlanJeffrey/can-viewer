@@ -138,11 +138,14 @@ describe('CaptureRecorder rolling capture', () => {
       endCapture: () => Promise.resolve(logInfo()),
     });
     const cost = captureFrameBytes(frame(0));
-    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock(), { intervalMs: 5 }, { warnBytes: 3 * cost, maxBytes: 4 * cost });
+    const time = clock();
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', time, { intervalMs: 5 }, { warnBytes: 3 * cost, maxBytes: 4 * cost });
     const ended = vi.fn();
     recorder.onEnd = ended;
     await recorder.start({ ...settings, keepMinutes: 1 });
+    const started = time.ms;
     const send = async (seconds: number) => {
+      time.ms = started + seconds * 1000;
       state.events!.onFrames([frame(seconds * 1e9)]);
       await new Promise((resolve) => setTimeout(resolve, 20));
     };
@@ -161,6 +164,33 @@ describe('CaptureRecorder rolling capture', () => {
     expect(ended).not.toHaveBeenCalled();
     expect(recorder.status().frames).toBe(5);
     expect(recorder.text.title(recorder.status())).toMatch(/\nKeeping only about the last 1 min\./);
+    await recorder.stop();
+  });
+
+  it('does not let a frame timed far ahead of the computer drop the frames in the window', async () => {
+    const { adapter, state } = fakeAdapter();
+    const core = fakeCore({
+      startCapture: () => Promise.resolve(logInfo()),
+      appendFrames: () => Promise.resolve(logInfo()),
+      trimCapture: vi.fn(() => Promise.resolve(logInfo())),
+      endCapture: () => Promise.resolve(logInfo()),
+    });
+    const time = clock();
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', time, { intervalMs: 5 });
+    await recorder.start({ ...settings, keepMinutes: 1 });
+    const started = time.ms;
+    const send = async (seconds: number, timeS = seconds) => {
+      time.ms = started + seconds * 1000;
+      state.events!.onFrames([frame(timeS * 1e9)]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+
+    await send(0);
+    await send(30, 1e6);
+    await send(31);
+    expect(core.trimCapture).not.toHaveBeenCalled();
+    await send(75);
+    expect(core.trimCapture).toHaveBeenCalledWith(15e9);
     await recorder.stop();
   });
 

@@ -132,6 +132,8 @@ const CaptureSheet = lazy(() => import('./capture/CaptureSheet').then((m) => ({ 
 const LiveSetup = lazy(() => import('./capture/LiveSetup').then((m) => ({ default: m.LiveSetup })));
 // Fetched as the app starts, not when first shown, as most visits begin with it.
 const loadWelcome = import('./welcome/Welcome');
+// Welcome's lazy() reports a failed load; this only keeps it from going unhandled meanwhile.
+loadWelcome.catch(() => {});
 const Welcome = lazy(() => loadWelcome.then((m) => ({ default: m.Welcome })));
 
 // Keep these in step with the media queries in styles.css.
@@ -801,8 +803,9 @@ export function App({ core }: { core: CoreApi }) {
    */
   const showClosedLog = async (toDatabase = true) => {
     showNoLog();
-    await Promise.all([forget('log'), forget('compare')]);
+    // In the same render as showNoLog, or the welcome flashes up before Database.
     if (toDatabase && dbcsRef.current.length > 0) setView('database');
+    await Promise.all([forget('log'), forget('compare')]);
   };
 
   const closeLog = () =>

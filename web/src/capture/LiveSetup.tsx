@@ -23,7 +23,10 @@ export function LiveSetup({ onStart, kinds, request, buses, busy, onStartingChan
   const ids = useId();
   const form = useCaptureForm({ onStart, kinds, request, buses, layout: 'inline' });
 
-  useEffect(() => onStartingChange?.(form.starting), [form.starting, onStartingChange]);
+  useEffect(() => {
+    onStartingChange?.(form.starting);
+    return () => onStartingChange?.(false);
+  }, [form.starting, onStartingChange]);
 
   return (
     <>

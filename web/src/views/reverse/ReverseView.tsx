@@ -16,6 +16,7 @@ import { initialForm, useCandidateForms } from './SignalForm';
 import { Workspace } from './Workspace';
 import { clampTime, clampWindow, defaultWindow, describeId, matchesQuery, windowFits, type TimeWindow } from './bits';
 import { pinId, useReferences, type Pin } from './pins';
+import { useDiscovery } from './useDiscovery';
 import './reverse.css';
 
 type Mode = 'bytes' | 'advanced';
@@ -83,6 +84,8 @@ export function ReverseView({ ctx }: ViewProps) {
     [messages, bus, channels, messageOf, query],
   );
   const unknown = useMemo(() => messages.filter((s) => !messageOf(s.key)), [messages, messageOf]);
+  const unknownKeys = useMemo(() => unknown.map((s) => s.key), [unknown]);
+  const discovery = useDiscovery(ctx, unknownKeys);
 
   if (!log) return null;
 
@@ -228,6 +231,11 @@ export function ReverseView({ ctx }: ViewProps) {
           onUnpin={unpin}
           onPinSignal={() => setPinOpen(true)}
           baseline={baseline}
+          discovery={discovery}
+          unknown={unknown}
+          pins={pins}
+          onTogglePin={togglePin}
+          parked={parked}
         />
       ) : (
         <div className="content-scroll re-scroll" role="tabpanel" aria-label="Advanced">

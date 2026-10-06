@@ -57,6 +57,9 @@ class FakeSession {
     if (key === 2) throw new Error('No such ID');
     return 7;
   }
+  suggest_signals(key: number, hints: string): string {
+    return JSON.stringify({ key, hints: JSON.parse(hints) });
+  }
   private chunks: Uint8Array[] = [];
   export_log(format: string) {
     if (format !== 'csv') throw new Error('Not a format');
@@ -88,11 +91,11 @@ async function startWorker(): Promise<Port> {
   return port;
 }
 
-/** Sends a rowCount request and resolves to the worker's reply. */
-function ask(port: Port, id: number, key: number): Promise<unknown> {
+/** Sends a request (rowCount unless named) and resolves to the worker's reply. */
+function ask(port: Port, id: number, key: number, method: Request['method'] = 'rowCount', ...rest: unknown[]): Promise<unknown> {
   // vi.waitFor would advance the fake timers and fire the rethrow too early.
   const reply = new Promise((resolve) => port.postMessage.mockImplementationOnce(resolve));
-  port.onmessage?.({ data: { id, method: 'rowCount', args: [key] } });
+  port.onmessage?.({ data: { id, method, args: [key, ...rest] } });
   return reply;
 }
 
@@ -133,6 +136,13 @@ describe('core worker', () => {
     expect(await ask(port, 1, 2)).toEqual({ id: 1, error: 'No such ID' });
     expect(vi.getTimerCount()).toBe(0);
     expect(await ask(port, 2, 3)).toEqual({ id: 2, result: 7 });
+  });
+
+  it('passes discovery hints to the session as JSON, and none as an empty object', async () => {
+    const port = await startWorker();
+    const hints = { markers: [{ t: 12 }], reference: { key: 5, signal: 'Speed' } };
+    expect(await ask(port, 1, 9, 'suggestSignals', hints)).toEqual({ id: 1, result: { key: 9, hints } });
+    expect(await ask(port, 2, 9, 'suggestSignals')).toEqual({ id: 2, result: { key: 9, hints: {} } });
   });
 
   it('runs a capture in a fresh session, without the old log B', async () => {

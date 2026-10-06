@@ -24,6 +24,9 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
 - [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
+- [x] Reverse Engineer Advanced: Suggested signals (counters, checksums, flags, enums, continuous and signed values) with Accept, Dismiss and Plot it, event and reference hints, and a scan of the unknown messages (`suggestSignals`, `scanSignals`)
+- [ ] Suggested signals: float32 values are left out on purpose, a multiplexed message's selector is suggested as a counter and its cells get nothing, and a value whose top bits never change in the log comes out narrower than its real field (VEHICLE_STATE in the demo)
+- [ ] Suggested signals: a 64-byte CAN FD message takes about 110 ms to suggest for in the browser (measured with 32 changing 16-bit values; about 1.5 s before the sample was cut for long payloads), and Cancel only lands between messages; move the scan off the main request queue or split the work if logs with many large unknown IDs make it drag
 - [x] Compare view: open a second log (B) and rank IDs and bytes by how differently they behave, with ignore rules for counters, checksums and changes within A, Swap, and Open in Reverse Engineer
 - [ ] Compare: check the counter and checksum detection, and the scores, against real before-and-after logs (the tests and the smoke test use the generated demo) (owner, with your own logs)
 - [ ] Compare: Open in Reverse Engineer selects the ID and byte, but the Advanced window stays where it was; move it to where the byte differs (the first frame of a value log A never shows, say)

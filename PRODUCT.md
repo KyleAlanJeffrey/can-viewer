@@ -19,14 +19,14 @@ The job: open a log (often hundreds of MB), find out what's on the bus, decode i
 
 ## Product Purpose
 
-FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV logs, and exports the open log in any of those formats. It decodes with imported DBC files, plots signals, and makes bit-level activity visible so unknown messages can be defined by hand. It also records live from a CAN adapter (slcan over Web Serial, candleLight/gs_usb over WebUSB) in Chrome and Edge, still experimental until tried with real hardware: live capture moved from the Pro plan into the free web app. FreeCAN Studio Pro is a planned paid desktop app on the same core that adds transmit and replay, UDS scanning, automated signal discovery, multi-GB files and scripting. Paid features are hidden for now: the web app shows no Pro features or upsell.
+FreeCAN Studio is a free, browser-based CAN bus log viewer and reverse-engineering tool. It opens candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV logs, and exports the open log in any of those formats. It decodes with imported DBC files, plots signals, makes bit-level activity visible and suggests likely signals, so unknown messages can be defined quickly. It also records live from a CAN adapter (slcan over Web Serial, candleLight/gs_usb over WebUSB) in Chrome and Edge, still experimental until tried with real hardware: live capture moved from the Pro plan into the free web app. FreeCAN Studio Pro is a planned paid desktop app on the same core that adds transmit and replay, UDS scanning, multi-GB files and scripting. Paid features are hidden for now: the web app shows no Pro features or upsell.
 
 Success: an engineer drops a large log into a browser tab and is reading decoded signals, or has defined an unknown one, within minutes, with nothing installed and nothing uploaded.
 
 ## Positioning
 
 - Everything runs client-side: a Rust core compiled to WebAssembly in a Web Worker. Log files never leave the user's computer.
-- Bit-level reverse-engineering tools are free: flip heatmaps, drag-to-define signals, and notching.
+- Bit-level reverse-engineering tools are free: flip heatmaps, drag-to-define signals, notching, and automated signal discovery (Suggested signals).
 - Real-world scale in a tab: the spike parses 10M frames (552 MB) in about 2.7 s.
 
 ## Operating Context
@@ -40,7 +40,7 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
   - candump parsing;
   - a columnar frame store with per-ID stats, bit-flip counts, jitter, bus load and error-frame counts;
   - DBC decode (Intel/Motorola, signed, float, simple multiplexing), with several DBCs per log, each for every bus or one bus, and J1939 messages matched by PGN;
-  - six views: Overview, Trace, Plot, Reverse Engineer (drag-to-define signals and Find Signal), Compare (what differs between two logs, such as idle and one action) and Database (DBC editing and export);
+  - six views: Overview, Trace, Plot, Reverse Engineer (drag-to-define signals, Find Signal and Suggested signals), Compare (what differs between two logs, such as idle and one action) and Database (DBC editing and export);
   - a virtualized canvas trace table, a bit heatmap, and uPlot plots with decimation;
   - trace filters by bus, ID or name, data rules, frame kind and time range, run in the core;
   - the open log, DBCs and view state kept across reloads;
@@ -49,7 +49,7 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
 - **Planned:** see [docs/screens.md](docs/screens.md), [docs/research.md](docs/research.md) and [TODO.md](TODO.md). Key items are more log formats, parallel parsing, extended multiplexing, J1939 multi-packet messages, and the Pro desktop app.
 - **Licensing:**
   - The product is closed-source and commercial, so no GPL or LGPL code can be copied in.
-  - Pro-only features must not ship in the web bundle (the Cargo `pro` feature or desktop-only crates).
+  - Pro-only features must not ship in the web bundle (the Cargo `pro` feature or desktop-only crates). Automated signal discovery is not one of them: it ships free in the web app.
   - Fonts and icons must be licensed for web and desktop use. Apple's SF fonts and SF Symbols are not.
 - **Pricing and the tagline** are undecided.
 - **Mockup decisions (2026-09-30):** omit taglines; use "Free. No account." rather than a forever promise; omit undecided Pro format and file-size claims. Use the shipped 1M-frame demo (55 MB, about 30 min 15 s) across all screens. Keep bus load, jitter, and error-frame counts visible only as explicitly Planned placeholders until the core computes them.

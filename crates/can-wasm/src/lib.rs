@@ -3,11 +3,14 @@
 //!
 //! Bulk data crosses the boundary as typed arrays; small structured results as JSON strings.
 
+mod checksum;
 mod clock;
 mod compare;
+mod discover;
 mod export;
 mod find;
 mod series;
+mod suggest;
 
 use std::collections::VecDeque;
 

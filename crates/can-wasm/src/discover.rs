@@ -48,6 +48,8 @@ const MAX_CUTS: usize = 3;
 const MAX_JOINED: usize = 3;
 /// A change within this long of an event marker counts as near it.
 const MARKER_WINDOW_NS: i64 = 1_000_000_000;
+/// Markers looked at, which bounds the reads near them.
+const MAX_MARKERS: usize = 20;
 /// Scores within this of each other are about as good.
 const CLOSE_SCORE: f64 = 0.03;
 /// A value's step counts as small up to this share of its range.
@@ -1008,6 +1010,11 @@ fn flag(range: Range, p: &Profile, log: &Log) -> Option<Scored> {
     if range.size != 1 || flips == 0 || rate >= TOGGLE_RATE {
         return None;
     }
+    // A bit that toggles often is a blinker or such only when it does so at a steady pace; bits
+    // set at random are noise.
+    if rate >= FLAG_RATE && !steady_runs(p) {
+        return None;
+    }
     let set = p.values.iter().filter(|&&v| v != 0).count() as f64 / p.values.len().max(1) as f64;
     let score = if rate < FLAG_RATE {
         0.5 + 0.2 * (1.0 - rate / FLAG_RATE)
@@ -1021,6 +1028,39 @@ fn flag(range: Range, p: &Profile, log: &Log) -> Option<Scored> {
         score,
         reason: flag_reason(flips, log.frames.steps(), set),
         unconfirmed: false,
+    })
+}
+
+/// Whether a bit stays on, and stays off, for about the same number of frames each time.
+fn steady_runs(p: &Profile) -> bool {
+    let mut runs: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    // The first run of each stretch of following frames may have started before it.
+    let mut run: Option<usize> = None;
+    for i in 1..p.values.len() {
+        if !p.follows[i] {
+            run = None;
+            continue;
+        }
+        if p.values[i] == p.values[i - 1] {
+            run = run.map(|n| n + 1);
+            continue;
+        }
+        if let Some(n) = run {
+            runs[usize::from(p.values[i - 1] != 0)].push(n);
+        }
+        run = Some(1);
+    }
+    runs.iter_mut().all(|lengths| {
+        if lengths.len() < 4 {
+            return false;
+        }
+        lengths.sort_unstable();
+        let typical = lengths[lengths.len() / 2];
+        let near = lengths
+            .iter()
+            .filter(|&&n| n.abs_diff(typical) <= (typical / 4).max(1))
+            .count();
+        near as f64 >= 0.6 * lengths.len() as f64
     })
 }
 
@@ -1514,8 +1554,8 @@ fn whole_log_value_reasons(log: &Log, ranges: &[Range]) -> Vec<String> {
 pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
     let frames = Frames::new(store, stats);
     let len = frames.len;
-    let around: Vec<usize> = hints
-        .markers
+    let markers = &hints.markers[..hints.markers.len().min(MAX_MARKERS)];
+    let around: Vec<usize> = markers
         .iter()
         .map(|m| frames.between(store, m.t_ns, i64::MAX).start)
         .filter(|&at| at < frames.list.len())
@@ -1551,7 +1591,7 @@ pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
         let Some(mut s) = classify(range, &profile, &log) else {
             continue;
         };
-        let near = markers_near(&log, range, profile.change_rate(), &hints.markers);
+        let near = markers_near(&log, range, profile.change_rate(), markers);
         if !near.is_empty() {
             s.score += (0.15 * near.len() as f64).min(0.25);
             let labels: Vec<&str> = near.iter().map(|m| m.label.as_str()).collect();
@@ -2247,6 +2287,22 @@ mod tests {
             blinker.reason,
             "Toggles on 10% of frames; set 25% of the time"
         );
+    }
+
+    #[test]
+    fn bits_set_at_random_are_not_toggles() {
+        // Each bit of byte 1 set on 10% of frames, independently.
+        let s = store(6000, |i, rng| {
+            let mut noise = 0u8;
+            for bit in 0..8 {
+                if rng.next() % 10 == 0 {
+                    noise |= 1 << bit;
+                }
+            }
+            [i as u8, noise, 0, 0, 0, 0, 0, 0]
+        });
+        let all = found(&s);
+        assert_eq!(all, [(Kind::Counter, 0, 8, ByteOrder::Intel, false)]);
     }
 
     #[test]

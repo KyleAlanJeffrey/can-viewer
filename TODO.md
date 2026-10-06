@@ -63,6 +63,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Name the capture's bus (always `can0` today), so a DBC scoped to another bus applies to it
 - [ ] Overview bus load assumes 500 kbit/s for every log; use the capture's bitrate, and let the user set it for opened logs
 - [x] Warn before a long capture reaches the wasm memory cap (about 65 bytes a frame), and stop it by itself before it does
+- [x] slcan on a CANable: learn whether the adapter answers from `S` rather than `V`, confirm listen-only only through `L`, read frames only once the open command is written, write `C` before closing the port, and give up on an adapter that doesn't start within 10 s (PR #39)
 - [ ] Offer a rolling capture that keeps the last N minutes
 - [ ] Keep a remote frame's DLC (slcan `r1238`, gs_usb `can_dlc`), so candump export writes `123#R8`; the frame store has no field for it, so every format's reader drops it today
 - [ ] slcan CAN FD: set the data bitrate (the `Y` command of CANable 2 firmware) for FD buses
@@ -84,6 +85,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Reverse Engineer Bit History reads only the row's 64 bytes but offers bytes up to the message length, drawing nothing past 64 (PR #7 review; capped at 64 with a note)
 - [x] The Trace view's "(N bytes)" label is not clipped to the Data column (PR #7 review)
 - [x] Reverse Engineer Byte Values labels every payload longer than 8 bytes "CAN FD", including a reassembled J1939 transfer; it now reads "J1939 TP" for those
+- [x] Negative and pre-1970 times: candump reads negative timestamps again, MF4, ASC and BLF exports keep times before 1970, and ASC, BLF, TRC and MF4 exports refuse logs before 1900 (PR #38)
 - [x] Reverse Engineer Bit Activity counts the window's frames with `rowAtTime`, which leaves out a frame on the window's end and the last frame when the window reaches it, so a bit could change "133% of frames" and the header said one frame fewer than Bit History; the core now counts them (`rowCountBetween`)
 
 ## Follow-ups
@@ -123,3 +125,6 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Trace filters: "Any byte changes" ignores a payload that only grows or shrinks; say so in the sheet's hint if that confuses people
 - [ ] Bit flips (`IdStats::bit_flips`) and change activity still compare each frame with the previous frame of its ID whatever its kind, so a polled ID's remote frames hide the changes between its data frames there too; the trace's changed bytes and the filter now skip them
 - [ ] Trace filters: check the sheet, the ID combobox and the range handles with a real screen reader (VoiceOver or NVDA) (owner)
+- [ ] Memory: the store's columns are plain `Vec`s, and doubling on growth nearly doubles peak memory; switch to fixed-size chunked columns
+- [ ] Parallel parsing: a pool of workers parsing `Blob.slice` ranges for multi-core throughput
+- [ ] Plot queries: level-of-detail pyramids, so a query no longer scales linearly with the points in range

@@ -94,10 +94,11 @@ These use the 10M-frame demo: a 552 MB candump file, about 5 h of driving, 11 ID
 
 ## Known gaps / next steps
 
+The larger ones; every open task is in [TODO.md](TODO.md).
+
 - **Memory:** the store's columns are plain `Vec`s, and doubling on growth nearly doubles peak memory. Switch to fixed-size chunked columns to hold wasm memory close to the actual data size.
 - **Formats:** candump, Vector ASC, Vector BLF (CAN objects), PEAK TRC, ASAM MF4 (CAN bus logging) and CSV (python-can, SavvyCAN and generic header-named layouts) are supported, all through the `LogParser` interface. MF4 is buffered and read when the file ends, up to 1 GiB, because its blocks link anywhere in the file; its data is then read a block at a time and the frames merged by time, so a 112 MB, 10M-frame MF4 takes about 610 MB of wasm memory (the file plus the frames). Not read: CAN XL, LIN, FlexRay and Ethernet frames, and MF4 files of decoded signals rather than bus frames.
 - **Parallel parsing:** add a pool of workers parsing `Blob.slice` ranges for multi-core throughput.
 - **Plot queries:** add level-of-detail pyramids so a query no longer scales linearly with the points in range.
 - **Reverse engineering:** drag-to-define signals on the heatmap, a scrubbable time window for bit flips, and DBC export are in. Suggested signals guesses counters, checksums, flags, enums and values from bit activity; next are float values, multiplexed messages and opendbc fingerprinting.
-- **DBC:** extended multiplexing (`SG_MUL_VAL_`) is not decoded yet.
 - **Live capture:** not yet tried with real adapters. One bus at a time, receive only, classic CAN on gs_usb, host-clock timestamps; see [TODO.md](TODO.md) for the follow-ups.

@@ -168,9 +168,10 @@ describe('CaptureRecorder start', () => {
     expect(adapter.stop).toHaveBeenCalledTimes(1);
     expect(core.startCapture).not.toHaveBeenCalled();
 
-    // A start that still succeeds later is stopped again.
+    // A start that settles after the timeout is ignored; the adapter itself closes the device.
     finishStart({ listenOnly: true });
-    await vi.waitFor(() => expect(adapter.stop).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(adapter.stop).toHaveBeenCalledTimes(1);
     expect(core.startCapture).not.toHaveBeenCalled();
   });
 });

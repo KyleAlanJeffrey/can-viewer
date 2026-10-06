@@ -191,10 +191,9 @@ export class CaptureRecorder {
     const timedOut = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         this.ended = true;
-        // Not awaited: a port that never opened may never close either. Stopped again in case
-        // the start still succeeds later.
+        // The stop cuts the start short, so it rejects rather than opening the bus later.
         void this.adapter.stop();
-        void starting.then(() => this.adapter.stop(), () => undefined);
+        starting.catch(() => undefined);
         reject(new Error(`The adapter didn't start within ${this.startTimeoutMs / 1000} seconds. Unplug it, plug it back in and try again.`));
       }, this.startTimeoutMs);
     });

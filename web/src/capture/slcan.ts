@@ -10,6 +10,8 @@ import { FLAG_BRS, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
 import {
   errorText,
   ListenOnlyUnconfirmedError,
+  settleWithin,
+  START_CANCELLED,
   usbIds,
   type CaptureAdapter,
   type CaptureEvents,
@@ -159,6 +161,8 @@ export interface SlcanTiming {
 }
 
 const DEFAULT_TIMING: SlcanTiming = { commandMs: 1000, settleMs: 100 };
+/** How long a stop waits for the port to close; a hung device may never let it. */
+const CLOSE_WAIT_MS = 1000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -177,6 +181,15 @@ export class SlcanAdapter implements CaptureAdapter {
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private reading: Promise<void> | null = null;
   private stopping: Promise<void> | null = null;
+  /** The writer of the command being written, so a stop can abort a write that hangs. */
+  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  /** The start under way, until it settles; another isn't begun before then. */
+  private starting: Promise<StartedCapture> | null = null;
+  /** Set by `stop`, so a start still under way stops at its next step. */
+  private cancelled = false;
+  /** Resolves on `stop`, so a write that hangs stops being waited for. */
+  private stopped: Promise<void> = new Promise(() => {});
+  private signalStop = () => {};
   private events: CaptureEvents | null = null;
   private clock: () => number = () => 0;
   /** Set as `O` or `L` is sent. Until then a line that looks like a frame is a reply or stale. */
@@ -190,23 +203,41 @@ export class SlcanAdapter implements CaptureAdapter {
     this.label = ids ? `USB serial device ${ids}` : 'Serial port';
   }
 
-  async start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
+  start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
+    if (this.starting) return Promise.reject(new Error('The adapter is still being released from the last try. Wait a moment, or choose it again.'));
+    const starting = this.open(settings, events, clock);
+    this.starting = starting;
+    const settled = () => {
+      if (this.starting === starting) this.starting = null;
+    };
+    starting.then(settled, settled);
+    return starting;
+  }
+
+  private async open(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
     const code = BITRATE_CODES.get(settings.bitrate);
     if (code === undefined) throw new Error(`slcan adapters can't run at ${settings.bitrate} bit/s.`);
     // The sheet keeps the chosen adapter, so it can be started again after a stop.
     this.parser = new SlcanParser();
     this.waiters = [];
     this.stopping = null;
+    this.cancelled = false;
+    this.stopped = new Promise((resolve) => (this.signalStop = resolve));
+    this.reader = null;
+    this.reading = null;
+    this.writer = null;
     this.busOpen = false;
     this.events = events;
     this.clock = clock;
     try {
       await this.port.open({ baudRate: SERIAL_BAUD_RATE });
     } catch (e) {
+      if (this.cancelled) throw new Error(START_CANCELLED);
       throw new Error(`The adapter couldn't be opened (${errorText(e)}). Close any other program or tab using it, then try again.`);
     }
-    this.reading = this.readLoop();
     try {
+      this.checkCancelled();
+      this.reading = this.readLoop();
       await this.expect('C', this.timing.settleMs, null);
       await sleep(this.timing.settleMs);
       this.answerAll('no answer');
@@ -241,20 +272,46 @@ export class SlcanAdapter implements CaptureAdapter {
       await open();
       return { listenOnly: silent === 'ok' };
     } catch (e) {
-      await this.stop();
-      throw e;
+      if (!this.cancelled) {
+        await this.stop();
+        throw e;
+      }
+      // The stop found the port not yet open, or the start part way through; close it now.
+      await this.teardown();
+      throw new Error(START_CANCELLED);
     }
   }
 
   stop(): Promise<void> {
-    this.stopping ??= (async () => {
-      // So the adapter stops sending. A lost device has no stream left, and nothing to tell.
-      if (this.port.readable) await this.command('C', this.timing.settleMs);
+    this.cancelled = true;
+    this.signalStop();
+    this.stopping ??= this.teardown();
+    return this.stopping;
+  }
+
+  /** Lets the port go. Never rejects, and doesn't wait long on a device that has hung. */
+  private async teardown(): Promise<void> {
+    try {
+      const hung = this.writer;
+      if (hung) {
+        // A write that hasn't finished holds the stream, so no C can follow it.
+        this.writer = null;
+        void hung.abort().catch(() => undefined);
+        hung.releaseLock();
+      } else if (this.port.readable && this.port.writable && !this.port.writable.locked) {
+        // So the adapter stops sending. A lost device has no stream left, and nothing to tell.
+        await this.command('C', this.timing.settleMs);
+      }
       await this.reader?.cancel().catch(() => undefined);
       await this.reading;
-      await this.port.close().catch(() => undefined);
-    })();
-    return this.stopping;
+      await settleWithin(this.port.close(), CLOSE_WAIT_MS);
+    } catch {
+      // Stopping never fails; what is left of the port goes with the page.
+    }
+  }
+
+  private checkCancelled() {
+    if (this.cancelled) throw new Error(START_CANCELLED);
   }
 
   release() {
@@ -269,7 +326,9 @@ export class SlcanAdapter implements CaptureAdapter {
    * BEL throws `refused` when given. No answer is fine: some adapters never answer.
    */
   private async expect(command: string, waitMs: number, refused: string | null): Promise<Answer> {
+    this.checkCancelled();
     const answer = await this.command(command, waitMs);
+    this.checkCancelled();
     if (answer === 'write failed') throw new Error("The adapter stopped taking commands. Unplug it, plug it back in and try again.");
     if (answer === 'refused' && refused !== null) throw new Error(refused);
     return answer;
@@ -292,13 +351,15 @@ export class SlcanAdapter implements CaptureAdapter {
         resolve('no answer');
       }, waitMs);
     });
-    try {
-      await writer.write(new TextEncoder().encode(`${command}\r`));
-    } catch {
-      this.answerAll('write failed');
-    } finally {
-      writer.releaseLock();
-    }
+    this.writer = writer;
+    const written = writer.write(new TextEncoder().encode(`${command}\r`)).then(
+      () => true,
+      () => false,
+    );
+    const stopped = this.stopped.then(() => false);
+    if (!(await Promise.race([written, stopped]))) this.answerAll('write failed');
+    if (this.writer === writer) this.writer = null;
+    writer.releaseLock();
     return answered;
   }
 

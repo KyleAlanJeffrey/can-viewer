@@ -8,6 +8,8 @@ import { FLAG_BRS, FLAG_ERROR, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../c
 import {
   errorText,
   ListenOnlyUnconfirmedError,
+  settleWithin,
+  START_CANCELLED,
   usbIds,
   type CaptureAdapter,
   type CaptureEvents,
@@ -155,6 +157,9 @@ function u32s(...values: number[]): ArrayBuffer {
   return view.buffer;
 }
 
+/** How long a stop waits on each request to the device; a hung device may never answer. */
+const CLOSE_WAIT_MS = 1000;
+
 export class GsUsbAdapter implements CaptureAdapter {
   readonly label: string;
   private interfaceNumber = 0;
@@ -164,32 +169,58 @@ export class GsUsbAdapter implements CaptureAdapter {
   private stopping: Promise<void> | null = null;
   private events: CaptureEvents | null = null;
   private clock: () => number = () => 0;
+  /** The start under way, until it settles; another isn't begun before then. */
+  private starting: Promise<StartedCapture> | null = null;
+  /** Set by `stop`, so a start still under way stops at its next step. */
+  private cancelled = false;
+  /** Set once the device has been opened, and its interface claimed, for this start. */
+  private claimed = false;
 
   constructor(private readonly device: UsbDeviceLike) {
     const ids = usbIds({ usbVendorId: device.vendorId, usbProductId: device.productId });
     this.label = `${device.productName || 'USB CAN adapter'} (${ids})`;
   }
 
-  async start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
+  start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
+    if (this.starting) return Promise.reject(new Error('The adapter is still being released from the last try. Wait a moment, or choose it again.'));
+    const starting = this.open(settings, events, clock);
+    this.starting = starting;
+    const settled = () => {
+      if (this.starting === starting) this.starting = null;
+    };
+    starting.then(settled, settled);
+    return starting;
+  }
+
+  private async open(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
     // The sheet keeps the chosen adapter, so it can be started again after a stop.
     this.stopping = null;
+    this.cancelled = false;
+    this.claimed = false;
     this.reads = [];
     this.events = events;
     this.clock = clock;
     try {
       await this.device.open();
+      this.checkCancelled();
       if (this.device.configuration === null) await this.device.selectConfiguration(1);
+      this.checkCancelled();
       this.findEndpoint();
       await this.device.claimInterface(this.interfaceNumber);
+      this.claimed = true;
+      this.checkCancelled();
     } catch (e) {
-      await this.device.close().catch(() => undefined);
+      await settleWithin(this.device.close(), CLOSE_WAIT_MS);
+      if (this.cancelled) throw new Error(START_CANCELLED);
       throw new Error(
         `The adapter couldn't be opened (${errorText(e)}). Close any other program or tab using it. On Linux, the gs_usb driver holds it: unbind the driver first.`,
       );
     }
     try {
       await this.controlOut(BREQ_HOST_FORMAT, 1, u32s(0x0000_beef));
+      this.checkCancelled();
       const limits = parseBitTimingLimits(await this.controlIn(BREQ_BT_CONST, 0, 40));
+      this.checkCancelled();
       const timing = bitTiming(limits, settings.bitrate);
       if (!timing) throw new Error(`The adapter can't run at ${settings.bitrate} bit/s.`);
       const listenOnly = settings.listenOnly && (limits.feature & FEATURE_LISTEN_ONLY) !== 0;
@@ -197,28 +228,49 @@ export class GsUsbAdapter implements CaptureAdapter {
         throw new ListenOnlyUnconfirmedError("This adapter can't listen only, so it would acknowledge frames on the bus.");
       }
       await this.controlOut(BREQ_MODE, 0, u32s(MODE_RESET, 0));
+      this.checkCancelled();
       await this.controlOut(BREQ_BITTIMING, 0, u32s(timing.propSeg, timing.phaseSeg1, timing.phaseSeg2, timing.sjw, timing.brp));
+      this.checkCancelled();
       await this.controlOut(BREQ_MODE, 0, u32s(MODE_START, listenOnly ? MODE_FLAG_LISTEN_ONLY : 0));
       this.running = true;
+      this.checkCancelled();
       this.reads = Array.from({ length: READS_IN_FLIGHT }, () => this.readLoop());
       return { listenOnly };
     } catch (e) {
-      await this.stop();
-      throw e;
+      if (!this.cancelled) {
+        await this.stop();
+        throw e;
+      }
+      // The stop found the device not yet set up, or the start part way through; release it now.
+      await this.teardown();
+      throw new Error(START_CANCELLED);
     }
   }
 
   stop(): Promise<void> {
-    this.stopping ??= (async () => {
+    this.cancelled = true;
+    this.stopping ??= this.teardown();
+    return this.stopping;
+  }
+
+  /** Lets the device go. Never rejects, and doesn't wait long on a device that has hung. */
+  private async teardown(): Promise<void> {
+    try {
       const wasRunning = this.running;
       this.running = false;
-      if (wasRunning) await this.controlOut(BREQ_MODE, 0, u32s(MODE_RESET, 0)).catch(() => undefined);
-      await this.device.releaseInterface(this.interfaceNumber).catch(() => undefined);
+      if (wasRunning) await settleWithin(this.controlOut(BREQ_MODE, 0, u32s(MODE_RESET, 0)), CLOSE_WAIT_MS);
+      if (this.claimed) await settleWithin(this.device.releaseInterface(this.interfaceNumber), CLOSE_WAIT_MS);
+      this.claimed = false;
       // Closing the device fails the reads still waiting.
-      await this.device.close().catch(() => undefined);
+      await settleWithin(this.device.close(), CLOSE_WAIT_MS);
       await Promise.all(this.reads);
-    })();
-    return this.stopping;
+    } catch {
+      // Stopping never fails; what is left of the device goes with the page.
+    }
+  }
+
+  private checkCancelled() {
+    if (this.cancelled) throw new Error(START_CANCELLED);
   }
 
   release() {

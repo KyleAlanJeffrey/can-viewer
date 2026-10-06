@@ -19,6 +19,9 @@ export class FakeSerialPort implements SerialPortLike {
   openError: Error | null = null;
   /** Set to make writes fail, as when the adapter has hung. */
   writeError: Error | null = null;
+  /** Set to make writes never finish, as when the USB serial link has hung; abort ends them. */
+  hangWrites = false;
+  private opening: Promise<void> | null = null;
   private controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   private written = '';
 
@@ -28,7 +31,19 @@ export class FakeSerialPort implements SerialPortLike {
     return this.info;
   }
 
+  /** Makes the next `open` wait until the returned function is called. */
+  delayOpen(): () => void {
+    let release = () => {};
+    this.opening = new Promise((resolve) => (release = resolve));
+    return release;
+  }
+
   async open() {
+    if (this.opening) {
+      const opening = this.opening;
+      this.opening = null;
+      await opening;
+    }
     if (this.openError) throw this.openError;
     this.opened = true;
     this.closed = false;
@@ -39,6 +54,7 @@ export class FakeSerialPort implements SerialPortLike {
     });
     this.writable = new WritableStream<Uint8Array>({
       write: (chunk) => {
+        if (this.hangWrites) return new Promise<void>(() => {});
         if (this.writeError) throw this.writeError;
         this.written += new TextDecoder().decode(chunk);
         let end: number;

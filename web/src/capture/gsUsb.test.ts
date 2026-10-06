@@ -97,15 +97,28 @@ class FakeUsbDevice implements UsbDeviceLike {
   closed = false;
   claimError: Error | null = null;
   limits = CANDLELIGHT;
+  /** Set to make control transfers never finish until the device is closed, as on a hung device. */
+  hangControl = false;
+  /** Set to make `open` wait for it. */
+  opening: Promise<void> | null = null;
   private queued: DataView[] = [];
   private waiting: { resolve: (r: UsbInResult) => void; reject: (e: Error) => void }[] = [];
+  private hung: ((e: Error) => void)[] = [];
 
   async open() {
+    await this.opening;
     this.opened = true;
+    this.closed = false;
   }
   async close() {
     this.closed = true;
-    for (const w of this.waiting.splice(0)) w.reject(new DOMException('The device was closed.', 'AbortError') as unknown as Error);
+    const closed = () => new DOMException('The device was closed.', 'AbortError') as unknown as Error;
+    for (const w of this.waiting.splice(0)) w.reject(closed());
+    for (const reject of this.hung.splice(0)) reject(closed());
+  }
+  /** A control transfer that ends only when the device is closed. */
+  private hang<T>(): Promise<T> {
+    return new Promise((_, reject) => this.hung.push(reject));
   }
   async selectConfiguration() {
     this.configuration = { interfaces: [{ interfaceNumber: 0, alternate: { endpoints: [{ endpointNumber: 2, direction: 'out', type: 'bulk' }, { endpointNumber: 1, direction: 'in', type: 'bulk' }] } }] };
@@ -115,6 +128,7 @@ class FakeUsbDevice implements UsbDeviceLike {
   }
   async releaseInterface() {}
   async controlTransferIn(setup: UsbSetup, length: number): Promise<UsbInResult> {
+    if (this.hangControl) return this.hang();
     this.requests.push({ request: setup.request, value: setup.value, data: [] });
     const l = this.limits;
     const values = [l.feature, l.fclk, l.tseg1Min, l.tseg1Max, l.tseg2Min, l.tseg2Max, l.sjwMax, l.brpMin, l.brpMax, l.brpInc];
@@ -123,6 +137,7 @@ class FakeUsbDevice implements UsbDeviceLike {
     return { status: 'ok', data: view };
   }
   async controlTransferOut(setup: UsbSetup, data?: BufferSource) {
+    if (this.hangControl) return this.hang<{ status: 'ok' }>();
     const view = new DataView(data as ArrayBuffer);
     const words = Array.from({ length: view.byteLength / 4 }, (_, i) => view.getUint32(4 * i, true));
     this.requests.push({ request: setup.request, value: setup.value, data: words });
@@ -239,6 +254,40 @@ describe('GsUsbAdapter', () => {
     expect(frames).toEqual([{ id: 0x321, extended: false, flags: 0, data: Uint8Array.of(5), timeNs: 7 }]);
     await adapter.stop();
     expect(device.requests.at(-1)).toEqual({ request: 2, value: 0, data: [0, 0] });
+  });
+
+  it('lets the device go when a request hangs, and can start again', async () => {
+    const device = new FakeUsbDevice();
+    device.hangControl = true;
+    const adapter = new GsUsbAdapter(device);
+    const starting = adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0);
+    await tick();
+    await expect(adapter.stop()).resolves.toBeUndefined();
+    expect(device.closed).toBe(true);
+    await expect(starting).rejects.toThrow('The capture was stopped while the adapter started.');
+
+    device.hangControl = false;
+    expect(await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0)).toEqual({ listenOnly: true });
+    await adapter.stop();
+  });
+
+  it('closes a device that opens only after the start was stopped, without starting it', async () => {
+    const device = new FakeUsbDevice();
+    let opened = () => {};
+    device.opening = new Promise((resolve) => (opened = resolve));
+    const adapter = new GsUsbAdapter(device);
+    const { frames, events } = recordingEvents();
+    const starting = adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => 0);
+    await adapter.stop();
+    await expect(adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => 0)).rejects.toThrow('The adapter is still being released from the last try.');
+
+    opened();
+    await expect(starting).rejects.toThrow('The capture was stopped while the adapter started.');
+    expect(device.requests).toEqual([]);
+    expect(device.closed).toBe(true);
+    device.receive(hostFrame(0x123, 1, [9]));
+    await tick();
+    expect(frames).toEqual([]);
   });
 
   it('ends the capture once when the adapter is unplugged', async () => {

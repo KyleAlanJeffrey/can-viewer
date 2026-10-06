@@ -376,6 +376,40 @@ describe('SlcanAdapter', () => {
     expect(port.closed).toBe(true);
   });
 
+  it('lets the port go when a write hangs, and can start again', async () => {
+    const port = new FakeSerialPort();
+    const adapter = new SlcanAdapter(port, timing);
+    port.hangWrites = true;
+    const starting = adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0);
+    await tick();
+    await expect(adapter.stop()).resolves.toBeUndefined();
+    expect(port.closed).toBe(true);
+    await expect(starting).rejects.toThrow('The capture was stopped while the adapter started.');
+
+    port.hangWrites = false;
+    port.commands.length = 0;
+    expect(await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0)).toEqual({ listenOnly: true });
+    expect(port.commands).toEqual(['C', 'S6', 'L']);
+    await adapter.stop();
+  });
+
+  it('closes a port that opens only after the start was stopped, without opening the bus', async () => {
+    const port = new FakeSerialPort();
+    const opened = port.delayOpen();
+    const adapter = new SlcanAdapter(port, timing);
+    const starting = adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0);
+    await adapter.stop();
+    await expect(adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
+      'The adapter is still being released from the last try.',
+    );
+
+    opened();
+    await expect(starting).rejects.toThrow('The capture was stopped while the adapter started.');
+    expect(port.commands).not.toContain('O');
+    expect(port.commands).not.toContain('S6');
+    expect(port.closed).toBe(true);
+  });
+
   it('stops only once, however often it is asked', async () => {
     const port = new FakeSerialPort();
     const adapter = new SlcanAdapter(port, timing);

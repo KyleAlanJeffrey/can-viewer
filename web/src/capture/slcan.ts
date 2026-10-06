@@ -248,10 +248,11 @@ export class SlcanAdapter implements CaptureAdapter {
       const bitrate = await this.expect(`S${code}`, this.timing.commandMs, 'The adapter refused the bitrate. Check that it runs slcan firmware.');
       const answers = bitrate !== 'no answer';
       const wait = answers ? this.timing.commandMs : this.timing.settleMs;
-      const open = () => {
+      // Frames can follow the answer to O or L in the same chunk, so read them once the command is out.
+      const busOpened = () => {
         this.busOpen = true;
-        return this.expect('O', wait, 'The adapter refused to open the CAN channel.');
       };
+      const open = () => this.expect('O', wait, 'The adapter refused to open the CAN channel.', busOpened);
       if (!settings.listenOnly) {
         await open();
         return { listenOnly: false };
@@ -259,9 +260,7 @@ export class SlcanAdapter implements CaptureAdapter {
       // CANable ignores L, so a silent adapter gets only M1, which CANable takes as silent mode.
       let listenOnly: Answer | null = null;
       if (answers) {
-        // Frames can follow the answer to L in the same chunk.
-        this.busOpen = true;
-        listenOnly = await this.expect('L', wait, null);
+        listenOnly = await this.expect('L', wait, null, busOpened);
         if (listenOnly === 'ok') return { listenOnly: true };
         this.busOpen = false;
       }
@@ -336,16 +335,16 @@ export class SlcanAdapter implements CaptureAdapter {
    * Sends `command` and waits up to `waitMs` for an answer. A failed write always throws; a
    * BEL throws `refused` when given. No answer is fine: some adapters never answer.
    */
-  private async expect(command: string, waitMs: number, refused: string | null): Promise<Answer> {
+  private async expect(command: string, waitMs: number, refused: string | null, onWritten?: () => void): Promise<Answer> {
     this.checkCancelled();
-    const answer = await this.command(command, waitMs);
+    const answer = await this.command(command, waitMs, onWritten);
     this.checkCancelled();
     if (answer === 'write failed') throw new Error("The adapter stopped taking commands. Unplug it, plug it back in and try again.");
     if (answer === 'refused' && refused !== null) throw new Error(refused);
     return answer;
   }
 
-  private async command(command: string, waitMs = this.timing.commandMs): Promise<Answer> {
+  private async command(command: string, waitMs = this.timing.commandMs, onWritten?: () => void): Promise<Answer> {
     const writer = this.port.writable?.getWriter();
     if (!writer) return 'write failed';
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -368,7 +367,8 @@ export class SlcanAdapter implements CaptureAdapter {
       () => false,
     );
     // Let go of the stream as soon as the write settles, so a stop then sees it free for C.
-    void written.then(() => {
+    void written.then((ok) => {
+      if (ok) onWritten?.();
       if (this.writer === writer) this.writer = null;
       writer.releaseLock();
     });

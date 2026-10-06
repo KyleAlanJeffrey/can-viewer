@@ -287,6 +287,25 @@ describe('SlcanAdapter', () => {
     await adapter.stop();
   });
 
+  it('reads no frames that arrive while the open command is still being written', async () => {
+    const port = new FakeSerialPort();
+    const answer = port.answer;
+    port.answer = (command) => {
+      if (command.startsWith('S')) {
+        port.writeDelayMs = 20;
+        setTimeout(() => port.send('t1230\r'), 5);
+      }
+      return answer(command);
+    };
+    const adapter = new SlcanAdapter(port, timing);
+    const { frames, events } = recordingEvents();
+    await adapter.start({ bitrate: 500_000, listenOnly: false }, events, () => 0);
+    port.send('t4560\r');
+    await tick();
+    expect(frames.map((f) => f.id)).toEqual([0x456]);
+    await adapter.stop();
+  });
+
   it('still fails on a BEL from an adapter that otherwise answers nothing', async () => {
     const port = new FakeSerialPort();
     port.answer = (command) => (command === 'O' ? '\x07' : null);

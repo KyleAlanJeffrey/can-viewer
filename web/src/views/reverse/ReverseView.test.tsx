@@ -7,6 +7,7 @@ import { bitFlips, fakeCore, lane, logInfo, makeRowBatch, message, seriesInfo, s
 import { ViewStateContext, ViewStateStore } from '../shared/viewState';
 import { SlotContext } from '../slots';
 import type { LoadedDbc, ViewContext } from '../types';
+import { REF_AXIS_H, REF_PLOT_H } from './ReferencePlot';
 import { ReverseView } from './ReverseView';
 
 const engine = summary({ id: 0x100, name: 'Engine' });
@@ -180,7 +181,7 @@ describe('Byte Values', () => {
     expect(screen.getByRole('button', { name: /^100 byte 2, .*pinned$/ })).toBeTruthy();
     expect(await screen.findByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeTruthy();
 
-    expect(screen.getByRole('heading', { name: 'Pinned references' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Pinned references \u00b7 1' })).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Unpin byte' }));
     expect(screen.getByRole('button', { name: 'Pin byte' })).toBeTruthy();
@@ -246,7 +247,15 @@ describe('Pinned references', () => {
     const candidate = screen.getByRole('img', { name: /the candidate, across the window$/ });
     expect(pinned.closest('.re-ref-rows')).toBeTruthy();
     expect(candidate.closest('.re-ref-rows')).toBeNull();
-    expect(candidate.closest('section')).toBe(screen.getByRole('region', { name: 'Pinned references' }));
+    const card = screen.getByRole('region', { name: 'Pinned references' });
+    expect(candidate.closest('section')).toBe(card);
+
+    // One time axis for them all, under the rows, and no plot tall enough to draw its own.
+    expect(card.querySelectorAll('.re-ref-axis-row')).toHaveLength(1);
+    expect(card.querySelector('.re-ref-axis-row canvas')?.getAttribute('height')).toBe(String(REF_AXIS_H));
+    const plots = [...card.querySelectorAll('.re-ref-plot canvas')];
+    expect(plots).toHaveLength(2);
+    for (const plot of plots) expect(plot.getAttribute('height')).toBe(String(REF_PLOT_H));
   });
 });
 

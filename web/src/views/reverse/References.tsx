@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Pin as PinIcon, Plus, X } from 'lucide-react';
 import type { CoreApi } from '../../core/api';
+import { cssVar } from '../../format';
 import { formatValue, lastIn, pointAt, type TimeWindow, type Trace } from './bits';
 import type { Pin, Reference } from './pins';
 import { ReferencePlot, TimeAxis } from './ReferencePlot';
@@ -42,7 +43,11 @@ export function References({ core, references, window: win, cursor, candidate, o
       <div className="re-card-head">
         <PinIcon size={16} strokeWidth={1.5} aria-hidden="true" className="re-refs-icon" />
         {/* With nothing pinned, the card shrinks to one row that says what it is for. */}
-        <h3 className="section-title">{rows === 0 ? 'Pin a signal for comparison' : 'Pinned references'}</h3>
+        <h3 className="section-title">
+          {rows === 0 ? 'Pin a signal for comparison' : 'Pinned references'}
+          {/* A short view shows only the first rows. */}
+          {references.length > 0 && ` \u00b7 ${references.length}`}
+        </h3>
         {rows > 0 && <span className="re-card-note">Shared time {'\u00b7'} separate scales</span>}
         <button
           type="button"
@@ -83,7 +88,8 @@ export function References({ core, references, window: win, cursor, candidate, o
           </div>
           <ReferencePlot
             trace={ownRow.trace}
-            color="var(--graphite)"
+            // A canvas can't resolve CSS variables.
+            color={cssVar('--graphite')}
             dashed
             window={win}
             cursor={cursor}

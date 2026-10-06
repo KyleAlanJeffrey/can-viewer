@@ -51,6 +51,8 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
   const [generation, setGeneration] = useState(0);
   // Cursor marks are placed in pixels, so they move when the plot is resized.
   const [plotWidth, setPlotWidth] = useState(0);
+  // uPlot rescales a tick after new data, so marks placed before then would use the old scales.
+  const [rescaled, setRescaled] = useState(0);
   const fontsReady = useFontsReady();
   const hasOverlay = !!overlay;
   // uPlot callbacks and DOM listeners outlive renders; they read the current props from here.
@@ -107,6 +109,7 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
           },
         ],
         cursor: { show: false },
+        hooks: { setScale: [() => setRescaled((n) => n + 1)] },
       },
       [new Float64Array(0), new Float64Array(0)],
       host,
@@ -194,7 +197,7 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
       dot.hidden = false;
       dot.style.transform = `translate(${x}px, ${y}px)`;
     });
-  }, [cursor, win, trace, overlay, data, generation, plotWidth]);
+  }, [cursor, win, trace, overlay, data, generation, plotWidth, rescaled]);
 
   return <div className="re-ref-plot" ref={hostRef} role="img" aria-label={label} />;
 }

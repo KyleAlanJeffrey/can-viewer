@@ -7,7 +7,7 @@
   padding: 16px 20px 24px;
 }
 
-/* The message heading and Pinned references stay on top, outside the scroller, while the content beneath them scrolls. */
+/* The message heading and Pinned references stay on top, outside the scroller, while the content below them scrolls. */
 .re-docked {
   flex: 1;
   display: flex;
@@ -20,27 +20,39 @@
 
 .re-docked > .re-message-head,
 .re-docked > .re-refs {
-  flex: none;
   margin: 0 20px 12px;
+}
+
+.re-docked > .re-message-head {
+  flex: none;
+}
+
+/* The content keeps a floor. Past it the card gives way down to its head and scrolls inside itself,
+   as a last resort, rather than leave the content no room. */
+.re-docked > .re-refs {
+  flex: 0 1 auto;
+  min-height: 56px;
+  overflow-y: auto;
 }
 
 .re-docked > .re-scroll {
   padding-top: 0;
+  /* Never more than the dock has left under the message heading (58px), the card's head (56px) and the gaps. */
+  min-height: min(max(150px, 28cqh), 100cqh - 130px);
 }
 
-/* Only the pinned rows scroll, so the card's head, candidate, time axis and analysis window stay in
-   view. At least the first row shows: its cursor time (18px) over a REF_PLOT_H plot. */
+/* Room for three rows and the selection footer on a phone; there is no message heading here. */
+.re-docked > .re-bytes {
+  min-height: min(max(230px, 35cqh), 100cqh - 68px);
+}
+
+/* The pinned rows scroll on their own, so the candidate, time axis and analysis window stay under
+   them. The cap shows the first row (its 18px cursor time over a REF_PLOT_H plot) and the top of
+   the next, so the rest are seen to scroll. */
 .re-docked .re-ref-rows {
-  max-height: max(74px, 25cqh);
+  max-height: max(98px, 20cqh);
   overflow-x: hidden;
   overflow-y: auto;
-}
-
-/* A short view keeps its height for the content below. */
-@container re-dock (max-height: 479px) {
-  .re-docked .re-ref-rows {
-    max-height: 74px;
-  }
 }
 
 /* A classic scrollbar on the rows narrows their plots; the same gutter keeps the rest aligned. */
@@ -53,6 +65,12 @@
 .re-docked .re-ref-row.candidate,
 .re-docked .re-ref-axis-row {
   overflow: hidden;
+}
+
+/* Room for a cursor dot at the bottom of the last plot, which these rows would otherwise clip. */
+.re-docked .re-ref-rows,
+.re-docked .re-ref-row.candidate {
+  padding-bottom: 4px;
 }
 
 .re-card {
@@ -983,6 +1001,13 @@
     .re-sugpanel {
       height: 30%;
       min-height: 160px;
+    }
+  }
+
+  @media (max-height: 600px) {
+    .re-sugpanel {
+      height: 25%;
+      min-height: 56px;
     }
   }
 }

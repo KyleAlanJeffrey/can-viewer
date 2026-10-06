@@ -96,6 +96,8 @@ class FrameWorker implements PartWorker {
   static reading = 0;
   static mostReading = 0;
   closed = false;
+  /** The parts whose reads got past their delay. */
+  partsRead: number[] = [];
   private stops: (() => void)[] = [];
   ready = Promise.resolve();
   constructor(
@@ -119,12 +121,15 @@ class FrameWorker implements PartWorker {
       });
     });
     if (this.closed) throw new Error('closed');
+    this.partsRead.push(task.task[0]);
     if (task.task[0] === this.failAt) throw new Error('out of memory');
     return new TextEncoder().encode(JSON.stringify({ task: task.task[0], body }));
   }
   close() {
     this.closed = true;
-    for (const stop of this.stops) stop();
+    const stops = this.stops;
+    this.stops = [];
+    for (const stop of stops) stop();
   }
 }
 
@@ -655,11 +660,11 @@ describe('reading a log in parts', () => {
         workers.push(worker);
         return worker;
       };
-      const started = performance.now();
       expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
-      expect(performance.now() - started).toBeLessThan(40);
       expect(session.joined).toEqual([0, 2, 1]);
       expect(workers.every((worker) => worker.closed)).toBe(true);
+      // The slow reads of the parts after them were stopped, not waited for.
+      expect(workers.flatMap((worker) => worker.partsRead).sort()).toEqual([0, 1, 2]);
       expect(warn).not.toHaveBeenCalled();
       warn.mockRestore();
     });

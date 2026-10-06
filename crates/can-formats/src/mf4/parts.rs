@@ -16,9 +16,16 @@
 //!
 //! The plan and the reads keep to the file's budgets for data and frames, as a read of each
 //! data group alone would: a data list that links the same blocks over and over is planned no
-//! further than a read of the whole file gets. A file is read whole when it can't be split
-//! ([`splittable`]), when a data block's header doesn't give its length, or when the plan
-//! would have too many parts.
+//! further than a read of the whole file gets. The data groups' plans together take at most
+//! twice those budgets, so planning a file of many data groups costs about as much as two
+//! reads of it. A file is read whole when it can't be split ([`splittable`]), when a data
+//! block's header doesn't give its length, or when the plan would have too many parts or take
+//! more than that.
+//!
+//! Each data group is planned within the whole budgets, though a read of the file shares them
+//! between the groups, so data groups that link the same blocks can be planned and read
+//! further than the merge then takes them. A part's reads take more bytes than its stream when
+//! its records are only a few bytes long.
 
 use super::*;
 
@@ -36,7 +43,7 @@ const PENDING: u8 = 5;
 
 /// What a read can fail or be rejected with, sent by its place here.
 const REASONS: [&str; 21] = [
-    "more data than the file's size allows",
+    DATA_OVER,
     "bad data block",
     "data list inside a data list",
     "unknown data block type",
@@ -143,6 +150,20 @@ struct Budget {
     frames: u64,
 }
 
+impl Budget {
+    /// Takes `data` and `frames` from what is left, or None when not that much is.
+    fn take(&mut self, data: u64, frames: u64) -> Option<()> {
+        self.data = self.data.checked_sub(data)?;
+        self.frames = self.frames.checked_sub(frames)?;
+        Some(())
+    }
+}
+
+/// How many times one read's budgets the plans of all the data groups may take together.
+const PLANNED_BUDGETS: u64 = 2;
+/// The error a walk stops with at the data budget.
+const DATA_OVER: &str = "more data than the file's size allows";
+
 /// Plans reading the frames of `file` in parts of about `part_bytes` of stream each, after
 /// reading it up to them with `stats`. None for a file read whole (see the module's docs).
 ///
@@ -160,38 +181,56 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
         data: full.data_left,
         frames: full.frames_left as u64,
     };
+    // What all the data groups' plans may take together. A read of the whole file takes at
+    // most one budget, shared by the data groups, so plans that take more than this end at a
+    // budget anyway: the file is read whole, and planning never costs more than about two
+    // reads of it.
+    let mut allowance = Budget {
+        data: budget.data.saturating_mul(PLANNED_BUDGETS),
+        frames: budget.frames.saturating_mul(PLANNED_BUDGETS),
+    };
+    // The data the blocks sized for the plans may charge together, kept apart from the
+    // allowance because a walk can stop well before the blocks sized for it.
+    let mut sizing_allowance = allowance.data;
     // Each part with the data group it reads and how far into its stream it starts.
     let mut planned: Vec<(f64, usize, PartTask)> = Vec::new();
     let mut pieces = 0;
     for (s, source) in sources.iter().enumerate() {
         let reader = &source.reader;
         let spec = spec(start_ns, reader);
-        let mut blocks = sized_blocks(file, &reader.records)?;
-        let stream_blocks = blocks.len();
         // Blocks past the one whose charge takes the stream over the data budget are never
         // entered, and the reads of the stream end in that one.
-        let over = blocks
-            .iter()
-            .position(|block| block.charged_before.saturating_add(block.charge) > budget.data);
-        let mut data_end = None;
-        if let Some(over) = over {
-            blocks.truncate(over + 1);
-            data_end = Some(blocks[over].start + 1);
+        let sizing_budget = budget.data.min(sizing_allowance);
+        let (blocks, over_budget) = sized_blocks(file, &reader.records, sizing_budget)?;
+        if over_budget && sizing_budget < budget.data {
+            return None;
         }
-        let ends_open = reader.records.ends_open() && blocks.len() == stream_blocks;
+        let sized = blocks
+            .last()
+            .map_or(0, |block| block.charged_before.saturating_add(block.charge));
+        sizing_allowance = sizing_allowance.checked_sub(sized)?;
+        let data_end = over_budget.then(|| blocks.last().map_or(0, |block| block.start) + 1);
+        let ends_open = reader.records.ends_open() && !over_budget;
         let (cuts, stop) = if reader.record_id_size == 0 {
             let record_len = reader.groups[0].record_len as u64;
             // A read ends with the frame that takes it over the frame budget, if not before.
             let frames_end = budget.frames.saturating_add(1).saturating_mul(record_len);
             let total = blocks.last().map_or(0, |block| block.start + block.len);
-            let end = data_end.map_or(frames_end, |end| end.min(frames_end));
+            let end = data_end
+                .map_or(frames_end, |end| end.min(frames_end))
+                .min(total);
+            let entered = blocks.partition_point(|block| block.start < end);
+            let charged = blocks[..entered]
+                .last()
+                .map_or(0, |block| block.charged_before + block.charge);
+            allowance.take(charged, end / record_len)?;
             let cuts = sorted_cuts(&blocks, record_len, part_bytes, end)
                 .into_iter()
                 .map(|at| Some((at, vec![usize::try_from(at / record_len).ok()?])))
                 .collect::<Option<Vec<_>>>()?;
             (cuts, (end < total).then_some(end))
         } else {
-            walked_cuts(reader, part_bytes, budget)
+            walked_cuts(reader, part_bytes, budget, &mut allowance)?
         };
         let total = blocks.last().map_or(0, |block| block.start + block.len);
         for (i, (from, indexes)) in cuts.iter().enumerate() {
@@ -251,13 +290,18 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
     })
 }
 
-/// The blocks of a data group's stream, sized from their headers. None when a block's
-/// header doesn't give its length, or it isn't a data block.
-fn sized_blocks(file: &[u8], records: &BlockReader<'_>) -> Option<Vec<SizedBlock>> {
+/// The blocks of a data group's stream, sized from their headers, up to the one whose charge
+/// takes the stream over `data_budget`, and whether there is one. None when a block's header
+/// doesn't give its length, or it isn't a data block.
+fn sized_blocks(
+    file: &[u8],
+    records: &BlockReader<'_>,
+    data_budget: u64,
+) -> Option<(Vec<SizedBlock>, bool)> {
     let list = records.blocks.as_slice();
     let mut start = 0;
     let mut charged_before = 0u64;
-    let mut blocks = Vec::with_capacity(list.len());
+    let mut blocks = Vec::new();
     for (i, &at) in list.iter().enumerate() {
         let (block, end) = match records.open_end {
             Some(end) if i + 1 == list.len() => (Block::ending_at(file, at, end)?, end as u64),
@@ -290,8 +334,11 @@ fn sized_blocks(file: &[u8], records: &BlockReader<'_>) -> Option<Vec<SizedBlock
         });
         start += len;
         charged_before = charged_before.saturating_add(charge);
+        if charged_before > data_budget {
+            return Some((blocks, true));
+        }
     }
-    Some(blocks)
+    Some((blocks, false))
 }
 
 /// The lengths a DZ block inflates to and inflates from, if [`inflate`] would get as far as
@@ -337,25 +384,32 @@ fn sorted_cuts(blocks: &[SizedBlock], record_len: u64, part_bytes: u64, end: u64
     cuts
 }
 
+/// Where parts of a stream start, each with the records read in each channel group before it.
+type Cuts = Vec<(u64, Vec<usize>)>;
+
 /// Where an unsorted data group's parts start, about `part_bytes` apart, each where a frame
 /// record ends, with the records read in each channel group before it; and where the reads of
 /// the stream stop short of its end, if they do: at an error, or at the frame or data that
-/// takes them over `budget`.
+/// takes them over `budget`. None when the walk would take more than is left of `allowance`,
+/// which it takes its walk from.
 fn walked_cuts(
     reader: &RecordReader<'_>,
     part_bytes: u64,
     budget: Budget,
-) -> (Vec<(u64, Vec<usize>)>, Option<u64>) {
+    allowance: &mut Budget,
+) -> Option<(Cuts, Option<u64>)> {
     let groups = &reader.groups;
     let is_frame = |index: usize| groups[index].bus.is_some() && !groups[index].vlsd;
     let mut records = reader.records.unread_copy();
     let mut walk = Walk::unlimited(Repairs::default());
-    walk.data_left = budget.data;
+    let data_left = budget.data.min(allowance.data);
+    walk.data_left = data_left;
+    let frames_left = budget.frames.min(allowance.frames);
     let mut indexes = vec![0; groups.len()];
     let mut cuts = vec![(0, indexes.clone())];
     let mut last = 0;
     let mut frames = 0u64;
-    loop {
+    let stop = loop {
         let group_index = match next_record(
             &mut records,
             groups,
@@ -364,21 +418,39 @@ fn walked_cuts(
             is_frame,
         ) {
             Ok(Some((group_index, _))) => group_index,
-            Ok(None) => return (cuts, None),
-            // The read that failed starts at or before where this one stopped.
-            Err(_) => return (cuts, Some(records.position() + 1)),
+            Ok(None) => break None,
+            Err(reason) => {
+                if reason == DATA_OVER && data_left < budget.data {
+                    return None;
+                }
+                // The read that failed starts at or before where this one stopped.
+                break Some(records.position() + 1);
+            }
         };
+        #[cfg(test)]
+        WALKED.with(|walked| walked.set(walked.get() + 1));
         indexes[group_index] += 1;
         frames += 1;
         let at = records.position();
-        if frames > budget.frames {
-            return (cuts, Some(at));
+        if frames > frames_left {
+            if frames_left < budget.frames {
+                return None;
+            }
+            break Some(at);
         }
         if at - last >= part_bytes {
             cuts.push((at, indexes.clone()));
             last = at;
         }
-    }
+    };
+    allowance.take(data_left - walk.data_left, frames.min(frames_left))?;
+    Some((cuts, stop))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Records walked to plan parts, so tests can bound the work.
+    pub(super) static WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The task of a part whose reads start at `from` in the stream, with `indexes` records read

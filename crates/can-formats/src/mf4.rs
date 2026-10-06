@@ -462,14 +462,20 @@ fn prepare<'a>(
     // all the data groups.
     walk.starts.sort_unstable();
     walk.starts.dedup();
+    if repairs.last_data_block {
+        for source in &mut sources {
+            source.reader.records.run_on_last_block(&walk.starts);
+        }
+    }
+    if for_parts
+        && !sources
+            .iter()
+            .all(|source| parts::splittable(file, &source.reader, repairs))
+    {
+        return Err(parts::NOT_SPLITTABLE);
+    }
     for source in &mut sources {
         let reader = &mut source.reader;
-        if repairs.last_data_block {
-            reader.records.run_on_last_block(&walk.starts);
-        }
-        if for_parts && !parts::splittable(file, reader, repairs) {
-            return Err(parts::NOT_SPLITTABLE);
-        }
         if reader.record_id_size != 0 {
             reader.variable = variable_data(
                 &reader.records,
@@ -2506,6 +2512,57 @@ mod tests {
                 let (joined, joined_stats) = parse_in_parts(input, part_bytes).unwrap();
                 assert_eq!(joined.frames, whole.frames, "{reason}");
                 assert_eq!(joined_stats, stats, "{reason}");
+            }
+        }
+    }
+
+    /// A file of `groups` data groups, each with records of a 1-byte ID and nothing else
+    /// from one block of `records` they all link.
+    fn groups_sharing_a_block(records: usize, groups: usize) -> Vec<u8> {
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let dt = b.data_block(&vec![1; records]);
+        let mut previous = None;
+        for _ in 0..groups {
+            let mut members = data_frame_members(0);
+            members[5].cn_type = 0;
+            let structure = b.structure("CAN_DataFrame", &members);
+            let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+            let cg = b.channel_group(1, 0, 0, time, 0);
+            let dg = b.data_group(1, cg, dt);
+            match previous {
+                None => b.set_link(hd, 0, dg),
+                Some(previous) => b.set_link(previous, 0, dg),
+            }
+            previous = Some(dg);
+        }
+        b.bytes
+    }
+
+    #[test]
+    fn planning_many_data_groups_walks_no_more_than_two_reads_would() {
+        for (groups, planned) in [(2, true), (64, false)] {
+            let input = groups_sharing_a_block(1 << 18, groups);
+            let (whole, stats) = parse_chunked(Mf4Parser::new(), &input, usize::MAX);
+            assert_eq!(
+                stats.first_rejection.map(|(_, reason)| reason),
+                Some("bad time value")
+            );
+            parts::WALKED.with(|walked| walked.set(0));
+            assert_eq!(plan_of(&input, 1 << 16, MAX_PARTS) > 0, planned, "{groups}");
+            let walked = parts::WALKED.with(|walked| walked.get());
+            assert!(
+                walked <= 2 * input.len() as u64 + 2,
+                "{groups} groups: walked {walked} records for {} bytes",
+                input.len()
+            );
+            match parse_in_parts(&input, 1 << 16) {
+                Some((joined, joined_stats)) => {
+                    assert!(planned);
+                    assert_eq!(joined.frames, whole.frames, "{groups}");
+                    assert_eq!(joined_stats, stats, "{groups}");
+                }
+                None => assert!(!planned),
             }
         }
     }

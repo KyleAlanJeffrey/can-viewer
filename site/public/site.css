@@ -184,6 +184,7 @@ code,
 
 .brand {
   display: flex;
+  white-space: nowrap;
   align-items: center;
   gap: 10px;
   color: var(--graphite);
@@ -210,6 +211,7 @@ code,
 
 .site-nav a {
   color: var(--graphite);
+  white-space: nowrap;
   font-weight: 500;
   font-size: 15px;
   text-decoration: none;
@@ -465,18 +467,16 @@ h3 {
   padding-bottom: 24px;
 }
 
-.start-grid {
+.start-stack {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-  gap: 16px 24px;
-  align-items: end;
+  gap: 32px;
 }
 
 .local-card {
   display: flex;
   gap: 14px;
   align-items: flex-start;
-  padding: 20px;
+  padding: 16px 20px;
   color: var(--slate);
   font-size: 15px;
   line-height: 22px;
@@ -492,6 +492,23 @@ h3 {
   color: var(--graphite);
   font-size: 16px;
   font-weight: 600;
+}
+
+/* Wide enough for the claim and its sentence on one line. */
+@media (min-width: 861px) {
+  .local-card {
+    align-items: center;
+  }
+
+  .local-card > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 12px;
+  }
+
+  .local-card .local-title {
+    margin-bottom: 0;
+  }
 }
 
 .start-ways h2 {
@@ -553,6 +570,12 @@ h3 {
   color: var(--slate);
 }
 
+.way-more {
+  color: var(--deep-ochre);
+  font-weight: 500;
+  text-decoration: underline;
+}
+
 /* Product illustration: a static, simplified drawing of the Trace view with the demo log. */
 
 .product {
@@ -576,12 +599,14 @@ h3 {
   line-height: 18px;
 }
 
+/* Beside the hero copy the six views no longer fit beside the log name, so the switcher wraps to a second row. */
 .pw-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 8px 16px;
   min-height: 52px;
-  padding: 0 16px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -1438,8 +1463,21 @@ h3 {
     max-width: 720px;
   }
 
-  .start-grid {
-    grid-template-columns: minmax(0, 1fr);
+}
+
+/* Below this the header's links no longer fit on one line beside the brand and Open App. */
+@media (max-width: 760px) {
+  .site-header .wrap {
+    justify-content: space-between;
+  }
+
+  .site-nav,
+  .header-open {
+    display: none;
+  }
+
+  .site-menu {
+    display: block;
   }
 }
 
@@ -1498,17 +1536,7 @@ h3 {
   }
 
   .site-header .wrap {
-    justify-content: space-between;
     min-height: 60px;
-  }
-
-  .site-nav,
-  .header-open {
-    display: none;
-  }
-
-  .site-menu {
-    display: block;
   }
 
   .brand {
@@ -1570,6 +1598,7 @@ h3 {
   }
 
   .text-link {
+    padding: 9px 0;
     font-size: 16px;
   }
 
@@ -1577,7 +1606,7 @@ h3 {
     padding-bottom: 8px;
   }
 
-  .start-grid {
+  .start-stack {
     gap: 24px;
   }
 
@@ -1674,51 +1703,44 @@ h3 {
     margin-top: 24px;
   }
 
-  /* On a phone the drawing shows only the first message rows of the sidebar, at a readable size. */
+  /* On a phone the drawing shows only the top of the desktop sidebar, at a readable size. */
   .pw-switch,
   .pw-main,
-  .pw-sidebar > :nth-child(n + 5) {
+  .pw-sidebar > :nth-child(n + 7) {
     display: none;
   }
 
   .pw-sidebar {
-    display: grid;
-    gap: 8px;
-    padding: 12px;
+    display: block;
+    padding: 8px;
     border-right: 0;
   }
 
   .pw-group {
-    padding: 0 4px;
     font-size: 13px;
   }
 
   .pw-id {
-    grid-template-columns: 52px minmax(0, 1fr);
-    gap: 0 12px;
-    height: auto;
-    padding: 9px 14px;
-    border: 1px solid var(--hairline);
-    border-radius: 10px;
-    background: var(--paper);
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    gap: 12px;
+    height: 40px;
     font-size: 15px;
-    line-height: 22px;
+  }
+
+  .pw-id + .pw-id {
+    border-top: 1px solid var(--hairline);
+  }
+
+  .pw-id.on + .pw-id {
+    border-top-color: transparent;
   }
 
   .pw-id .mono {
-    grid-row: 1 / 3;
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 14px;
   }
 
   .pw-id .period {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    line-height: 18px;
-  }
-
-  .pw-id.on {
-    background: var(--paper);
+    font-size: 13px;
   }
 }
 

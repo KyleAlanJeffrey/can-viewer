@@ -143,7 +143,8 @@ export function Workspace(props: Props) {
   );
   const selected = useMemo(() => (range ? rangeBits(range) : []), [range]);
   const scale = parseScale(form);
-  const spec: RawSignalSpec | null = range && scale ? { ...range, signed: form.signed, ...scale } : null;
+  const float = !!form.float && range?.size === 32;
+  const spec: RawSignalSpec | null = range && scale ? { ...range, signed: form.signed && !float, ...(float && { float }), ...scale } : null;
   const currentKey = spec ? JSON.stringify(spec) : '';
   const specKey = useDebounced(currentKey, 200);
 
@@ -270,6 +271,7 @@ export function Workspace(props: Props) {
       size: String(spec.size),
       byteOrder: spec.byteOrder,
       signed: spec.signed,
+      float: !!spec.float,
       fromGrid: false,
       limits: null,
       ...(fit && { factor: plainNumber(spec.factor), offset: plainNumber(spec.offset), unit: fit.unit }),
@@ -292,7 +294,7 @@ export function Workspace(props: Props) {
   };
 
   const windowFrames = activity && !activity.wholeLog ? activity.frames : (summary.count * (settled[1] - settled[0])) / Math.max(duration, 1e-9);
-  const layout = range ? layoutString(range, form.signed) : null;
+  const layout = range ? layoutString(range, form.signed && !float, float) : null;
   const matching = <T extends { key: string }>(x: T | null) => (x && x.key === currentKey ? x : null);
   const trace: Trace | null = matching(view);
 

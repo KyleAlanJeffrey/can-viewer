@@ -34,6 +34,8 @@ export interface FormState {
    */
   fromGrid: boolean;
   signed: boolean;
+  /** Read as a 32-bit IEEE 754 float, when the range is 32 bits. Missing in forms saved before it existed. */
+  float?: boolean;
   factor: string;
   offset: string;
   unit: string;
@@ -61,6 +63,7 @@ export function initialForm(spec: RawSignalSpec | null): FormState {
     byteOrder: spec?.byteOrder ?? 'intel',
     fromGrid: false,
     signed: spec?.signed ?? false,
+    float: spec?.float ?? false,
     factor: spec ? plainNumber(spec.factor) : '1',
     offset: spec ? plainNumber(spec.offset) : '0',
     unit: '',
@@ -159,6 +162,7 @@ export function SignalForm(props: Props) {
         ? `${target.name} already has a signal named ${name}.`
         : null;
 
+  const float = !!form.float && range?.size === 32;
   const factor = parseNumber(form.factor);
   const factorError = factor === null ? 'Enter a number.' : factor === 0 ? "The factor can't be zero." : null;
   const offsetError = parseNumber(form.offset) === null ? 'Enter a number.' : null;
@@ -180,7 +184,7 @@ export function SignalForm(props: Props) {
       startBit: range.startBit,
       size: range.size,
       byteOrder: range.byteOrder,
-      kind: form.signed ? 'signed' : 'unsigned',
+      kind: float ? 'float32' : form.signed ? 'signed' : 'unsigned',
       factor,
       offset: parseNumber(form.offset) ?? 0,
       min,
@@ -337,10 +341,23 @@ export function SignalForm(props: Props) {
             type="checkbox"
             role="switch"
             className="switch"
-            checked={form.signed}
+            checked={form.signed && !float}
+            disabled={float}
             onChange={(e) => onChange({ signed: e.target.checked, limits: null })}
           />
         </label>
+        {(range?.size === 32 || float) && (
+          <label className="re-switch-row">
+            <span>Float (IEEE 754)</span>
+            <input
+              type="checkbox"
+              role="switch"
+              className="switch"
+              checked={float}
+              onChange={(e) => onChange({ float: e.target.checked, limits: null })}
+            />
+          </label>
+        )}
 
         <div className="re-pair">
           <Field id={`${ids}factor`} label="Factor" error={factorError}>
@@ -410,7 +427,7 @@ export function SignalForm(props: Props) {
         <dl className="re-stats" aria-label="Decoded values">
           <div>
             <dt>Layout</dt>
-            <dd className="mono">{range ? layoutString(range, form.signed) : '\u2013'}</dd>
+            <dd className="mono">{range ? layoutString(range, form.signed && !float, float) : '\u2013'}</dd>
           </div>
           {decodeError ? (
             <div>

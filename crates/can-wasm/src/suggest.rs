@@ -154,6 +154,7 @@ impl Session {
                         size: s.range.size,
                         byte_order: s.range.byte_order,
                         signed: s.signed,
+                        float: s.kind == Kind::Float,
                         factor,
                         offset,
                     },
@@ -256,6 +257,37 @@ mod tests {
             s.suggestions(key, &reference(id_key(0, 0x200) as f64))
                 .unwrap_err(),
             "no loaded DBC defines the reference's message"
+        );
+    }
+
+    #[test]
+    fn a_float_suggestion_decodes_as_a_float() {
+        let mut log = String::new();
+        for i in 0..3000u32 {
+            let v = (f64::from(i) / 300.0).sin() as f32 * 10.0;
+            let hex: String = v.to_le_bytes().iter().map(|b| format!("{b:02X}")).collect();
+            log += &format!("({:.6}) can0 100#{hex}00000000\n", f64::from(i) / 100.0);
+        }
+        let mut s = Session::new();
+        s.push_chunk(log.as_bytes());
+        s.finish();
+        let key = id_key(0, 0x100) as f64;
+        let found: Value = serde_json::from_str(&s.suggest_signals(key, "").unwrap()).unwrap();
+        let first = &found["suggestions"][0];
+        assert_eq!(first["kind"], "float");
+        assert_eq!(
+            first["spec"],
+            json!({ "startBit": 0, "size": 32, "byteOrder": "intel", "signed": false, "float": true, "factor": 1.0, "offset": 0.0 })
+        );
+        let info: Value =
+            serde_json::from_str(&s.decode_raw(key, &first["spec"].to_string()).unwrap()).unwrap();
+        assert!(
+            (info["max"].as_f64().unwrap() - 10.0).abs() < 1e-3,
+            "{info}"
+        );
+        assert!(
+            (info["min"].as_f64().unwrap() + 10.0).abs() < 1e-3,
+            "{info}"
         );
     }
 

@@ -319,6 +319,9 @@ struct RawSignalSpec {
     size: u16,
     byte_order: ByteOrder,
     signed: bool,
+    /// Read as an IEEE 754 single float, which takes exactly 32 bits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    float: bool,
     factor: f64,
     offset: f64,
 }
@@ -773,9 +776,14 @@ impl Session {
                 "the bit range must be 1 to 64 bits and fit in this ID's frames",
             ));
         }
+        if spec.float && spec.size != 32 {
+            return Err(js_err("a float must be 32 bits"));
+        }
         let series = Series::decode(&self.store, &stats.frames, self.origin_ns(), |data| {
             let raw = bits::extract(data, spec.start_bit, spec.size, spec.byte_order)?;
-            let value = if spec.signed {
+            let value = if spec.float {
+                f64::from(f32::from_bits(raw as u32))
+            } else if spec.signed {
                 bits::sign_extend(raw, spec.size) as f64
             } else {
                 raw as f64
@@ -786,8 +794,9 @@ impl Session {
             ByteOrder::Intel => 1,
             ByteOrder::Motorola => 0,
         };
-        let sign = if spec.signed { '-' } else { '+' };
-        let name = format!("bits {}|{}@{order}{sign}", spec.start_bit, spec.size);
+        let sign = if spec.signed || spec.float { '-' } else { '+' };
+        let float = if spec.float { " float" } else { "" };
+        let name = format!("bits {}|{}@{order}{sign}{float}", spec.start_bit, spec.size);
         Ok(add_series(&mut self.series, series, &name, ""))
     }
 
@@ -905,6 +914,7 @@ impl Session {
                         size: found.range.size,
                         byte_order: found.range.byte_order,
                         signed: false,
+                        float: false,
                         factor: 1.0,
                         offset: 0.0,
                     },

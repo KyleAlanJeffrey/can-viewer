@@ -202,6 +202,8 @@ export interface RawSignalSpec {
   size: number;
   byteOrder: 'intel' | 'motorola';
   signed: boolean;
+  /** Read as an IEEE 754 single float; the range must be 32 bits. Absent means false. */
+  float?: boolean;
   factor: number;
   offset: number;
 }
@@ -223,7 +225,7 @@ export interface Candidate {
 }
 
 /** What a suggested signal looks like it is. */
-export type SuggestionKind = 'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed';
+export type SuggestionKind = 'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed' | 'float';
 
 /** Optional help for `suggestSignals` and `scanSignals`. */
 export interface DiscoveryHints {

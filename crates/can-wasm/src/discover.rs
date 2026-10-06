@@ -9,9 +9,9 @@
 //! enum; single bits that change rarely are flags, or toggles when they change more often, and
 //! whole bytes are tested against checksum rules. The best-scoring candidates that don't overlap
 //! are kept, and an unsigned value is widened over never-set bits above it to an aligned field.
-//! Words that read as IEEE 754 floats get no suggestions, since a raw bit range can't
-//! describe them, and nor do the bytes of a multiplexed message that take turns with its
-//! selector.
+//! Words that read as IEEE 754 floats are suggested as floats when the evidence is strict
+//! enough, and get no other suggestions either way; nor do the bytes of a multiplexed message
+//! that take turns with its selector.
 
 use std::borrow::Cow;
 
@@ -67,6 +67,8 @@ pub enum Kind {
     Enum,
     Continuous,
     Signed,
+    /// An IEEE 754 single-precision float, always 32 bits.
+    Float,
 }
 
 /// A bit range in DBC conventions.
@@ -652,20 +654,31 @@ fn smoothness(values: &[f64], follows: &[bool]) -> Option<Smoothness> {
 fn low_bits_belong(values: &[u64], follows: &[bool], split: u16) -> bool {
     let low_mask = (1u64 << split) - 1;
     let small_step = 1u64 << (split - 3);
-    let (mut carries, mut consistent) = (0usize, 0usize);
     let (mut changes, mut small) = (0usize, 0usize);
+    for i in 1..values.len() {
+        let (low_before, low_after) = (values[i - 1] & low_mask, values[i] & low_mask);
+        if follows[i] && low_before != low_after {
+            let up = low_after.wrapping_sub(low_before) & low_mask;
+            let down = low_before.wrapping_sub(low_after) & low_mask;
+            changes += 1;
+            small += usize::from(up.min(down) <= small_step);
+        }
+    }
+    carries_agree(values, follows, split)
+        .unwrap_or(changes == 0 || small as f64 / changes as f64 >= 0.6)
+}
+
+/// When the bits above `split` step by one, whether the bits below wrapped the same way on most
+/// such steps, or `None` with too few of them to tell.
+fn carries_agree(values: &[u64], follows: &[bool], split: u16) -> Option<bool> {
+    let low_mask = (1u64 << split) - 1;
+    let (mut carries, mut consistent) = (0usize, 0usize);
     for i in 1..values.len() {
         if !follows[i] {
             continue;
         }
         let (before, after) = (values[i - 1], values[i]);
         let (low_before, low_after) = (before & low_mask, after & low_mask);
-        if low_before != low_after {
-            let up = low_after.wrapping_sub(low_before) & low_mask;
-            let down = low_before.wrapping_sub(low_after) & low_mask;
-            changes += 1;
-            small += usize::from(up.min(down) <= small_step);
-        }
         let (high_before, high_after) = (before >> split, after >> split);
         if high_after == high_before.wrapping_add(1) {
             carries += 1;
@@ -675,11 +688,7 @@ fn low_bits_belong(values: &[u64], follows: &[bool], split: u16) -> bool {
             consistent += usize::from(low_after > low_before);
         }
     }
-    if carries >= 5 {
-        consistent as f64 / carries as f64 >= 0.8
-    } else {
-        changes == 0 || small as f64 / changes as f64 >= 0.6
-    }
+    (carries >= 5).then(|| consistent as f64 / carries as f64 >= 0.8)
 }
 
 /// The commonest step between consecutive values modulo `modulus`, and its share of steps.
@@ -1203,16 +1212,18 @@ fn checksums(sample: &Sample, len: usize, rates: &[f64]) -> Vec<Scored> {
     out
 }
 
-/// Bits of 32-bit words that read as smoothly changing IEEE 754 floats. Nothing is suggested
-/// inside them: a float is not a bit range these kinds describe, and its exponent and mantissa
-/// bits would otherwise look like flags and values. A word holding one of the ranges in `kept`,
-/// such as a counter's, is not a float.
+/// 32-bit words that read as smoothly changing IEEE 754 single floats. Nothing else is suggested
+/// inside them: their exponent and mantissa bits would otherwise look like flags and values. The
+/// words with the strictest evidence, whose mantissa also carries as one number, are suggested as
+/// floats themselves. A word holding one of the ranges in `kept`, such as a counter's, is not a
+/// float, and nor is one overlapping such a range suggested.
 fn float_words(
     sample: &Sample,
     len: usize,
     kept: &[[u64; MAX_PAYLOAD / 8]],
-) -> [u64; MAX_PAYLOAD / 8] {
+) -> ([u64; MAX_PAYLOAD / 8], Vec<Scored>) {
     let mut taken = [0u64; MAX_PAYLOAD / 8];
+    let mut found = Vec::new();
     for byte in 0..len.saturating_sub(3) {
         for range in [
             Range::intel(byte * 8, 32),
@@ -1252,23 +1263,83 @@ fn float_words(
                 .any(|&b| exponent(b) != exponent(distinct[0]));
             // With one exponent, a constant byte such as 0x42 ahead of three separate values
             // also reads as smooth floats; a real reading's mantissa carries as one number.
-            let one_number = || {
-                let mantissas: Vec<u64> = floats
-                    .iter()
-                    .map(|v| u64::from(v.to_bits() & 0x7F_FFFF))
-                    .collect();
-                low_bits_belong(&mantissas, &sample.follows, 16)
+            let mantissas: Vec<u64> = floats
+                .iter()
+                .map(|v| u64::from(v.to_bits() & 0x7F_FFFF))
+                .collect();
+            let one_number = low_bits_belong(&mantissas, &sample.follows, 16);
+            let carries = carries_agree(&mantissas, &sample.follows, 16);
+            let Some(smooth) =
+                smoothness(&values, &sample.follows).filter(|s| s.small >= 0.85 && s.wraps <= 0.02)
+            else {
+                continue;
             };
-            let smooth = smoothness(&values, &sample.follows)
+            if distinct.len() < 16 || !(exponents_vary || one_number) {
+                continue;
+            }
+            for (t, m) in taken.iter_mut().zip(word) {
+                *t |= m;
+            }
+            let overlaps_kept = kept
+                .iter()
+                .any(|k| k.iter().zip(&word).any(|(k, w)| k & w != 0));
+            // A real float's low mantissa bits jitter as it moves, or carry into the bits above;
+            // ones that change smoothly on their own are a second value beside the one on top.
+            let lows: Vec<f64> = floats
+                .iter()
+                .map(|v| f64::from(v.to_bits() as u16))
+                .collect();
+            let low_is_a_value = smoothness(&lows, &sample.follows)
                 .is_some_and(|s| s.small >= 0.85 && s.wraps <= 0.02);
-            if distinct.len() >= 16 && smooth && (exponents_vary || one_number()) {
-                for (t, m) in taken.iter_mut().zip(word) {
-                    *t |= m;
-                }
+            // An integer read as a float moves its exponent in step with its own bits, sweeping
+            // many decades; a reading keeps to a few, apart from the odd value near zero.
+            let mut magnitudes: Vec<f32> = floats
+                .iter()
+                .filter(|v| **v != 0.0)
+                .map(|v| v.abs())
+                .collect();
+            let few_decades = magnitudes.len() >= 2 && {
+                let low = magnitudes.len() / 20;
+                let (_, &mut low, _) = magnitudes.select_nth_unstable_by(low, f32::total_cmp);
+                let high = magnitudes.iter().copied().fold(0.0, f32::max);
+                high <= low * 1e6
+            };
+            if !overlaps_kept && few_decades && (!low_is_a_value || carries == Some(true)) {
+                // Within one exponent an integer with a constant top byte reads the same way.
+                let score = 0.65 + 0.3 * ((smooth.small - 0.85) / 0.15)
+                    - 15.0 * smooth.wraps
+                    - if exponents_vary { 0.0 } else { 0.05 };
+                found.push(Scored {
+                    kind: Kind::Float,
+                    range,
+                    signed: false,
+                    score,
+                    reason: format!(
+                        "Reads as a 32-bit float changing smoothly from {} to {}",
+                        short_number(smooth.min),
+                        short_number(smooth.max)
+                    ),
+                    unconfirmed: false,
+                });
             }
         }
     }
-    taken
+    (taken, found)
+}
+
+/// `x` to four significant digits, without trailing zeros.
+fn short_number(x: f64) -> String {
+    let decimals = if x == 0.0 {
+        0
+    } else {
+        (3 - x.abs().log10().floor() as i32).clamp(0, 6) as usize
+    };
+    let text = format!("{x:.decimals$}");
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    }
 }
 
 /// Bits from least to most significant, as if the payload were one integer in `order`.
@@ -1508,10 +1579,12 @@ fn sparkline(log: &Log, s: &Scored, fit: Option<Fit>) -> Vec<(i64, f64)> {
             };
             let frame = log.store.frame(log.frames.list[i] as usize);
             let raw = s.range.read(frame.data);
-            (
-                frame.ts_ns,
-                read_as(raw, s.range.size, s.signed) * factor + offset,
-            )
+            let value = if s.kind == Kind::Float {
+                f64::from(f32::from_bits(raw as u32))
+            } else {
+                read_as(raw, s.range.size, s.signed)
+            };
+            (frame.ts_ns, value * factor + offset)
         })
         .collect()
 }
@@ -1746,10 +1819,29 @@ pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
             kept.push(masks[i]);
         }
     }
-    let mut taken = float_words(&sample, len, &kept);
+    let (mut taken, mut floats) = float_words(&sample, len, &kept);
     let inside = |a: &[u64], b: &[u64]| a.iter().zip(b).all(|(x, y)| x & !y == 0);
     let cap = MAX_SUGGESTIONS.max(len);
     let mut chosen = Vec::new();
+    // The float words, best first, that don't overlap one another.
+    floats.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.range.sort_key().cmp(&b.range.sort_key()))
+    });
+    let mut float_bits = [0u64; MAX_PAYLOAD / 8];
+    for f in floats {
+        let mask = f.range.mask();
+        if f.score < MIN_SCORE || overlaps(&mask, &float_bits) || chosen.len() == cap {
+            continue;
+        }
+        for (t, m) in float_bits.iter_mut().zip(mask) {
+            *t |= m;
+        }
+        chosen.push(scored.len());
+        scored.push(f);
+        fits.push(None);
+    }
     for (rank, &i) in order.iter().enumerate() {
         let s = &scored[i];
         let mask = &masks[i];
@@ -1786,6 +1878,7 @@ pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
         }
     }
 
+    chosen.sort_by(|&a, &b| scored[b].score.total_cmp(&scored[a].score));
     let from_sample: Vec<usize> = chosen
         .iter()
         .copied()
@@ -2098,30 +2191,95 @@ mod tests {
     }
 
     #[test]
-    fn floats_are_left_alone() {
+    fn finds_floats_in_either_byte_order() {
         let s = store(6000, |i, _| {
             let f = ((wave(i) - 0.5) * 24.0) as f32;
             let b = f.to_le_bytes();
             [b[0], b[1], b[2], b[3], 0, 0, 0, 0]
         });
-        assert!(found(&s).is_empty(), "{:?}", found(&s));
+        let all = run(&s, &Hints::default());
+        assert_eq!(
+            found(&s),
+            [(Kind::Float, 0, 32, ByteOrder::Intel, false)],
+            "{all:?}"
+        );
+        assert_eq!(
+            all[0].reason,
+            "Reads as a 32-bit float changing smoothly from -12 to 12"
+        );
+        let (_, last) = all[0].spark.last().copied().unwrap();
+        assert!((last - f64::from(((wave(5999) - 0.5) * 24.0) as f32)).abs() < 1e-6);
 
-        // Beside a counter, in either byte order, and within one binade: only the counter.
-        let counter_only = |at: usize, float: &dyn Fn(usize) -> [u8; 4]| {
+        // Beside a counter, in either byte order, and within one binade.
+        let with_counter = |at: usize, float: &dyn Fn(usize) -> [u8; 4], range: Range| {
             let s = store(6000, |i, _| {
                 let mut d = [0u8; 8];
                 d[at..at + 4].copy_from_slice(&float(i));
                 d[if at == 0 { 4 } else { 0 }] = i as u8;
                 d
             });
-            let all = found(&s);
-            assert_eq!(all.len(), 1, "{all:?}");
-            assert_eq!(all[0].0, Kind::Counter, "{all:?}");
+            let all = run(&s, &Hints::default());
+            let kinds: Vec<(Kind, Range)> = all.iter().map(|s| (s.kind, s.range)).collect();
+            assert_eq!(kinds.len(), 2, "{all:?}");
+            assert_eq!(kinds[0].0, Kind::Counter, "{all:?}");
+            assert_eq!(kinds[1], (Kind::Float, range), "{all:?}");
         };
-        counter_only(0, &|i| ((20.0 + wave(i) * 60.0) as f32).to_le_bytes());
-        counter_only(4, &|i| ((100.0 + wave(i) * 100.0) as f32).to_be_bytes());
-        counter_only(0, &|i| ((12.0 + wave(i) * 3.5) as f32).to_le_bytes());
-        counter_only(4, &|i| ((3.3 + wave(i) * 0.6) as f32).to_be_bytes());
+        let motorola = Range {
+            start_bit: 39,
+            size: 32,
+            byte_order: ByteOrder::Motorola,
+        };
+        with_counter(
+            0,
+            &|i| ((20.0 + wave(i) * 60.0) as f32).to_le_bytes(),
+            Range::intel(0, 32),
+        );
+        with_counter(
+            4,
+            &|i| ((100.0 + wave(i) * 100.0) as f32).to_be_bytes(),
+            motorola,
+        );
+        with_counter(
+            0,
+            &|i| ((12.0 + wave(i) * 3.5) as f32).to_le_bytes(),
+            Range::intel(0, 32),
+        );
+        with_counter(
+            4,
+            &|i| ((3.3 + wave(i) * 0.6) as f32).to_be_bytes(),
+            motorola,
+        );
+    }
+
+    #[test]
+    fn integers_that_read_as_floats_are_not_suggested_as_floats() {
+        // A value whose high byte falls in a float's exponent range, over two bytes of noise:
+        // as a float it sweeps many decades, which no reading does.
+        let s = store(6000, |i, rng| {
+            let b = ((14000.0 + wave(i) * 4000.0) as u16).to_le_bytes();
+            [
+                rng.next() as u8,
+                rng.next() as u8,
+                b[0],
+                b[1],
+                i as u8,
+                0,
+                0,
+                0,
+            ]
+        });
+        assert!(run(&s, &Hints::default())
+            .iter()
+            .all(|s| s.kind != Kind::Float));
+        // The same value beside a second one, which would carry into it as one number.
+        let s = store(6000, |i, _| {
+            let a = ((wave(i + 1000) * 60000.0) as u16).to_le_bytes();
+            let b = ((14000.0 + wave(i) * 4000.0) as u16).to_le_bytes();
+            [a[0], a[1], b[0], b[1], i as u8, 0, 0, 0]
+        });
+        assert!(run(&s, &Hints::default())
+            .iter()
+            .all(|s| s.kind != Kind::Float));
     }
 
     #[test]

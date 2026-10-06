@@ -10,6 +10,7 @@ export const KIND_LABELS: Record<SuggestionKind, string> = {
   enum: 'Enum',
   continuous: 'Continuous value',
   signed: 'Signed value',
+  float: 'Float',
 };
 
 /** A suggestion as listed for one message, numbered as on the bit grid. */

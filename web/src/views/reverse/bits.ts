@@ -60,9 +60,9 @@ export function rangeFits(r: BitRange, bytes: number): boolean {
   return first + r.size - 1 < bytes * 8;
 }
 
-/** DBC notation, e.g. `23|16@0+`. */
-export function layoutString(r: BitRange, signed: boolean): string {
-  return `${r.startBit}|${r.size}@${r.byteOrder === 'intel' ? 1 : 0}${signed ? '-' : '+'}`;
+/** DBC notation, e.g. `23|16@0+`, or `0|32@1- float` for a float. */
+export function layoutString(r: BitRange, signed: boolean, float = false): string {
+  return `${r.startBit}|${r.size}@${r.byteOrder === 'intel' ? 1 : 0}${signed || float ? '-' : '+'}${float ? ' float' : ''}`;
 }
 
 export const DBC_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;

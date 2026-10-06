@@ -21,7 +21,8 @@ export function describePlace(s: Suggestion): string {
   const lo = Math.min(...bits);
   const hi = Math.max(...bits);
   const where = bits.length === 1 ? `bit ${lo}` : hi - lo + 1 === bits.length ? `bits ${lo}-${hi}` : layoutString(s.spec, s.spec.signed);
-  return `${where} \u00b7 ${s.spec.byteOrder === 'intel' ? 'Intel' : 'Motorola'} \u00b7 ${s.spec.signed ? 'signed' : 'unsigned'}`;
+  const reading = s.spec.float ? 'float' : s.spec.signed ? 'signed' : 'unsigned';
+  return `${where} \u00b7 ${s.spec.byteOrder === 'intel' ? 'Intel' : 'Motorola'} \u00b7 ${reading}`;
 }
 
 /** The unknown message other than `current` with the most likely suggestions. */
@@ -43,6 +44,7 @@ const NAME_STEMS: Record<Suggestion['kind'], string> = {
   enum: 'Enum',
   continuous: 'Value',
   signed: 'Signed',
+  float: 'Float',
 };
 
 /** `Counter`, or `Value_16` for kinds a message often has several of, made unique in `message`. */

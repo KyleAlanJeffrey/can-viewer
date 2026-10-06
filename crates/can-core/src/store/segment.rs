@@ -264,9 +264,9 @@ impl<'a> Rows<'a> {
         let (first, completions) = (self.first, self.completions);
         let mut before = 0;
         frames.map(move |j| {
-            while completions.get(before).is_some_and(|&c| (c as usize) < j) {
-                before += 1;
-            }
+            // A search rather than a walk, so an ID with few frames doesn't step through every
+            // completion in the part.
+            before += completions[before..].partition_point(|&c| (c as usize) < j);
             (first + j + before) as u32
         })
     }

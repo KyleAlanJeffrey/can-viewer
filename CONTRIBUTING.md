@@ -50,7 +50,7 @@ pnpm --dir web test
 ```
 
 - Fix any clippy warning your change introduces. CI fails on warnings.
-- `.github/workflows/ci.yml` runs all of these, plus the wasm and Vite builds, on every pull request.
+- `.github/workflows/ci.yml` runs all of these, plus the wasm and Vite builds, on every pull request. Its `screenshots` job then takes screenshots of the landing site and the built app (see [Screenshots](#screenshots)).
 - UI tests are Vitest with jsdom and Testing Library. They sit next to the code as `*.test.ts` or `*.test.tsx`; shared fixtures, including a fake `CoreApi`, are in `web/src/test/fixtures.ts`; `web/src/test/shell.tsx` renders a view inside a stand-in for the app shell, which owns the `ViewContext` state and gives the view its sidebar, inspector and search field; and `web/src/test/setup.ts` stubs the browser APIs jsdom lacks (canvas, `ResizeObserver`, `matchMedia`, `document.fonts`, `scrollIntoView`, modal dialogs, `IDBKeyRange`). Session tests use `fake-indexeddb`, and tests of kept captures give `navigator` the shared Web Locks of `web/src/test/fakeLocks.ts`. Test files are type-checked with the app, but the Vite build never imports them.
 - The tests don't draw canvases or check layout, so still check UI changes by hand in `pnpm dev`, including keyboard use and focus.
 - If you change the DBC decoder, cross-check it against cantools (`pip install cantools`, after `pnpm demo`):
@@ -71,6 +71,20 @@ python scripts/crosscheck_cantools.py /tmp/mux.log /tmp/mux.dbc /tmp/ours_mux.cs
 Last run (cantools 44.1.0): the whole demo log, 5,408,346 values, all equal; the extended multiplexing log, 81,891 values, all equal, with 1,302 frames left out because their multiplexor values switch in no signal and cantools refuses to decode them.
 
 If you could not run a check, say which one and why in the pull request.
+
+### Screenshots
+
+`scripts/screenshots.mjs` serves `site/public` and `web/dist`, each with its `_headers` (so under its real Content-Security-Policy), and takes PNGs in headless Chrome at 1440 px and at 390 px with phone emulation: every site page in full, and the app empty, with the demo loaded, on each view and with the Capture sheet open. It fails on any console error, CSP violation, uncaught exception (in the page, its workers or the service worker), failed same-origin request or service worker that doesn't install, and on a site page wider than the window. Phones are out of scope for the app (PRODUCT.md), so a view it can't reach at 390 px is only noted. It needs Node 22 and Chrome, and no npm packages. From the repository root:
+
+```bash
+pnpm --dir web wasm && pnpm --dir web demo && pnpm --dir web build
+node scripts/screenshots.mjs
+```
+
+- The PNGs and an `index.md` listing them and any problems go to `target/screenshots` (set `SCREENSHOTS_DIR` to change it). Chrome runs with a throwaway profile, deleted on exit.
+- Set `CHROME` to Chrome's path if it is not in `/Applications` (macOS) or `google-chrome` on the `PATH`.
+- In CI, the `screenshots` job in `.github/workflows/ci.yml` runs it on the `web/dist` the `check` job built (the `web-dist` artifact, kept 3 days so the job can be re-run on its own), writes the list to the run's summary and uploads the PNGs as the `screenshots` artifact, kept 14 days, even when it fails.
+- `node scripts/serve-static.mjs site/public --404-page` (or `web/dist --spa`) serves either one the same way on port 8000 for a look by hand.
 
 ## Branches and commits
 

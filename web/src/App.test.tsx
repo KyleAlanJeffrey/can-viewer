@@ -379,6 +379,34 @@ describe('App live capture', () => {
     });
   }
 
+  it('keeps Open log B disabled until the capture has stopped', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    const stop = { finish: () => {} };
+    const finished = new Promise<void>((resolve) => (stop.finish = resolve));
+    const idSummary = core.idSummary;
+    render(<App core={core} />);
+    await startCapture(port);
+    port.send('t1230\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('radio', { name: 'Compare' }));
+
+    // The capture has ended but its IDs are still being read.
+    core.idSummary = vi.fn<CoreApi['idSummary']>(async () => {
+      await finished;
+      return idSummary();
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await waitFor(() => expect(core.idSummary).toHaveBeenCalled());
+    const openB = await screen.findByRole('button', { name: 'Open log B\u2026' });
+    expect((openB as HTMLButtonElement).disabled).toBe(true);
+
+    stop.finish();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Open log B\u2026' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
   it('refuses a dropped log while the capture is stopping, then asks about the stopped capture', async () => {
     const App = await freshApp();
     const port = new FakeSerialPort();

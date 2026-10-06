@@ -951,7 +951,7 @@ export function App({ core }: { core: CoreApi }) {
     pinnedTime,
     setPinnedTime,
     run,
-    busyLabel: () => busyRef.current?.label ?? null,
+    busyLabel: () => busyRef.current?.label ?? (stoppingRef.current ? 'Stopping the capture\u2026' : null),
     setError,
     setView,
     openLog: (file, name) => {

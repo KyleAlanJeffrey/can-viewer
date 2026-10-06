@@ -210,8 +210,9 @@ export function SignalForm(props: Props) {
       unit: form.unit.trim(),
       isMultiplexor: multiplexor,
       muxValue: mux ? mux.value : null,
-      // A multiplexor that is itself on a page of another switches its signals by SG_MUL_VAL_.
-      ...(mux && selector && (selector.muxValue !== null || selector.muxSwitch) && { muxSwitch: { signal: selector.name, ranges: [[mux.value, mux.value]] } }),
+      // With several multiplexors, the core binds a bare page value to the first one listed, so
+      // SG_MUL_VAL_ names this one.
+      ...(mux && selector && multiplexors.length > 1 && { muxSwitch: { signal: selector.name, ranges: [[mux.value, mux.value]] } }),
       valueTable: [],
       comment: null,
     };

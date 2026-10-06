@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CaptureFrame, LogInfo } from '../core/api';
 import { fakeCore, logInfo } from '../test/fixtures';
-import type { CaptureAdapter, CaptureEvents, StartedCapture } from './adapter';
+import { DeviceClock, type CaptureAdapter, type CaptureEvents, type StartedCapture } from './adapter';
 import { CAPTURE_LIMITS, CaptureRecorder, captureFrameBytes, captureName } from './recorder';
 
 const frame = (timeNs: number): CaptureFrame => ({ timeNs, id: 0x123, extended: false, flags: 0, data: new Uint8Array(0) });
@@ -191,6 +191,45 @@ describe('CaptureRecorder rolling capture', () => {
     expect(core.trimCapture).not.toHaveBeenCalled();
     await send(75);
     expect(core.trimCapture).toHaveBeenCalledWith(15e9);
+    await recorder.stop();
+  });
+
+  it('keeps dropping past a frame the adapter stamped far ahead', async () => {
+    const { adapter, state } = fakeAdapter();
+    // As the engine stores them: in the order they came, dropped from the start up to the
+    // first frame at or after the cutoff.
+    let kept: number[] = [];
+    const core = fakeCore({
+      startCapture: () => Promise.resolve(logInfo()),
+      appendFrames: (frames) => {
+        kept.push(...frames.map((f) => f.timeNs));
+        return Promise.resolve(logInfo());
+      },
+      trimCapture: vi.fn((beforeNs: number) => {
+        const first = kept.findIndex((t) => t >= beforeNs);
+        kept = first === -1 ? [] : kept.slice(first);
+        return Promise.resolve(logInfo());
+      }),
+      endCapture: () => Promise.resolve(logInfo()),
+    });
+    const time = clock();
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', time, { intervalMs: 5 });
+    await recorder.start({ ...settings, keepMinutes: 1 });
+    const started = time.ms;
+    // An slcan adapter's Z1 clock, which wraps every minute.
+    const deviceClock = new DeviceClock(60e9);
+    const send = async (seconds: number, deviceS = seconds) => {
+      time.ms = started + seconds * 1000;
+      state.events!.onFrames([frame(deviceClock.time(deviceS * 1e9, state.clock!()))]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+
+    await send(0);
+    // A glitch: nearly half a wrap ahead, which unwrapping alone would time at 30.5 s.
+    await send(1, 30.5);
+    for (let s = 5; s <= 75; s += 5) await send(s);
+    expect(core.trimCapture).toHaveBeenLastCalledWith(15e9);
+    expect(kept[0]).toBe(15e9);
     await recorder.stop();
   });
 

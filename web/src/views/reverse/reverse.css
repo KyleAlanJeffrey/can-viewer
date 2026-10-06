@@ -868,6 +868,90 @@
 /* Byte Values matrix */
 .re-bytes {
   padding-bottom: 0;
+  /* Keeps a byte scrolled into view clear of the sticky footer, with room for its row to grow. */
+  scroll-padding-bottom: 80px;
+}
+
+/* Byte Values beside its Suggested signals panel; the panel stacks under the matrix when narrow. */
+.re-split {
+  container: re-split / inline-size;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.re-split-body {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.re-split-body > .re-bytes {
+  min-width: 0;
+}
+
+.re-sugpanel {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: var(--re-sug-width, 360px);
+  /* The matrix keeps the width its table needs (720px plus padding and a scrollbar) before scrolling sideways. */
+  max-width: max(300px, calc(100% - 800px));
+  min-height: 0;
+  border-left: 1px solid var(--hairline);
+  background: var(--paper);
+}
+
+.re-sugpanel-loading {
+  padding: 16px;
+}
+
+@container re-split (max-width: 1100px) {
+  .re-split-body {
+    flex-direction: column;
+  }
+
+  .re-sugpanel {
+    width: auto;
+    max-width: none;
+    height: 40%;
+    min-height: 280px;
+    border-left: 0;
+    border-top: 1px solid var(--hairline);
+  }
+}
+
+.re-sug-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--deep-ochre);
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+
+.re-sug-toggle:hover {
+  background: var(--selected-row);
+}
+
+.re-sug-toggle:has(:focus-visible) {
+  outline: 2px solid var(--ochre-control);
+  outline-offset: 2px;
+}
+
+.re-sug-toggle .switch:focus-visible {
+  outline: none;
 }
 
 .re-matrix-tools {
@@ -1025,6 +1109,28 @@
 .re-cell:focus-visible {
   outline: 2px solid var(--ochre-control);
   outline-offset: 1px;
+}
+
+/* The selected suggestion's bytes: Deep Ochre, a step darker than a selected byte, with its number. */
+.re-cell.suggested {
+  border: 2px solid var(--deep-ochre);
+  padding: 1px 3px;
+  background: var(--paper);
+}
+
+.re-cell-badge {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border: 1px solid var(--graphite);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--graphite);
+  font: 600 11px/14px var(--font-ui);
+  text-align: center;
 }
 
 .re-cell.still {

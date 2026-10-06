@@ -969,6 +969,7 @@ export function App({ core }: { core: CoreApi }) {
     openLogPicker: () => logInput.current?.click(),
     openDbcPicker: () => dbcInput.current?.click(),
     setInspectorHidden,
+    openInspector: () => setInspectorOpen(true),
   };
 
   const skipped = log && log.rejected > 0 && !skippedDismissed;

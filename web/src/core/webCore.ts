@@ -1,4 +1,5 @@
 import type {
+  BitFlips,
   ByteComparison,
   ByteLane,
   Candidate,
@@ -136,7 +137,7 @@ export class WebCore implements CoreApi {
   idSummary = () => this.call<IdSummary[]>('idSummary');
   rowCount = (key: number) => this.call<number>('rowCount', key);
   frameData = (key: number, row: number) => this.call<Uint8Array>('frameData', key, row);
-  bitFlips = (key: number) => this.call<Uint32Array>('bitFlips', key);
+  bitFlips = (key: number) => this.call<BitFlips>('bitFlips', key);
   decodeSignal = (key: number, signal: string) => this.call<SeriesInfo>('decodeSignal', key, signal);
   dropSeries = (handle: number) => this.call<void>('dropSeries', handle);
 
@@ -163,8 +164,7 @@ export class WebCore implements CoreApi {
 
   rowAtTime = (key: number, t: number) => this.call<number>('rowAtTime', key, t);
   rowCountBetween = (key: number, t0: number, t1: number) => this.call<number>('rowCountBetween', key, t0, t1);
-  bitFlipsBetween = (key: number, t0: number, t1: number) => this.call<Uint32Array>('bitFlipsBetween', key, t0, t1);
-  flipPairsBetween = (key: number, t0: number, t1: number) => this.call<number>('flipPairsBetween', key, t0, t1);
+  bitFlipsBetween = (key: number, t0: number, t1: number) => this.call<BitFlips>('bitFlipsBetween', key, t0, t1);
   decodeRaw = (key: number, spec: RawSignalSpec) => this.call<SeriesInfo>('decodeRaw', key, spec);
   exportDbc = (db: Database) => this.call<string>('exportDbc', db);
   setTraceFilter = (filter: FrameFilter | null) => this.call<number>('setTraceFilter', filter);

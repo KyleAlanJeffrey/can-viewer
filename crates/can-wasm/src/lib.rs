@@ -16,8 +16,8 @@ mod suggest;
 use std::collections::{TryReserveError, VecDeque};
 
 use can_core::{
-    flags, tp::MAX_TRANSFER, Combine, DataRule, FilterPass, FrameFilter, FrameKind, FrameRef,
-    FrameSink, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
+    flags, tp::MAX_TRANSFER, Combine, DataRule, FilterPass, FlipCounts, FrameFilter, FrameKind,
+    FrameRef, FrameSink, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
 };
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{mf4, writer, AnyParser, Format, LogParser, ParseStats};
@@ -417,8 +417,6 @@ struct IdSummary<'a> {
     id: u32,
     extended: bool,
     count: usize,
-    /// Pairs of frames `bit_flips` compared; see [`IdStats::flip_pairs`].
-    flip_pairs: u32,
     period_ms: Option<f64>,
     jitter_ms: Option<f64>,
     min_len: u16,
@@ -519,6 +517,14 @@ struct Candidate {
     key: IdKey,
     spec: RawSignalSpec,
     score: f64,
+}
+
+/// `counts` as CoreApi `bitFlips` receives them: the flips, 8 per byte, then the pairs, 1 per
+/// byte.
+fn packed_flips(counts: FlipCounts) -> Vec<u32> {
+    let mut packed = counts.flips;
+    packed.extend_from_slice(&counts.pairs);
+    packed
 }
 
 fn js_err(msg: impl std::fmt::Display) -> JsError {
@@ -795,7 +801,6 @@ impl Session {
                     id: s.id & !EXT_FLAG,
                     extended: s.id & EXT_FLAG != 0,
                     count: s.frames.len(),
-                    flip_pairs: s.flip_pairs,
                     period_ms: s.mean_period_ns().map(|ns| ns / 1e6),
                     jitter_ms: s.jitter_ns().map(|ns| ns / 1e6),
                     min_len: s.min_len,
@@ -993,10 +998,11 @@ impl Session {
         out
     }
 
-    /// Per-bit change counts for one ID, indexed `byte * 8 + bit` (bit 0 = LSB).
+    /// Per-bit change counts for one ID, indexed `byte * 8 + bit` (bit 0 = LSB), followed by
+    /// the pairs of frames compared per byte: 9 values per byte, as [`packed_flips`] lays out.
     pub fn bit_flips(&self, key: f64) -> Vec<u32> {
         match self.filter(key) {
-            Ok(Some(stats)) => stats.bit_flips.clone(),
+            Ok(Some(stats)) => packed_flips(stats.flip_counts()),
             _ => Vec::new(),
         }
     }
@@ -1145,26 +1151,16 @@ impl Session {
         out
     }
 
-    /// Like [`Session::bit_flips`], counting only changes between consecutive frames that are
-    /// both between `t0` and `t1` seconds.
+    /// Like [`Session::bit_flips`], counting only pairs of frames that are both between `t0`
+    /// and `t1` seconds.
     pub fn bit_flips_between(&self, key: f64, t0: f64, t1: f64) -> Vec<u32> {
         match self.filter(key) {
-            Ok(Some(stats)) => self
-                .store
-                .bit_flips_between(stats, self.ns_at(t0), self.ns_at(t1)),
+            Ok(Some(stats)) => packed_flips(self.store.bit_flips_between(
+                stats,
+                self.ns_at(t0),
+                self.ns_at(t1),
+            )),
             _ => Vec::new(),
-        }
-    }
-
-    /// How many pairs of frames [`Session::bit_flips_between`] compares in the same window, to
-    /// divide its counts by: each frame with the previous one of its kind in the window,
-    /// leaving out remote frames, which have no payload.
-    pub fn flip_pairs_between(&self, key: f64, t0: f64, t1: f64) -> u32 {
-        match self.filter(key) {
-            Ok(Some(stats)) => self
-                .store
-                .flip_pairs_between(stats, self.ns_at(t0), self.ns_at(t1)),
-            _ => 0,
         }
     }
 
@@ -1852,8 +1848,10 @@ mod tests {
         // No bit can change more often than there are steps between the rows of the window.
         for (t0, t1) in [(0.0, 0.06), (0.0, 0.01), (0.01, 99.0), (0.02, 0.05)] {
             let steps = s.row_count_between(key_123(), t0, t1).saturating_sub(1);
-            let flips = s.bit_flips_between(key_123(), t0, t1);
-            assert_eq!(s.flip_pairs_between(key_123(), t0, t1), steps, "{t0}..{t1}");
+            let packed = s.bit_flips_between(key_123(), t0, t1);
+            // Four bytes: 32 flips, then 4 pair counts.
+            let (flips, pairs) = packed.split_at(32);
+            assert_eq!(pairs, [steps; 4], "{t0}..{t1}");
             assert!(flips.iter().all(|&n| n <= steps), "{t0}..{t1}");
             assert_eq!(
                 flips.iter().max().copied().unwrap_or(0),
@@ -2504,7 +2502,7 @@ mod tests {
     }
 
     #[test]
-    fn flip_pairs_leave_out_the_remote_frames_of_a_polled_id() {
+    fn bit_flips_pair_only_the_data_frames_of_a_polled_id() {
         let mut s = Session::new();
         s.push_chunk(
             b"(0.0) can0 100#R\n(0.1) can0 100#01\n(0.2) can0 100#R\n(0.3) can0 100#00\n\
@@ -2512,19 +2510,15 @@ mod tests {
         );
         s.finish();
         let key = id_key(0, 0x100) as f64;
-        let summary = &json(&s.id_summary())[0];
-        assert_eq!(
-            (summary["count"].as_u64(), summary["flipPairs"].as_u64()),
-            (Some(6), Some(2))
-        );
-        // Bit 0 changes between every pair of data frames: 100% of them.
-        assert_eq!(s.bit_flips(key)[0], 2);
-        assert_eq!(s.flip_pairs_between(key, 0.0, 0.5), 2);
-        assert_eq!(s.bit_flips_between(key, 0.2, 0.5)[0], 1);
-        assert_eq!(s.flip_pairs_between(key, 0.2, 0.5), 1);
-        assert_eq!(s.flip_pairs_between(key, 0.1, 0.1), 0);
-        assert_eq!(s.flip_pairs_between(ALL_IDS, 0.0, 0.5), 0);
-        assert_eq!(s.flip_pairs_between(id_key(0, 0x200) as f64, 0.0, 0.5), 0);
+        // One byte: 8 flips, then its pairs. Bit 0 changes between every pair of data frames,
+        // 100% of them.
+        let with_flips = |flip: u32, pairs: u32| [flip, 0, 0, 0, 0, 0, 0, 0, pairs];
+        assert_eq!(s.bit_flips(key), with_flips(2, 2));
+        assert_eq!(s.bit_flips_between(key, 0.0, 0.5), with_flips(2, 2));
+        assert_eq!(s.bit_flips_between(key, 0.2, 0.5), with_flips(1, 1));
+        assert_eq!(s.bit_flips_between(key, 0.1, 0.1), with_flips(0, 0));
+        assert!(s.bit_flips_between(ALL_IDS, 0.0, 0.5).is_empty());
+        assert!(s.bit_flips(id_key(0, 0x200) as f64).is_empty());
     }
 
     #[test]

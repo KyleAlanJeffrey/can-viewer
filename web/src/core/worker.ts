@@ -1,7 +1,7 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { CompareOptions, Database, DiscoveryHints, ExportFormat, FindRule, FrameFilter, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
+import type { BitFlips, CompareOptions, Database, DiscoveryHints, ExportFormat, FindRule, FrameFilter, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 import { readChunks as readChunksFrom, readInParts, type PartTask, type PartWorker } from './readInParts';
 
@@ -159,6 +159,12 @@ function halves(xy: Float64Array): [[Float64Array, Float64Array], Transferable[]
   return [[xy.subarray(0, n), xy.subarray(n)], [xy.buffer]];
 }
 
+/** Splits `[flips..., pairs...]`, 8 flips and 1 pair count per byte, transferring the shared buffer. */
+function flipCounts(packed: Uint32Array): [BitFlips, Transferable[]] {
+  const bytes = packed.length / 9;
+  return [{ flips: packed.subarray(0, bytes * 8), pairs: packed.subarray(bytes * 8) }, [packed.buffer]];
+}
+
 const handlers = {
   async openLog(file: Blob, name: string) {
     session.free();
@@ -215,7 +221,7 @@ const handlers = {
   frameData: (key: number, row: number) => transfer(session.frame_data(key, row)),
   rowBytes: (key: number, start: number, count: number, first: number, byteCount: number) =>
     transfer(session.row_bytes(key, start, count, first, byteCount)),
-  bitFlips: (key: number) => transfer(session.bit_flips(key)),
+  bitFlips: (key: number) => flipCounts(session.bit_flips(key)),
   parseDbc: async (file: Blob) => JSON.parse(parse_dbc(new Uint8Array(await file.arrayBuffer()))),
   decodeSignal: (key: number, signal: string) => JSON.parse(session.decode_signal(key, signal)),
   seriesView: (handle: number, t0: number, t1: number, buckets: number) =>
@@ -227,8 +233,7 @@ const handlers = {
   rowCountBetween: (key: number, t0: number, t1: number) => session.row_count_between(key, t0, t1),
   busLoad: (channel: number, t0: number, t1: number, buckets: number, bitrate: number) =>
     halves(session.bus_load(channel, t0, t1, buckets, bitrate)),
-  bitFlipsBetween: (key: number, t0: number, t1: number) => transfer(session.bit_flips_between(key, t0, t1)),
-  flipPairsBetween: (key: number, t0: number, t1: number) => session.flip_pairs_between(key, t0, t1),
+  bitFlipsBetween: (key: number, t0: number, t1: number) => flipCounts(session.bit_flips_between(key, t0, t1)),
   changeActivity: (key: number, t0: number, t1: number, buckets: number) =>
     transfer(session.change_activity(key, t0, t1, buckets)),
   decodeRaw: (key: number, spec: RawSignalSpec) => JSON.parse(session.decode_raw(key, JSON.stringify(spec))),

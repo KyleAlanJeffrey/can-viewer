@@ -16,8 +16,8 @@ const DIMMED_ALPHA = 0.25;
 interface Props {
   flips: Uint32Array;
   bytes: number;
-  /** Pairs of frames the counts were taken over. */
-  transitions: number;
+  /** Per byte, the pairs of frames its bits' counts were taken over. */
+  pairs: Uint32Array;
   /** Seconds the counts cover. */
   seconds: number;
   /** Selected bits, `byte * 8 + bit`. */
@@ -52,7 +52,7 @@ export interface GridRegion {
  * Drag, or use Shift with the arrow keys, to select a bit range.
  */
 export function BitGrid(props: Props) {
-  const { flips, bytes, transitions, seconds, selected, owners, dimmed = null, onSelect, onClear } = props;
+  const { flips, bytes, pairs, seconds, selected, owners, dimmed = null, onSelect, onClear } = props;
   const { regions = NO_REGIONS, activeRegion = null, onRegionHover, onRegionActivate } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -128,7 +128,7 @@ export function BitGrid(props: Props) {
           g.lineWidth = 1;
           g.stroke();
         } else {
-          g.fillStyle = ramp[heatStep(count, transitions, RAMP_STEPS)];
+          g.fillStyle = ramp[heatStep(count, pairs[byte] ?? 0, RAMP_STEPS)];
           g.globalAlpha = dimmed && (dimmed[byte * 8 + (7 - col)] ?? 0) > 0 ? DIMMED_ALPHA : 1;
           g.fill();
           g.globalAlpha = 1;
@@ -194,7 +194,7 @@ export function BitGrid(props: Props) {
       g.strokeStyle = cssVar('--ochre-control');
       g.strokeRect(cell.x + 1, cell.y + 1, cell.w - 2, cell.h - 2);
     }
-  }, [flips, dimmed, bytes, transitions, selectedSet, regions, activeRegion, width, height, pitch, rowPitch, available, focusBit, showFocus, fontsReady]);
+  }, [flips, dimmed, bytes, pairs, selectedSet, regions, activeRegion, width, height, pitch, rowPitch, available, focusBit, showFocus, fontsReady]);
 
   /** The cell under the pointer, with the pointer's position in the wrapper for the tooltip. */
   const cellAt = (e: PointerEvent<HTMLCanvasElement>, clamp: boolean) => {
@@ -243,7 +243,7 @@ export function BitGrid(props: Props) {
     const owner = owners[bit];
     const region = regionOf.get(bit);
     return `Byte ${bit >> 3}, bit ${bit & 7}. ${
-      count === 0 ? 'Never changes' : `Changed ${times(count)}, ${percent(count, transitions)} of frames`
+      count === 0 ? 'Never changes' : `Changed ${times(count)}, ${percent(count, pairs[bit >> 3] ?? 0)} of frames`
     }.${dimmed && (dimmed[bit] ?? 0) > 0 ? ' Also changes in the baseline.' : ''}${owner ? ` In ${owner}.` : ''}${
       region ? ` ${region.label}; Enter selects it.` : ''
     }${selectedSet.has(bit) ? ' Selected.' : ''}`;
@@ -375,7 +375,7 @@ export function BitGrid(props: Props) {
           <div className="muted">
             {hovered.flips === 0
               ? 'Never changes in this window'
-              : `Changed ${times(hovered.flips)} \u00b7 ${percent(hovered.flips, transitions)} of frames \u00b7 ${rate(hovered.flips, seconds)}`}
+              : `Changed ${times(hovered.flips)} \u00b7 ${percent(hovered.flips, pairs[hovered.byte] ?? 0)} of frames \u00b7 ${rate(hovered.flips, seconds)}`}
           </div>
           {hovered.baseline && <div className="muted">Also changes in the baseline</div>}
           {hovered.owner && <div className="muted">In {hovered.owner}</div>}
@@ -479,8 +479,8 @@ function traceOutline(g: CanvasRenderingContext2D, selected: Set<number>, bytes:
 
 const times = (n: number) => (n === 1 ? 'once' : `${formatCount(n)} times`);
 
-function percent(count: number, transitions: number): string {
-  return `${((100 * count) / Math.max(1, transitions)).toFixed(count >= transitions / 10 ? 0 : 2)}%`;
+function percent(count: number, pairs: number): string {
+  return `${((100 * count) / Math.max(1, pairs)).toFixed(count >= pairs / 10 ? 0 : 2)}%`;
 }
 
 function rate(count: number, seconds: number): string {

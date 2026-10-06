@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
 import { FLAG_FD, FLAG_REASSEMBLED, type CoreApi, type IdSummary, type MessageDef } from '../../core/api';
-import { fakeCore, lane, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
+import { bitFlips, fakeCore, lane, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
 import { ViewStateContext, ViewStateStore } from '../shared/viewState';
 import { SlotContext } from '../slots';
 import type { LoadedDbc, ViewContext } from '../types';
@@ -182,9 +182,7 @@ describe('Advanced', () => {
 
   it('rates bit changes against the steps between the frames of the window', async () => {
     // Five frames in the window, so four steps; bit 6 of byte 0 changes at every one of them.
-    const flips = new Uint32Array(64);
-    flips[6] = 4;
-    const core = testCore({ rowCountBetween: async () => 5, flipPairsBetween: async () => 4, bitFlipsBetween: async () => flips });
+    const core = testCore({ rowCountBetween: async () => 5, bitFlipsBetween: async () => bitFlips(8, 4, { 6: 4 }) });
     const user = renderView([engine], core);
     await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
     await user.click(screen.getByRole('tab', { name: 'Advanced' }));
@@ -197,9 +195,7 @@ describe('Advanced', () => {
   });
 
   it('says a bit that changed one time changed once', async () => {
-    const flips = new Uint32Array(64);
-    flips[6] = 1;
-    const core = testCore({ rowCountBetween: async () => 2, flipPairsBetween: async () => 1, bitFlipsBetween: async () => flips });
+    const core = testCore({ rowCountBetween: async () => 2, bitFlipsBetween: async () => bitFlips(8, 1, { 6: 1 }) });
     const user = renderView([engine], core);
     await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
     await user.click(screen.getByRole('tab', { name: 'Advanced' }));
@@ -211,11 +207,12 @@ describe('Advanced', () => {
     expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed once, 100% of frames\./)).toBeTruthy();
   });
 
-  it('rates bit changes against the pairs of frames compared, not the remote frames of a polled ID', async () => {
-    // Eight frames in the window, every other one a remote frame: the four data frames make three pairs.
-    const flips = new Uint32Array(64);
-    flips[6] = 3;
-    const core = testCore({ rowCountBetween: async () => 8, flipPairsBetween: async () => 3, bitFlipsBetween: async () => flips });
+  it('rates each byte against the pairs of frames that had it, not the remote frames of a polled ID', async () => {
+    // Eight frames in the window, every other one a remote frame. The four data frames make
+    // three pairs, only one of them with a byte 1; bit 6 of each byte changes in all of its pairs.
+    const counts = bitFlips(8, 0, { 6: 3, 14: 1 });
+    counts.pairs.set([3, 1]);
+    const core = testCore({ rowCountBetween: async () => 8, bitFlipsBetween: async () => counts });
     const user = renderView([engine], core);
     await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
     await user.click(screen.getByRole('tab', { name: 'Advanced' }));
@@ -225,6 +222,8 @@ describe('Advanced', () => {
     grid.focus();
     await user.keyboard('{ArrowRight}');
     expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed 3 times, 100% of frames\./)).toBeTruthy();
+    await user.keyboard('{ArrowDown}');
+    expect(await within(grid).findByText(/^Byte 1, bit 6\. Changed once, 100% of frames\./)).toBeTruthy();
   });
 });
 

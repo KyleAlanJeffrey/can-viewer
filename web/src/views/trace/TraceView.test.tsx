@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ALL_IDS, EXT_FLAG, FLAG_ERROR, FLAG_FD, FLAG_RTR, type CoreApi } from '../../core/api';
 import type { PlotSpec } from '../../components/Plots';
-import { fakeCore, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
+import { bitFlips, fakeCore, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
 import { renderInShell, type ShellOptions } from '../../test/shell';
 import type { LoadedDbc } from '../types';
 import { TraceTable } from '../../components/TraceTable';
@@ -58,7 +58,7 @@ function traceCore() {
   });
   const core = fakeCore({
     rows,
-    bitFlips: async () => new Uint32Array(64),
+    bitFlips: async () => bitFlips(8, 99),
     seriesView: async () => [Float64Array.of(0, 100), Float64Array.of(0, 1)],
   });
   return { core, rows };

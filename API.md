@@ -108,7 +108,6 @@ One arbitration ID on one bus. Returned by [`idSummary`](#idsummary).
 - **`id`** `number` - The ID without the extended flag. An error frame keeps the CAN error flag (`0x20000000`), so its ID never equals a real frame's, and no database decodes it.
 - **`extended`** `boolean` - True for a 29-bit ID.
 - **`count`** `number` - Frames with this ID on this bus.
-- **`flipPairs`** `number` - Pairs of frames [`bitFlips`](#bitflips) compared: each frame paired with the previous frame of the ID and the same kind, leaving out remote frames, which have no payload. A bit's count over this is the share of frames it changed in. It is `count - 1` for an ID whose frames are all data frames, and 0 for an ID of remote frames only.
 - **`periodMs`** `number | null` - Mean interval between frames in milliseconds, or null with fewer than two frames.
 - **`jitterMs`** `number | null` - Population standard deviation of the interval between frames in milliseconds, or null with fewer than three frames.
 - **`minLen`** `number` - Shortest payload in bytes.
@@ -371,6 +370,22 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 
 A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, [`frameData`](#framedata) fetches the whole payload, and [`rowBytes`](#rowbytes) fetches a range of bytes of many rows. `decodeRaw` and `decodeSignal` work on the whole payload.
 
+### The BitFlips object
+
+How often each payload bit of one ID changed, with the pairs of frames each byte was compared in. Returned by [`bitFlips`](#bitflips) and [`bitFlipsBetween`](#bitflipsbetween).
+
+Each frame is compared with the previous frame of the ID and the same kind (data, remote, error or reassembled, as `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) compares them), over the bytes both payloads have. A byte's pairs are the pairs of frames that both have it, so a bit's share of changes is its flips over its byte's pairs. For an ID whose frames are all of one kind other than remote and all of one length, every byte has `count - 1` pairs. Remote frames have no payload, so their pairs count for no byte, and a pair whose payloads differ in length counts only for the bytes of the shorter one. So a byte carried only by an ID's 14-byte J1939 transfers, next to its 8-byte single frames, is compared only between the transfers.
+
+**Attributes**
+
+- **`flips`** `Uint32Array` - Changes per bit, indexed `byte * 8 + bit`, where bit 0 is the least significant bit of the byte. Its length is 8 times the ID's longest payload.
+- **`pairs`** `Uint32Array` - Pairs of frames per byte, one per byte of `flips`.
+
+```ts
+const { flips, pairs } = await core.bitFlips(summary.key);
+const share = (bit: number) => flips[bit] / Math.max(1, pairs[bit >> 3]);
+```
+
 ### The CompareOptions object
 
 Ignore rules for [`compareLogs`](#comparelogs) and [`compareBytes`](#comparebytes).
@@ -418,6 +433,8 @@ One ID compared byte by byte. Returned by [`compareBytes`](#comparebytes). Per-b
 - **`payloadsB`** `number` - The same for log B.
 - **`flipsA`** `number[]` - How often each bit toggled from the previous frame of the ID and the same kind in log A, as [`bitFlips`](#bitflips) counts them over its first `len` bytes, so a polled ID's remote frames don't hide its changes; `len * 8` counts, zeros when log A lacks the ID.
 - **`flipsB`** `number[]` - The same for log B.
+- **`pairsA`** `number[]` - Per byte, the pairs of frames `flipsA` were counted over, as in [`BitFlips`](#the-bitflips-object): those of the same kind that both have the byte, so a bit's share of changes is its flips over its byte's pairs. `len` counts, zeros when log A lacks the ID.
+- **`pairsB`** `number[]` - The same for log B.
 - **`bitScores`** `number[]` - From 0 to 1 per bit, how differently it behaves (see [`compareLogs`](#comparelogs)), before the log A baseline. 0 for ignored bits and when either log lacks the ID or the byte.
 - **`byteScores`** `number[]` - From 0 to 100 per byte, after both ignore rules.
 - **`byteReasons`** `string[]` - Each byte's reason, worded as `IdComparison.reason`; `No significant changes` below 10, `Too few frames to compare` for every byte when either log has fewer than 8 frames of the ID, and empty when either log lacks the byte.
@@ -711,7 +728,7 @@ const batch = await core.rows(ALL_IDS, row, 1);
 rowCountBetween(key: number, t0: number, t1: number): Promise<number>
 ```
 
-The number of rows of `key` (or `ALL_IDS`, or `FILTERED_ROWS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares; divide its counts by [`flipPairsBetween`](#flippairsbetween), which leaves out the frames that make no pair. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
+The number of rows of `key` (or `ALL_IDS`, or `FILTERED_ROWS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares, though not every one makes a pair: divide its flips by its `pairs`, not by `rowCountBetween - 1`. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
 
 **Parameters**
 
@@ -799,31 +816,31 @@ if (count !== null) showPreview(`${count} of ${log.frames} frames match`);
 ### bitFlips
 
 ```ts
-bitFlips(key: number): Promise<Uint32Array>
+bitFlips(key: number): Promise<BitFlips>
 ```
 
-How often each payload bit of one ID changed from the previous frame of the ID and the same kind (data, remote, error or reassembled, as `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) compares them), over the whole log, so a polled ID's remote frames don't hide the changes between its data frames. A bit changes at most once per pair of frames compared, so work out its share over the ID's [`flipPairs`](#the-idsummary-object): over `count - 1` it reads low for an ID with frames of more than one kind. The counts are kept while parsing, so this is cheap.
+How often each payload bit of one ID changed from the previous frame of the ID and the same kind over the whole log, so a polled ID's remote frames don't hide the changes between its data frames, with the pairs of frames each byte was compared in (see [`BitFlips`](#the-bitflips-object)). A bit's share of changes is its flips over its byte's pairs; over `count - 1` it reads low for an ID with frames of more than one kind or length. The counts are kept while parsing, so this is cheap.
 
 **Parameters**
 
 - **`key`** `number` - An ID key. `ALL_IDS` is not accepted.
 
-**Returns** a `Uint32Array` indexed `byte * 8 + bit`, where bit 0 is the least significant bit of the byte. Its length is 8 times the ID's longest payload. It is empty for `ALL_IDS` or an unknown key.
+**Returns** a [`BitFlips`](#the-bitflips-object) object. Its arrays are empty for `ALL_IDS` or an unknown key.
 
 ```ts
-const flips = await core.bitFlips(summary.key);
+const { flips, pairs } = await core.bitFlips(summary.key);
 const busiest = flips.indexOf(Math.max(...flips));
-const share = flips[busiest] / Math.max(1, summary.flipPairs);
+const share = flips[busiest] / Math.max(1, pairs[busiest >> 3]);
 console.log(`byte ${busiest >> 3}, bit ${busiest & 7}, ${(100 * share).toFixed(1)}% of frames`);
 ```
 
 ### bitFlipsBetween
 
 ```ts
-bitFlipsBetween(key: number, t0: number, t1: number): Promise<Uint32Array>
+bitFlipsBetween(key: number, t0: number, t1: number): Promise<BitFlips>
 ```
 
-Like [`bitFlips`](#bitflips), counting only changes between frames that are both inside `[t0, t1]` seconds.
+Like [`bitFlips`](#bitflips), counting only pairs of frames that are both inside `[t0, t1]` seconds, in the flips and in the pairs alike.
 
 **Parameters**
 
@@ -831,34 +848,11 @@ Like [`bitFlips`](#bitflips), counting only changes between frames that are both
 - **`t0`** `number` - Window start, in seconds.
 - **`t1`** `number` - Window end, in seconds.
 
-**Returns** a `Uint32Array` laid out as for `bitFlips`. It is empty for `ALL_IDS` or an unknown key.
+**Returns** a [`BitFlips`](#the-bitflips-object) object laid out as for `bitFlips`. Its arrays are empty for `ALL_IDS` or an unknown key.
 
 ```ts
-const flips = await core.bitFlipsBetween(summary.key, 120, 135);
-```
-
-### flipPairsBetween
-
-```ts
-flipPairsBetween(key: number, t0: number, t1: number): Promise<number>
-```
-
-The number of pairs of frames [`bitFlipsBetween`](#bitflipsbetween) compares for the same window, to divide its counts by: each frame inside `[t0, t1]` seconds paired with the previous frame of the ID and the same kind inside the window, leaving out remote frames, as [`flipPairs`](#the-idsummary-object) counts them over the whole log.
-
-**Parameters**
-
-- **`key`** `number` - An ID key. `ALL_IDS` is not accepted.
-- **`t0`** `number` - Window start, in seconds.
-- **`t1`** `number` - Window end, in seconds.
-
-**Returns** a pair count. It is 0 for `ALL_IDS`, an unknown key or a window with fewer than two frames of a kind.
-
-```ts
-const [flips, pairs] = await Promise.all([
-  core.bitFlipsBetween(summary.key, 120, 135),
-  core.flipPairsBetween(summary.key, 120, 135),
-]);
-const share = flips[0] / Math.max(1, pairs);
+const { flips, pairs } = await core.bitFlipsBetween(summary.key, 120, 135);
+const share = flips[0] / Math.max(1, pairs[0]);
 ```
 
 ### changeActivity

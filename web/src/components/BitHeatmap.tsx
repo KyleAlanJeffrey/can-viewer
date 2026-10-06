@@ -10,8 +10,8 @@ const RAMP_STEPS = 6;
 
 interface Props {
   flips: Uint32Array;
-  /** Pairs of frames `flips` were counted over, the denominator of each bit's share. */
-  pairs: number;
+  /** Per byte, the pairs of frames its bits' flips were counted over: the denominator of their shares. */
+  pairs: ArrayLike<number>;
   bytes: number;
   signals: SignalDef[];
   /** Colour per signal, same order as `signals`. */
@@ -80,7 +80,6 @@ export function BitHeatmap({ flips, pairs, bytes, signals, colors, highlight, ma
     ctx.textAlign = 'center';
     for (let col = 0; col < 8; col++) ctx.fillText(String(7 - col), LABEL_W + col * pitch + pitch / 2, HEAD_H / 2 - 2);
 
-    const denom = Math.max(1, pairs);
     for (let byte = 0; byte < bytes; byte++) {
       const y = HEAD_H + byte * rowPitch;
       ctx.fillStyle = label;
@@ -101,7 +100,7 @@ export function BitHeatmap({ flips, pairs, bytes, signals, colors, highlight, ma
           ctx.lineWidth = 1;
           ctx.stroke();
         } else {
-          ctx.fillStyle = ramp[Math.min(RAMP_STEPS - 1, Math.floor(heat(count / denom) * RAMP_STEPS))];
+          ctx.fillStyle = ramp[Math.min(RAMP_STEPS - 1, Math.floor(heat(count / Math.max(1, pairs[byte] ?? 0)) * RAMP_STEPS))];
           ctx.fill();
         }
       }
@@ -193,7 +192,7 @@ export function BitHeatmap({ flips, pairs, bytes, signals, colors, highlight, ma
           <div className="muted">
             {hovered.flips === 0
               ? 'Never changes'
-              : `Changed ${formatCount(hovered.flips)} times \u00b7 ${((100 * hovered.flips) / Math.max(1, pairs)).toFixed(2)}% of frames`}
+              : `Changed ${formatCount(hovered.flips)} times \u00b7 ${((100 * hovered.flips) / Math.max(1, pairs[hovered.byte] ?? 0)).toFixed(2)}% of frames`}
           </div>
           {hovered.owner && <div className="muted">Signal {hovered.owner.name}</div>}
           {markedLabel && marked?.has(hover.bit) && <div>{markedLabel}</div>}

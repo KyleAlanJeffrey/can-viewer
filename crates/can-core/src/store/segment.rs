@@ -4,7 +4,7 @@
 //! The part's store works out the per-ID statistics of its own frames, which is most of the
 //! cost of storing a frame. Joining it adds what depends on the frames before it: bit flips
 //! between the last frame of each kind before the part and the first in it, each a pair of
-//! frames compared, and the gaps between frames, redone frame by frame so their floating-point
+//! frames compared over their bytes in common, and the gaps between frames, redone frame by frame so their floating-point
 //! sums come out the same. J1939 transfers are reassembled as the part is joined, since their
 //! packets may span parts; a part that completes one has its statistics worked out again frame
 //! by frame instead.
@@ -15,7 +15,7 @@ use rustc_hash::FxHashSet;
 
 use crate::{flags, id_key, FrameKind, FrameRef, FrameSink, MAX_PAYLOAD};
 
-use super::{count_flips, set_last_data, FrameStore, IdStats};
+use super::{count_flips, count_pair, set_last_data, FrameStore, IdStats};
 
 const MAGIC: &[u8; 4] = b"FCS2";
 
@@ -90,7 +90,11 @@ impl FrameStore {
                 .bit_flips
                 .iter()
                 .for_each(|n| out.extend_from_slice(&n.to_le_bytes()));
-            out.extend_from_slice(&stats.flip_pairs.to_le_bytes());
+            put_len(&mut out, stats.pairs_by_len.len());
+            stats
+                .pairs_by_len
+                .iter()
+                .for_each(|n| out.extend_from_slice(&n.to_le_bytes()));
             for last in &stats.last_data {
                 match last {
                     Some(data) => {
@@ -175,8 +179,8 @@ impl IdStats {
                 Some(last) => {
                     let first_of_part = segment.first_payload_of_kind(part, kind);
                     grow_to(&mut self.bit_flips, first_of_part.len().min(last.len()) * 8);
+                    count_pair(&mut self.pairs_by_len, first_of_part.len().min(last.len()));
                     count_flips(&mut self.bit_flips, last, first_of_part);
-                    self.flip_pairs += u32::from(kind != FrameKind::Remote as usize);
                     set_last_data(last, last_of_part);
                 }
                 none => *none = Some(last_of_part.to_vec()),
@@ -185,7 +189,10 @@ impl IdStats {
         for (count, flips) in self.bit_flips.iter_mut().zip(part.bit_flips()) {
             *count += flips;
         }
-        self.flip_pairs += part.flip_pairs;
+        grow_to(&mut self.pairs_by_len, part.pairs_by_len.len() / 4);
+        for (count, pairs) in self.pairs_by_len.iter_mut().zip(u32s(part.pairs_by_len)) {
+            *count += pairs;
+        }
         for j in part.frames() {
             self.observe_time((first + j) as u32, segment.ts(j));
         }
@@ -230,10 +237,10 @@ struct SegmentId<'a> {
     max_len: u16,
     gap_mean_ns: f64,
     gap_m2: f64,
-    /// `u32`s, as are the bit flips.
+    /// `u32`s, as are the bit flips and pairs.
     frames: &'a [u8],
     bit_flips: &'a [u8],
-    flip_pairs: u32,
+    pairs_by_len: &'a [u8],
     last_data: [Option<&'a [u8]>; 4],
 }
 
@@ -308,7 +315,10 @@ impl<'a> Segment<'a> {
                     let count = r.len()?;
                     r.list(count, 4)?
                 },
-                flip_pairs: r.u32()?,
+                pairs_by_len: {
+                    let count = r.len()?;
+                    r.list(count, 4)?
+                },
                 last_data: [r.payload()?, r.payload()?, r.payload()?, r.payload()?],
             };
             let ordered = u32s(part.frames)
@@ -404,7 +414,7 @@ impl SegmentId<'_> {
             min_len: self.min_len,
             max_len: self.max_len,
             bit_flips: self.bit_flips().collect(),
-            flip_pairs: self.flip_pairs,
+            pairs_by_len: u32s(self.pairs_by_len).collect(),
             last_data: self.last_data.map(|data| data.map(<[u8]>::to_vec)),
             gap_mean_ns: self.gap_mean_ns,
             gap_m2: self.gap_m2,
@@ -656,13 +666,17 @@ mod tests {
     #[test]
     fn pairs_across_a_cut_count_as_read_whole() {
         let mut frames = Vec::new();
-        for t in 0..4 {
+        for (t, len) in [8, 2, 8, 64].into_iter().enumerate() {
+            let t = t as i64;
             frames.push(Pushed {
                 remote_dlc: Some(1),
                 flags: flags::RTR,
                 ..frame("can0", t * 20, 0x100, &[])
             });
-            frames.push(frame("can0", t * 20 + 10, 0x100, &[t as u8]));
+            frames.push(Pushed {
+                flags: if len > 8 { flags::FD } else { 0 },
+                ..frame("can0", t * 20 + 10, 0x100, &vec![t as u8; len])
+            });
         }
         frames.push(Pushed {
             flags: flags::ERROR,
@@ -676,22 +690,27 @@ mod tests {
             store
                 .ids()
                 .iter()
-                .map(|stats| stats.flip_pairs)
+                .map(|stats| stats.flip_counts().pairs)
                 .collect::<Vec<_>>()
         };
+        // The data frames pair over 2, 2 and 8 bytes, and the remote frames not at all; the
+        // error frames over 8.
+        let mut data = vec![0; 64];
+        data[..8].fill(1);
+        data[..2].fill(3);
+        let expected = [data, vec![1; 8]];
         let mut whole = FrameStore::new();
         push_into(&mut whole, &frames);
-        // Four data frames make three pairs and the remote frames none; two error frames one.
-        assert_eq!(pairs(&whole), [3, 1]);
+        assert_eq!(pairs(&whole), expected);
         for cut in 0..=frames.len() {
             assert_eq!(
                 pairs(&read_in_parts(&frames, &[cut])),
-                [3, 1],
+                expected,
                 "cut at {cut}"
             );
         }
         let every_frame: Vec<usize> = (1..frames.len()).collect();
-        assert_eq!(pairs(&read_in_parts(&frames, &every_frame)), [3, 1]);
+        assert_eq!(pairs(&read_in_parts(&frames, &every_frame)), expected);
     }
 
     #[test]

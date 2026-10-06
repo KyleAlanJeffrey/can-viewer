@@ -302,7 +302,7 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
           onPointerCancel={() => {
             pressedOnVideo.current = false;
           }}
-          // A mouse dragged off the video won't click it. Touch and pen leave before their click, so they keep the press.
+          // A mouse dragged off the video won't click it. Touch, and pen without hover, leave before their click.
           onPointerLeave={(e) => {
             if (e.pointerType === 'mouse') pressedOnVideo.current = false;
           }}

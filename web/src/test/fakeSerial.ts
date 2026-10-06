@@ -101,11 +101,13 @@ export class FakeSerialPort implements SerialPortLike {
 
   /**
    * A Lawicel adapter (CANUSB, USBtin): `O` and `L` open the channel and `C` closes it; while it
-   * is open, every command but `C` and `V` is refused with BEL. `V` is answered with `version`.
+   * is open, every command but `C`, `V` and `F` is refused with BEL. `V` is answered with
+   * `version`; `F` with the status flags while the channel is open, and BEL while it is closed.
    */
   lawicel(version: string | null = 'V1013\r') {
     this.answer = (command) => {
       if (command === 'V') return version;
+      if (command === 'F') return this.channelOpen ? 'F00\r' : '\x07';
       if (command === 'C') {
         const wasOpen = this.channelOpen;
         this.channelOpen = false;

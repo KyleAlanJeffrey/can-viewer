@@ -9,12 +9,12 @@ It is plain static HTML with one shared stylesheet. There is no build step and n
 | Path | What |
 |---|---|
 | `public/index.html` | Home |
-| `public/blf-viewer-online/`, `public/mf4-viewer-online/`, `public/dbc-viewer-online/`, `public/canalyzer-alternative/` | Content pages, one shared template: H1, button into the app, 3 steps, FAQ, links to the other pages |
+| `public/blf-viewer-online/`, `public/mf4-viewer-online/`, `public/dbc-viewer-online/`, `public/canalyzer-alternative/` | Content pages, one shared template: H1, button into the app with Try the Demo beside it, 3 steps, collapsible questions with the upload question first and open, and chips to the other guides |
 | `public/404.html` | Served for unknown paths (`not_found_handling: "404-page"`) |
 | `public/site.css` | Every style. The tokens are copied from `web/src/styles.css`; keep them in step with [DESIGN.md](../DESIGN.md) |
 | `public/fonts/` | IBM Plex Sans 400/500/600 and Mono 400/600, Latin subset, copied from `web/node_modules/@fontsource`, with their OFL licences |
 | `public/logo.svg`, `public/favicon.svg` | The Twisted F, exported from `web/src/components/Logo.tsx` with the gaps painted Warm White |
-| `public/og-image.png` | The 1200 x 630 social preview image |
+| `public/og-image.png` | The 1200 x 630 social preview image. It repeats the home page H1, so remake it when that changes: a 1200 x 630 HTML page with the site's fonts, logo and tokens, screenshotted in Chrome |
 | `public/capture-sheet.webp` | Screenshot of the app's Live Capture sheet for the home page's live capture section, 560 x 607 at 2x. Retake it if the sheet changes |
 | `public/_headers` | Content-Security-Policy and caching |
 | `public/robots.txt`, `public/sitemap.xml` | For search engines. Add new pages to the sitemap |
@@ -27,7 +27,8 @@ Each folder holds an `index.html`, so pages have clean URLs (`/blf-viewer-online
 - No drop zone. A file dropped here can't be handed to the app on another origin, so every button sends people to the app to open files there.
 - One amber primary button per page; everything else is an outline button or a text link.
 - Copy stays truthful: only claim what the app does today (see [PRODUCT.md](../PRODUCT.md) and [COMPATIBILITY.md](../COMPATIBILITY.md)). No prices, dates, customers or usage numbers.
-- No inline styles or scripts: the Content-Security-Policy allows only this origin.
+- No inline styles or scripts: the Content-Security-Policy allows only this origin. The site has no script of its own: the phone menu and the collapsible sections are `details` elements.
+- Phones get the same pages, with the menu button and the longer detail collapsed. The app itself has no phone layout (see [PRODUCT.md](../PRODUCT.md)), so the site says it runs in desktop browsers and never shows or promises a phone layout or phone live capture.
 - Analytics, a newsletter signup or video embeds are allowed here, by widening `public/_headers`, and never in the app, whose policy in `web/public/_headers` stays self-only. The site's policy allows Cloudflare Web Analytics, which Cloudflare injects and which sets no cookies. The app domain must be excluded from Web Analytics in the Cloudflare dashboard; its policy would block the beacon anyway.
 - ASCII only in the source. Use HTML entities such as `&hellip;`, `&middot;` and `&rsquo;` for typographic characters.
 

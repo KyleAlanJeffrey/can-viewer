@@ -41,7 +41,8 @@ export function SuggestionsPanel(props: Props) {
   const ids = useId();
   const [showDismissed, setShowDismissed] = useState(false);
   const [refocus, setRefocus] = useState<string | null>(null);
-  const drag = useRef<{ x: number; width: number } | null>(null);
+  const drag = useRef<{ x: number; width: number; widest: number } | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const key = summary?.key ?? null;
   const { ensure } = discovery;
   const { capturing } = ctx;
@@ -98,14 +99,26 @@ export function SuggestionsPanel(props: Props) {
     next.focus();
   };
 
+  // The CSS keeps the panel narrower than the stored width when the matrix needs the room, so
+  // resizing starts from, and stops at, the widest it can be here.
+  const widest = () => {
+    const aside = panelRef.current;
+    if (!aside) return PANEL_WIDTH.max;
+    const before = aside.style.width;
+    aside.style.width = `${PANEL_WIDTH.max}px`;
+    const measured = aside.offsetWidth;
+    aside.style.width = before;
+    return measured > 0 ? Math.min(PANEL_WIDTH.max, Math.max(PANEL_WIDTH.min, measured)) : PANEL_WIDTH.max;
+  };
+  const resize = (to: number, max: number) => onWidth(Math.round(Math.min(max, Math.max(PANEL_WIDTH.min, to))));
   const startDrag = (e: PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { x: e.clientX, width };
+    const max = widest();
+    drag.current = { x: e.clientX, width: Math.min(width, max), widest: max };
   };
-  const resize = (to: number) => onWidth(Math.round(Math.min(PANEL_WIDTH.max, Math.max(PANEL_WIDTH.min, to))));
 
   return (
-    <aside className="re-sugpanel" aria-labelledby={`${ids}title`} style={{ '--re-sug-width': `${width}px` } as CSSProperties}>
+    <aside ref={panelRef} className="re-sugpanel" aria-labelledby={`${ids}title`} style={{ '--re-sug-width': `${width}px` } as CSSProperties}>
       <div
         className="re-sugpanel-grip"
         role="separator"
@@ -115,24 +128,18 @@ export function SuggestionsPanel(props: Props) {
         aria-valuemax={PANEL_WIDTH.max}
         aria-valuenow={width}
         tabIndex={0}
+        onFocus={() => width > widest() && resize(width, widest())}
         onPointerDown={startDrag}
-        onPointerMove={(e) => drag.current && resize(drag.current.width - (e.clientX - drag.current.x))}
+        onPointerMove={(e) => drag.current && resize(drag.current.width - (e.clientX - drag.current.x), drag.current.widest)}
         onPointerUp={() => (drag.current = null)}
         onPointerCancel={() => (drag.current = null)}
         onKeyDown={(e) => {
-          const to =
-            e.key === 'ArrowLeft'
-              ? width + 16
-              : e.key === 'ArrowRight'
-                ? width - 16
-                : e.key === 'Home'
-                  ? PANEL_WIDTH.min
-                  : e.key === 'End'
-                    ? PANEL_WIDTH.max
-                    : null;
-          if (to === null) return;
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
           e.preventDefault();
-          resize(to);
+          const max = widest();
+          const from = Math.min(width, max);
+          const to = e.key === 'ArrowLeft' ? from + 16 : e.key === 'ArrowRight' ? from - 16 : e.key === 'Home' ? PANEL_WIDTH.min : max;
+          resize(to, max);
         }}
       />
       <div className="re-sugpanel-scroll" onKeyDown={onKeyDown}>

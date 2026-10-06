@@ -122,6 +122,20 @@ describe('Suggested signals on Byte Values', () => {
     expect(grip.getAttribute('aria-valuenow')).toBe('300');
   });
 
+  it('resizes no wider than the matrix leaves room for', async () => {
+    const { user } = await openByteValues([flag]);
+    // As at 1440px with the sidebar open: the matrix keeps all but 366px.
+    vi.spyOn(panel(), 'offsetWidth', 'get').mockReturnValue(366);
+    const grip = within(panel()).getByRole('separator', { name: 'Resize Suggested signals' });
+    grip.focus();
+    await user.keyboard('{End}');
+    expect(grip.getAttribute('aria-valuenow')).toBe('366');
+    await user.keyboard('{ArrowLeft}');
+    expect(grip.getAttribute('aria-valuenow')).toBe('366');
+    await user.keyboard('{ArrowRight}');
+    expect(grip.getAttribute('aria-valuenow')).toBe('350');
+  });
+
   it('says so when the picked suggestion\'s row is filtered out of the table', async () => {
     const { user } = await openByteValues([flag]);
     await user.click(card(1));

@@ -278,6 +278,8 @@ impl<'a> Segment<'a> {
         {
             return Err(SegmentError::Malformed);
         }
+        // Each frame must belong to exactly one ID, so the joined statistics count it once.
+        let mut owned = vec![false; len];
         for _ in 0..r.len()? {
             let part = SegmentId {
                 channel: usize::from(r.u8()?),
@@ -308,9 +310,17 @@ impl<'a> Segment<'a> {
             if part.channel >= segment.channels.len() || !ordered || !in_range {
                 return Err(SegmentError::Malformed);
             }
+            for j in part.frames() {
+                let its_own = usize::from(segment.channel[j]) == part.channel
+                    && u32_at(segment.id, j) == part.id;
+                if owned[j] || !its_own {
+                    return Err(SegmentError::Malformed);
+                }
+                owned[j] = true;
+            }
             segment.ids.push(part);
         }
-        if !r.0.is_empty() {
+        if !r.0.is_empty() || owned.contains(&false) {
             return Err(SegmentError::Malformed);
         }
         Ok(segment)
@@ -677,6 +687,26 @@ mod tests {
         longer.push(0);
         assert_eq!(
             FrameStore::new().append_segment(&longer),
+            Err(SegmentError::Malformed)
+        );
+        assert_eq!(FrameStore::new().append_segment(&bytes), Ok(()));
+    }
+
+    #[test]
+    fn a_segment_whose_ids_do_not_own_each_frame_once_is_refused() {
+        let mut part = FrameStore::for_segment();
+        push_into(
+            &mut part,
+            &[frame("can0", 1, 0x100, &[1]), frame("can0", 2, 0x200, &[2])],
+        );
+        let bytes = part.encode_segment();
+        // Magic, frame count, bus count, then "can0" with its length, then two times.
+        let ids_at = 4 + 4 + 4 + 4 + 4 + 2 * 8;
+        assert_eq!(bytes[ids_at..ids_at + 4], 0x100u32.to_le_bytes());
+        let mut moved = bytes.clone();
+        moved[ids_at..ids_at + 4].copy_from_slice(&0x200u32.to_le_bytes());
+        assert_eq!(
+            FrameStore::new().append_segment(&moved),
             Err(SegmentError::Malformed)
         );
         assert_eq!(FrameStore::new().append_segment(&bytes), Ok(()));

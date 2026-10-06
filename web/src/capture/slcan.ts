@@ -257,6 +257,8 @@ export class SlcanAdapter implements CaptureAdapter {
    * command, and so does a BEL before the version line.
    */
   private awaitedReply: AwaitedReply | null = null;
+  /** F went unanswered on a consented start, so a late BEL means F was refused after all. */
+  private statusUnanswered = false;
 
   constructor(
     private readonly port: SerialPortLike,
@@ -298,6 +300,7 @@ export class SlcanAdapter implements CaptureAdapter {
     this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
     this.timestampsAsked = false;
     this.awaitedReply = null;
+    this.statusUnanswered = false;
     this.events = events;
     this.clock = clock;
     try {
@@ -350,12 +353,16 @@ export class SlcanAdapter implements CaptureAdapter {
         if (drained && listenOnly === 'ok') return { listenOnly: true };
         // An L answered with CR is very probably in effect, and firmware without F would refuse
         // it while the channel is open, so only an L left unanswered is probed.
-        if (listenOnly !== 'refused' && (listenOnly === 'ok' || (await this.probeChannelOpen(wait)) !== false)) {
+        const open = listenOnly === 'ok' || listenOnly === 'refused' ? undefined : await this.probeChannelOpen(wait);
+        if (listenOnly !== 'refused' && open !== false) {
           // The channel is likely open in listen-only mode, where Lawicel adapters refuse M1 and
           // O, so it is left as it is: the safer of the two. A status line from F doesn't say
           // more, as only the answer to L confirms the mode. A BEL to F that comes too late
           // shows as a problem: the only sign that the channel is closed after all.
-          if (settings.allowUnconfirmedListenOnly) return { listenOnly: false };
+          if (settings.allowUnconfirmedListenOnly) {
+            this.statusUnanswered = open === null;
+            return { listenOnly: false };
+          }
           this.busOpen = false;
           throw new ListenOnlyUnconfirmedError(
             listenOnly === 'ok'
@@ -591,7 +598,14 @@ export class SlcanAdapter implements CaptureAdapter {
           // Before the version line, a BEL answers an earlier command.
           if (this.awaitedReply === 'version') break;
           // A late BEL to a command no longer waited for, such as the opening C, is no problem.
-          if (!this.answer('refused') && this.busOpen) this.events?.onProblem('The adapter reported an error.');
+          if (!this.answer('refused') && this.busOpen) {
+            this.events?.onProblem(
+              this.statusUnanswered
+                ? 'The adapter refused the status request (F), so its channel may not be open; stop and start without listen only.'
+                : 'The adapter reported an error.',
+            );
+            this.statusUnanswered = false;
+          }
           break;
         case 'bad':
           if (this.busOpen) this.events?.onProblem(`A line from the adapter wasn't a CAN frame (${event.reason}).`);

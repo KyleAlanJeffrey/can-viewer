@@ -398,6 +398,24 @@ describe('SlcanAdapter', () => {
     await adapter.stop();
   });
 
+  it('says a late refusal of an unanswered F means the channel may not be open', async () => {
+    const port = new FakeSerialPort();
+    ignoringL(port);
+    const lawicel = port.answer;
+    port.answer = (command) => (command === 'F' ? null : lawicel(command));
+    const adapter = new SlcanAdapter(port, timing);
+    const { problems, events } = recordingEvents();
+    const settings = { bitrate: 500_000, listenOnly: true, allowUnconfirmedListenOnly: true };
+    expect(await adapter.start(settings, events, () => 0)).toEqual({ listenOnly: false });
+    port.send('\x07\x07');
+    await tick();
+    expect(problems).toEqual([
+      'The adapter refused the status request (F), so its channel may not be open; stop and start without listen only.',
+      'The adapter reported an error.',
+    ]);
+    await adapter.stop();
+  });
+
   it('reads frames that come before the answer to F, without taking them for it', async () => {
     const port = new FakeSerialPort();
     port.lawicel();

@@ -37,23 +37,24 @@ Success: an engineer drops a large log into a browser tab and is reading decoded
 ## Capabilities and Constraints
 
 - **Built so far:**
-  - candump parsing;
+  - log parsing for candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV, and Export Log... to any of the same formats (see [COMPATIBILITY.md](COMPATIBILITY.md#log-export));
   - a columnar frame store with per-ID stats, bit-flip counts, jitter, bus load and error-frame counts;
-  - DBC decode (Intel/Motorola, signed, float, simple multiplexing), with several DBCs per log, each for every bus or one bus, and J1939 messages matched by PGN;
+  - DBC decode (Intel/Motorola, signed, float, simple and extended multiplexing), with several DBCs per log, each for every bus or one bus, J1939 messages matched by PGN and J1939 multi-packet (TP) messages reassembled;
   - six views: Overview, Trace, Plot, Reverse Engineer (drag-to-define signals, Find Signal and Suggested signals), Compare (what differs between two logs, such as idle and one action) and Database (DBC editing and export);
   - a virtualized canvas trace table, a bit heatmap, and uPlot plots with decimation;
   - trace filters by bus, ID or name, data rules, frame kind and time range, run in the core;
   - the open log, DBCs and view state kept across reloads;
-  - live capture from slcan and gs_usb adapters in Chrome and Edge, saved as candump logs (see "Live capture" in [COMPATIBILITY.md](COMPATIBILITY.md#live-capture));
+  - offline use and install as an app (a service worker and a web app manifest; see [COMPATIBILITY.md](COMPATIBILITY.md#offline-and-install));
+  - live capture from slcan (Web Serial) and gs_usb (WebUSB) adapters in Chrome and Edge, saved as candump logs, experimental until tried with real adapters (see "Live capture" in [COMPATIBILITY.md](COMPATIBILITY.md#live-capture));
   - video sync in the Plot view: a local video plays beside the plots, lined up with the log by one matched moment, and moves with the plot cursor. The video stays in the tab and is never stored or uploaded.
-- **Planned:** see [docs/screens.md](docs/screens.md), [docs/research.md](docs/research.md) and [TODO.md](TODO.md). Key items are more log formats, parallel parsing, extended multiplexing, J1939 multi-packet messages, and the Pro desktop app.
+- **Planned:** see [docs/screens.md](docs/screens.md), [docs/research.md](docs/research.md) and [TODO.md](TODO.md). Key items are parallel parsing and the Pro desktop app (transmit and replay, UDS scanning, multi-GB files and scripting).
 - **Licensing:**
   - The product is closed-source and commercial, so no GPL or LGPL code can be copied in.
   - Pro-only features must not ship in the web bundle (the Cargo `pro` feature or desktop-only crates). Automated signal discovery is not one of them: it ships free in the web app.
   - Fonts and icons must be licensed for web and desktop use. Apple's SF fonts and SF Symbols are not.
 - **Pricing and the tagline** are undecided.
-- **Mockup decisions (2026-09-30):** omit taglines; use "Free. No account." rather than a forever promise; omit undecided Pro format and file-size claims. Use the shipped 1M-frame demo (55 MB, about 30 min 15 s) across all screens. Keep bus load, jitter, and error-frame counts visible only as explicitly Planned placeholders until the core computes them.
-- **Domain:** freecan.studio is planned. The URL shown in mockups, `studio.freecan.app`, is an image-generator artifact, not a real domain.
+- **Mockup decisions (2026-09-30):** omit taglines; use "Free. No account." rather than a forever promise; omit undecided Pro format and file-size claims. Use the shipped 1M-frame demo (55 MB, about 30 min 15 s) across all screens. Keep bus load, jitter, and error-frame counts visible only as explicitly Planned placeholders until the core computes them (it now does).
+- **Domain:** the landing site is `freecanstudio.com` and the app `app.freecanstudio.com`; `freecan.studio` and `freecan.app` redirect to the site (see "Deploy" in [README.md](README.md#deploy)). The URL shown in mockups, `studio.freecan.app`, is an image-generator artifact, not a real domain.
 
 ## Brand Commitments
 

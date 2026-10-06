@@ -14,7 +14,7 @@ import { CompareTable } from './CompareTable';
 import { IgnoreRulesSheet } from './IgnoreRules';
 import { LogCards, type Reading } from './LogCards';
 import { forgetLogBOnReset, onLogB } from './logBWork';
-import { DEFAULT_OPTIONS, GROUPS, SHOW_OPTIONS, busesMatchedByOrder, findingsCsv, groupOf, looksTheSame, matchesQuery, rowKey, stem, type Show } from './findings';
+import { DEFAULT_OPTIONS, GROUPS, SHOW_OPTIONS, busesMatchedByOrder, findingsCsv, groupOf, looksTheSame, matchesQuery, rowKey, stem, withinANote, type Show } from './findings';
 import './compare.css';
 
 /** A log file as the session store keeps it. */
@@ -188,6 +188,7 @@ function CompareLogs({ ctx }: ViewProps) {
   };
 
   const same = !!logB && results !== null && looksTheSame(results);
+  const hiddenWithinA = results && withinANote(results);
   const matchedBuses = results ? busesMatchedByOrder(results) : null;
 
   return (
@@ -220,6 +221,7 @@ function CompareLogs({ ctx }: ViewProps) {
                 These logs look the same
               </h2>
               <p className="hint">No differences found with the current ignore rules.</p>
+              {hiddenWithinA && <p className="hint">{hiddenWithinA}</p>}
               {matchedBuses && <p className="hint">Buses matched by order: {matchedBuses}</p>}
               <p className="cmp-same-count">
                 0 changed IDs &middot; {formatCount(results.length)} compared

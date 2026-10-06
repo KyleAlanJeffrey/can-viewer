@@ -5,18 +5,21 @@
 //!
 //! - An ID in only one log scores 100. One with fewer than 8 frames in either log is not
 //!   scored: "Too few frames to compare".
-//! - Discrete changes score 75 to 100: a payload length change or a change between classic CAN
-//!   and CAN FD (90), and values of a byte that one log shows and the other never does. A value
-//!   only counts as new when the other log's frames would have shown it had it been as common
-//!   there, and, unless the other log holds the byte at 3 values or fewer, when it is not within
-//!   reach of the other log's values (noise around a value, or a reading drifting on).
+//! - Discrete changes: a payload length change or a change between classic CAN and CAN FD
+//!   (90), and values of a byte that one log shows and the other never does (up to 100). A
+//!   value counts as new unless the other log's values reach it: for a byte with 8 values or
+//!   more, a small hole between them, one step past either end, or noise trailing on past an
+//!   end that thins out. It scores 75 to 100 times how sure it is that the other log would have
+//!   shown it, from how many separate times it comes up and how long each log ran.
 //! - Graded changes score at most 50: per bit, the change in the share of frames with the bit
 //!   set and in the share where it toggles, scaled down when one log is much shorter.
 //! - A rate ratio from 1.1 (more for IDs with few frames) up to 2 scores 0 up to 80.
 //! - The ID scores its largest component.
 //!
-//! Ignore rules leave out bits that behave like a counter or checksum in both logs, and
-//! subtract from each component what it scores between the first and second halves of log A.
+//! Ignore rules leave out bits that behave like a counter or checksum in both logs, and what
+//! log A's own changes explain: B's new values past where a drifting A carries on, A's values
+//! that come and go in both of its halves, and from the graded part what it scores between
+//! A's halves.
 
 use std::collections::BTreeMap;
 
@@ -30,8 +33,17 @@ use crate::{byte_lanes_in, js_err, log_info_json, ns_in, to_json, LogInput, Sess
 pub const SIGNIFICANT: f64 = 0.1;
 /// An ID with fewer frames than this in either log is not scored.
 pub const MIN_FRAMES: u32 = 8;
-/// A byte that takes at most this many values is a state, where any new value matters.
-const STATE_VALUES: usize = 3;
+/// A byte with at least this many values in the reference log is a measurement: a value in a
+/// small hole between its values, one step past its range, or trailing on past a thinning
+/// end as noise does, is not new.
+const MEASURED_VALUES: usize = 8;
+/// The widest gap between values, in steps, that still counts as one spread of values.
+const HOLE_STEPS: usize = 4;
+/// A byte with at least this many values is taken for a reading, which comes back to its
+/// values as it moves about.
+const READING_VALUES: usize = 4;
+/// Each log is cut into this many stretches of frames, to tell how often a value comes up.
+const STRETCHES: usize = 64;
 /// Ratio of rates that scores nothing, and the share of the rate score a doubling reaches.
 const RATE_TOLERANCE: f64 = 1.1;
 const RATE_WEIGHT: f64 = 0.8;
@@ -71,7 +83,7 @@ pub enum Presence {
 pub struct IdComparison {
     pub bus: String,
     /// What log B calls the bus, when it has the ID; differs from `bus` when buses were
-    /// matched by order.
+    /// matched in order of name.
     pub bus_b: Option<String>,
     /// Without the extended flag; error frames are left out.
     pub id: u32,
@@ -89,6 +101,11 @@ pub struct IdComparison {
     pub reason: String,
     /// Payload bytes that differ significantly, most different first.
     pub bytes: Vec<usize>,
+    /// Either log has fewer than `MIN_FRAMES` frames of the ID, so it is not scored.
+    pub too_few_frames: bool,
+    /// The ID differs, but no more than it changes within log A, and the within-A rule left
+    /// the differences out.
+    pub changes_within_a: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -144,6 +161,11 @@ struct ByteProfile {
     steps: [u32; 256],
     /// The same for the high nibble, modulo 16.
     high_steps: [u32; 16],
+    /// Per value, a bit for each of up to [`STRETCHES`] equal stretches of the frames that
+    /// show it.
+    stretches: [u64; 256],
+    /// The value of the last frame.
+    last: Option<u8>,
 }
 
 impl ByteProfile {
@@ -153,6 +175,8 @@ impl ByteProfile {
             xors: [0; 256],
             steps: [0; 256],
             high_steps: [0; 16],
+            stretches: [0; 256],
+            last: None,
         }
     }
 
@@ -205,7 +229,9 @@ fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profi
         xor_all: [0; 256],
     };
     let mut prev: &[u8] = &[];
-    for &index in frames {
+    let stretches = frames.len().min(STRETCHES);
+    for (i, &index) in frames.iter().enumerate() {
+        let stretch = 1u64 << (i * stretches / frames.len());
         let frame = store.frame(index as usize);
         let data = &frame.data[..frame.data.len().min(len)];
         p.frames += 1;
@@ -216,6 +242,8 @@ fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profi
         for (k, &v) in data.iter().enumerate() {
             let b = &mut p.bytes[k];
             b.values[usize::from(v)] += 1;
+            b.stretches[usize::from(v)] |= stretch;
+            b.last = Some(v);
             if let Some(&u) = prev.get(k) {
                 b.xors[usize::from(u ^ v)] += 1;
                 b.steps[usize::from(v.wrapping_sub(u))] += 1;
@@ -348,11 +376,8 @@ enum ByteReason {
 }
 
 /// What one byte scores, and why: the graded change, values only B shows, and values only A
-/// shows, kept apart for the log A baseline. Values only B shows are discounted by values
-/// A's second half shows that its first never does, as a drifting reading's are; values
-/// only A shows by A's halves differing either way, since then B, another stretch of time,
-/// may simply miss some of A's values; and graded changes by any change within A. So a
-/// change elsewhere in A's byte never hides a new value in B.
+/// shows. The value parts already leave out what log A's own changes explain (see
+/// [`WithinA`]); only the graded part has a baseline subtracted, in [`ByteDiff::less`].
 struct ByteDiff {
     parts: [(f64, ByteReason); 3],
     bits: [f64; 8],
@@ -364,15 +389,16 @@ impl ByteDiff {
         self.less(None)
     }
 
-    /// The largest part less its baseline from `within_a`, with its reason.
+    /// The largest part, the graded one less the largest part of `within_a`, with its reason.
     fn less(&self, within_a: Option<&ByteDiff>) -> (f64, ByteReason) {
-        let baseline = within_a.map_or([0.0; 3], |n| {
-            let [graded, new_b, new_a] = n.parts.map(|p| p.0);
-            [graded.max(new_b).max(new_a), new_b, new_b.max(new_a)]
-        });
+        let baseline = within_a.map_or(0.0, |n| n.parts.iter().map(|p| p.0).fold(0.0, f64::max));
         let mut best = (0.0, ByteReason::Shift);
         for (i, &(score, reason)) in self.parts.iter().enumerate() {
-            let score = (score - baseline[i]).max(0.0);
+            let score = if i == 0 {
+                (score - baseline).max(0.0)
+            } else {
+                score
+            };
             if score > best.0 {
                 best = (score, reason);
             }
@@ -389,97 +415,194 @@ fn masked(values: &[u32; 256], keep: u8) -> [u32; 256] {
     out
 }
 
-/// How much each log's frames are worth as evidence about the other. A log of fewer seconds
-/// than the other shows less of what an ID does, so its frames count for less, and graded
-/// changes between logs of very different lengths count for less too.
-#[derive(Debug, Clone, Copy)]
-struct Weight {
-    a: f64,
-    b: f64,
-    graded: f64,
-}
-
-fn weight_of(a: &Profile, b: &Profile) -> Weight {
-    let at_most_one = |x: f64, y: f64| if y > 0.0 { (x / y).min(1.0) } else { 1.0 };
-    let (sa, sb) = (a.span_s, b.span_s);
-    Weight {
-        a: at_most_one(sa, sb),
-        b: at_most_one(sb, sa),
-        graded: at_most_one(sa.min(sb), sa.max(sb)).sqrt(),
-    }
-}
-
-/// Values of `other` within reach of the reference's own: walking the values either log shows
-/// in order (wrapping at 255), a run with gaps of at most `step` that holds a reference value
-/// takes in every value of it. This is how noise around a value, or a reading drifting on,
-/// looks.
-fn within_reach(reference: &[u32; 256], other: &[u32; 256], step: usize) -> [bool; 256] {
-    let present: Vec<usize> = (0..256)
-        .filter(|&v| reference[v] > 0 || other[v] > 0)
-        .collect();
-    let mut run = vec![0usize; present.len()];
-    for i in 1..present.len() {
-        run[i] = run[i - 1] + usize::from(present[i] - present[i - 1] > step);
-    }
-    // Counted before the last run wraps into the first, which leaves later runs numbered as
-    // they were.
-    let runs = run.last().map_or(0, |&r| r + 1);
-    if let (Some(&first), Some(&last)) = (present.first(), present.last()) {
-        if present.len() > 1 && first + 256 - last <= step {
-            let wrapped = run[present.len() - 1];
-            for r in &mut run {
-                if *r == wrapped {
-                    *r = 0;
-                }
-            }
-        }
-    }
-    let mut anchored = vec![false; runs];
-    for (i, &v) in present.iter().enumerate() {
-        if reference[v] > 0 {
-            anchored[run[i]] = true;
-        }
-    }
-    let mut out = [false; 256];
-    for (i, &v) in present.iter().enumerate() {
-        out[v] = anchored[run[i]];
+fn masked_stretches(stretches: &[u64; 256], keep: u8) -> [u64; 256] {
+    let mut out = [0; 256];
+    for (v, &m) in stretches.iter().enumerate() {
+        out[v & usize::from(keep)] |= m;
     }
     out
 }
 
-/// Values `other` shows that `reference` never does, counted as new: what they score and
-/// which they are. `unit` is the smallest step a value takes with ignored bits cleared, and
-/// `coverage` the reference's [`Weight`]: a reference log much shorter than the other may just
-/// not have run into the values.
-fn novelty(
-    reference: &[u32; 256],
-    other: &[u32; 256],
-    other_frames: f64,
-    coverage: f64,
-    unit: usize,
-) -> (f64, Vec<u8>) {
-    let values = distinct(reference, 0xFF);
-    let reach = if values <= STATE_VALUES {
-        [false; 256]
-    } else {
-        within_reach(reference, other, unit * (values / 4).max(2))
+/// How many separate times a value comes up: runs of neighbouring stretches that show it.
+fn episodes(stretches: u64) -> u32 {
+    (stretches & !(stretches << 1)).count_ones()
+}
+
+fn present(values: &[u32; 256]) -> impl DoubleEndedIterator<Item = usize> + '_ {
+    (0..256).filter(|&v| values[v] > 0)
+}
+
+/// How long each log ran, for weighing what one log's frames say about the other.
+#[derive(Debug, Clone, Copy)]
+struct Spans {
+    a: f64,
+    b: f64,
+}
+
+impl Spans {
+    /// How many times as long the reference ran as the other log; 1 when either has no
+    /// duration, as nothing is known then.
+    fn ratio(reference: f64, other: f64) -> f64 {
+        if reference > 0.0 && other > 0.0 {
+            reference / other
+        } else {
+            1.0
+        }
+    }
+
+    /// Graded changes between logs of very different lengths count for less.
+    fn graded(self) -> f64 {
+        let (short, long) = (self.a.min(self.b), self.a.max(self.b));
+        if short > 0.0 {
+            (short / long).sqrt()
+        } else {
+            1.0
+        }
+    }
+}
+
+/// Groups the reference's values into spreads, split at gaps wider than `hole`. A spread
+/// crosses from 255 to 0 only when the reference shows values on both sides of that seam
+/// within `hole`, as a signed byte around 0 does.
+fn spreads(values: &[usize], hole: usize) -> (Vec<Vec<usize>>, bool) {
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for &v in values {
+        match out.last_mut() {
+            Some(s) if v - s[s.len() - 1] <= hole => s.push(v),
+            _ => out.push(vec![v]),
+        }
+    }
+    let wraps = values.len() > 1 && values[0] + 256 - values[values.len() - 1] <= hole;
+    if wraps && out.len() > 1 {
+        let first = out.remove(0);
+        out.last_mut()
+            .expect("more than one spread")
+            .extend(first.into_iter().map(|v| v + 256));
+    }
+    (out, wraps)
+}
+
+/// Values the reference log never shows that its values explain: those in a small hole
+/// between a measurement's values, one step past either end of a spread, and values of
+/// `other` trailing on past a thinning end no further than the reference thins out before it,
+/// as noise around a reading does.
+fn reach(reference: &[u32; 256], other: &[u32; 256], unit: usize) -> [bool; 256] {
+    let mut explained = [false; 256];
+    let values: Vec<usize> = present(reference).collect();
+    if values.len() < MEASURED_VALUES {
+        return explained;
+    }
+    let total: u32 = values.iter().map(|&v| reference[v]).sum();
+    let mean = f64::from(total) / values.len() as f64;
+    let sparse = |p: usize| f64::from(reference[p % 256]) < mean;
+    let hole = HOLE_STEPS * unit;
+    let (spreads, wraps) = spreads(&values, hole);
+    // Outside the byte's range there is nothing to reach, unless the values wrap.
+    let at = |p: isize| -> Option<usize> {
+        if wraps {
+            Some(p.rem_euclid(256) as usize)
+        } else {
+            usize::try_from(p).ok().filter(|&v| v < 256)
+        }
     };
+    for s in &spreads {
+        for pair in s.windows(2) {
+            for p in pair[0] + 1..pair[1] {
+                explained[p % 256] = true;
+            }
+        }
+        let ends = [
+            (
+                s[0] as isize,
+                -1isize,
+                s.iter().take_while(|&&p| sparse(p)).count(),
+            ),
+            (
+                s[s.len() - 1] as isize,
+                1,
+                s.iter().rev().take_while(|&&p| sparse(p)).count(),
+            ),
+        ];
+        for (end, dir, thinning) in ends {
+            if let Some(v) = at(end + dir * unit as isize) {
+                explained[v] = true;
+            }
+            let (mut last, mut p, mut trail) = (end, end + dir, Vec::new());
+            while (p - last).unsigned_abs() <= hole {
+                let Some(v) = at(p) else { break };
+                if reference[v] > 0 {
+                    break;
+                }
+                if other[v] > 0 {
+                    trail.push(v);
+                    last = p;
+                }
+                p += dir;
+            }
+            if (last - end).unsigned_abs() <= thinning * unit {
+                for v in trail {
+                    explained[v] = true;
+                }
+            }
+        }
+    }
+    explained
+}
+
+/// One log's view of a byte, for [`novelty`].
+struct Seen<'a> {
+    values: &'a [u32; 256],
+    stretches: &'a [u64; 256],
+    frames: f64,
+}
+
+/// Values `other` shows that `reference` never does, counted as new: what they score and
+/// which they are. `unit` is the smallest step a value takes with ignored bits cleared,
+/// `ratio` how many times as long the reference ran, and `skip` values log A's own changes
+/// explain. A value is new when the reference's values don't reach it (see [`reach`]). It
+/// scores by how sure it is that the reference would have shown it, had it come up as often
+/// there: up to 75, plus up to 25 as its frames reach a quarter of the other log.
+fn novelty(
+    reference: &Seen<'_>,
+    other: &Seen<'_>,
+    unit: usize,
+    ratio: f64,
+    skip: &[bool; 256],
+) -> (f64, Vec<u8>) {
+    let explained = reach(reference.values, other.values, unit);
     let new: Vec<u8> = (0..=255u8)
         .filter(|&v| {
             let v = usize::from(v);
-            other[v] > 0 && reference[v] == 0 && !reach[v]
+            other.values[v] > 0 && reference.values[v] == 0 && !skip[v] && !explained[v]
         })
         .collect();
-    let frames: u32 = new.iter().map(|&v| other[usize::from(v)]).sum();
-    if frames == 0 || other_frames <= 0.0 {
+    let frames: u32 = new.iter().map(|&v| other.values[usize::from(v)]).sum();
+    if frames == 0 || other.frames <= 0.0 {
         return (0.0, new);
     }
-    let share = f64::from(frames) / other_frames;
-    // How sure it is that the reference would have shown the values, had they been as common
-    // there as they are in the other log.
-    let seen = 1.0 - (-share * f64::from(reference.iter().sum::<u32>())).exp();
-    let score = seen * (QUALITATIVE + (1.0 - QUALITATIVE) * (4.0 * share).min(1.0));
-    (score * coverage, new)
+    let share = f64::from(frames) / other.frames;
+    // Frames of one value come in runs and runs in bursts, so it is how many separate times
+    // a new value comes up, not how many frames carry it, that says whether the reference
+    // would have shown it.
+    let times = new
+        .iter()
+        .map(|&v| episodes(other.stretches[usize::from(v)]))
+        .max()
+        .unwrap_or(0);
+    // A reading comes back to its values as it moves about, so a shorter reference has no
+    // more chances to show one than the share of the time it covers.
+    let reading = present(other.values).count() >= READING_VALUES;
+    let (more, covered) = if reading {
+        (ratio.max(1.0), ratio.min(1.0))
+    } else {
+        (ratio, 1.0)
+    };
+    let expected = (f64::from(times + 1) * more).min(share * reference.frames);
+    let seen = (1.0 - (-expected).exp()) * covered;
+    (
+        seen * (QUALITATIVE + (1.0 - QUALITATIVE) * (4.0 * share).min(1.0)),
+        new,
+    )
 }
 
 /// Bits that tell `new` values apart from the reference's: bits the reference holds steady
@@ -504,9 +627,109 @@ fn telling_bits(reference: &[u32; 256], new: &[u8], keep: u8) -> u8 {
     new.iter().fold(0u8, |m, &v| m | ((v ^ common) & keep))
 }
 
+/// Log A's halves, for the "Ignore IDs that also change within A alone" rule.
+#[derive(Clone, Copy)]
+struct WithinA<'a> {
+    first: &'a ByteProfile,
+    second: &'a ByteProfile,
+}
+
+impl WithinA<'_> {
+    /// Where a drifting log A carries on: it ends at or near one end of the spread of values
+    /// it ends in, on a value only its second half shows. Returns that end, in the positions
+    /// [`spreads`] uses, and the direction, up or down. A one-off value in A, or A ending
+    /// anywhere else, is no drift.
+    fn drift(
+        &self,
+        a: &[u32; 256],
+        end: Option<u8>,
+        keep: u8,
+        hole: usize,
+    ) -> Option<(isize, isize, bool)> {
+        let end = usize::from(end? & keep);
+        if masked(&self.first.values, keep)[end] > 0 {
+            return None;
+        }
+        let values: Vec<usize> = present(a).collect();
+        let (spreads, wraps) = spreads(&values, hole);
+        let spread = spreads.iter().find(|s| s.iter().any(|&p| p % 256 == end))?;
+        let at = spread.iter().position(|&p| p % 256 == end)?;
+        let (lo, hi) = (spread[0], spread[spread.len() - 1]);
+        let p = spread[at];
+        if hi - p <= hole {
+            Some((hi as isize, 1, wraps))
+        } else if p - lo <= hole {
+            Some((lo as isize, -1, wraps))
+        } else {
+            None
+        }
+    }
+
+    /// Values of A and of B that a drifting log A explains. B's values past where A carries
+    /// on are the reading still moving, however far it moved between the logs: from the
+    /// nearest one outwards, through B's values with gaps of at most `hole`. A's own values
+    /// are where the reading has been, which B, another stretch of time, need not show.
+    fn drifted(
+        &self,
+        a: &[u32; 256],
+        b: &[u32; 256],
+        end: Option<u8>,
+        keep: u8,
+        hole: usize,
+    ) -> ([bool; 256], [bool; 256]) {
+        let (mut in_a, mut in_b) = ([false; 256], [false; 256]);
+        let Some((edge, dir, wraps)) = self.drift(a, end, keep, hole) else {
+            return (in_a, in_b);
+        };
+        let mut last: Option<isize> = None;
+        for step in 1..256 {
+            let p = edge + dir * step;
+            let v = if wraps {
+                p.rem_euclid(256) as usize
+            } else if (0..256).contains(&p) {
+                p as usize
+            } else {
+                break;
+            };
+            if a[v] > 0 {
+                break;
+            }
+            if b[v] > 0 {
+                if last.is_some_and(|l| (p - l).unsigned_abs() > hole) {
+                    break;
+                }
+                in_b[v] = true;
+                last = Some(p);
+            }
+        }
+        for v in present(a) {
+            in_a[v] = true;
+        }
+        (in_a, in_b)
+    }
+
+    /// Values of A that log A shows in both halves while its halves differ: A keeps varying
+    /// over them, so B, another stretch of time, may simply not have come to them. A value of
+    /// only one half is an event in A and is kept.
+    fn throughout(&self, keep: u8) -> [bool; 256] {
+        let (first, second) = (
+            masked(&self.first.values, keep),
+            masked(&self.second.values, keep),
+        );
+        let differ = (0..256).any(|v| (first[v] > 0) != (second[v] > 0));
+        std::array::from_fn(|v| differ && first[v] > 0 && second[v] > 0)
+    }
+}
+
 /// How differently one byte behaves in `a` and `b`, over the bits in `keep`. None when either
 /// log has no frame carrying it, or every bit is ignored.
-fn byte_diff(a: &ByteProfile, b: &ByteProfile, keep: u8, weight: Weight) -> Option<ByteDiff> {
+fn byte_diff(
+    a: &ByteProfile,
+    b: &ByteProfile,
+    keep: u8,
+    spans: Spans,
+    within_a: Option<WithinA<'_>>,
+) -> Option<ByteDiff> {
     let (va, vb) = (masked(&a.values, keep), masked(&b.values, keep));
     let (na, nb) = (va.iter().sum::<u32>(), vb.iter().sum::<u32>());
     if keep == 0 || na == 0 || nb == 0 {
@@ -522,7 +745,7 @@ fn byte_diff(a: &ByteProfile, b: &ByteProfile, keep: u8, weight: Weight) -> Opti
             graded_best = (score, reason);
         }
     };
-    let graded = GRADED_MAX * weight.graded;
+    let graded = GRADED_MAX * spans.graded();
     let mut bits = [0.0; 8];
     for (bit, out) in bits.iter_mut().enumerate() {
         if keep >> bit & 1 == 0 {
@@ -545,8 +768,39 @@ fn byte_diff(a: &ByteProfile, b: &ByteProfile, keep: u8, weight: Weight) -> Opti
     }
 
     let unit = 1usize << keep.trailing_zeros();
-    let (new_b, values_b) = novelty(&va, &vb, nb, weight.a, unit);
-    let (new_a, values_a) = novelty(&vb, &va, na, weight.b, unit);
+    let (sa, sb) = (
+        masked_stretches(&a.stretches, keep),
+        masked_stretches(&b.stretches, keep),
+    );
+    let side_a = Seen {
+        values: &va,
+        stretches: &sa,
+        frames: na,
+    };
+    let side_b = Seen {
+        values: &vb,
+        stretches: &sb,
+        frames: nb,
+    };
+    let (skip_b, skip_a) = within_a.map_or(([false; 256], [false; 256]), |w| {
+        let (left, carried) = w.drifted(&va, &vb, a.last, keep, HOLE_STEPS * unit);
+        let throughout = w.throughout(keep);
+        (carried, std::array::from_fn(|v| left[v] || throughout[v]))
+    });
+    let (new_b, values_b) = novelty(
+        &side_a,
+        &side_b,
+        unit,
+        Spans::ratio(spans.a, spans.b),
+        &skip_b,
+    );
+    let (new_a, values_a) = novelty(
+        &side_b,
+        &side_a,
+        unit,
+        Spans::ratio(spans.b, spans.a),
+        &skip_a,
+    );
     for (score, reference, values) in [(new_b, &va, &values_b), (new_a, &vb, &values_a)] {
         if score > 0.0 {
             let telling = telling_bits(reference, values, keep);
@@ -601,12 +855,22 @@ fn rate_score(ratio: f64, frames: u32) -> f64 {
     RATE_WEIGHT * ((up - tolerance) / (2.0 - tolerance)).clamp(0.0, 1.0)
 }
 
-fn components(a: &Profile, b: &Profile, keep: &[u8]) -> Components {
+/// `halves` are log A's two halves, when the within-A rule applies and both have enough
+/// frames.
+fn components(
+    a: &Profile,
+    b: &Profile,
+    keep: &[u8],
+    halves: Option<(&Profile, &Profile)>,
+) -> Components {
     let ratio = match (rate_of(a), rate_of(b)) {
         (Some(ra), Some(rb)) if ra > 0.0 => Some(rb / ra),
         _ => None,
     };
-    let weight = weight_of(a, b);
+    let spans = Spans {
+        a: a.span_s,
+        b: b.span_s,
+    };
     let common = a.bytes.len().min(b.bytes.len());
     let differ = |x: bool| if x { FORMAT_SCORE } else { 0.0 };
     Components {
@@ -616,11 +880,18 @@ fn components(a: &Profile, b: &Profile, keep: &[u8]) -> Components {
         fd: differ((a.fd_frames == 0) != (b.fd_frames == 0)),
         bytes: (0..common)
             .map(|k| {
+                let within_a = halves.and_then(|(first, second)| {
+                    Some(WithinA {
+                        first: first.bytes.get(k)?,
+                        second: second.bytes.get(k)?,
+                    })
+                });
                 byte_diff(
                     &a.bytes[k],
                     &b.bytes[k],
                     keep.get(k).copied().unwrap_or(0xFF),
-                    weight,
+                    spans,
+                    within_a,
                 )
             })
             .collect(),
@@ -642,6 +913,8 @@ struct Verdict {
     byte_scores: Vec<f64>,
     byte_reasons: Vec<ByteReason>,
     too_few: bool,
+    /// Differences the within-A rule left out.
+    within_a: bool,
 }
 
 fn byte_reason_text(byte: usize, reason: ByteReason, score: f64) -> String {
@@ -668,14 +941,36 @@ fn rate_text(ratio: f64) -> String {
     }
 }
 
-fn judge(ab: &Components, a: &Profile, b: &Profile, noise: Option<&Components>) -> Verdict {
+/// Whether two profiles show different payloads: another length, or a byte value one shows
+/// and the other never does.
+fn payloads_differ(a: &Profile, b: &Profile) -> bool {
+    a.max_len != b.max_len
+        || a.bytes.iter().zip(&b.bytes).any(|(x, y)| {
+            (0..256)
+                .any(|v| (x.values[v] > 0) != (y.values[v] > 0) && x.values[v] + y.values[v] > 0)
+        })
+}
+
+/// `raw` is `ab` without what log A's own changes explain, when the within-A rule is on.
+fn judge(
+    ab: &Components,
+    raw: Option<&Components>,
+    a: &Profile,
+    b: &Profile,
+    noise: Option<&Components>,
+) -> Verdict {
     if a.frames < MIN_FRAMES || b.frames < MIN_FRAMES {
         return Verdict {
             score: 0.0,
-            reason: TOO_FEW_FRAMES.to_owned(),
+            reason: if payloads_differ(a, b) {
+                format!("{TOO_FEW_FRAMES}; payloads differ")
+            } else {
+                TOO_FEW_FRAMES.to_owned()
+            },
             byte_scores: vec![0.0; ab.bytes.len()],
             byte_reasons: vec![ByteReason::Shift; ab.bytes.len()],
             too_few: true,
+            within_a: false,
         };
     }
     let less = |score: f64, baseline: Option<f64>| (score - baseline.unwrap_or(0.0)).max(0.0);
@@ -704,7 +999,12 @@ fn judge(ab: &Components, a: &Profile, b: &Profile, noise: Option<&Components>) 
     };
     for (k, d) in ab.bytes.iter().enumerate() {
         if let (Some(d), Some((score, reason))) = (d, adjusted[k]) {
-            consider(d.best().0, score, Finding::Byte(k, reason));
+            let unadjusted = raw
+                .and_then(|r| r.bytes.get(k)?.as_ref())
+                .unwrap_or(d)
+                .best()
+                .0;
+            consider(unadjusted, score, Finding::Byte(k, reason));
         }
     }
     consider(
@@ -725,6 +1025,8 @@ fn judge(ab: &Components, a: &Profile, b: &Profile, noise: Option<&Components>) 
         );
     }
 
+    let within_a =
+        raw.is_some() && raw_best >= SIGNIFICANT && best.is_none_or(|(s, _)| s < SIGNIFICANT);
     let (score, reason) = match best {
         Some((score, finding)) if score >= SIGNIFICANT => (
             score,
@@ -738,7 +1040,7 @@ fn judge(ab: &Components, a: &Profile, b: &Profile, noise: Option<&Components>) 
         ),
         best => (
             best.map_or(0.0, |(s, _)| s),
-            if noise.is_some() && raw_best >= SIGNIFICANT {
+            if within_a {
                 "Also changes within A".to_owned()
             } else {
                 "No significant changes".to_owned()
@@ -751,6 +1053,7 @@ fn judge(ab: &Components, a: &Profile, b: &Profile, noise: Option<&Components>) 
         byte_scores,
         byte_reasons,
         too_few: false,
+        within_a,
     }
 }
 
@@ -793,6 +1096,8 @@ struct Analysis {
     ignored: Vec<Ignored>,
     keep: Vec<u8>,
     ab: Option<Components>,
+    /// `ab` before the within-A rule, when it applies.
+    raw: Option<Components>,
     noise: Option<Components>,
 }
 
@@ -822,42 +1127,53 @@ fn analyse(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options) -> Analys
             keep[k] = !(counter | checksum);
         }
     }
-    let ab = match (&pa, &pb) {
-        (Some(pa), Some(pb)) => Some(components(pa, pb, &keep)),
-        _ => None,
-    };
-    let noise = match (a, &ab) {
-        (Some(a), Some(_)) if options.ignore_changes_within_a => {
-            let (early, late) = halves(a, len);
-            Some(components(&early, &late, &keep))
+    // An ID that starts or stops halfway through A says nothing about how A varies.
+    let halves = match (a, &pa, &pb) {
+        (Some(a), Some(_), Some(_)) if options.ignore_changes_within_a => {
+            Some(halves(a, len)).filter(|(early, late)| early.frames.min(late.frames) >= MIN_FRAMES)
         }
         _ => None,
     };
+    let (mut ab, mut raw, mut noise) = (None, None, None);
+    if let (Some(pa), Some(pb)) = (&pa, &pb) {
+        match &halves {
+            Some((early, late)) => {
+                ab = Some(components(pa, pb, &keep, Some((early, late))));
+                raw = Some(components(pa, pb, &keep, None));
+                noise = Some(components(early, late, &keep, None));
+            }
+            None => ab = Some(components(pa, pb, &keep, None)),
+        }
+    }
     Analysis {
         a: pa,
         b: pb,
         ignored,
         keep,
         ab,
+        raw,
         noise,
     }
 }
 
-/// Channels of `store` that carry data frames, not just error frames, in order.
+/// Channels of `store` that carry data frames, not just error frames, in order of name.
 fn data_buses(store: &FrameStore) -> Vec<usize> {
-    (0..store.channels().len())
+    let mut buses: Vec<usize> = (0..store.channels().len())
         .filter(|&c| {
             store
                 .ids()
                 .iter()
                 .any(|s| usize::from(s.channel) == c && s.id & ERR_FLAG == 0)
         })
-        .collect()
+        .collect();
+    buses.sort_by(|&x, &y| store.channels()[x].cmp(&store.channels()[y]));
+    buses
 }
 
 /// What each of B's channels is called for matching: its own name, unless the logs carry data
 /// on as many buses as each other and share no bus name, as when another tool names them
-/// `vcan0` rather than `can0`. Then B's buses take A's names in order.
+/// `vcan0` rather than `can0`. Then B's buses take A's names in order of name, so `vcan0`
+/// is `can0` and `vcan1` is `can1` whichever bus the logger saw first.
 fn b_bus_names(a: &FrameStore, b: &FrameStore) -> Vec<String> {
     let mut names = b.channels().to_vec();
     let (on_a, on_b) = (data_buses(a), data_buses(b));
@@ -895,16 +1211,28 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
         .map(|((bus, id), (sa, sb))| {
             let side_a = sa.map(|stats| Side { store: a, stats });
             let side_b = sb.map(|stats| Side { store: b, stats });
-            let (presence, score, reason, bytes) = match (side_a, side_b) {
-                (Some(_), None) => (Presence::OnlyA, 100, "Appears only in A".to_owned(), vec![]),
-                (None, Some(_)) => (Presence::OnlyB, 100, "Appears only in B".to_owned(), vec![]),
+            let (presence, score, reason, bytes, flags) = match (side_a, side_b) {
+                (Some(_), None) => (
+                    Presence::OnlyA,
+                    100,
+                    "Appears only in A".to_owned(),
+                    vec![],
+                    (false, false),
+                ),
+                (None, Some(_)) => (
+                    Presence::OnlyB,
+                    100,
+                    "Appears only in B".to_owned(),
+                    vec![],
+                    (false, false),
+                ),
                 _ => {
                     let analysis = analyse(side_a, side_b, options);
                     let (Some(pa), Some(pb), Some(ab)) = (&analysis.a, &analysis.b, &analysis.ab)
                     else {
                         unreachable!("both sides are present");
                     };
-                    let verdict = judge(ab, pa, pb, analysis.noise.as_ref());
+                    let verdict = judge(ab, analysis.raw.as_ref(), pa, pb, analysis.noise.as_ref());
                     let mut bytes: Vec<(usize, f64)> = verdict
                         .byte_scores
                         .iter()
@@ -918,6 +1246,7 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                         percent(verdict.score),
                         verdict.reason,
                         bytes.into_iter().map(|(k, _)| k).collect(),
+                        (verdict.too_few, verdict.within_a),
                     )
                 }
             };
@@ -939,6 +1268,8 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                 score,
                 reason,
                 bytes,
+                too_few_frames: flags.0,
+                changes_within_a: flags.1,
             }
         })
         .collect();
@@ -966,7 +1297,7 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
     let mut byte_reasons = vec![String::new(); len];
     let mut new_values = vec![Vec::new(); len];
     if let (Some(pa), Some(pb), Some(ab)) = (&analysis.a, &analysis.b, &analysis.ab) {
-        let verdict = judge(ab, pa, pb, analysis.noise.as_ref());
+        let verdict = judge(ab, analysis.raw.as_ref(), pa, pb, analysis.noise.as_ref());
         for (k, d) in ab.bytes.iter().enumerate() {
             let Some(d) = d else { continue };
             let score = verdict.byte_scores[k];
@@ -1016,7 +1347,8 @@ impl Session {
     /// Push its bytes with [`Session::compare_push_chunk`] and end with
     /// [`Session::compare_finish`]. Log B may take what the open log leaves of
     /// [`COMPARE_MEMORY_BUDGET`]; a file likely to need more is refused once its format is
-    /// known, with an error from the next call.
+    /// known, and one that turns out to need more once it does, with an error from the next
+    /// call.
     pub fn compare_begin(&mut self, name: &str, total_bytes: f64) {
         self.log_b = None;
         let mut log = LogB::default();
@@ -1030,6 +1362,7 @@ impl Session {
         if let Some(log) = &mut self.log_b {
             log.input.push(chunk, &mut log.store);
             if log.input.refused {
+                log.store = FrameStore::default();
                 return Err(js_err(too_large(&log.input.file_name)));
             }
         }
@@ -1245,7 +1578,7 @@ mod tests {
         assert_eq!(body.presence, Presence::Both);
         assert_eq!(body.reason, "Byte 3 takes new values");
         assert_eq!(body.bytes, vec![3]);
-        assert!(body.score >= 90, "{}", body.score);
+        assert!(body.score >= 85, "{}", body.score);
         let near_10 = |rate: Option<f64>| rate.is_some_and(|r| (r - 10.0).abs() < 0.1);
         assert!(near_10(body.rate_a) && near_10(body.rate_b));
 
@@ -1270,7 +1603,7 @@ mod tests {
         }));
         let body = &compare_logs(&a, &b, NO_RULES)[0];
         assert_eq!(body.reason, "Byte 5 takes new values");
-        assert!(body.score >= 75);
+        assert!(body.score >= 60, "{body:?}");
     }
 
     #[test]
@@ -1664,12 +1997,13 @@ mod tests {
     fn a_reading_drifting_on_scores_low() {
         let a = store(&periodic(0x3E9, 20.0, 180.0, rising(0.0)));
         let b = store(&periodic(0x3E9, 20.0, 180.0, rising(180.0)));
+        // On its own, a reading that has moved on shows values A never does.
         let raw = &compare_logs(&a, &b, NO_RULES)[0];
-        assert!(raw.score <= 50, "{raw:?}");
-        assert!(!raw.reason.contains("new values"), "{raw:?}");
+        assert_eq!(raw.reason, "Byte 2 takes new values", "{raw:?}");
         let found = &compare_logs(&a, &b, DEFAULTS)[0];
         assert!(found.score < 10, "{found:?}");
         assert_eq!(found.reason, "Also changes within A");
+        assert!(found.changes_within_a);
     }
 
     #[test]
@@ -1698,8 +2032,9 @@ mod tests {
         let found = &compare_logs(&a, &b, NO_RULES)[0];
         assert_eq!(
             (found.score, found.reason.as_str()),
-            (0, "Too few frames to compare")
+            (0, "Too few frames to compare; payloads differ")
         );
+        assert!(found.too_few_frames);
         assert!(found.bytes.is_empty());
         let detail = compare_bytes(first_id(&a), first_id(&b), NO_RULES);
         assert_eq!(detail.byte_reasons, vec!["Too few frames to compare"]);
@@ -1727,13 +2062,14 @@ mod tests {
         let (a, b) = (drive(0.0, None), drive(180.0, Some(60.0)));
         for options in [COUNTERS_ONLY, DEFAULTS] {
             let found = compare_logs(&a, &b, options);
-            assert_eq!(found[0].id, 0x450, "{options:?}: {found:?}");
-            assert_eq!(found[0].reason, "Byte 3 takes new values");
-            assert!(found[0].score >= 75, "{:?}", found[0]);
-            assert!(
-                found[1].score + 25 <= found[0].score,
-                "{options:?}: {found:?}"
-            );
+            let lock = find(&found, 0x450);
+            assert_eq!(lock.reason, "Byte 3 takes new values");
+            assert!(lock.score >= 60, "{lock:?}");
+            if options.ignore_changes_within_a {
+                // Without the rule the drifting readings show values A never does too.
+                assert_eq!(found[0].id, 0x450, "{found:?}");
+                assert!(found[1].score + 25 <= found[0].score, "{found:?}");
+            }
         }
         let detail = compare_bytes(
             Some(Side {
@@ -1824,6 +2160,13 @@ mod tests {
             ("can0", Some("vcan0"))
         );
 
+        // Buses pair by name, whichever one a log happens to show first.
+        let mut can1_first = frames.clone();
+        can1_first.reverse();
+        let found = compare_logs(&a, &store(&on(can1_first, ["vcan0", "vcan1"])), DEFAULTS);
+        assert_eq!(find(&found, 0x100).bus_b.as_deref(), Some("vcan0"));
+        assert!(found.iter().all(|c| c.score == 0), "{found:?}");
+
         // One bus name in common: names are taken as they are.
         let c = store(&on(frames, ["can0", "vcan1"]));
         let found = compare_logs(&a, &c, DEFAULTS);
@@ -1877,6 +2220,22 @@ mod tests {
         assert!(input.refused);
         assert!(store.is_empty());
 
+        // A file that holds more than its size suggested is refused once it has.
+        let mut input = LogInput {
+            file_name: "short.log".to_owned(),
+            total_bytes: 0.0,
+            limit: Some(256 << 10),
+            ..LogInput::default()
+        };
+        let mut store = FrameStore::new();
+        let chunk = candump(100, 10, "0C9").repeat(50);
+        input.push(chunk.as_bytes(), &mut store);
+        assert!(!input.refused);
+        while !input.refused {
+            input.push(chunk.as_bytes(), &mut store);
+            assert!(store.len() < 10_000, "never refused");
+        }
+
         // The same log fits when it is small.
         let mut session = session();
         let log = candump(200, 1, "123");
@@ -1917,5 +2276,114 @@ mod tests {
             compare_logs(&a, &ramp16(0x120, 0x140), options);
             compare_bytes(first_id(&a), first_id(&a), options);
         }
+    }
+
+    /// Byte 0 stepping through `values`, `period` seconds each, for a minute at 10 Hz, and
+    /// holding `event` from `at` seconds for `seconds`.
+    fn stepping(values: &'static [u8], period: f64, event: Option<(u8, f64, f64)>) -> FrameStore {
+        store(&periodic(0x101, 10.0, 60.0, move |_, t| {
+            let v = match event {
+                Some((v, at, seconds)) if (at..at + seconds).contains(&t) => v,
+                _ => values[(t / period) as usize % values.len()],
+            };
+            vec![v, 0, 0, 0, 0, 0, 0, 0]
+        }))
+    }
+
+    #[test]
+    fn a_new_state_counts_however_close_to_the_old_ones() {
+        let cases: [(&'static [u8], f64, u8); 6] = [
+            (&[0, 1, 2], 5.0, 4),
+            (&[0, 1, 2, 3], 5.0, 4),
+            (&[0, 1, 2, 3], 5.0, 5),
+            (&[1, 2, 3, 4, 5, 6], 4.0, 7),
+            (&[0, 1, 2, 3, 4, 5], 3.0, 0xFF),
+            (&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 2.0, 0xFE),
+        ];
+        for (values, period, new) in cases {
+            let a = stepping(values, period, None);
+            let b = stepping(values, period, Some((new, 30.0, 2.0)));
+            for options in [NO_RULES, DEFAULTS] {
+                assert_eq!(compare_logs(&a, &a, options)[0].score, 0);
+                let found = &compare_logs(&a, &b, options)[0];
+                assert!(found.score >= 60, "{values:?} then {new}: {found:?}");
+                assert_eq!(found.reason, "Byte 0 takes new values");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sweep_past_a_reading_counts() {
+        let a = stepping(&[10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], 1.0, None);
+        let b = store(&periodic(0x101, 10.0, 60.0, |i, t| {
+            let v = if (30.0..39.0).contains(&t) {
+                22 + 2 * (i - 300) as u8
+            } else {
+                10 + (t as u8) % 11
+            };
+            vec![v, 0, 0, 0, 0, 0, 0, 0]
+        }));
+        for options in [NO_RULES, DEFAULTS] {
+            let found = &compare_logs(&a, &b, options)[0];
+            assert!(found.score >= 60, "{found:?}");
+        }
+    }
+
+    #[test]
+    fn an_event_in_a_alone_is_kept_by_the_within_a_rule() {
+        let clean = stepping(&[0], 1.0, None);
+        for at in [10.0, 45.0] {
+            let a = stepping(&[0], 1.0, Some((1, at, 2.0)));
+            let found = &compare_logs(&a, &clean, DEFAULTS)[0];
+            assert!(found.score >= 60, "{found:?}");
+            assert_eq!(found.reason, "Byte 0 has values only in A");
+            assert!(!found.changes_within_a);
+        }
+
+        // A's own event does not hide a different one in B.
+        let a = stepping(&[0], 1.0, Some((1, 45.0, 2.0)));
+        let b = stepping(&[0], 1.0, Some((2, 30.0, 2.0)));
+        let found = &compare_logs(&a, &b, DEFAULTS)[0];
+        assert!(found.score >= 60, "{found:?}");
+    }
+
+    #[test]
+    fn a_short_log_a_still_shows_an_event_in_b() {
+        let b = store(&periodic(0x200, 10.0, 60.0, |_, t| {
+            vec![u8::from((30.0..31.0).contains(&t))]
+        }));
+        let mut last = 100;
+        for seconds in [60.0, 30.0, 10.0] {
+            let a = store(&periodic(0x200, 10.0, seconds, |_, _| vec![0]));
+            let found = &compare_logs(&a, &b, DEFAULTS)[0];
+            assert!(
+                found.score >= 10 && found.score <= last,
+                "{seconds} s: {found:?}"
+            );
+            last = found.score;
+        }
+
+        // Nothing is known of how long a log with no duration ran, so it is taken to have run
+        // as long as log B: its 50 frames make it count for more than 10 s of A.
+        let timeless = store(&vec![(0.0, "can0", 0x200, vec![0]); 50]);
+        let found = &compare_logs(&timeless, &b, DEFAULTS)[0];
+        assert!(found.score > last, "{found:?}");
+        assert_eq!(found.reason, "Byte 0 takes new values");
+    }
+
+    #[test]
+    fn an_id_that_starts_late_in_a_keeps_its_length_change() {
+        let mut a = periodic(0x100, 10.0, 60.0, quiet);
+        a.extend(
+            periodic(0x10F, 10.0, 20.0, |_, _| vec![0; 8])
+                .into_iter()
+                .map(|(t, bus, id, p)| (t + 40.0, bus, id, p)),
+        );
+        let mut b = periodic(0x100, 10.0, 60.0, quiet);
+        b.extend(periodic(0x10F, 10.0, 60.0, |_, _| vec![0; 6]));
+        let found = compare_logs(&store(&a), &store(&b), DEFAULTS);
+        let late = find(&found, 0x10F);
+        assert_eq!(late.reason, "Length changes from 8 to 6 bytes");
+        assert_eq!(late.score, 90);
     }
 }

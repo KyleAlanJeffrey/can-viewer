@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { formatId, type CompareOptions, type IdComparison } from '../../core/api';
 import { useViewState } from '../shared/viewState';
 import { IgnoreRules } from './IgnoreRules';
-import { GROUPS, SHOW_OPTIONS, formatRate, groupOf, matchesQuery, rowKey, SIGNIFICANT, type GroupId, type Show } from './findings';
+import { GROUPS, SHOW_OPTIONS, formatRate, groupOf, matchesQuery, rowKey, SIGNIFICANT, withinANote, type GroupId, type Show } from './findings';
 
 interface Props {
   /** Null while the comparison runs. */
@@ -67,11 +67,18 @@ export function CompareTable({ results, show, query, selected, onSelect, onOpen,
   };
 
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  const noneDifferent = !!results && !results.some((c) => groupOf(c) === 'different');
+  const hiddenWithinA = noneDifferent ? withinANote(results) : null;
   let body: ReactNode;
   if (results === null) {
     body = <EmptyRow>Comparing the logs&hellip;</EmptyRow>;
   } else if (total === 0) {
-    body = <EmptyRow>{query.trim() ? 'No IDs or names match.' : 'No IDs to show here.'}</EmptyRow>;
+    body = (
+      <EmptyRow>
+        {query.trim() ? 'No IDs or names match.' : 'No IDs to show here.'}
+        {hiddenWithinA && ` ${hiddenWithinA}`}
+      </EmptyRow>
+    );
   } else {
     body = groups.map((g) =>
       g.rows.length === 0 ? null : (
@@ -132,6 +139,7 @@ export function CompareTable({ results, show, query, selected, onSelect, onOpen,
         </h2>
         <p className="cmp-note">Rates are frames per second of each log, so logs of different lengths compare.</p>
         {busNote && <p className="cmp-note">{busNote}</p>}
+        {hiddenWithinA && total > 0 && <p className="cmp-note">{hiddenWithinA}</p>}
       </div>
       <div className="cmp-table-scroll">
         <table>

@@ -37,6 +37,8 @@ function comparison(id: number, fields: Partial<IdComparison> = {}): IdCompariso
     score: 0,
     reason: 'No significant changes',
     bytes: [],
+    tooFewFrames: false,
+    changesWithinA: false,
     ...fields,
   };
 }
@@ -324,6 +326,22 @@ describe('logs that look the same', () => {
     const sheet = screen.getByRole('dialog', { name: 'Ignore Rules' });
     await user.click(within(sheet).getByRole('checkbox', { name: /^Ignore counters and checksums/ }));
     await waitFor(() => expect(compareLogs).toHaveBeenLastCalledWith({ ignoreCounters: false, ignoreChangesWithinA: true }));
+  });
+
+  it('says how many IDs the within-A rule left out', async () => {
+    const drifting = comparison(0x3e9, { score: 1, reason: 'Also changes within A', changesWithinA: true });
+    renderInShell(CompareView, { core: compareCore([steady, drifting]) });
+    expect(await screen.findByRole('heading', { name: 'These logs look the same' })).toBeTruthy();
+    expect(screen.getByText('1 ID changes within A; turn off the rule to see it.')).toBeTruthy();
+  });
+
+  it('leaves IDs with too few frames to their own group', async () => {
+    const few = comparison(0x5a0, { framesA: 3, framesB: 6, tooFewFrames: true, reason: 'Too few frames to compare; payloads differ' });
+    const { user } = renderInShell(CompareView, { core: compareCore([body, few]) });
+    expect(await screen.findByRole('button', { name: 'Too few frames to compare(1)' })).toBeTruthy();
+    expect(screen.getByRole('row', { name: /^5A0 / })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /Too few frames to compare/ }));
+    expect(screen.queryByRole('row', { name: /^5A0 / })).toBeNull();
   });
 });
 

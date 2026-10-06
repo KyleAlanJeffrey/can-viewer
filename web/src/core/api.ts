@@ -284,7 +284,7 @@ export interface IdComparison {
   bus: string;
   /**
    * Log B's name for the bus, or null when the ID is only in A. It differs from `bus` when the
-   * logs share no bus name and their buses were matched by order.
+   * logs share no bus name and their buses were matched in order of name.
    */
   busB: string | null;
   /** ID without the extended flag. */
@@ -308,6 +308,10 @@ export interface IdComparison {
   reason: string;
   /** Payload bytes that differ, most different first. */
   bytes: number[];
+  /** Either log has fewer than 8 frames of the ID, so it is not scored. */
+  tooFewFrames: boolean;
+  /** The ID differs, but `ignoreChangesWithinA` left every difference out as a change within log A. */
+  changesWithinA: boolean;
 }
 
 /** Bits the ignore rules left out of a comparison. */

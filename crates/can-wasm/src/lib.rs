@@ -172,6 +172,11 @@ impl LogInput {
                 }
             }
         }
+        // A file can hold more frames than its size suggested.
+        if self.limit.is_some_and(|limit| store.heap_bytes() > limit) {
+            self.refused = true;
+            self.parser = None;
+        }
     }
 
     fn choose_parser(&mut self, store: &mut FrameStore) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { IdComparison } from '../../core/api';
 import { logInfo } from '../../test/fixtures';
-import { bitList, busesMatchedByOrder, findingsCsv, formatRate, groupOf, looksTheSame, matchesQuery, rowKey, stem } from './findings';
+import { bitList, busesMatchedByOrder, findingsCsv, formatRate, groupOf, looksTheSame, matchesQuery, rowKey, stem, withinANote } from './findings';
 
 function comparison(fields: Partial<IdComparison> = {}): IdComparison {
   return {
@@ -20,6 +20,8 @@ function comparison(fields: Partial<IdComparison> = {}): IdComparison {
     score: 0,
     reason: 'No significant changes',
     bytes: [],
+    tooFewFrames: false,
+    changesWithinA: false,
     ...fields,
   };
 }
@@ -32,10 +34,29 @@ describe('groupOf', () => {
     expect(groupOf(comparison({ presence: 'onlyB', score: 100 }))).toBe('onlyB');
   });
 
+  it('keeps IDs with too few frames apart', () => {
+    expect(groupOf(comparison({ tooFewFrames: true, reason: 'Too few frames to compare' }))).toBe('tooFew');
+  });
+
   it('calls the logs the same only when no ID differs', () => {
     expect(looksTheSame([comparison(), comparison({ id: 0x451, score: 5 })])).toBe(true);
     expect(looksTheSame([comparison(), comparison({ presence: 'onlyB', score: 100 })])).toBe(false);
     expect(looksTheSame([])).toBe(false);
+  });
+
+  it('lets IDs with too few frames say nothing either way', () => {
+    const tooFew = comparison({ id: 0x5a0, tooFewFrames: true, reason: 'Too few frames to compare; payloads differ' });
+    expect(looksTheSame([comparison(), tooFew])).toBe(true);
+    expect(looksTheSame([tooFew])).toBe(false);
+  });
+});
+
+describe('withinANote', () => {
+  it('counts the IDs the within-A rule left out', () => {
+    const left = comparison({ score: 2, reason: 'Also changes within A', changesWithinA: true });
+    expect(withinANote([comparison()])).toBeNull();
+    expect(withinANote([left, comparison()])).toBe('1 ID changes within A; turn off the rule to see it.');
+    expect(withinANote([left, { ...left, id: 0x451 }])).toBe('2 IDs change within A; turn off the rule to see them.');
   });
 });
 

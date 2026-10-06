@@ -371,7 +371,8 @@ h3 {
   color: var(--slate);
 }
 
-.privacy-line {
+.privacy-line,
+.hero-note {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -380,10 +381,20 @@ h3 {
   line-height: 22px;
 }
 
-.privacy-line svg {
+.privacy-line svg,
+.hero-note svg {
   flex: none;
   margin-top: 3px;
   color: var(--graphite);
+}
+
+.hero-note a {
+  white-space: nowrap;
+}
+
+.hero-notes {
+  display: grid;
+  gap: 8px;
 }
 
 /* Product illustration: a static, simplified drawing of the Trace view with the demo log. */
@@ -938,6 +949,49 @@ h3 {
   background: var(--heat-6);
 }
 
+/* Live capture */
+
+.section-head h2 .tag {
+  margin-left: 8px;
+}
+
+.capture-feature .feature-copy h3:not(:first-child) {
+  margin-top: 12px;
+}
+
+.capture-visual {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.capture-visual img {
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+}
+
+.capture-visual figcaption {
+  color: var(--slate);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.capture-needs {
+  margin-top: 24px;
+  padding: 24px 32px;
+}
+
+.capture-needs ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 40px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
 /* Content pages */
 
 .page-hero {
@@ -1175,6 +1229,14 @@ h3 {
 
   .faq {
     padding: 8px 24px;
+  }
+
+  .capture-needs {
+    padding: 24px;
+  }
+
+  .capture-needs ul {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .footer-grid {

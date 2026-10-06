@@ -9,7 +9,7 @@ import { ByteStrip } from './ByteStrip';
 import { References, type Candidate } from './References';
 import { SignalForm, initialForm, parseRange, parseScale, useCandidateForms, type AddedSignal, type FormState } from './SignalForm';
 import { ChunkBoundary } from '../../components/ChunkBoundary';
-import { KIND_LABELS, bitOwners, shownSuggestions, type ShownSuggestion } from './suggestionList';
+import { KIND_LABELS, bitOwners, shownSuggestions, suggestionForm, suggestionPin, type ShownSuggestion } from './suggestionList';
 import { WindowStrip } from './WindowStrip';
 import {
   coveringRange,
@@ -17,7 +17,6 @@ import {
   errorText,
   formatSeconds,
   layoutString,
-  plainNumber,
   rangeBits,
   rectBits,
   useDebounced,
@@ -61,6 +60,9 @@ interface Props {
   onTogglePin: (pin: Pin) => void;
   /** The parked cursor, or null. */
   parked: number | null;
+  /** Focus the form's name, as after an Accept in Byte Values put a suggestion in it. */
+  focusName: boolean;
+  onNameFocused: () => void;
 }
 
 interface Activity {
@@ -85,7 +87,7 @@ interface CandidateView {
  */
 export function Workspace(props: Props) {
   const { ctx, summary, message, window: win, onWindowChange, references, cursor, onHover, onPark, onUnpin, onPinSignal, baseline } = props;
-  const { discovery, unknown, pins, onTogglePin, parked } = props;
+  const { discovery, unknown, pins, onTogglePin, parked, focusName, onNameFocused } = props;
   const { core, logVersion, log } = ctx;
   const duration = log?.durationS ?? 0;
   const bytes = summary.maxLen;
@@ -264,39 +266,24 @@ export function Workspace(props: Props) {
       });
   }, [listed, dismissed]);
   const selectedSuggestion = range ? (shown.find((s) => sameBits(s.suggestion.spec, range) && samePage(s.suggestion.spec.mux, mux))?.id ?? null) : null;
-  const plotPin = (s: ShownSuggestion): Pin => ({
-    kind: 'range',
-    key: summary.key,
-    spec: s.suggestion.spec,
-    label: `Suggested ${KIND_LABELS[s.suggestion.kind].toLowerCase()}`,
-    unit: s.suggestion.fit?.unit ?? '',
-  });
   const pinned = new Set(pins.map(pinId));
-  const plotted = new Set(shown.filter((s) => pinned.has(pinId(plotPin(s)))).map((s) => s.id));
+  const plotted = new Set(shown.filter((s) => pinned.has(pinId(suggestionPin(summary.key, s)))).map((s) => s.id));
 
-  const selectSuggestion = (s: ShownSuggestion, extra: Partial<FormState> = {}) => {
-    const { spec, fit } = s.suggestion;
-    patch({
-      startBit: String(spec.startBit),
-      size: String(spec.size),
-      byteOrder: spec.byteOrder,
-      signed: spec.signed,
-      float: !!spec.float,
-      multiplexor: s.suggestion.kind === 'multiplexor',
-      mux: spec.mux ?? null,
-      fromGrid: false,
-      limits: null,
-      ...(fit && { factor: plainNumber(spec.factor), offset: plainNumber(spec.offset), unit: fit.unit }),
-      ...extra,
-    });
-  };
-  const acceptSuggestion = (s: ShownSuggestion, name: string) => {
-    selectSuggestion(s, { name });
+  const selectSuggestion = (s: ShownSuggestion, extra: Partial<FormState> = {}) => patch({ ...suggestionForm(s.suggestion), ...extra });
+  const focusNameField = () =>
     requestAnimationFrame(() => {
       nameRef.current?.focus();
       nameRef.current?.select();
     });
+  const acceptSuggestion = (s: ShownSuggestion, name: string) => {
+    selectSuggestion(s, { name });
+    focusNameField();
   };
+  useEffect(() => {
+    if (!focusName) return;
+    focusNameField();
+    onNameFocused();
+  }, [focusName, onNameFocused]);
   // Whatever way its bits got into the form, a suggestion added to a DBC counts as accepted.
   const onAdded = (added: AddedSignal) => {
     const match = shown.find((s) => sameBits(s.suggestion.spec, added.signal) && (s.suggestion.spec.mux?.value ?? null) === added.signal.muxValue);
@@ -435,7 +422,7 @@ export function Workspace(props: Props) {
                 onAccept={acceptSuggestion}
                 onUndone={() => setFormEpoch((n) => n + 1)}
                 plotted={plotted}
-                onPlot={(s) => onTogglePin(plotPin(s))}
+                onPlot={(s) => onTogglePin(suggestionPin(summary.key, s))}
                 parked={parked}
               />
             </Suspense>

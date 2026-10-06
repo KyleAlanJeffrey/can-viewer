@@ -4,8 +4,8 @@ import { formatId, type IdSummary, type MessageDef, type SignalDef, type Suggest
 import { formatCount } from '../../format';
 import type { ViewContext } from '../types';
 import { Sparkline } from './Sparkline';
-import { layoutString, plainNumber, rangeBits } from './bits';
-import { KIND_LABELS, shownSuggestions, type ShownSuggestion } from './suggestionList';
+import { plainNumber } from './bits';
+import { KIND_LABELS, describeBits, shownSuggestions, type ShownSuggestion } from './suggestionList';
 import './suggestions.css';
 import type { Discovery, MessageHints } from './useDiscovery';
 
@@ -17,25 +17,26 @@ const MAX_BITS = 512;
 
 /** Where its bits are, such as `bits 16-31 \u00b7 Motorola \u00b7 unsigned`. */
 export function describePlace(s: Suggestion): string {
-  const bits = rangeBits(s.spec);
-  const lo = Math.min(...bits);
-  const hi = Math.max(...bits);
-  const where = bits.length === 1 ? `bit ${lo}` : hi - lo + 1 === bits.length ? `bits ${lo}-${hi}` : layoutString(s.spec, s.spec.signed);
   const reading = s.spec.float ? 'float' : s.spec.signed ? 'signed' : 'unsigned';
   const page = s.spec.mux ? ` \u00b7 page m${s.spec.mux.value}` : '';
-  return `${where} \u00b7 ${s.spec.byteOrder === 'intel' ? 'Intel' : 'Motorola'} \u00b7 ${reading}${page}`;
+  return `${describeBits(s.spec)} \u00b7 ${s.spec.byteOrder === 'intel' ? 'Intel' : 'Motorola'} \u00b7 ${reading}${page}`;
 }
 
 /** The unknown message other than `current` with the most likely suggestions. */
-function mostPromising(discovery: Discovery, unknown: IdSummary[], current: number): IdSummary | null {
+function mostPromising(discovery: Discovery, unknown: IdSummary[], current: number | null): IdSummary | null {
   let best: IdSummary | null = null;
   let bestScore = 0;
   for (const s of unknown) {
     if (s.key === current) continue;
-    const score = (discovery.results[s.key]?.suggestions ?? []).reduce((n, x) => n + (x.level === 'high' ? 10 : 0) + x.confidence, 0);
+    const score = promise(discovery, s.key);
     if (score > bestScore) [best, bestScore] = [s, score];
   }
   return best;
+}
+
+/** How likely a message's suggestions are, for ranking messages against each other. */
+export function promise(discovery: Pick<Discovery, 'results'>, key: number): number {
+  return (discovery.results[key]?.suggestions ?? []).reduce((n, x) => n + (x.level === 'high' ? 10 : 0) + x.confidence, 0);
 }
 
 const NAME_STEMS: Record<Suggestion['kind'], string> = {
@@ -50,7 +51,7 @@ const NAME_STEMS: Record<Suggestion['kind'], string> = {
 };
 
 /** `Counter`, or `Value_16` for kinds a message often has several of, made unique in `message`. */
-function suggestedName(s: ShownSuggestion, message: MessageDef | null): string {
+export function suggestedName(s: ShownSuggestion, message: MessageDef | null): string {
   const { kind } = s.suggestion;
   const page = s.suggestion.spec.mux ? `_m${s.suggestion.spec.mux.value}` : '';
   const base = kind === 'counter' || kind === 'checksum' || kind === 'multiplexor' ? NAME_STEMS[kind] : `${NAME_STEMS[kind]}_${Math.min(...s.bits)}${page}`;
@@ -79,7 +80,7 @@ export function isAcceptedSignal(signal: SignalDef, id: string, name: string): b
  * Takes an accepted suggestion's signal out of its DBC again, and the message or DBC the add
  * created once empty.
  */
-function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndone: () => void) {
+export function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndone: () => void) {
   const accepted = discovery.accepted[id];
   if (!accepted) return;
   void ctx.run(`Removing ${accepted.signal}\u2026`, async () => {
@@ -169,20 +170,7 @@ export function Suggestions(props: Props) {
   const hintRef = useRef<HTMLInputElement>(null);
   const ids = useId();
 
-  const unknownKeys = useMemo(() => new Set(unknown.map((s) => s.key)), [unknown]);
-  // Over every message scanned, which includes one that stopped being unknown on an Accept, and
-  // as listed: without those dismissed or over bits a DBC describes.
-  let total = 0;
-  let messages = 0;
-  for (const found of Object.values(discovery.results)) {
-    const n = shownSuggestions(discovery, found.key, ctx.messageOf(found.key), MAX_BITS).length;
-    total += n;
-    if (n > 0) messages++;
-  }
-  const scanned = Object.keys(discovery.results).length;
-  const notScanned = unknown.filter((s) => !discovery.results[s.key]).length;
   const [refocus, setRefocus] = useState<string | null>(null);
-  const next = mostPromising(discovery, unknown, key);
   const openHints = () => {
     setHintsOpen(true);
     requestAnimationFrame(() => hintRef.current?.focus());
@@ -217,60 +205,7 @@ export function Suggestions(props: Props) {
       </div>
       <p className="re-sug-caution">Suggestions are guesses. Check them against the log before accepting.</p>
 
-      {unknown.length > 0 && (
-        <div className="re-sug-overview">
-          {progress ? (
-            <div className="re-sug-progress">
-              <span role="status">
-                Scanning {formatCount(progress.total)} {progress.total === 1 ? 'message' : 'messages'}&hellip; {progress.done} of {progress.total}
-              </span>
-              <span
-                className="re-sug-bar"
-                role="progressbar"
-                aria-label="Scan progress"
-                aria-valuemin={0}
-                aria-valuemax={progress.total}
-                aria-valuenow={progress.done}
-              >
-                <span
-                  style={{
-                    transform: `scaleX(${progress.done / Math.max(1, progress.total)})`,
-                  }}
-                />
-              </span>
-              <button type="button" className="button" onClick={discovery.cancel}>
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <p className="re-sug-summary">
-              {discovery.scanError && <span className="re-quiet">The scan stopped: {discovery.scanError}. </span>}
-              {scanned === 0 ? (
-                `${formatCount(unknown.length)} unknown ${unknown.length === 1 ? 'message' : 'messages'} not scanned yet.`
-              ) : total === 0 ? (
-                `Nothing suggested for the ${formatCount(scanned)} ${scanned === 1 ? 'message' : 'messages'} scanned.`
-              ) : (
-                <>
-                  <strong>
-                    {formatCount(total)} {total === 1 ? 'suggestion' : 'suggestions'} across {formatCount(messages)} {messages === 1 ? 'message' : 'messages'}
-                  </strong>
-                  {notScanned > 0 && ` \u00b7 ${formatCount(notScanned)} unknown not scanned`}
-                </>
-              )}
-              {notScanned > 0 && (
-                <button type="button" className="text-button" onClick={() => discovery.scanAll(unknownKeys.has(key) ? key : undefined)}>
-                  {notScanned === unknown.length ? 'Scan them' : 'Scan the rest'}
-                </button>
-              )}
-              {next && (
-                <button type="button" className="text-button" onClick={() => ctx.select(next.key)}>
-                  Most promising: <span className="mono">{formatId(next.id, next.extended)}</span>
-                </button>
-              )}
-            </p>
-          )}
-        </div>
-      )}
+      <ScanOverview ctx={ctx} discovery={discovery} unknown={unknown} current={key} onPick={(k) => ctx.select(k)} />
 
       {error ? (
         <div className="re-sug-state">
@@ -375,6 +310,88 @@ export function Suggestions(props: Props) {
   );
 }
 
+interface OverviewProps {
+  ctx: ViewContext;
+  discovery: Discovery;
+  unknown: IdSummary[];
+  /** The open message, scanned first and left out of Most promising. */
+  current: number | null;
+  onPick: (key: number) => void;
+}
+
+/** The scan of every unknown message: its progress, or what it found and where to look next. */
+export function ScanOverview({ ctx, discovery, unknown, current, onPick }: OverviewProps) {
+  const unknownKeys = useMemo(() => new Set(unknown.map((s) => s.key)), [unknown]);
+  if (unknown.length === 0) return null;
+  const progress = discovery.progress;
+  // Over every message scanned, which includes one that stopped being unknown on an Accept, and
+  // as listed: without those dismissed or over bits a DBC describes.
+  let total = 0;
+  let messages = 0;
+  for (const found of Object.values(discovery.results)) {
+    const n = shownSuggestions(discovery, found.key, ctx.messageOf(found.key), MAX_BITS).length;
+    total += n;
+    if (n > 0) messages++;
+  }
+  const scanned = Object.keys(discovery.results).length;
+  const notScanned = unknown.filter((s) => !discovery.results[s.key]).length;
+  const next = mostPromising(discovery, unknown, current);
+  return (
+    <div className="re-sug-overview">
+      {progress ? (
+        <div className="re-sug-progress">
+          <span role="status">
+            Scanning {formatCount(progress.total)} {progress.total === 1 ? 'message' : 'messages'}&hellip; {progress.done} of {progress.total}
+          </span>
+          <span
+            className="re-sug-bar"
+            role="progressbar"
+            aria-label="Scan progress"
+            aria-valuemin={0}
+            aria-valuemax={progress.total}
+            aria-valuenow={progress.done}
+          >
+            <span
+              style={{
+                transform: `scaleX(${progress.done / Math.max(1, progress.total)})`,
+              }}
+            />
+          </span>
+          <button type="button" className="button" onClick={discovery.cancel}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <p className="re-sug-summary">
+          {discovery.scanError && <span className="re-quiet">The scan stopped: {discovery.scanError}. </span>}
+          {scanned === 0 ? (
+            `${formatCount(unknown.length)} unknown ${unknown.length === 1 ? 'message' : 'messages'} not scanned yet.`
+          ) : total === 0 ? (
+            `Nothing suggested for the ${formatCount(scanned)} ${scanned === 1 ? 'message' : 'messages'} scanned.`
+          ) : (
+            <>
+              <strong>
+                {formatCount(total)} {total === 1 ? 'suggestion' : 'suggestions'} across {formatCount(messages)} {messages === 1 ? 'message' : 'messages'}
+              </strong>
+              {notScanned > 0 && ` \u00b7 ${formatCount(notScanned)} unknown not scanned`}
+            </>
+          )}
+          {notScanned > 0 && (
+            <button type="button" className="text-button" onClick={() => discovery.scanAll(current !== null && unknownKeys.has(current) ? current : undefined)}>
+              {notScanned === unknown.length ? 'Scan them' : 'Scan the rest'}
+            </button>
+          )}
+          {next && (
+            <button type="button" className="text-button" onClick={() => onPick(next.key)}>
+              Most promising: <span className="mono">{formatId(next.id, next.extended)}</span>
+            </button>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
 interface RowProps {
   ctx: ViewContext;
   item: ShownSuggestion;
@@ -390,10 +407,16 @@ interface RowProps {
   focusAccept: boolean;
   onFocused: () => void;
   onPlot: (s: ShownSuggestion) => void;
+  /** Accept is the view's one amber button, as on the selected card of Byte Values. */
+  primaryAccept?: boolean;
+  /** A line under the actions, such as where the suggestion is in the table. */
+  note?: string | null;
+  /** The message's ID, named in the buttons where suggestions of several messages are listed. */
+  of?: string;
 }
 
-function SuggestionRow(props: RowProps) {
-  const { ctx, item, discovery, active, selected, plotted, onActive, onSelect, onAccept, onUndo, focusAccept, onFocused, onPlot } = props;
+export function SuggestionRow(props: RowProps) {
+  const { ctx, item, discovery, active, selected, plotted, onActive, onSelect, onAccept, onUndo, focusAccept, onFocused, onPlot, primaryAccept, note, of } = props;
   const { id, number, suggestion: s } = item;
   const accepted = discovery.accepted[id] ?? null;
   const acceptRef = useRef<HTMLButtonElement>(null);
@@ -405,6 +428,7 @@ function SuggestionRow(props: RowProps) {
   const dismissed = discovery.dismissed.has(id);
   const kind = KIND_LABELS[s.kind];
   const t = s.sparkline.t;
+  const which = `suggestion ${number}${of ? ` of ${of}` : ''}`;
   return (
     <li
       className="re-sug-item"
@@ -422,7 +446,7 @@ function SuggestionRow(props: RowProps) {
         type="button"
         className="re-sug-main"
         aria-pressed={selected}
-        aria-label={`${number}. ${kind}, ${describePlace(s)}, ${LEVEL_LABELS[s.level]} confidence ${Math.round(s.confidence * 100)}%. Select its bits.`}
+        aria-label={`${number}. ${kind}${of ? ` of ${of}` : ''}, ${describePlace(s)}, ${LEVEL_LABELS[s.level]} confidence ${Math.round(s.confidence * 100)}%. Select its bits.`}
         onClick={() => onSelect(item)}
       >
         <span className="re-sug-badge" aria-hidden="true">
@@ -467,23 +491,30 @@ function SuggestionRow(props: RowProps) {
         </div>
       ) : (
         <div className="re-sug-actions">
-          <button ref={acceptRef} type="button" className="button" aria-label={`Accept suggestion ${number}`} onClick={() => onAccept(item)}>
+          <button
+            ref={acceptRef}
+            type="button"
+            className={primaryAccept ? 'primary' : 'button'}
+            aria-label={`Accept ${which}`}
+            onClick={() => onAccept(item)}
+          >
             Accept
           </button>
           <button
             type="button"
             className="button"
-            aria-label={`${dismissed ? 'Restore' : 'Dismiss'} suggestion ${number}`}
+            aria-label={`${dismissed ? 'Restore' : 'Dismiss'} ${which}`}
             onClick={() => discovery.dismiss(id, !dismissed)}
           >
             {dismissed ? 'Restore' : 'Dismiss'}
           </button>
-          <button type="button" className="button" aria-pressed={plotted} aria-label={`Plot it: suggestion ${number}`} onClick={() => onPlot(item)}>
+          <button type="button" className="button" aria-pressed={plotted} aria-label={`Plot it: ${which}`} onClick={() => onPlot(item)}>
             {plotted && <Check size={14} strokeWidth={2} aria-hidden="true" />}
             Plot it
           </button>
         </div>
       )}
+      {note && <p className="re-sug-note">{note}</p>}
     </li>
   );
 }

@@ -414,7 +414,7 @@ describe('Suggested signals', () => {
         ],
       },
     };
-    const { core } = discoveryCore();
+    const { core } = discoveryCore({ suggestSignals: vi.fn(async (key: number) => found(key, [mux])) });
     const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [paged], selected: first.key, capturing: false });
     act(() =>
       shell.state.viewState.set(

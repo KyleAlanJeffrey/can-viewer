@@ -220,9 +220,11 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
   const ensure = useCallback(
     (key: number) => {
       const { saved: now, unknown: keys } = latest.current;
+      const left = leftToScan.current;
       leftToScan.current = null;
       if (now.results[key] || inFlight.current.has(key)) return;
-      if (controller.current && scanning.current === key) {
+      // Asked again before the scan got to it, as when Byte Values started the scan with it first.
+      if (controller.current && (scanning.current === key || left === key)) {
         leftToScan.current = key;
         return;
       }

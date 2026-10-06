@@ -4,8 +4,8 @@
 //! The part's store works out the per-ID statistics of its own frames, which is most of the
 //! cost of storing a frame. Joining it adds what depends on the frames before it: bit flips
 //! between the last frame of each kind before the part and the first in it, each a pair of
-//! frames compared over their bytes in common, and the gaps between frames, redone frame by frame so their floating-point
-//! sums come out the same. J1939 transfers are reassembled as the part is joined, since their
+//! frames compared over their bytes in common, and the gaps between frames, redone frame by
+//! frame so their floating-point sums come out the same. J1939 transfers are reassembled as the part is joined, since their
 //! packets may span parts; a part that completes one has its statistics worked out again frame
 //! by frame instead.
 

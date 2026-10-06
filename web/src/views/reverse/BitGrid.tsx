@@ -17,7 +17,7 @@ interface Props {
   flips: Uint32Array;
   bytes: number;
   /** Per byte, the pairs of frames its bits' counts were taken over. */
-  pairs: Uint32Array;
+  pairs: ArrayLike<number>;
   /** Seconds the counts cover. */
   seconds: number;
   /** Selected bits, `byte * 8 + bit`. */

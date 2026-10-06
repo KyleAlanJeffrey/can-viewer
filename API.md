@@ -433,7 +433,7 @@ One ID compared byte by byte. Returned by [`compareBytes`](#comparebytes). Per-b
 - **`payloadsB`** `number` - The same for log B.
 - **`flipsA`** `number[]` - How often each bit toggled from the previous frame of the ID and the same kind in log A, as [`bitFlips`](#bitflips) counts them over its first `len` bytes, so a polled ID's remote frames don't hide its changes; `len * 8` counts, zeros when log A lacks the ID.
 - **`flipsB`** `number[]` - The same for log B.
-- **`pairsA`** `number[]` - Per byte, the pairs of frames `flipsA` were counted over, as in [`BitFlips`](#the-bitflips-object): those of the same kind that both have the byte, so a bit's share of changes is its flips over its byte's pairs. `len` counts, zeros when log A lacks the ID.
+- **`pairsA`** `number[]` - Per byte, the pairs of frames `flipsA` were counted over, as in [`BitFlips`](#the-bitflips-object) but over the frames `payloadsA` counts: those of the same kind that both have the byte, so a bit's share of changes is its flips over its byte's pairs. `len` counts, zeros when log A lacks the ID.
 - **`pairsB`** `number[]` - The same for log B.
 - **`bitScores`** `number[]` - From 0 to 1 per bit, how differently it behaves (see [`compareLogs`](#comparelogs)), before the log A baseline. 0 for ignored bits and when either log lacks the ID or the byte.
 - **`byteScores`** `number[]` - From 0 to 100 per byte, after both ignore rules.

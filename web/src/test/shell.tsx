@@ -21,6 +21,12 @@ export interface ShellState {
   viewState: ViewStateStore;
   /** The view asked for the inspector to be shown. */
   inspectorOpened: boolean;
+  /** The view hid the inspector, as it does while it has nothing to show there. */
+  inspectorHidden: boolean;
+  /** What the view last said of its own amber button, or null if nothing. */
+  viewPrimary: boolean | null;
+  /** The view asked for the sidebar to be shown. */
+  sidebarShown: boolean;
 }
 
 export interface ShellOptions {
@@ -60,6 +66,7 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
   const [store] = useState(() => new ViewStateStore());
   const [sidebar, setSidebar] = useState<HTMLElement | null>(null);
   const [inspector, setInspector] = useState<HTMLElement | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   // Changes apply in call order to the latest list, as App's mutateDbcs does.
   const latestDbcs = useRef(dbcs);
   const labels = useRef<string[]>([]);
@@ -148,9 +155,20 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
     busyLabel: () => labels.current[labels.current.length - 1] ?? options.busy ?? null,
     setError,
     setView,
-    setInspectorHidden: () => {},
+    setInspectorHidden: (hidden) => {
+      state.inspectorHidden = hidden;
+    },
+    inspectorOpen,
+    toggleInspector: () => setInspectorOpen((o) => !o),
     openInspector: () => {
       state.inspectorOpened = true;
+      setInspectorOpen(true);
+    },
+    setViewPrimary: (has) => {
+      state.viewPrimary = has;
+    },
+    showSidebar: () => {
+      state.sidebarShown = true;
     },
     openLog: options.openLog ?? (() => Promise.resolve(true)),
     swapCompareLog: options.swapCompareLog ?? (() => Promise.resolve(true)),
@@ -178,7 +196,7 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
 /** Renders `view` inside the test shell. `state` always holds the shell's latest state. */
 export function renderInShell(view: ComponentType<ViewProps>, options: ShellOptions) {
   const user = userEvent.setup();
-  const state = { running: 0, inspectorOpened: false } as ShellState;
+  const state = { running: 0, inspectorOpened: false, inspectorHidden: false, viewPrimary: null, sidebarShown: false } as ShellState;
   render(<Shell view={view} options={options} state={state} />);
   return { user, state };
 }

@@ -224,6 +224,10 @@ button:disabled {
   color: var(--graphite);
 }
 
+.toolbar-button[aria-pressed='true'] {
+  background: var(--hover-wash);
+}
+
 .icon-button.small {
   width: 24px;
   height: 24px;
@@ -314,22 +318,32 @@ button:disabled {
 
 .main {
   display: grid;
-  grid-template-rows: 60px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   background: var(--paper);
 }
 
-/* Toolbar */
+/* Toolbar: the log and its actions, then the views on a row of their own unless all fit on one. */
 .toolbar {
-  container: toolbar / inline-size;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--hairline);
+  min-width: 0;
+}
+
+.toolbar-row {
   display: flex;
   align-items: center;
   gap: 12px;
+  height: 60px;
   padding: 0 12px;
-  border-bottom: 1px solid var(--hairline);
   min-width: 0;
+}
+
+.toolbar.two-rows .toolbar-row {
+  height: 56px;
 }
 
 .toolbar-divider {
@@ -339,7 +353,6 @@ button:disabled {
   flex: none;
 }
 
-/* Leading and trailing groups share the slack equally, so the view switcher sits centred. */
 .toolbar-leading {
   flex: 1 1 0;
   display: flex;
@@ -353,8 +366,49 @@ button:disabled {
   min-width: 0;
 }
 
-.view-switcher {
+.toolbar-views {
+  display: flex;
+  height: 40px;
+  padding: 0 8px;
+  min-width: 0;
+}
+
+/* The views as tabs, underlined in Ochre Control on the toolbar's bottom edge. */
+.toolbar .view-switcher {
   flex: none;
+  align-self: stretch;
+  gap: 4px;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.toolbar .view-switcher button {
+  height: 100%;
+  padding: 0 12px;
+  border-radius: 0;
+}
+
+.toolbar .view-switcher button:hover:not(:disabled):not([aria-checked='true']) {
+  background: none;
+}
+
+.toolbar .view-switcher button[aria-checked='true'] {
+  background: none;
+  box-shadow: none;
+}
+
+.toolbar .view-switcher button[aria-checked='true']::after {
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  border-radius: 1px;
+}
+
+.toolbar .view-switcher button:focus-visible {
+  outline-offset: -4px;
+  border-radius: 8px;
 }
 
 .doc-title {
@@ -412,12 +466,84 @@ button:disabled {
 }
 
 .toolbar-actions {
-  flex: 1 1 0;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Leading and trailing groups share the slack equally, so the views sit centred. */
+.toolbar.one-row .toolbar-actions {
+  flex: 1 1 0;
   min-width: max-content;
+}
+
+/* The More menu */
+.menu-anchor {
+  position: relative;
+  flex: none;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--shadow-float);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--graphite);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.menu-item svg {
+  flex: none;
+  color: var(--slate);
+}
+
+.menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--hover-wash);
+}
+
+.menu-item:focus-visible {
+  outline-offset: -2px;
+}
+
+.menu-item.separated {
+  position: relative;
+  margin-top: 9px;
+}
+
+.menu-item.separated::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: -4px;
+  right: -4px;
+  height: 1px;
+  background: var(--hairline);
 }
 
 .progress {
@@ -773,15 +899,6 @@ button:disabled {
   background: var(--plot-paper);
   border: 1px solid var(--hairline);
   border-radius: 12px;
-}
-
-.plots-hint {
-  flex: none;
-  margin: 12px 16px 16px;
-  padding: 14px 16px;
-  border: 1px dashed var(--hairline);
-  border-radius: 12px;
-  color: var(--slate);
 }
 
 .plots-bar {
@@ -1390,93 +1507,16 @@ input[type='checkbox'] {
   }
 
   .body {
+    position: relative;
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* Below the toolbar, however many rows it has. */
   .inspector {
-    position: fixed;
-    inset: 60px 0 0 auto;
+    position: absolute;
+    inset: 0 0 0 auto;
     width: min(360px, 92vw);
     z-index: 14;
     box-shadow: var(--shadow-float);
-  }
-}
-
-/* The toolbar holds the view switcher and up to five buttons, so their labels go one by one as
-   it narrows, the least needed first, keeping about 400px beside the centred switcher for the
-   log name and its status. */
-@container toolbar (max-width: 1759px) {
-  .toolbar-button.save-capture .label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-@container toolbar (max-width: 1559px) {
-  .toolbar-button.capture .label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-@container toolbar (max-width: 1429px) {
-  .toolbar-button.export-log .label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-@container toolbar (max-width: 1269px) {
-  .toolbar-button.open-dbc .label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-/* Narrow, Cancel takes the place of Export Log, which can't be used while a log is read. */
-@container toolbar (max-width: 999px) {
-  .toolbar[data-reading-log] .export-log {
-    display: none;
-  }
-
-  .cancel-read {
-    width: 32px;
-    padding: 0;
-  }
-
-  .cancel-read .label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-/* The view switcher needs the toolbar's middle, so it tightens too well before phone widths. */
-@media (max-width: 1439px) {
-  .toolbar-button {
-    padding: 0 8px;
-  }
-
-  .view-switcher button {
-    padding: 0 9px;
   }
 }

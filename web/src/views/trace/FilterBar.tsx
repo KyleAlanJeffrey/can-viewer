@@ -1,4 +1,4 @@
-import type { Ref } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { SearchX, SlidersHorizontal, X } from 'lucide-react';
 import { formatCount } from '../../format';
 import type { FilterChip } from './filters';
@@ -14,10 +14,12 @@ interface BarProps {
   onEdit: () => void;
   onRemove: (chip: FilterChip) => void;
   onClear: () => void;
+  /** At the far end of the bar, after the count. */
+  trailing?: ReactNode;
 }
 
 /** The Filters button over the trace, then the applied filters as removable chips and their count. */
-export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onRemove, onClear }: BarProps) {
+export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onRemove, onClear, trailing }: BarProps) {
   const filtered = chips.length > 0;
   return (
     <div className="tv-bar">
@@ -53,6 +55,7 @@ export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onR
             </>
           ))}
       </p>
+      {trailing}
     </div>
   );
 }

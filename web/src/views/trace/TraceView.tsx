@@ -5,6 +5,7 @@ import { ChunkBoundary } from '../../components/ChunkBoundary';
 import { DetailPanel } from '../../components/DetailPanel';
 import { Plots } from '../../components/Plots';
 import { TraceTable } from '../../components/TraceTable';
+import { DetailsToggle } from '../shared/DetailsToggle';
 import { IdListSidebar } from '../shared/IdListSidebar';
 import { useViewState } from '../shared/viewState';
 import { InspectorSlot } from '../slots';
@@ -33,7 +34,7 @@ let results = 0;
 
 /** Every frame (or one ID's, or the filtered ones) over the plot card, with the selected ID in the inspector. */
 export function TraceView({ ctx }: ViewProps) {
-  const { core, log, ids, selected, plots, pinnedTime, setPinnedTime, setError, logVersion } = ctx;
+  const { core, log, ids, selected, plots, pinnedTime, setPinnedTime, setError, logVersion, setInspectorHidden } = ctx;
   const [filters, setFilters] = useViewState<TraceFilters | null>('trace.filters', null, 'log');
   const [sheetOpen, setSheetOpen] = useState(false);
   // A new key per opening, so the sheet's draft starts from the applied filters.
@@ -129,6 +130,12 @@ export function TraceView({ ctx }: ViewProps) {
     }
   }, [sheetOpen]);
 
+  // With All frames there is nothing to inspect, so the pane gives the table its room.
+  const nothingSelected = !ids.some((s) => s.key === selected);
+  useEffect(() => {
+    setInspectorHidden(nothingSelected);
+  }, [setInspectorHidden, nothingSelected]);
+
   const apply = useCallback(
     (next: TraceFilters | null) => {
       setFilters(next && hasFilters(next) ? next : null);
@@ -167,6 +174,7 @@ export function TraceView({ ctx }: ViewProps) {
         onEdit={openSheet}
         onRemove={(chip) => apply(chip.without)}
         onClear={() => apply(null)}
+        trailing={<DetailsToggle ctx={ctx} emptyReason={summary ? null : 'Select an ID to see its bit activity and signals'} />}
       />
       {sheetOpen && (
         <ChunkBoundary key={sheetKey} message="Couldn't load the filters.">

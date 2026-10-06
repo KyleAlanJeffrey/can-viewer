@@ -700,8 +700,12 @@
   margin-left: auto;
 }
 
-.re-refs-empty {
-  max-width: 64ch;
+.re-refs.collapsed {
+  padding-top: 6px;
+}
+
+.re-refs.collapsed .re-card-head {
+  margin-bottom: 0;
 }
 
 .re-ref-rows {
@@ -866,7 +870,7 @@
 }
 
 /* Byte Values matrix */
-.re-bytes {
+.re-bytes:has(> .re-matrix-foot) {
   padding-bottom: 0;
   /* Keeps a byte scrolled into view clear of the sticky footer, with room for its row to grow. */
   scroll-padding-bottom: 80px;
@@ -897,8 +901,8 @@
   display: flex;
   flex-direction: column;
   width: var(--re-sug-width, 360px);
-  /* The matrix keeps the width its table needs (720px plus padding and a scrollbar) before scrolling sideways. */
-  max-width: max(300px, calc(100% - 800px));
+  /* The matrix keeps the width its table needs (652px plus padding and a scrollbar) before scrolling sideways. */
+  max-width: max(300px, calc(100% - 728px));
   min-height: 0;
   border-left: 1px solid var(--hairline);
   background: var(--paper);
@@ -908,7 +912,7 @@
   padding: 16px;
 }
 
-@container re-split (max-width: 1100px) {
+@container re-split (max-width: 1027px) {
   .re-split-body {
     flex-direction: column;
   }
@@ -972,7 +976,7 @@
 
 .re-table {
   width: 100%;
-  min-width: 720px;
+  min-width: 652px;
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
@@ -988,7 +992,7 @@
 }
 
 .re-table thead .re-th-msg {
-  width: 196px;
+  width: 188px;
   text-align: left;
 }
 
@@ -1184,6 +1188,23 @@
 .re-matrix-sel {
   font-size: 17px;
   font-weight: 600;
+}
+
+.re-matrix-value {
+  color: var(--slate);
+  white-space: nowrap;
+}
+
+.re-matrix-value .mono,
+.re-matrix-value .num {
+  color: var(--graphite);
+}
+
+.re-matrix-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .re-matrix-hint {

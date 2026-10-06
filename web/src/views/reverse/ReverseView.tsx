@@ -3,9 +3,9 @@ import { ArrowLeft, Search } from 'lucide-react';
 import { ALL_IDS, formatId, isErrorFrame, type Candidate, type FindRule } from '../../core/api';
 import { ChunkBoundary } from '../../components/ChunkBoundary';
 import { formatCount } from '../../format';
+import { DetailsToggle } from '../shared/DetailsToggle';
 import { IdListSidebar } from '../shared/IdListSidebar';
 import { useViewState } from '../shared/viewState';
-import { InspectorSlot } from '../slots';
 import type { ViewProps } from '../types';
 import { AnalysisWindow } from './AnalysisWindow';
 import { BaselineSheet } from './BaselineSheet';
@@ -71,9 +71,11 @@ export function ReverseView({ ctx }: ViewProps) {
   const panelSwitch = useRef<HTMLInputElement>(null);
   const references = useReferences(ctx, pins);
 
+  // Byte Values has no inspector, and Advanced has nothing for it until a message is selected.
+  const messageSelected = ids.some((s) => s.key === selected);
   useEffect(() => {
-    setInspectorHidden(mode === 'bytes');
-  }, [setInspectorHidden, mode]);
+    setInspectorHidden(mode === 'bytes' || !messageSelected);
+  }, [setInspectorHidden, mode, messageSelected]);
 
   useLayoutEffect(() => {
     if (mode === 'bytes' && scroller.current) scroller.current.scrollTop = savedScroll;
@@ -238,6 +240,7 @@ export function ReverseView({ ctx }: ViewProps) {
             <Search size={16} strokeWidth={1.5} aria-hidden="true" />
             Find Signal&hellip;
           </button>
+          {mode === 'advanced' && <DetailsToggle ctx={ctx} emptyReason={summary ? null : 'Select a message to define its signals'} />}
         </div>
       </header>
 
@@ -281,6 +284,10 @@ export function ReverseView({ ctx }: ViewProps) {
                 onPark={park}
                 onTogglePin={togglePin}
                 onOpenAdvanced={openAdvanced}
+                onClearSelection={() => {
+                  setSelectedByte(null);
+                  setPickedId(null);
+                }}
               />
             </div>
             {panelOpen && (
@@ -368,18 +375,6 @@ export function ReverseView({ ctx }: ViewProps) {
             )}
           </section>
         </div>
-      )}
-
-      {mode === 'advanced' && !summary && (
-        <InspectorSlot>
-          <header className="inspector-head">
-            <h2 className="pane-title">New Signal</h2>
-            <p className="sub">No message selected</p>
-          </header>
-          <div className="inspector-section">
-            <p className="hint">Select a message, then drag across its bits to define a signal.</p>
-          </div>
-        </InspectorSlot>
       )}
 
       <BaselineSheet

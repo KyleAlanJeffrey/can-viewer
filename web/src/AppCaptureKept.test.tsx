@@ -80,7 +80,7 @@ function captureCore() {
 }
 
 async function startCapture() {
-  await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Connect live\u2026' }));
   await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
   await userEvent.click(within(screen.getByRole('dialog', { name: 'Live Capture' })).getByRole('button', { name: 'Start Capture' }));
   await screen.findByRole('button', { name: 'Stop Capture' });
@@ -146,7 +146,8 @@ describe('App unsaved capture across a reload', () => {
     expect(screen.getByRole('button', { name: 'Save Capture\u2026' })).toBeTruthy();
 
     // Still unsaved, so closing it asks first.
-    await userEvent.click(screen.getByRole('button', { name: `Close ${name}` }));
+    await userEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: `Close ${name}` }));
     expect(screen.getByRole('dialog', { name: 'Discard the capture?' })).toBeTruthy();
   });
 
@@ -213,7 +214,8 @@ describe('App unsaved capture across a reload', () => {
     const { core } = captureCore();
     const { unmount } = render(<App core={core} />);
     const name = await unsavedCapture(port, core);
-    await userEvent.click(screen.getByRole('button', { name: `Close ${name}` }));
+    await userEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: `Close ${name}` }));
     await userEvent.click(within(screen.getByRole('dialog', { name: 'Discard the capture?' })).getByRole('button', { name: 'Discard Capture' }));
     await emptyState();
     const session = await storage();
@@ -253,7 +255,7 @@ describe('App unsaved capture across a reload', () => {
     await screen.findByText(/Not saved \u00b7 2 frames/);
     const nextPort = new FakeSerialPort();
     withSerialPort(nextPort);
-    await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Connect live\u2026' }));
     await userEvent.click(within(screen.getByRole('dialog', { name: 'Discard the capture?' })).getByRole('button', { name: 'Discard Capture' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
     await userEvent.click(within(screen.getByRole('dialog', { name: 'Live Capture' })).getByRole('button', { name: 'Start Capture' }));
@@ -280,7 +282,8 @@ describe('App unsaved capture across a reload', () => {
     const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
     await userEvent.upload(input, new File(['(1.0) can0 123#00\n'], 'mine.log'));
     await waitFor(() => expect(document.querySelector('.doc-title')?.textContent).toBe('mine.log'));
-    await userEvent.click(screen.getByRole('button', { name: 'Close mine.log' }));
+    await userEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Close mine.log' }));
     await emptyState();
     expect(core.startCapture).not.toHaveBeenCalled();
     expect((await otherTab.keptCaptures()).map((c) => c.id)).toEqual(['other']);

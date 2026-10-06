@@ -71,23 +71,6 @@
   background: var(--error);
 }
 
-/* Recording, the toolbar's slack goes to the status line rather than to centring the views. */
-.toolbar.recording .toolbar-actions {
-  flex: none;
-}
-
-/* A narrow toolbar keeps "Stop" on the button; screen readers still hear "Stop Capture". */
-@container toolbar (max-width: 1269px) {
-  .stop-capture-rest {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
 .cap-advanced > summary {
   color: var(--slate);
   font-size: 12px;

@@ -72,7 +72,11 @@ function Shell({ core, ids, inspector = null }: { core: CoreApi; ids: IdSummary[
     setError: () => {},
     setView: () => {},
     setInspectorHidden: () => {},
+    inspectorOpen: true,
+    toggleInspector: () => {},
     openInspector: () => {},
+    setViewPrimary: () => {},
+    showSidebar: () => {},
     openLog: unused,
     swapCompareLog: unused,
     openLogPicker: () => {},
@@ -145,8 +149,10 @@ describe('Byte Values', () => {
 
   it('selects a byte and pins it', async () => {
     const user = renderView();
-    expect(screen.getByText(/^Select a byte to pin it/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Pin byte' }).hasAttribute('disabled')).toBe(true);
+    // The selection's footer and its actions appear only once a byte is selected.
+    expect(screen.queryByRole('button', { name: 'Pin byte' })).toBeNull();
+    // With nothing pinned, the references card is one row.
+    expect(screen.getByRole('heading', { name: 'Pin a signal for comparison' })).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: /^100 byte 2/ }));
     const cell = screen.getByRole('button', { name: /^100 byte 2/ });
@@ -156,15 +162,24 @@ describe('Byte Values', () => {
     expect(within(screen.getAllByRole('rowheader')[0]).getByRole('button').getAttribute('aria-pressed')).toBe('true');
     // The cursor parks where the cell was clicked, so the cell shows that frame's byte.
     await waitFor(() => expect(screen.getByRole('button', { name: '100 byte 2, 33 hex' })).toBeTruthy());
+    expect(screen.getByText('(51)')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Pin byte' }));
     expect(screen.getByRole('button', { name: 'Unpin byte' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^100 byte 2, .*pinned$/ })).toBeTruthy();
     expect(await screen.findByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeTruthy();
 
+    expect(screen.getByRole('heading', { name: 'Pinned references' })).toBeTruthy();
+
     await user.click(screen.getByRole('button', { name: 'Unpin byte' }));
     expect(screen.getByRole('button', { name: 'Pin byte' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeNull();
+
+    // Clearing the selection puts the footer away and leaves focus on the byte.
+    await user.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(screen.queryByRole('button', { name: 'Pin byte' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^100 byte 2/ }));
+    expect(screen.getByRole('button', { name: /^100 byte 2/ }).getAttribute('aria-pressed')).toBe('false');
   });
 });
 

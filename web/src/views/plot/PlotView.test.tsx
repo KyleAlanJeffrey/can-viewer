@@ -87,7 +87,12 @@ function readoutRow(label: string): string[] {
 describe('Plot signal tree', () => {
   it('adds a lane for each ticked signal and removes it when unticked or removed', async () => {
     const { user, state } = renderPlot();
-    expect(screen.getByText('Choose signals in the sidebar to plot them')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Choose signals to plot' })).toBeTruthy();
+    // Until something is plotted, the view's next step is its own amber button.
+    expect(state.viewPrimary).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Choose Signals' }));
+    expect(state.sidebarShown).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(within(tree()).getAllByRole('button')[0]));
     // Only messages a DBC describes are listed, and they start closed.
     expect(within(tree()).getAllByRole('button').map((b) => b.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
     expectSignals([]);
@@ -97,6 +102,7 @@ describe('Plot signal tree', () => {
 
     await user.click(within(tree()).getByRole('checkbox', { name: /^EngineSpeed/ }));
     await waitFor(() => expect(lanes()).toEqual(['EngineSpeed (rpm)']));
+    expect(state.viewPrimary).toBe(false);
     await user.click(within(tree()).getByRole('checkbox', { name: /^Throttle/ }));
     await waitFor(() => expect(lanes()).toEqual(['EngineSpeed (rpm)', 'Throttle (%)']));
     expect(within(tree()).getByRole('checkbox', { name: /^EngineSpeed/ })).toHaveProperty('checked', true);
@@ -141,6 +147,8 @@ describe('Plot signal tree', () => {
     renderPlot({ dbcs: [] });
     expect(within(tree()).getByRole('button', { name: 'Open DBC\u2026' })).toBeTruthy();
     expect(screen.getByText('Signals come from a DBC, so open one first.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Choose Signals' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Open DBC\u2026' })).toHaveLength(2);
   });
 });
 

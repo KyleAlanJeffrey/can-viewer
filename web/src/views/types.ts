@@ -60,10 +60,24 @@ export interface ViewContext {
   busyLabel(): string | null;
   setError(message: string | null): void;
   setView(view: ViewId): void;
-  /** Hide the inspector pane for a mode of the view that has none; the shell resets it on a view change. */
+  /**
+   * Hide the inspector pane while the view has nothing to put there, or for a mode of the view
+   * that has none; the shell resets it on a view change.
+   */
   setInspectorHidden(hidden: boolean): void;
-  /** Show the inspector pane, as its toolbar toggle does, when the view puts something there to act on. */
+  /** Whether the inspector pane is shown, which the view's Details toggle reflects. */
+  inspectorOpen: boolean;
+  /** Show or hide the inspector pane, as the view's Details toggle does. */
+  toggleInspector(): void;
+  /** Show the inspector pane when the view puts something there to act on. */
   openInspector(): void;
+  /**
+   * Whether the view shows its own amber button now, for a view where it comes and goes, so
+   * Open Log... drops to an outline button meanwhile. The shell resets it on a view change.
+   */
+  setViewPrimary(has: boolean): void;
+  /** Show the sidebar, if hidden, for a view that sends the user there. */
+  showSidebar(): void;
   /** Open `file` as the log, as Open Log... does but staying in this view. Resolves false if it failed. */
   openLog(file: Blob, name: string): Promise<boolean>;
   /** Make the Compare view's second log the open log, and the open log the second log. Resolves false if it failed. */
@@ -96,9 +110,9 @@ export interface ViewMeta {
   Component: ComponentType<ViewProps>;
   /** Placeholder for the sidebar search field. */
   search: string;
-  /** False disables the toolbar's inspector toggle. */
+  /** False leaves the inspector pane out. */
   hasInspector: boolean;
-  /** True when the view shows its own amber primary, so Open Log drops to an outlined button. */
+  /** True when the view shows its own amber primary, so Open Log drops to an outlined button. See `setViewPrimary`. */
   hasPrimary: boolean;
   /** False lets the view open with only a database loaded. */
   needsLog: boolean;

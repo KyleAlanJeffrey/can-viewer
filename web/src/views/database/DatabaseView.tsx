@@ -4,6 +4,7 @@ import { ALL_IDS, dbcId, formatId, isErrorFrame, type Database, type IdSummary, 
 import { Sheet } from '../../components/Sheet';
 import { cssVar, formatPeriod } from '../../format';
 import { InspectorSlot, SidebarSlot } from '../slots';
+import { DetailsToggle } from '../shared/DetailsToggle';
 import { startTextSave } from '../shared/saveFile';
 import { useViewState } from '../shared/viewState';
 import type { LoadedDbc, ViewProps } from '../types';
@@ -80,6 +81,13 @@ export function DatabaseView({ ctx }: ViewProps) {
   const messageIndex = dbc && message ? dbc.db.messages.indexOf(message) : -1;
   const signalIndex =
     message && message.signals.length > 0 ? Math.max(0, message.signals.findIndex((s) => s.name === selection.signal)) : null;
+
+  // The inspector edits a signal, so it gives its room back while there is none.
+  const { setInspectorHidden } = ctx;
+  const noSignal = signalIndex === null;
+  useEffect(() => {
+    setInspectorHidden(noSignal);
+  }, [setInspectorHidden, noSignal]);
 
   /** Whether the core decodes log ID `s` with message `id` of `of`. */
   const decodes = (s: IdSummary, of: LoadedDbc, id: number) => ctx.dbcOf(s.key)?.id === of.id && ctx.messageOf(s.key)?.id === id;
@@ -347,11 +355,6 @@ export function DatabaseView({ ctx }: ViewProps) {
             </div>
           </div>
         </div>
-        <InspectorSlot>
-          <div className="inspector-section">
-            <p className="hint">Signal details appear here once a DBC is open.</p>
-          </div>
-        </InspectorSlot>
         {dialogs}
       </>
     );
@@ -395,6 +398,7 @@ export function DatabaseView({ ctx }: ViewProps) {
           <button className="primary" onClick={() => exportDbc(dbc)} title={EXPORT_NOTE}>
             Export DBC&hellip;
           </button>
+          <DetailsToggle ctx={ctx} emptyReason={signal ? null : message ? 'Add a signal to edit its details' : 'Add a message to start'} />
         </div>
       </header>
 
@@ -438,8 +442,8 @@ export function DatabaseView({ ctx }: ViewProps) {
         )}
       </div>
 
-      <InspectorSlot>
-        {message && signal && signalIndex !== null ? (
+      {message && signal && signalIndex !== null && (
+        <InspectorSlot>
           <SignalInspector
             key={`${dbc.id}:${messageIndex}:${signalIndex}`}
             message={message}
@@ -449,12 +453,8 @@ export function DatabaseView({ ctx }: ViewProps) {
             onChange={(patch) => changeSignal(signal.name, patch)}
             plot={plotFor(signal)}
           />
-        ) : (
-          <div className="inspector-section">
-            <p className="hint">{message ? 'Add a signal to edit its layout, scaling and value descriptions.' : 'Add a message to start.'}</p>
-          </div>
-        )}
-      </InspectorSlot>
+        </InspectorSlot>
+      )}
 
       {dialogs}
       {dialog?.kind === 'delete-signal' && message?.signals.some((s) => s.name === dialog.name) && (

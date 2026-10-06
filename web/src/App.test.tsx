@@ -553,7 +553,7 @@ describe('App live capture', () => {
   }
 
   async function startCapture(port: FakeSerialPort) {
-    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect live\u2026' }));
     // The sheet shows as loading until its code arrives.
     await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
     const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
@@ -617,7 +617,7 @@ describe('App live capture', () => {
     const busLoad = vi.fn(async () => [Float64Array.of(0.25), Float64Array.of(0.1)] as [Float64Array, Float64Array]);
     core.busLoad = busLoad;
     render(<App core={core} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect live\u2026' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
     await userEvent.selectOptions(screen.getByLabelText('Bitrate'), '250 kbit/s');
     await userEvent.clear(screen.getByLabelText('Bus name'));
@@ -695,12 +695,12 @@ describe('App live capture', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
     await screen.findByText(/Not saved/);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Connect live\u2026' }));
     const confirm = screen.getByRole('dialog', { name: 'Discard the capture?' });
     await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog', { name: 'Live Capture' })).toBeNull();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Connect live\u2026' }));
     await userEvent.click(within(screen.getByRole('dialog', { name: 'Discard the capture?' })).getByRole('button', { name: 'Discard Capture' }));
     expect(screen.getByRole('dialog', { name: 'Live Capture' })).toBeTruthy();
   });
@@ -758,7 +758,7 @@ describe('App live capture', () => {
     await unsavedCapture(port, core);
     stubSavePicker();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Connect live\u2026' }));
     const confirm = screen.getByRole('dialog', { name: 'Discard the capture?' });
     expect(within(confirm).getByRole('button', { name: 'Discard Capture' }).className).toBe('button');
     await userEvent.click(within(confirm).getByRole('button', { name: 'Save Capture\u2026' }));
@@ -792,7 +792,7 @@ describe('App live capture', () => {
       window.dispatchEvent(event);
       return event.defaultPrevented;
     };
-    await screen.findByRole('button', { name: 'Capture\u2026' });
+    await screen.findByRole('button', { name: 'Connect live\u2026' });
     expect(leave()).toBe(false);
 
     await startCapture(port);
@@ -817,7 +817,7 @@ describe('App live capture', () => {
     withSerialPort(port);
     const { core, frames } = captureCore();
     render(<App core={core} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect live\u2026' }));
     // The sheet shows as loading until its code arrives.
     await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
     const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
@@ -924,7 +924,7 @@ describe('App live capture', () => {
     const { core, reset } = resettingCore();
     render(<App core={core} />);
     await unsavedCapture(port, core);
-    await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Connect live\u2026' }));
     expect(screen.getByRole('dialog', { name: 'Discard the capture?' })).toBeTruthy();
 
     reset();
@@ -977,7 +977,7 @@ describe('App live capture', () => {
   it('explains in the sheet when the browser has no Web Serial or WebUSB', async () => {
     const App = await freshApp();
     render(<App core={fakeCore()} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect live\u2026' }));
     // The sheet's code loads on first use, which can take over a second under load.
     expect(await screen.findByText(/needs Chrome or Edge/, {}, { timeout: 3000 })).toBeTruthy();
     // The loaded sheet is opened by an effect, a moment after its text is on the page.

@@ -122,21 +122,37 @@
 /* Empty state */
 .pv-empty {
   flex: 1;
-  display: grid;
-  place-content: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 32px 24px;
   text-align: center;
 }
 
+.pv-empty-icon {
+  margin-bottom: 6px;
+  color: var(--slate);
+}
+
 .pv-empty-title {
-  font-size: 15px;
-  line-height: 20px;
+  font-size: 17px;
+  line-height: 22px;
   font-weight: 600;
 }
 
 .pv-empty-hint {
+  max-width: 44ch;
   color: var(--slate);
+}
+
+.pv-empty-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 /* Content header */
@@ -591,8 +607,4 @@
 
 .pv-lane-host .u-over {
   cursor: crosshair;
-}
-
-.pv-empty-action {
-  margin-top: 10px;
 }

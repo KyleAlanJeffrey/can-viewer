@@ -11,8 +11,8 @@ const NO_POINT: u32 = u32::MAX;
 /// when every value of the run is NaN.
 #[derive(Clone, Copy)]
 pub struct Extremes {
-    pub lo: u32,
-    pub hi: u32,
+    lo: u32,
+    hi: u32,
 }
 
 impl Extremes {
@@ -20,6 +20,11 @@ impl Extremes {
         lo: NO_POINT,
         hi: NO_POINT,
     };
+
+    /// The lowest and highest points, or `None` when every value of the run is NaN.
+    pub fn points(self) -> [Option<usize>; 2] {
+        [self.lo, self.hi].map(|p| (p != NO_POINT).then_some(p as usize))
+    }
 
     /// Ties go to the earlier point, so runs merge in any order to the result of one scan.
     fn merge(self, other: Self, v: &[f64]) -> Self {
@@ -69,6 +74,8 @@ fn scan(v: &[f64], points: Range<usize>) -> Extremes {
 /// last node of a level may cover fewer.
 pub struct Pyramid {
     levels: Vec<Vec<Extremes>>,
+    /// The NaN points in order, which the levels skip. Empty for most series.
+    nans: Vec<u32>,
 }
 
 impl Pyramid {
@@ -87,7 +94,13 @@ impl Pyramid {
             below = above;
         }
         levels.push(below);
-        Self { levels }
+        let nans = v
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_nan())
+            .map(|(i, _)| i as u32)
+            .collect();
+        Self { levels, nans }
     }
 
     #[cfg(test)]
@@ -95,7 +108,14 @@ impl Pyramid {
         self.levels
             .iter()
             .map(|level| level.capacity() * size_of::<Extremes>())
-            .sum()
+            .sum::<usize>()
+            + self.nans.capacity() * size_of::<u32>()
+    }
+
+    /// The first NaN point of `start..end`.
+    pub fn first_nan(&self, start: usize, end: usize) -> Option<usize> {
+        let k = self.nans.partition_point(|&i| (i as usize) < start);
+        self.nans.get(k).map(|&i| i as usize).filter(|&i| i < end)
     }
 
     /// The [`Extremes`] of points `start..end`: whole nodes where they fit, single points only
@@ -162,5 +182,22 @@ mod tests {
         assert_eq!((found.lo, found.hi), (2, 3));
         let found = pyramid.extremes(&v, 9, 10);
         assert_eq!((found.lo, found.hi), (NO_POINT, NO_POINT));
+    }
+
+    #[test]
+    fn first_nan_is_the_earliest_in_range() {
+        let mut v = vec![1.0; 100];
+        for i in [3, 40, 41, 99] {
+            v[i] = f64::NAN;
+        }
+        let pyramid = Pyramid::new(&v);
+        assert_eq!(pyramid.first_nan(0, 100), Some(3));
+        assert_eq!(pyramid.first_nan(3, 4), Some(3));
+        assert_eq!(pyramid.first_nan(4, 40), None);
+        assert_eq!(pyramid.first_nan(4, 41), Some(40));
+        assert_eq!(pyramid.first_nan(41, 100), Some(41));
+        assert_eq!(pyramid.first_nan(42, 99), None);
+        assert_eq!(pyramid.first_nan(42, 100), Some(99));
+        assert_eq!(Pyramid::new(&[1.0, 2.0]).first_nan(0, 2), None);
     }
 }

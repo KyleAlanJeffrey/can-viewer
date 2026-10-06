@@ -1,10 +1,10 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
-/// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
+/// answered with `{ id, result }` or `{ id, error }`, plus `aborted: true` for an `AbortError`;
+/// parse progress is pushed as events.
 
-import { LOG_SUPERSEDED, type CompareOptions, type Database, type DiscoveryHints, type ExportFormat, type FindRule, type FrameFilter, type LogInfo, type RawSignalSpec, type ScopedDatabase } from './api';
-import { isAbort } from './discovery';
+import { LOG_SUPERSEDED, isAbort, type CompareOptions, type Database, type DiscoveryHints, type ExportFormat, type FindRule, type FrameFilter, type LogInfo, type RawSignalSpec, type ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
-import { readChunks as readChunksFrom, readInParts, type PartTask, type PartWorker } from './readInParts';
+import { readChunks, readInParts, type PartTask, type PartWorker } from './readInParts';
 
 /** Smaller logs are read in this worker alone: starting part workers would cost more than they save. */
 const PARTS_MIN_BYTES = 32 << 20;
@@ -59,16 +59,25 @@ function progressOf(file: Blob): (bytes: number) => void {
   };
 }
 
-/** The newest request that replaces the log: an `openLog` sent before it stops, or never starts. */
+/**
+ * The newest request that replaces the log: an `openLog` or `openCompareLog` sent before it
+ * stops, or never starts.
+ */
 let latestLogRequest = 0;
-/** Aborted when a request that replaces the log arrives while `openLog` reads one. */
+/** Aborted when a request that replaces the log arrives while `openLog` or `openCompareLog` reads. */
 let reading: AbortController | null = null;
 
 const superseded = () => new DOMException(LOG_SUPERSEDED, 'AbortError');
 
-/** Reads `file` in chunks through `push`, reporting progress. */
-function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress = progressOf(file)) {
-  return readChunksFrom(file, push, onProgress);
+/** Starts a read that a newer `openLog` or `startCapture` stops; throws when one is already queued. */
+function startReading(): AbortController {
+  if (currentId < latestLogRequest) throw superseded();
+  reading = new AbortController();
+  return reading;
+}
+
+function endReading(read: AbortController) {
+  if (reading === read) reading = null;
 }
 
 /**
@@ -169,10 +178,7 @@ function halves(xy: Float64Array): [[Float64Array, Float64Array], Transferable[]
 
 const handlers = {
   async openLog(file: Blob, name: string) {
-    // A newer request that replaces the log is already queued behind this one.
-    if (currentId !== latestLogRequest) throw superseded();
-    const thisRead = new AbortController();
-    reading = thisRead;
+    const thisRead = startReading();
     const { signal } = thisRead;
     session.free();
     session = freshSession();
@@ -195,10 +201,8 @@ const handlers = {
           session.set_file_name(name);
           session.reserve_for_bytes(file.size);
         }
-        await readChunksFrom(file, (chunk) => session.push_chunk(chunk), progress, 0, signal);
+        await readChunks(file, (chunk) => session.push_chunk(chunk), progress, 0, signal);
       }
-      // Finishing can't be stopped part way, so a log superseded by now isn't finished at all.
-      signal.throwIfAborted();
       const json = session.finish();
       logMeta = { name, parseMs: performance.now() - started };
       return withMemory(json, logMeta);
@@ -212,7 +216,7 @@ const handlers = {
       session = freshSession();
       throw err;
     } finally {
-      if (reading === thisRead) reading = null;
+      endReading(thisRead);
     }
   },
   startCapture(name: string, channel: string, startedAtMs: number) {
@@ -263,11 +267,12 @@ const handlers = {
   },
   exportDbc: (db: Database) => export_dbc(JSON.stringify(db)),
   async openCompareLog(file: Blob, name: string) {
+    const thisRead = startReading();
     compareMeta = null;
     const started = performance.now();
     try {
       session.compare_begin(name, file.size);
-      await readChunks(file, (chunk) => session.compare_push_chunk(chunk));
+      await readChunks(file, (chunk) => session.compare_push_chunk(chunk), progressOf(file), 0, thisRead.signal);
       const json = session.compare_finish();
       compareMeta = { name, parseMs: performance.now() - started };
       return withMemory(json, compareMeta);
@@ -278,6 +283,8 @@ const handlers = {
         // A session that trapped mid-call is replaced anyway.
       }
       throw err;
+    } finally {
+      endReading(thisRead);
     }
   },
   compareLogInfo() {

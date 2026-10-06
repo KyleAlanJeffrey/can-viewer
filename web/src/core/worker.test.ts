@@ -73,7 +73,12 @@ class FakeSession {
   compare_begin(name: string) {
     if (name === 'broken.log') throw new Error('No CAN frames');
   }
-  compare_push_chunk() {}
+  /** Bytes given to `compare_push_chunk`. */
+  compareRead = 0;
+  compare_push_chunk(chunk: Uint8Array) {
+    this.compareRead += chunk.length;
+    FakeSession.onPush?.();
+  }
   compare_finish() {
     this.hasB = true;
     return JSON.stringify({ frames: 3, durationS: 28 });
@@ -287,6 +292,8 @@ describe('core worker', () => {
       expect(BusyPartWorker.made.every((worker) => worker.terminated)).toBe(true);
       expect(stale.freed).toBe(true);
       expect(stale.finished).toBe(false);
+      // The stale read's, an empty one left in its place, and the new log's: no read again in one worker.
+      expect(FakeSession.made).toHaveLength(4);
 
       // Stopping them is no failure, so the next large log is read in parts again.
       send(3, 'openLog', bigLog(), 'drive.log');
@@ -296,6 +303,7 @@ describe('core worker', () => {
       expect(replies[2]).toEqual(superseded(3));
       expect(replies[3]).toMatchObject({ id: 4, result: { name: 'capture-1.log', format: 'capture' } });
       expect(BusyPartWorker.made.every((worker) => worker.terminated)).toBe(true);
+      expect(FakeSession.made).toHaveLength(7);
       expect(warn).not.toHaveBeenCalled();
       warn.mockRestore();
     });
@@ -310,6 +318,26 @@ describe('core worker', () => {
       expect(replies).toEqual([superseded(1), superseded(2), expect.objectContaining({ id: 3, result: expect.objectContaining({ name: 'idle.log' }) })]);
       // Only the first read started part workers.
       expect(BusyPartWorker.made).toHaveLength(3);
+    });
+
+    it('stops reading log B when another log is opened', async () => {
+      const { replies, send } = await startRecording();
+      send(1, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle.log');
+      await vi.waitUntil(() => replies.length === 1);
+      FakeSession.onPush = () => {
+        FakeSession.onPush = null;
+        send(3, 'openLog', new Blob(['(1.0) can0 123#00\n']), 'idle2.log');
+      };
+      send(2, 'openCompareLog', bigLog(), 'door-lock.log');
+      await vi.waitUntil(() => replies.length === 3);
+      expect(replies[1]).toEqual(superseded(2));
+      expect(replies[2]).toMatchObject({ id: 3, result: { name: 'idle2.log' } });
+      const withB = FakeSession.made[1];
+      expect(withB.compareRead).toBe(8 << 20);
+      expect(withB.hasB).toBe(false);
+      send(4, 'compareLogInfo');
+      await vi.waitUntil(() => replies.length === 4);
+      expect(replies[3]).toEqual({ id: 4, result: null });
     });
 
     it('stops a read in one worker between chunks', async () => {

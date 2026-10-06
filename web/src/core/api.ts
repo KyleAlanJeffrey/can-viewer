@@ -16,7 +16,7 @@ export const FLAG_REASSEMBLED = 1 << 6;
 export const EXT_FLAG = 0x8000_0000;
 /** What `CoreApi.rowBytes` gives for a byte past the end of a frame. */
 export const NO_BYTE = 0xffff;
-/** The message of the `AbortError` an `openLog` rejects with when a newer one replaced it. */
+/** The message of the `AbortError` an `openLog` or `openCompareLog` rejects with when superseded. */
 export const LOG_SUPERSEDED = 'Another log was opened, or a capture started, before this log was read.';
 
 /** A log file format the engine reads, or `capture` for frames recorded live (`startCapture`). */
@@ -546,7 +546,8 @@ export interface CoreApi {
 
   /**
    * Read a second log, B, to compare the open log (A) with, replacing any earlier one. Read like
-   * `openLog`, in chunks with progress. Opening another log with `openLog` drops it.
+   * `openLog`, in chunks with progress. Opening another log with `openLog` drops it, and one sent
+   * before log B is read supersedes it as it would an `openLog`.
    */
   openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>;
   /** Log B, or null when there is none. */
@@ -596,6 +597,11 @@ export interface CoreApi {
    * Absent in an implementation whose engine never restarts.
    */
   onReset?(listener: () => void): () => void;
+}
+
+/** Whether `e` is the `AbortError` of a cancelled scan or a superseded `openLog`. */
+export function isAbort(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError';
 }
 
 /** Key for the DBC message map: the ID with the extended flag, as in DBC files. */

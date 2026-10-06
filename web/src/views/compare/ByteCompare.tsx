@@ -102,8 +102,8 @@ export function ByteCompare({ ctx, comparison: c, logA, logB, options, onOpenInR
       <div className="cmp-section">
         <h3 className="section-title">Byte comparison</h3>
         <div className="cmp-grids">
-          <Grid letter="A" log={logA} flips={detail?.flipsA} frames={detail?.framesA ?? 0} len={len} marked={marked} present={c.keyA !== null} />
-          <Grid letter="B" log={logB} flips={detail?.flipsB} frames={detail?.framesB ?? 0} len={len} marked={marked} present={c.keyB !== null} />
+          <Grid letter="A" log={logA} flips={detail?.flipsA} payloads={detail?.payloadsA ?? 0} len={len} marked={marked} present={c.keyA !== null} />
+          <Grid letter="B" log={logB} flips={detail?.flipsB} payloads={detail?.payloadsB ?? 0} len={len} marked={marked} present={c.keyB !== null} />
         </div>
         {detail && both && (
           <ul className="cmp-findings">
@@ -210,13 +210,14 @@ interface GridProps {
   letter: 'A' | 'B';
   log: LogInfo;
   flips: number[] | undefined;
-  frames: number;
+  /** Frames that carry a payload, the frames `flips` pairs up. */
+  payloads: number;
   len: number;
   marked: ReadonlySet<number>;
   present: boolean;
 }
 
-function Grid({ letter, log, flips, frames, len, marked, present }: GridProps) {
+function Grid({ letter, log, flips, payloads, len, marked, present }: GridProps) {
   const counts = useMemo(() => Uint32Array.from(flips ?? []), [flips]);
   return (
     <div className="cmp-grid">
@@ -225,10 +226,12 @@ function Grid({ letter, log, flips, frames, len, marked, present }: GridProps) {
       </p>
       {!present ? (
         <p className="hint cmp-grid-empty">Not in log {letter}.</p>
-      ) : flips && len > 0 ? (
+      ) : flips && (len === 0 || payloads === 0) ? (
+        <p className="hint cmp-grid-empty">No payload bytes in log {letter}.</p>
+      ) : flips ? (
         <BitHeatmap
           flips={counts}
-          frames={frames}
+          frames={payloads}
           bytes={len}
           signals={NO_SIGNALS}
           colors={NO_SIGNALS}

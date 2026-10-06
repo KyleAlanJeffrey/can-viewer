@@ -16,6 +16,7 @@ import {
   rangeFits,
   rectBits,
   windowFits,
+  windowStats,
 } from './bits';
 
 describe('rangeBits', () => {
@@ -180,5 +181,21 @@ describe('layoutString', () => {
     expect(layoutString({ startBit: 23, size: 16, byteOrder: 'motorola' }, false)).toBe('23|16@0+');
     expect(layoutString({ startBit: 0, size: 8, byteOrder: 'intel' }, true)).toBe('0|8@1-');
     expect(layoutString({ startBit: 0, size: 32, byteOrder: 'intel' }, false, true)).toBe('0|32@1- float');
+  });
+});
+
+describe('windowStats', () => {
+  const x = Float64Array.from([0, 1, 2, 3, 4, 5]);
+
+  it('leaves NaN out of the range and counts no change between NaNs', () => {
+    const stats = windowStats(x, Float64Array.from([NaN, NaN, 2, NaN, -1, -1]), [0, 5]);
+    expect(stats).toMatchObject({ frames: 6, changes: 3, min: -1, max: 2 });
+  });
+
+  it('has min above max when every value is NaN', () => {
+    const stats = windowStats(x, Float64Array.from([NaN, NaN, NaN, NaN, NaN, NaN]), [1, 4]);
+    expect(stats.frames).toBe(4);
+    expect(stats.changes).toBe(0);
+    expect(stats.min).toBeGreaterThan(stats.max);
   });
 });

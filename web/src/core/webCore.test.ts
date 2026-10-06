@@ -146,31 +146,54 @@ describe('WebCore', () => {
     expect(reset).not.toHaveBeenCalled();
   });
 
-  it('scans messages one at a time with progress, and stops between them when cancelled', async () => {
+  /** Answers the next request, which must be `method`, and forgets it. */
+  const answer = async (worker: FakeWorker, method: Request['method'], result: unknown) => {
+    await vi.waitFor(() => expect(worker.requests.map((r) => r.method)).toContain(method));
+    worker.reply(method, { result });
+    worker.requests.splice(
+      worker.requests.findIndex((r) => r.method === method),
+      1,
+    );
+  };
+
+  it('suggests for a message in steps, each a request of its own', async () => {
+    const core = new WebCore();
+    const worker = FakeWorker.all[0];
+    const found: MessageSuggestions = { key: 1, frames: 10, sampledFrames: 10, suggestions: [] };
+    const hints = { markers: [{ t: 3 }] };
+    const suggest = core.suggestSignals(1, hints);
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(1));
+    expect(worker.requests[0]).toEqual(expect.objectContaining({ method: 'suggestBegin', args: [1, hints] }));
+    await answer(worker, 'suggestBegin', 7);
+    await answer(worker, 'suggestStep', null);
+    await vi.waitFor(() => expect(worker.requests).toEqual([expect.objectContaining({ method: 'suggestStep', args: [7] })]));
+    await answer(worker, 'suggestStep', null);
+    await answer(worker, 'suggestStep', found);
+    await expect(suggest).resolves.toEqual(found);
+  });
+
+  it('scans messages one at a time with progress, and stops within one when cancelled', async () => {
     const core = new WebCore();
     const worker = FakeWorker.all[0];
     const found = (key: number): MessageSuggestions => ({ key, frames: 10, sampledFrames: 10, suggestions: [] });
     const progress = vi.fn();
-    const hints = { markers: [{ t: 3 }] };
-    const scan = core.scanSignals([1, 2], hints, progress);
-    await vi.waitFor(() => expect(worker.requests).toHaveLength(1));
-    expect(worker.requests[0]).toEqual(expect.objectContaining({ method: 'suggestSignals', args: [1, hints] }));
-    worker.reply('suggestSignals', { result: found(1) });
-    await vi.waitFor(() => expect(worker.requests).toHaveLength(2));
-    expect(progress).toHaveBeenLastCalledWith(1, 2, found(1));
-    worker.requests.shift();
-    worker.reply('suggestSignals', { result: found(2) });
+    const scan = core.scanSignals([1, 2], {}, progress);
+    await answer(worker, 'suggestBegin', 0);
+    await answer(worker, 'suggestStep', found(1));
+    await vi.waitFor(() => expect(progress).toHaveBeenLastCalledWith(1, 2, found(1)));
+    await answer(worker, 'suggestBegin', 1);
+    await answer(worker, 'suggestStep', found(2));
     await expect(scan).resolves.toEqual([found(1), found(2)]);
     expect(progress).toHaveBeenLastCalledWith(2, 2, found(2));
 
     const controller = new AbortController();
-    worker.requests.length = 0;
     const cancelled = core.scanSignals([3, 4, 5], {}, () => {}, controller.signal);
-    await vi.waitFor(() => expect(worker.requests).toHaveLength(1));
+    await answer(worker, 'suggestBegin', 2);
+    await vi.waitFor(() => expect(worker.requests.map((r) => r.method)).toEqual(['suggestStep']));
     controller.abort();
-    worker.reply('suggestSignals', { result: found(3) });
+    await answer(worker, 'suggestStep', null);
     await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
-    expect(worker.requests).toHaveLength(1);
+    expect(worker.requests).toEqual([expect.objectContaining({ method: 'suggestDrop', args: [2] })]);
   });
 
   it('passes over messages a scan finds already suggested for when their turn comes', async () => {
@@ -182,9 +205,11 @@ describe('WebCore', () => {
     const scan = core.scanSignals([1, 2, 3], {}, progress, undefined, (key) => known.has(key));
     await vi.waitFor(() => expect(worker.requests).toHaveLength(1));
     known.add(3);
-    worker.reply('suggestSignals', { result: found(1) });
+    expect(worker.requests[0].args[0]).toBe(1);
+    await answer(worker, 'suggestBegin', 0);
+    await answer(worker, 'suggestStep', found(1));
     await expect(scan).resolves.toEqual([found(1)]);
-    expect(worker.requests.map((r) => r.args[0])).toEqual([1]);
+    expect(worker.requests).toEqual([]);
     expect(progress.mock.calls).toEqual([
       [1, 3, found(1)],
       [2, 3, null],

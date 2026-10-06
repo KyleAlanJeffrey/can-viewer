@@ -1,10 +1,10 @@
 //! The [`Session`] binding for Suggested signals ([`discover`]).
 
-use can_core::IdKey;
+use can_core::{IdKey, IdStats};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use crate::discover::{self, Hints, Kind, Marker, Reference};
+use crate::discover::{self, Findings, Hints, Job, Kind, Marker, Reference, STEP_WORK};
 use crate::{js_err, to_json, RawSignalSpec, Session};
 
 #[derive(Deserialize, Default)]
@@ -80,6 +80,25 @@ fn level(score: f64) -> Level {
     }
 }
 
+/// Suggestions being made a step at a time, by job id; see [`Session::suggest_begin`].
+#[derive(Default)]
+pub(crate) struct PendingSuggestions {
+    next_id: u32,
+    jobs: Vec<Pending>,
+}
+
+struct Pending {
+    id: u32,
+    key: f64,
+    job: Job,
+    /// For the result: the reference's name and unit.
+    reference: Option<String>,
+    unit: String,
+}
+
+/// Jobs begun and never finished or dropped are let go, oldest first, past this many.
+const MAX_PENDING: usize = 8;
+
 #[wasm_bindgen]
 impl Session {
     /// Suggested signals for ID `key`, given hints as a JSON `DiscoveryHints`; see
@@ -87,17 +106,94 @@ impl Session {
     pub fn suggest_signals(&self, key: f64, hints: &str) -> Result<String, JsError> {
         self.suggestions(key, hints).map_err(js_err)
     }
+
+    /// Starts [`Session::suggest_signals`] as a job to run with `suggest_step`, so other calls
+    /// can run between its steps. Returns the job's id.
+    pub fn suggest_begin(&mut self, key: f64, hints: &str) -> Result<u32, JsError> {
+        self.begin_suggestions(key, hints).map_err(js_err)
+    }
+
+    /// Does the next part of job `job`: `undefined` while there is more to do, else the JSON
+    /// `MessageSuggestions`, and the job is over. Fails for an unknown job, or one whose log
+    /// changed under it, which is then over too.
+    pub fn suggest_step(&mut self, job: u32) -> Result<Option<String>, JsError> {
+        self.step_suggestions(job).map_err(js_err)
+    }
+
+    /// Gives up job `job`, if it is still going.
+    pub fn suggest_drop(&mut self, job: u32) {
+        self.discovery.jobs.retain(|p| p.id != job);
+    }
 }
 
 impl Session {
     fn suggestions(&self, key: f64, hints: &str) -> Result<String, String> {
+        let (stats, hints, unit) = self.suggestion_inputs(key, hints)?;
+        let reference = hints.reference.as_ref().map(|r| r.name.clone());
+        let findings = discover::suggest(&self.store, stats, &hints);
+        Ok(self.suggestions_json(stats, findings, reference, &unit))
+    }
+
+    fn begin_suggestions(&mut self, key: f64, hints: &str) -> Result<u32, String> {
+        let (stats, hints, unit) = self.suggestion_inputs(key, hints)?;
+        let reference = hints.reference.as_ref().map(|r| r.name.clone());
+        let job = Job::new(&self.store, stats, hints);
+        let pending = &mut self.discovery;
+        let id = pending.next_id;
+        pending.next_id = pending.next_id.wrapping_add(1);
+        pending.jobs.push(Pending {
+            id,
+            key,
+            job,
+            reference,
+            unit,
+        });
+        if pending.jobs.len() > MAX_PENDING {
+            pending.jobs.remove(0);
+        }
+        Ok(id)
+    }
+
+    fn step_suggestions(&mut self, id: u32) -> Result<Option<String>, String> {
+        let at = self
+            .discovery
+            .jobs
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or("unknown suggestion job")?;
+        let mut pending = self.discovery.jobs.remove(at);
+        let stats = self
+            .filter(pending.key)
+            .ok()
+            .flatten()
+            .filter(|stats| pending.job.still_fits(&self.store, stats))
+            .ok_or("the log changed")?;
+        if !pending.job.scored_all() {
+            pending.job.step(&self.store, STEP_WORK);
+            self.discovery.jobs.insert(at, pending);
+            return Ok(None);
+        }
+        let findings = pending.job.finish(&self.store);
+        Ok(Some(self.suggestions_json(
+            stats,
+            findings,
+            pending.reference,
+            &pending.unit,
+        )))
+    }
+
+    /// The ID's stats, the hints as [`discover`] takes them, and the reference's unit.
+    fn suggestion_inputs(
+        &self,
+        key: f64,
+        hints: &str,
+    ) -> Result<(&IdStats, Hints, String), String> {
         let parsed: HintsJson = if hints.trim().is_empty() {
             HintsJson::default()
         } else {
             serde_json::from_str(hints).map_err(|e| e.to_string())?
         };
         let stats = self.filter(key).ok().flatten().ok_or("unknown ID")?;
-        let origin = self.origin_ns();
         let mut unit = String::new();
         let reference = match &parsed.reference {
             None => None,
@@ -140,7 +236,17 @@ impl Session {
                 .collect(),
             reference,
         };
-        let findings = discover::suggest(&self.store, stats, &hints);
+        Ok((stats, hints, unit))
+    }
+
+    fn suggestions_json(
+        &self,
+        stats: &IdStats,
+        findings: Findings,
+        reference: Option<String>,
+        unit: &str,
+    ) -> String {
+        let origin = self.origin_ns();
         let seconds = |ns: i64| (ns - origin) as f64 / 1e9;
         let suggestions = findings
             .suggestions
@@ -167,11 +273,8 @@ impl Session {
                         v: s.spark.iter().map(|&(_, v)| v).collect(),
                     },
                     fit: s.fit.map(|f| FitJson {
-                        reference: hints
-                            .reference
-                            .as_ref()
-                            .map_or_else(String::new, |r| r.name.clone()),
-                        unit: unit.clone(),
+                        reference: reference.clone().unwrap_or_default(),
+                        unit: unit.to_owned(),
                         r: (f.r * 1000.0).round() / 1000.0,
                         factor: f.factor,
                         offset: f.offset,
@@ -179,12 +282,12 @@ impl Session {
                 }
             })
             .collect();
-        Ok(to_json(&MessageSuggestions {
+        to_json(&MessageSuggestions {
             key: stats.key(),
             frames: stats.frames.len(),
             sampled_frames: findings.sampled_frames,
             suggestions,
-        }))
+        })
     }
 }
 
@@ -237,6 +340,34 @@ mod tests {
         assert_eq!(first["sparkline"]["v"].as_array().unwrap().len(), 64);
         let confidence = first["confidence"].as_f64().unwrap();
         assert!(confidence > 0.9 && confidence < 1.0);
+    }
+
+    #[test]
+    fn a_job_run_in_steps_gives_the_same_suggestions() {
+        let mut s = session();
+        let key = id_key(0, 0x100) as f64;
+        let hints = json!({ "markers": [{ "t": 2.5 }] }).to_string();
+        let whole = s.suggestions(key, &hints).unwrap();
+        let id = s.begin_suggestions(key, &hints).unwrap();
+        let other = s.begin_suggestions(id_key(0, 0x200) as f64, "").unwrap();
+        let mut steps = 0;
+        let stepped = loop {
+            steps += 1;
+            if let Some(json) = s.step_suggestions(id).unwrap() {
+                break json;
+            }
+        };
+        assert_eq!(stepped, whole);
+        assert!(steps >= 2);
+        assert_eq!(
+            s.step_suggestions(id).unwrap_err(),
+            "unknown suggestion job"
+        );
+        s.suggest_drop(other);
+        assert_eq!(
+            s.step_suggestions(other).unwrap_err(),
+            "unknown suggestion job"
+        );
     }
 
     #[test]

@@ -1212,10 +1212,12 @@ if (found.length > 0) {
 ### suggestSignals
 
 ```ts
-suggestSignals(key: number, hints?: DiscoveryHints): Promise<MessageSuggestions>
+suggestSignals(key: number, hints?: DiscoveryHints, signal?: AbortSignal): Promise<MessageSuggestions>
 ```
 
-Proposes likely signals in one message from how its bits change: counters, checksums, flags, enums, and unsigned and signed values. Every suggestion is a guess to check against the log, not a decode. The result is the same each time for the same log, databases and hints.
+Proposes likely signals in one message from how its bits change: counters, checksums, flags, enums, unsigned and signed values, and floats. Every suggestion is a guess to check against the log, not a decode. The result is the same each time for the same log, databases and hints.
+
+The worker does the work in steps of a few milliseconds each, every step a request of its own, so other calls run between them and a long payload never holds the worker for long: one step samples the frames, the next ones score about 200,000 sampled frame reads' worth of candidates each, and the last picks the suggestions (see `Job` in `crates/can-wasm/src/discover.rs`, and `suggest_begin`, `suggest_step` and `suggest_drop` in `crates/can-wasm/src/suggest.rs`).
 
 How it works (see `suggest` in `crates/can-wasm/src/discover.rs`):
 
@@ -1232,10 +1234,11 @@ How it works (see `suggest` in `crates/can-wasm/src/discover.rs`):
 
 - **`key`** `number` - The ID key. Any ID works, decoded or not; the UI asks about IDs no DBC describes.
 - **`hints`** [`DiscoveryHints`](#the-discoveryhints-object), optional - Event markers and a reference signal.
+- **`signal`** `AbortSignal`, optional - Aborting it gives the work up at the next step.
 
 **Returns** a [`MessageSuggestions`](#the-messagesuggestions-object). An ID whose bits never change, or with a single frame, has no suggestions.
 
-**Errors** Rejects with `unknown ID` for an unknown key, `unknown reference ID` or `unknown reference signal` for a reference the log doesn't have, and `no loaded DBC defines the reference's message` for a reference no DBC decodes.
+**Errors** Rejects with `unknown ID` for an unknown key, `unknown reference ID` or `unknown reference signal` for a reference the log doesn't have, `no loaded DBC defines the reference's message` for a reference no DBC decodes, `the log changed` when frames were added or another log opened between steps, and a `DOMException` named `AbortError` when aborted.
 
 ```ts
 const { suggestions } = await core.suggestSignals(summary.key, { markers: [{ t: 12 }] });
@@ -1255,14 +1258,14 @@ scanSignals(
 ): Promise<MessageSuggestions[]>
 ```
 
-Runs [`suggestSignals`](#suggestsignals) for each ID in turn, so a scan of many messages shows progress and can be cancelled. Other calls can run between the messages.
+Runs [`suggestSignals`](#suggestsignals) for each ID in turn, so a scan of many messages shows progress and can be cancelled. Other calls can run between the messages, and between the steps of each.
 
 **Parameters**
 
 - **`keys`** `number[]` - The ID keys to scan, in order. The UI passes the IDs no DBC describes.
 - **`hints`** [`DiscoveryHints`](#the-discoveryhints-object) - Applied to every message.
 - **`onProgress`** `(done: number, total: number, latest: MessageSuggestions | null) => void` - Called after each message with its suggestions, so a cancelled scan keeps what it found, and with `null` for a key passed over.
-- **`signal`** `AbortSignal`, optional - Aborting it stops the scan once the message in hand is done.
+- **`signal`** `AbortSignal`, optional - Aborting it stops the scan at the next step of the message in hand, whose suggestions are then not reported.
 - **`skip`** `(key: number) => boolean`, optional - Asked as each key's turn comes; a key it returns true for is passed over but counts towards `done`, and `onProgress` is called for it with `null`. The UI skips a message it suggested for meanwhile, such as one opened during the scan.
 
 **Returns** one [`MessageSuggestions`](#the-messagesuggestions-object) per key scanned, in the order given.

@@ -84,6 +84,7 @@ pub struct Session {
     filtered: Option<Vec<u32>>,
     /// The chunks of the last `export_log` not yet taken by `export_chunk`.
     export: VecDeque<Vec<u8>>,
+    discovery: suggest::PendingSuggestions,
 }
 
 /// A live capture: frames pushed by the page as an adapter receives them.

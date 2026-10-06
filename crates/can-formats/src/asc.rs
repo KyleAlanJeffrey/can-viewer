@@ -75,6 +75,10 @@ impl AscParser {
         self.lines = LineSplitter::mid_file();
     }
 
+    pub(crate) fn mid_line(&self) -> bool {
+        self.lines.mid_line()
+    }
+
     /// Relative timestamps add up from line to line, so each line depends on all before it.
     pub(crate) fn relative(&self) -> bool {
         self.header.relative

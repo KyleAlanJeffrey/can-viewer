@@ -93,6 +93,10 @@ impl CsvParser {
         self.lines = LineSplitter::mid_file();
     }
 
+    pub(crate) fn mid_line(&self) -> bool {
+        self.lines.mid_line()
+    }
+
     /// The layout the header line set, with the time unit once a row has decided it.
     pub(crate) fn state(&self) -> String {
         format!("{:?} {}", self.layout, self.bad_header)

@@ -33,6 +33,10 @@ impl CandumpParser {
         self.stats = ParseStats::default();
         self.lines = LineSplitter::mid_file();
     }
+
+    pub(crate) fn mid_line(&self) -> bool {
+        self.lines.mid_line()
+    }
 }
 
 impl LogParser for CandumpParser {

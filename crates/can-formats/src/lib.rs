@@ -148,13 +148,15 @@ impl AnyParser {
 
     /// Whether the rest of the file can be read in parts, each from a line boundary by a parser
     /// of its own that read only the file's start (see [`AnyParser::prime`]), given what the
-    /// file has set so far. A text format's lines depend only on its header, except for ASC
-    /// with relative timestamps. The binary formats are read whole.
+    /// file has set so far, and only between lines. A text format's lines depend only on its
+    /// header, except for ASC with relative timestamps. The binary formats are read whole.
     #[must_use]
     pub fn splittable(&self) -> bool {
         match self {
-            AnyParser::Candump(_) | AnyParser::Trc(_) | AnyParser::Csv(_) => true,
-            AnyParser::Asc(parser) => !parser.relative(),
+            AnyParser::Candump(parser) => !parser.mid_line(),
+            AnyParser::Trc(parser) => !parser.mid_line(),
+            AnyParser::Csv(parser) => !parser.mid_line(),
+            AnyParser::Asc(parser) => !parser.relative() && !parser.mid_line(),
             AnyParser::Blf(_) | AnyParser::Mf4(_) => false,
         }
     }

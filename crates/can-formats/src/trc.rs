@@ -117,6 +117,10 @@ impl TrcParser {
         self.lines = LineSplitter::mid_file();
     }
 
+    pub(crate) fn mid_line(&self) -> bool {
+        self.lines.mid_line()
+    }
+
     /// What the header lines read so far set.
     pub(crate) fn state(&self) -> String {
         format!("{:?}", self.header)

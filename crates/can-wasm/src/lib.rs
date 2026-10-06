@@ -661,8 +661,8 @@ impl Session {
     }
 
     /// The format to read the rest of the log in, in parts, with [`parse_segment`], once the
-    /// chunks pushed so far show it can be; see `AnyParser::splittable`. The chunks pushed so
-    /// far must end at a line break.
+    /// chunks pushed so far show it can be; see `AnyParser::splittable`. None while they end
+    /// partway through a line.
     #[must_use]
     pub fn segment_format(&self) -> Option<String> {
         if self.capture.is_some() {

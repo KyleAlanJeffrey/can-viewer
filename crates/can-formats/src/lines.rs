@@ -38,7 +38,7 @@ impl LineSplitter {
         stats.bytes += chunk.len() as u64;
         let bom = !self.mid_file;
         let mut rest = chunk;
-        if !self.carry.is_empty() || self.skipping_line {
+        if self.mid_line() {
             let nl = memchr::memchr(b'\n', rest);
             self.carry_over(&rest[..nl.unwrap_or(rest.len())], stats);
             let Some(nl) = nl else {
@@ -63,9 +63,14 @@ impl LineSplitter {
         stats: &mut ParseStats,
         mut on_line: impl FnMut(&[u8], &mut ParseStats),
     ) {
-        if !self.carry.is_empty() || self.skipping_line {
+        if self.mid_line() {
             self.end_carried_line(stats, &mut on_line);
         }
+    }
+
+    /// Whether the input so far ends partway through a line.
+    pub(crate) fn mid_line(&self) -> bool {
+        !self.carry.is_empty() || self.skipping_line
     }
 
     #[cfg(test)]

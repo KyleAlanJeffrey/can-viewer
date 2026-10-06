@@ -1210,9 +1210,11 @@ impl Session {
             Some(_) => return Err("the capture has ended"),
             None => return Err("no capture is running"),
         };
-        let dropped = self
-            .store
-            .drop_before(capture.started_at_ns.saturating_add(before_ns.round() as i64));
+        let dropped = self.store.drop_before(
+            capture
+                .started_at_ns
+                .saturating_add(before_ns.round() as i64),
+        );
         capture.dropped += dropped;
         if dropped > 0 {
             // Rows and counts name frames by their old places. The first frame moved, so the

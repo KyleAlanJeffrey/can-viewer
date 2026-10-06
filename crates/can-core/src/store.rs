@@ -611,9 +611,10 @@ impl FrameStore {
     fn sort_columns_by_time(&mut self) -> Result<(), TryReserveError> {
         let mut order: Vec<u32> = Vec::new();
         order.try_reserve_exact(self.len())?;
-        order.extend((0..self.len() as u32).filter(|&i| {
-            self.trimmed || self.flags[i as usize] & flags::REASSEMBLED == 0
-        }));
+        order.extend(
+            (0..self.len() as u32)
+                .filter(|&i| self.trimmed || self.flags[i as usize] & flags::REASSEMBLED == 0),
+        );
         order.sort_unstable_by_key(|&i| (self.ts_ns[i as usize], i));
 
         let mut reassembler = tp::Reassembler::default();

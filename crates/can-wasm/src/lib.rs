@@ -509,6 +509,7 @@ impl Session {
         self.input = LogInput::default();
         self.series.clear();
         self.filtered = None;
+        self.export = VecDeque::new();
         // Compared against a capture still growing, log B would show differences that aren't.
         self.log_b = None;
         let channel = self.store.channel_index(channel.as_bytes());

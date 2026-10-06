@@ -100,10 +100,23 @@ fn log_frames(store: &FrameStore) -> impl Iterator<Item = FrameRef<'_>> {
         .filter(|frame| frame.flags & flags::REASSEMBLED == 0)
 }
 
+/// 1900-01-01T00:00:00Z. Every format with a start time reads back a log from then on: TRC's
+/// days count from 1899-12-30, and MF4's offsets from 1970 stay in range.
+const EARLIEST_START_NS: i64 = -2_208_988_800_000_000_000;
+
 /// The earliest time of a log frame, which the formats with a start time count from. The store
-/// is in time order once loaded, unless it was too large to sort.
-fn start_ns(store: &FrameStore) -> i64 {
-    log_frames(store).map(|f| f.ts_ns).min().unwrap_or(0)
+/// is in time order once loaded, unless it was too large to sort. A log from before 1900 is an
+/// error.
+fn start_ns(store: &FrameStore) -> io::Result<i64> {
+    let start = log_frames(store).map(|f| f.ts_ns).min().unwrap_or(0);
+    if start < EARLIEST_START_NS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "This log has times before 1900, which ASC, BLF, TRC and MF4 can't hold. Export it \
+             as candump or CSV.",
+        ));
+    }
+    Ok(start)
 }
 
 /// Whether a frame needs a CAN FD record: a classic frame carries at most 8 bytes, and an MF4
@@ -409,6 +422,83 @@ mod tests {
     }
 
     #[test]
+    fn times_before_the_epoch_read_back_the_same() {
+        let times = [-1_000_001_000, -500_000_000, 250_000_000, 500_000_000];
+        let mut store = FrameStore::new();
+        let channel = store.channel_index(b"can1");
+        for (byte, ts_ns) in times.into_iter().enumerate() {
+            store.push(FrameRef {
+                ts_ns,
+                channel,
+                id: 0x123,
+                flags: 0,
+                data: &[byte as u8],
+            });
+        }
+        for format in [
+            Format::Candump,
+            Format::Asc,
+            Format::Trc,
+            Format::Csv,
+            Format::Blf,
+            Format::Mf4,
+        ] {
+            assert_eq!(
+                frames(&read(format, &write(format, &store))),
+                frames(&store),
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn logs_from_1900_on_read_back_and_earlier_ones_only_as_text() {
+        let mut store = FrameStore::new();
+        let channel = store.channel_index(b"can1");
+        for ts_ns in [EARLIEST_START_NS, EARLIEST_START_NS + 500_000_000] {
+            store.push(FrameRef {
+                ts_ns,
+                channel,
+                id: 0x123,
+                flags: 0,
+                data: &[1],
+            });
+        }
+        for format in [
+            Format::Candump,
+            Format::Asc,
+            Format::Trc,
+            Format::Csv,
+            Format::Blf,
+            Format::Mf4,
+        ] {
+            assert_eq!(
+                frames(&read(format, &write(format, &store))),
+                frames(&store),
+                "{format:?}"
+            );
+        }
+
+        store.push(FrameRef {
+            ts_ns: i64::MIN,
+            channel,
+            id: 0x123,
+            flags: 0,
+            data: &[1],
+        });
+        for format in [Format::Asc, Format::Trc, Format::Blf, Format::Mf4] {
+            let mut out = Cursor::new(Vec::new());
+            let error = write_log(format, &store, LocalTime::UTC, &mut out).unwrap_err();
+            assert!(error.to_string().contains("before 1900"), "{format:?}");
+        }
+        for format in [Format::Candump, Format::Csv] {
+            let copy = read(format, &write(format, &store));
+            let times: Vec<i64> = (0..copy.len()).map(|i| copy.frame(i).ts_ns).collect();
+            assert!(times.contains(&-9_223_372_036_854_775_000), "{format:?}");
+        }
+    }
+
+    #[test]
     fn empty_logs_read_back_with_no_frames() {
         for format in [
             Format::Candump,
@@ -564,6 +654,7 @@ mod tests {
         assert_eq!(len_to_dlc(12), 9);
         assert_eq!(len_to_dlc(33), 14);
         assert_eq!(len_to_dlc(64), 15);
+        assert_eq!(crate::text::unix_ns(1900, 1, 1, 0), Some(EARLIEST_START_NS));
         assert_eq!(plain_name("can0"), "can0");
         assert_eq!(plain_name("CAN 1,\"a\""), "CAN_1__a_");
         assert_eq!(plain_name(""), "can");

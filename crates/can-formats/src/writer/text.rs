@@ -69,7 +69,7 @@ pub(super) fn write_asc(
     local_time: LocalTime,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let start_s = start_ns(store).div_euclid(1_000_000_000);
+    let start_s = start_ns(store)?.div_euclid(1_000_000_000);
     let channels = bus_numbers(store)?;
     let date = asc_date(local_time.to_local(start_s));
     writeln!(out, "date {date}")?;
@@ -127,7 +127,7 @@ pub(super) fn write_asc(
 /// a CAN FD frame whose length no DLC gives is padded with zeros to the next one that does.
 pub(super) fn write_trc(store: &FrameStore, out: &mut impl Write) -> io::Result<()> {
     const NS_PER_DAY: i64 = 86_400 * 1_000_000_000;
-    let start_day = start_ns(store).div_euclid(NS_PER_DAY);
+    let start_day = start_ns(store)?.div_euclid(NS_PER_DAY);
     let buses = bus_numbers(store)?;
     writeln!(out, ";$FILEVERSION=2.1")?;
     writeln!(out, ";$STARTTIME={}", start_day + 25_569)?;

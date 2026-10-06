@@ -1291,6 +1291,8 @@ export function App({ core }: { core: CoreApi }) {
       </Sheet>
       {log && (
         <ExportLogSheet
+          // Remounted for each log, so its default format is picked for that log.
+          key={logVersion}
           open={exportOpen}
           onClose={() => setExportOpen(false)}
           core={core}

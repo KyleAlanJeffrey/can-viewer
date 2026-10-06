@@ -71,6 +71,33 @@ describe('App', () => {
     expect(exportButton.disabled).toBe(false);
   });
 
+  it('picks the default export format for each log opened', async () => {
+    const App = await freshApp();
+    const core = fakeCore({
+      openLog: (_file, logName) => Promise.resolve(logInfo({ name: logName, format: logName.endsWith('.asc') ? 'asc' : 'candump' })),
+      idSummary: () => Promise.resolve([]),
+    });
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
+    const exportButton = screen.getByRole('button', { name: 'Export Log\u2026' });
+    const checkedFormat = async () => {
+      await userEvent.click(exportButton);
+      const sheet = screen.getByRole('dialog', { name: 'Export Log' });
+      const checked = within(sheet).getByRole('radio', { checked: true }).getAttribute('aria-label');
+      await userEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }));
+      return checked;
+    };
+
+    await userEvent.upload(input, new File(['(1.0) can0 123#00\n'], 'x.log'));
+    await screen.findByText('candump \u00b7 1,000 frames \u00b7 1 min 40 s');
+    expect(await checkedFormat()).toBe('Vector ASC (.asc)');
+
+    await userEvent.upload(input, new File(['base hex'], 'y.asc'));
+    await screen.findByText('ASC \u00b7 1,000 frames \u00b7 1 min 40 s');
+    expect(await checkedFormat()).toBe('candump (.log)');
+  });
+
   it('shows the format of an open log next to its frame count', async () => {
     const App = await freshApp();
     const core = fakeCore({

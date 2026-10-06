@@ -18,7 +18,7 @@
 //! Ignore rules leave out bits that behave like a counter or checksum in both logs, and
 //! subtract from each component what it scores between the first and second halves of log A.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use can_core::{flags, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 use serde::{Deserialize, Serialize};
@@ -1157,6 +1157,7 @@ impl Session {
         std::mem::swap(&mut self.input, &mut log.input);
         self.series.clear();
         self.filtered = None;
+        self.export = VecDeque::new();
         Ok(())
     }
 
@@ -1552,7 +1553,9 @@ mod tests {
         .unwrap();
         let every = r#"{"channels":null,"keys":null,"kinds":null,"rules":[],"combine":"all","t0":null,"t1":null}"#;
         assert!(s.set_trace_filter(every).unwrap() > 0);
+        s.export_log("candump").unwrap();
         let info: serde_json::Value = serde_json::from_str(&s.swap_compare_log().unwrap()).unwrap();
+        assert_eq!(s.export_chunk(), None, "the export was the old open log's");
         assert_eq!(
             s.row_count(-2.0),
             0,
@@ -1581,8 +1584,10 @@ mod tests {
     fn a_capture_drops_log_b_and_cannot_be_swapped() {
         let mut s = session();
         open_b(&mut s);
+        s.export_log("candump").unwrap();
         s.start_capture("can0", 0.0);
         assert_eq!(s.compare_log_info(), None);
+        assert_eq!(s.export_chunk(), None, "the export was the old open log's");
         s.finish_capture().unwrap();
         open_b(&mut s);
         assert_eq!(

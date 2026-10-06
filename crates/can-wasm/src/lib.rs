@@ -175,7 +175,11 @@ impl LogInput {
                 }
             }
         }
-        // A file can hold more frames than its size suggested.
+        self.refuse_if_over_limit(store);
+    }
+
+    /// A file can hold more frames than its size suggested, a compressed MF4 most of all.
+    fn refuse_if_over_limit(&mut self, store: &FrameStore) {
         if self.limit.is_some_and(|limit| store.heap_bytes() > limit) {
             self.refused = true;
             self.parser = None;
@@ -214,6 +218,11 @@ impl LogInput {
         }
         if let Some(parser) = &mut self.parser {
             parser.finish(store);
+        }
+        // An MF4 file reads all its frames here.
+        self.refuse_if_over_limit(store);
+        if self.refused {
+            return;
         }
         store.sort_by_time();
     }

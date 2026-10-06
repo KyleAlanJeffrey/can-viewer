@@ -2263,6 +2263,34 @@ mod tests {
         assert!(session.compare_finish().is_ok());
     }
 
+    #[test]
+    fn a_compressed_mf4_log_b_that_outgrows_its_budget_is_refused() {
+        let frames = store(&periodic(0x123, 1000.0, 20.0, quiet));
+        let mut file = std::io::Cursor::new(Vec::new());
+        can_formats::writer::write_log(
+            can_formats::Format::Mf4,
+            &frames,
+            crate::clock::local_time(),
+            &mut file,
+        )
+        .unwrap();
+        let file = file.into_inner();
+        let limit = 256 << 10;
+        assert!(frames.heap_bytes() > limit);
+
+        let mut input = LogInput {
+            file_name: "drive.mf4".to_owned(),
+            total_bytes: file.len() as f64,
+            limit: Some(limit),
+            ..LogInput::default()
+        };
+        let mut store = FrameStore::new();
+        input.push(&file, &mut store);
+        assert!(!input.refused, "its size suggests it fits");
+        input.finish(&mut store);
+        assert!(input.refused);
+    }
+
     /// A 16-bit little-endian value from `from` to `to` over a minute at 10 Hz.
     fn ramp16(from: u32, to: u32) -> FrameStore {
         store(&periodic(0x10E, 10.0, 60.0, move |_, t| {

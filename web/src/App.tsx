@@ -9,6 +9,7 @@ import { EXPORT_FORMATS, ExportLogSheet } from './components/ExportLogSheet';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
+import { ChunkBoundary } from './components/ChunkBoundary';
 import { Sheet } from './components/Sheet';
 import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
@@ -129,6 +130,8 @@ export function App({ core }: { core: CoreApi }) {
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const [captureOpen, setCaptureOpen] = useState(false);
+  // The sheet loads when first opened, then stays, keeping the chosen adapter.
+  const [captureSheetUsed, setCaptureSheetUsed] = useState(false);
   const [live, setLive] = useState<LiveCapture | null>(null);
   const [liveStatus, setLiveStatus] = useState<CaptureStatus | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -1049,7 +1052,12 @@ export function App({ core }: { core: CoreApi }) {
                 )}
                 <button
                   className="toolbar-button capture"
-                  onClick={() => unlessUnsavedCapture(() => setCaptureOpen(true))}
+                  onClick={() =>
+                    unlessUnsavedCapture(() => {
+                      setCaptureSheetUsed(true);
+                      setCaptureOpen(true);
+                    })
+                  }
                   disabled={!!busy || stopping}
                   title={'Capture\u2026'}
                 >
@@ -1209,9 +1217,20 @@ export function App({ core }: { core: CoreApi }) {
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
       {dragOver && <div className="drop-overlay">Drop a log, DBC files or a video to open them</div>}
-      <Suspense fallback={null}>
-        <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
-      </Suspense>
+      {captureSheetUsed && (
+        <ChunkBoundary
+          message="Couldn't load capture."
+          frame={(fallback) => (
+            <Sheet open={captureOpen} onClose={() => setCaptureOpen(false)} title="Live Capture">
+              {fallback}
+            </Sheet>
+          )}
+        >
+          <Suspense fallback={null}>
+            <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
+          </Suspense>
+        </ChunkBoundary>
+      )}
       <Sheet
         open={discardThen !== null}
         onClose={() => setDiscardThen(null)}

@@ -51,6 +51,21 @@ interface Task {
 /** How a log read ended. */
 type ReadOutcome = 'opened' | 'failed' | 'stopped';
 
+interface OpenLogOptions {
+  /** Reopens a saved log with this UI, as after a reload. */
+  restore?: SavedUi;
+  /** Reopens the log shown before a read that was cancelled or failed. */
+  reopening?: boolean;
+  /** Keeps the current view rather than going to Overview, for a log opened from within a view. */
+  stay?: boolean;
+}
+
+type OpenLog = (file: Blob, name: string, options?: OpenLogOptions) => Promise<ReadOutcome>;
+
+/** Whether `saved` is a copy of `log`. A capture's bytes are 0; a saved one is kept as the candump file it was saved as. */
+const isSavedCopyOf = (saved: SavedLog | undefined, log: LogInfo | null): saved is SavedLog =>
+  !!saved && !!log && saved.name === log.name && (log.format === 'capture' || saved.blob.size === log.bytes);
+
 interface SavedLog {
   name: string;
   blob: Blob;
@@ -191,13 +206,16 @@ export function App({ core }: { core: CoreApi }) {
   const dbcInput = useRef<HTMLInputElement>(null);
   const exportButton = useRef<HTMLButtonElement>(null);
   const openLogButton = useRef<HTMLButtonElement>(null);
-  /** Set when Cancel is pressed or goes away with focus, to move focus to Open Log once it is enabled. */
-  const [focusOpenLog, setFocusOpenLog] = useState(false);
+  /** Set when Cancel is pressed or goes away with focus, to give focus somewhere once there is a place for it. */
+  const [focusAfterCancel, setFocusAfterCancel] = useState(false);
+  const cancelElement = useRef<HTMLButtonElement | null>(null);
   // Stable, so its cleanup runs only when Cancel goes away, not on every render.
   const cancelButton = useCallback((button: HTMLButtonElement | null) => {
     if (!button) return;
+    cancelElement.current = button;
     return () => {
-      if (document.activeElement === button) setFocusOpenLog(true);
+      if (cancelElement.current === button) cancelElement.current = null;
+      if (document.activeElement === button) setFocusAfterCancel(true);
     };
   }, []);
 
@@ -210,6 +228,9 @@ export function App({ core }: { core: CoreApi }) {
   logRef.current = log;
   const plotsRef = useRef(plots);
   plotsRef.current = plots;
+  /** The UI as a reload restores it, to reopen the log shown with it. */
+  const currentUi = useRef(() => uiSnapshot(view, selected, pinnedTime, plots));
+  currentUi.current = () => uiSnapshot(view, selected, pinnedTime, plots);
   const unsavedRef = useRef(unsavedCapture);
   unsavedRef.current = unsavedCapture;
   // Set by hand rather than each render, so a refresh in flight sees a capture stop at once.
@@ -248,7 +269,8 @@ export function App({ core }: { core: CoreApi }) {
       const mine: Task = { busy: { label, fraction: null, readingLog: read?.name }, read };
       tasks.current.push(mine);
       showLatestTask();
-      setError(null);
+      // A reopen follows a read that failed or was cancelled, whose error stays.
+      if (!read?.reopens) setError(null);
       const report = (progress: Busy) => {
         if (read?.stopped) return;
         mine.busy = { ...progress, readingLog: read?.name };
@@ -279,14 +301,14 @@ export function App({ core }: { core: CoreApi }) {
     if (lost || focused === exportButton.current) exportButton.current?.focus();
   }, [exportEnded, busy]);
 
-  // Cancel goes away when the read ends or is cancelled, and Open Log... is enabled once nothing
-  // but a read is under way; focus would otherwise fall to the page.
+  // Cancel goes away when the read ends or is cancelled, and focus would fall to the page. It goes
+  // to the Cancel of the log then reopened, if any, or else to Open Log... once that is enabled.
   useEffect(() => {
-    if (!focusOpenLog || (busy && busy.readingLog === undefined) || stopping) return;
-    setFocusOpenLog(false);
+    if (!focusAfterCancel || (busy && busy.readingLog === undefined) || stopping) return;
+    setFocusAfterCancel(false);
     const focused = document.activeElement;
-    if (!focused || focused === document.body) openLogButton.current?.focus();
-  }, [focusOpenLog, busy, stopping]);
+    if (!focused || focused === document.body) (cancelElement.current ?? openLogButton.current)?.focus();
+  }, [focusAfterCancel, busy, stopping]);
 
   const setView = useCallback((next: ViewId) => {
     setViewState(next);
@@ -434,12 +456,15 @@ export function App({ core }: { core: CoreApi }) {
     core.openLog(new Blob([]), '', () => {}).catch(() => undefined);
   }, [core, showLatestTask]);
 
-  /**
-   * Reads `file` as the open log. `restore` reopens a saved log with that UI; `stay` keeps the
-   * current view rather than going to Overview, for a log opened from within a view.
-   */
-  const openLog = useCallback(
-    (file: Blob, name: string, restore?: SavedUi, stay = false): Promise<ReadOutcome> => {
+  /** The saved copy of `shown`, the log the UI shows, to reopen it after the read that replaced it in the core. */
+  const savedCopyOf = async (shown: LogInfo | null) => {
+    const saved = shown ? await loadSaved<SavedLog>('log') : undefined;
+    return isSavedCopyOf(saved, shown) ? saved : undefined;
+  };
+
+  /** Reads `file` as the open log. */
+  const openLog = useCallback<OpenLog>(
+    (file, name, { restore, reopening = false, stay = false } = {}) => {
       stopReading();
       const read: LogRead = { name, stopped: false, reopens: !!restore };
       reading.current = read;
@@ -447,9 +472,11 @@ export function App({ core }: { core: CoreApi }) {
       unsavedRef.current = false;
       setUnsavedCapture(false);
       // A video added while a log loads would belong to the log being replaced.
+      /** The log shown before, to reopen if this read fails. */
+      let previous: SavedLog | undefined;
       return videoSession.whileLoadingLog(async () => {
         const opened = await run(
-          `Reading ${name}\u2026`,
+          `${reopening ? 'Reopening' : 'Reading'} ${name}\u2026`,
           (report) =>
             serially(async () => {
               // Whatever stopped this read shows its own outcome, so nothing here touches the UI.
@@ -466,10 +493,15 @@ export function App({ core }: { core: CoreApi }) {
               } catch (e) {
                 // Most likely the AbortError of the read the core was told to stop.
                 if (read.stopped) return;
-                showNoLog();
-                // No log is open now, so none must come back after a reload.
-                void forget('log');
-                void forget('compare');
+                // The core let the log shown go when this read began. It is reopened, as Cancel
+                // does, unless this read was a reopen, which a bad saved copy would repeat.
+                previous = read.reopens ? undefined : await savedCopyOf(logRef.current);
+                if (!previous) {
+                  showNoLog();
+                  // No log is open now, so none must come back after a reload.
+                  void forget('log');
+                  void forget('compare');
+                }
                 throw e;
               }
               const nextIds = await core.idSummary();
@@ -496,7 +528,9 @@ export function App({ core }: { core: CoreApi }) {
           read,
         );
         if (reading.current === read) reading.current = null;
-        return read.stopped ? 'stopped' : opened ? 'opened' : 'failed';
+        if (read.stopped) return 'stopped';
+        if (previous) await openLog(previous.blob, previous.name, { restore: currentUi.current(), reopening: true });
+        return opened ? 'opened' : 'failed';
       });
     },
     [core, run, serially, stopReading, showNoLog, showOpenedLog, setView, restoreUi, viewState],
@@ -598,8 +632,8 @@ export function App({ core }: { core: CoreApi }) {
     // The read has just ended, and the next render shows how.
     if (!read) return;
     const shown = read.reopens ? null : logRef.current;
-    const ui = uiSnapshot(view, selected, pinnedTime, plots);
-    setFocusOpenLog(true);
+    const ui = currentUi.current();
+    setFocusAfterCancel(true);
     stopReading();
     void (async () => {
       let previous: SavedLog | undefined;
@@ -607,14 +641,11 @@ export function App({ core }: { core: CoreApi }) {
         serially(async () => {
           // As Close does: whatever the stopped read reached, the core then holds no log.
           await core.openLog(new Blob([]), '', () => {});
-          const saved = shown ? await loadSaved<SavedLog>('log') : undefined;
-          // A capture's bytes are 0; a saved one is kept as the candump file it was saved as.
-          const isCopy = !!saved && !!shown && saved.name === shown.name && (shown.format === 'capture' || saved.blob.size === shown.bytes);
-          if (isCopy) previous = saved;
-          else await showClosedLog();
+          previous = await savedCopyOf(shown);
+          if (!previous) await showClosedLog();
         }),
       );
-      if (previous) await openLog(previous.blob, previous.name, ui);
+      if (previous) await openLog(previous.blob, previous.name, { restore: ui, reopening: true });
     })();
   };
 
@@ -796,7 +827,7 @@ export function App({ core }: { core: CoreApi }) {
       if (savedLog && (!demoRequested.current || savedLog.name === 'demo.log')) {
         const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
         // A copy that can't be read is forgotten, as is any log that fails to open.
-        await openLog(savedLog.blob, savedLog.name, ui);
+        await openLog(savedLog.blob, savedLog.name, { restore: ui });
       } else if (savedUi && savedDbcs?.length && !viewMeta(savedUi.view).needsLog) {
         setViewState(savedUi.view);
       }
@@ -1092,7 +1123,7 @@ export function App({ core }: { core: CoreApi }) {
         return Promise.resolve(false);
       }
       // Left unsettled if the discard prompt is cancelled, so the caller goes no further.
-      return new Promise((resolve) => unlessUnsavedCapture(() => resolve(openLog(file, name, undefined, true).then((outcome) => outcome === 'opened'))));
+      return new Promise((resolve) => unlessUnsavedCapture(() => resolve(openLog(file, name, { stay: true }).then((outcome) => outcome === 'opened'))));
     },
     swapCompareLog,
     openLogPicker: () => logInput.current?.click(),

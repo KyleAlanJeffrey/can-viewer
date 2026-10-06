@@ -1450,7 +1450,7 @@ input[type='checkbox'] {
 }
 
 /* Narrow, Cancel takes the place of Export Log, which can't be used while a log is read. */
-@container toolbar (max-width: 899px) {
+@container toolbar (max-width: 999px) {
   .toolbar[data-reading-log] .export-log {
     display: none;
   }

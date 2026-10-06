@@ -128,8 +128,8 @@ describe('App while a log is read', () => {
     superseded: boolean;
     progress: (p: Progress) => void;
     /** Resolves the read without `act`, for a test that needs to act between steps itself. */
-    settle: () => void;
-    resolve: () => Promise<void>;
+    settle: (fields?: Partial<LogInfo>) => void;
+    resolve: (fields?: Partial<LogInfo>) => Promise<void>;
     fail: (message: string) => Promise<void>;
     abort: () => void;
   }
@@ -157,13 +157,13 @@ describe('App while a log is read', () => {
             settled: false,
             superseded: false,
             progress: (p) => act(() => onProgress(p)),
-            settle: () => {
+            settle: (fields?: Partial<LogInfo>) => {
               read.settled = true;
-              if (!read.superseded) held = name;
+              if (!read.superseded && fields?.frames !== 0) held = name;
               if (current === read) current = null;
-              resolve(logInfo({ name, bytes: file.size }));
+              resolve(logInfo({ name, bytes: file.size, ...fields }));
             },
-            resolve: () => act(async () => read.settle()),
+            resolve: (fields) => act(async () => read.settle(fields)),
             fail: (message) =>
               act(async () => {
                 read.settled = true;
@@ -283,9 +283,9 @@ describe('App while a log is read', () => {
     await waitFor(async () => expect(await savedLog()).toBe('b.log'));
   });
 
-  it('shows why the log that took over failed, and leaves no log', async () => {
+  it('reopens the log shown before when the log that took over fails, keeping its error', async () => {
     const App = await freshApp();
-    const { core, read, abortSuperseded } = readingCore();
+    const { core, read, abortSuperseded, openedNames, held } = readingCore();
     const { container } = render(<App core={core} />);
     await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
     await openFirst(container, 'p.log', read);
@@ -296,8 +296,58 @@ describe('App while a log is read', () => {
     await abortSuperseded();
     await (await read('b.log')).fail('b.log is not a CAN log.');
     expect((await screen.findByRole('alert')).textContent).toContain('b.log is not a CAN log.');
+    const p = await read('p.log');
+    expect(toolbarStatus()).toBe('Reopening p.log\u2026');
+    expect(title()).toBe('p.log');
+    await p.resolve();
+    await waitFor(() => expect(toolbarStatus()).toBe('candump \u00b7 1,000 frames \u00b7 1 min 40 s'));
+    expect(title()).toBe('p.log');
+    expect(held()).toBe('p.log');
+    expect(screen.getByRole('alert').textContent).toContain('b.log is not a CAN log.');
+    expect(openedNames()).toEqual(['p.log', 'a.log', '', 'b.log', 'p.log']);
+    expect(await savedLog()).toBe('p.log');
+  });
+
+  it('leaves no log, and tries no more, when the log shown before fails to reopen', async () => {
+    const App = await freshApp();
+    const session = await import('./session');
+    const { core, read, openedNames, held } = readingCore();
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    await openFirst(container, 'p.log', read);
+    await session.save('compare', { name: 'q.log', blob: { size: 10 } as Blob });
+
+    await pick(container, 'b.log');
+    await (await read('b.log')).fail('b.log is not a CAN log.');
+    await (await read('p.log')).fail('p.log could not be read.');
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    expect(screen.getByRole('alert').textContent).toContain('p.log could not be read.');
     expect(title()).toBe('No log open');
+    expect(held()).toBeNull();
     await waitFor(async () => expect(await savedLog()).toBeUndefined());
+    expect(await session.loadSaved('compare')).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(openedNames()).toEqual(['p.log', 'b.log', 'p.log']);
+  });
+
+  it('leaves no log when the log Cancel reopens has no frames', async () => {
+    const App = await freshApp();
+    const { core, read, abortSuperseded, openedNames, held } = readingCore();
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    await openFirst(container, 'p.log', read);
+
+    await pick(container, 'a.log');
+    await read('a.log');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel reading a.log' }));
+    await abortSuperseded();
+    await (await read('p.log')).resolve({ frames: 0, rejected: 3 });
+    expect((await screen.findByRole('alert')).textContent).toContain('No CAN frames in p.log');
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    expect(held()).toBeNull();
+    await waitFor(async () => expect(await savedLog()).toBeUndefined());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(openedNames()).toEqual(['p.log', 'a.log', '', '', 'p.log']);
   });
 
   it('reopens the log shown before, as it was, when the read is cancelled', async () => {
@@ -315,8 +365,10 @@ describe('App while a log is read', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Cancel reading a.log' }));
     await abortSuperseded();
     const p = await read('p.log');
-    expect(toolbarStatus()).toBe('Reading p.log\u2026');
+    await waitFor(() => expect(toolbarStatus()).toBe('Reopening p.log\u2026'));
     expect(title()).toBe('p.log');
+    // The Cancel pressed has gone; the one that now cancels the reopen takes its focus.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel reading p.log' })));
     await p.resolve();
     await waitFor(() => expect(toolbarStatus()).toBe('candump \u00b7 1,000 frames \u00b7 1 min 40 s'));
     expect(title()).toBe('p.log');

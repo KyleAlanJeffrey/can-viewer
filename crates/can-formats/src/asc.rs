@@ -19,7 +19,7 @@ use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::lines::LineSplitter;
 use crate::text::{fields, parse_decimal, parse_decimal_ns, parse_hex_u32, unix_ns, ChannelName};
-use crate::{push_frame, LocalTime, LogParser, ParseStats};
+use crate::{push_frame, LocalTime, LogParser, ParseStats, PartTimes};
 
 /// Bits of the `Flags` field that follows the data of a CAN FD line.
 const FD_FLAG_RTR: u32 = 0x10;
@@ -43,6 +43,9 @@ struct Header {
     last_ns: i64,
     /// The time zone of the `date` line.
     local_time: LocalTime,
+    /// In a part of the file read apart from the lines before it, how its relative times count
+    /// on from theirs: `last_ns` counts from zero in place of the sum they left.
+    part: Option<PartTimes>,
 }
 
 impl Default for Header {
@@ -53,6 +56,7 @@ impl Default for Header {
             start_ns: 0,
             last_ns: 0,
             local_time: LocalTime::UTC,
+            part: None,
         }
     }
 }
@@ -73,27 +77,40 @@ impl AscParser {
     pub(crate) fn start_part(&mut self) {
         self.stats = ParseStats::default();
         self.lines = LineSplitter::mid_file();
+        self.header.last_ns = 0;
+        self.header.part = Some(PartTimes::default());
     }
 
     pub(crate) fn mid_line(&self) -> bool {
         self.lines.mid_line()
     }
 
-    /// Relative timestamps add up from line to line, so each line depends on all before it.
-    pub(crate) fn relative(&self) -> bool {
-        self.header.relative
-    }
-
-    /// What the header lines read so far set, but the time zone, which the host sets.
+    /// What the header lines read so far set, but the time zone, which the host sets, and the
+    /// sum of relative times, which [`AscParser::carried_ns`] gives.
     pub(crate) fn state(&self) -> String {
         let Header {
             hex,
             relative,
             start_ns,
-            last_ns,
-            local_time: _,
+            ..
         } = &self.header;
-        format!("{hex} {relative} {start_ns} {last_ns}")
+        format!("{hex} {relative} {start_ns}")
+    }
+
+    /// The sum of relative times the lines read so far leave for the lines after them.
+    pub(crate) fn carried_ns(&self) -> i64 {
+        self.header.last_ns
+    }
+
+    /// How the times of the part read since [`AscParser::start_part`] count on from the lines
+    /// before it.
+    pub(crate) fn part_times(&self) -> PartTimes {
+        let mut times = self.header.part.unwrap_or_default();
+        if times.open {
+            times.from_base_ns = self.header.last_ns;
+        }
+        times.last_ns = self.header.last_ns;
+        times
     }
 }
 
@@ -123,7 +140,10 @@ fn line_into<S: FrameSink>(header: &mut Header, line: &[u8], stats: &mut ParseSt
         return;
     }
     match event(header, line, sink) {
-        Ok(true) => stats.frames += 1,
+        Ok(true) => {
+            header.count_part_frame(stats.frames);
+            stats.frames += 1;
+        }
         Ok(false) => {}
         Err(reason) => stats.reject(reason),
     }
@@ -156,7 +176,26 @@ impl Header {
                 local_ns.saturating_add(shift_s.saturating_mul(1_000_000_000))
             });
         } else if first.eq_ignore_ascii_case(b"begin") {
+            if let Some(part) = self.part.as_mut().filter(|part| part.open) {
+                part.open = false;
+                part.from_base_ns = self.last_ns;
+            }
             self.last_ns = 0;
+        }
+    }
+
+    /// Counts a part's frame, the one after its first `frames_before`, among those timed from
+    /// the sum the lines before the part left.
+    fn count_part_frame(&mut self, frames_before: u64) {
+        let Some(part) = &mut self.part else {
+            return;
+        };
+        if self.relative && part.open {
+            if part.frames == frames_before {
+                part.frames += 1;
+            } else {
+                part.scattered = true;
+            }
         }
     }
 

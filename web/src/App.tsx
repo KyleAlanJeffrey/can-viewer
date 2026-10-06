@@ -1137,7 +1137,9 @@ export function App({ core }: { core: CoreApi }) {
               const file = e.target.files?.[0];
               e.target.value = '';
               if (!file) return;
-              if (liveRef.current) setError('Stop the capture before opening a log.');
+              // The picker may have opened before the app got busy, as when log B is restored.
+              if (busyRef.current) setError(`Wait for "${busyRef.current.label}" to finish, then open the log again.`);
+              else if (liveRef.current) setError('Stop the capture before opening a log.');
               else if (stoppingRef.current) setError('Wait for the capture to stop, then open the log again.');
               else unlessUnsavedCapture(() => void openLog(file, file.name));
             }}

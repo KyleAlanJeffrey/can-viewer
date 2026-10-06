@@ -17,7 +17,7 @@ use std::collections::{TryReserveError, VecDeque};
 
 use can_core::{
     flags, tp::MAX_TRANSFER, Combine, DataRule, FilterPass, FlipCounts, FrameFilter, FrameKind,
-    FrameRef, FrameSink, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
+    FrameRef, FrameSink, FrameStore, IdKey, IdStats, TimeShift, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
 };
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{mf4, writer, AnyParser, Format, LogParser, ParseStats};
@@ -237,10 +237,12 @@ struct LogInput {
     parts: Option<Parts>,
 }
 
-/// What the parts joined on so far counted, and the header state the last one left.
+/// What the parts joined on so far counted, and the header state and sum of relative times
+/// the last one left.
 struct Parts {
     stats: ReadStats,
     state: String,
+    carried_ns: i64,
 }
 
 impl LogInput {
@@ -357,28 +359,47 @@ impl LogInput {
     }
 
     /// The parser, if the rest of the log can be read in parts: see `AnyParser::splittable`.
-    /// A log read beside another is read whole, as the reads in parts don't count towards its
-    /// memory limit.
     fn splittable_parser(&self) -> Option<&AnyParser> {
         let parser = self.parser.as_ref()?;
-        (self.limit.is_none() && !self.refused && parser.splittable()).then_some(parser)
+        (!self.refused && parser.splittable()).then_some(parser)
+    }
+
+    fn segment_format(&self) -> Option<String> {
+        self.splittable_parser()
+            .map(|parser| parser.format().name().to_owned())
     }
 
     /// Joins a part read by `parse_segment` onto the log, or refuses it, perhaps after storing
-    /// some of its frames.
+    /// some of its frames. Like `push`, sets `refused` once the store outgrows `limit`.
     fn push_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
-        let state = self.splittable_parser().ok_or(())?.state();
+        let joined = self.join_part(bytes, store);
+        self.refuse_if_over_limit(store);
+        joined
+    }
+
+    fn join_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
+        let parser = self.splittable_parser().ok_or(())?;
+        let (state, carried_ns) = (parser.state(), parser.carried_ns());
         let part = Part::read(bytes).ok_or(())?;
         let parts = self.parts.get_or_insert_with(|| Parts {
             stats: ReadStats::default(),
             state,
+            carried_ns,
         });
         if part.entry != parts.state {
             return Err(());
         }
-        store.append_segment(part.frames).map_err(|_| ())?;
+        let carried_ns = part.times.join(parts.carried_ns).ok_or(())?;
+        let shift = TimeShift {
+            frames: usize::try_from(part.times.frames).map_err(|_| ())?,
+            ns: parts.carried_ns,
+        };
+        store
+            .append_shifted_segment(part.frames, shift)
+            .map_err(|_| ())?;
         parts.stats.append(&part.stats);
         parts.state = part.exit.to_owned();
+        parts.carried_ns = carried_ns;
         Ok(())
     }
 }
@@ -676,9 +697,7 @@ impl Session {
         if self.capture.is_some() {
             return None;
         }
-        self.input
-            .splittable_parser()
-            .map(|parser| parser.format().name().to_owned())
+        self.input.segment_format()
     }
 
     /// Joins a part of the log read by [`parse_segment`] onto it, the parts in file order after

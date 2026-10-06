@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { READY_MS, lineStart, partBytes, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
+import { CHUNK_BYTES, READY_MS, lineStart, partBytes, readChunks, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const realSetTimeout = globalThis.setTimeout;
@@ -275,6 +275,56 @@ describe('reading a log in parts', () => {
       expect(session.bytes).toBe(content);
       expect(onStalled).not.toHaveBeenCalled();
     });
+  });
+
+  it('closes every worker at once and rejects with the reason when the read is aborted', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const workers: PartWorker[] = [];
+    const startWorker = () => {
+      // Reads a part until closed, as the real part worker does with a large part.
+      let closed = (_: Error) => {};
+      const worker = {
+        ready: Promise.resolve(),
+        read: vi.fn(
+          () =>
+            new Promise<Uint8Array>((_, reject) => {
+              closed = reject;
+            }),
+        ),
+        close: vi.fn(() => closed(new Error('closed'))),
+      };
+      workers.push(worker);
+      return worker;
+    };
+    const session = new RecordingSession('candump');
+    const stop = new AbortController();
+    const reading = readInParts(new Blob([log(400)]), session, { workers: 3, partSize: 250, signal: stop.signal, startWorker }, () => undefined);
+    await vi.waitUntil(() => workers.length === 3 && workers.every((worker) => vi.mocked(worker.read).mock.calls.length === 1));
+    const reason = new DOMException('superseded', 'AbortError');
+    stop.abort(reason);
+    expect(workers.every((worker) => vi.mocked(worker.close).mock.calls.length > 0)).toBe(true);
+    await expect(reading).rejects.toBe(reason);
+    expect(session.joined).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('stops a read in chunks before the next chunk once aborted', async () => {
+    const file = new Blob([new Uint8Array(2 * CHUNK_BYTES + 1)]);
+    const stop = new AbortController();
+    const pushed: number[] = [];
+    const reading = readChunks(
+      file,
+      (chunk) => {
+        pushed.push(chunk.length);
+        stop.abort(new Error('superseded'));
+      },
+      () => undefined,
+      0,
+      stop.signal,
+    );
+    await expect(reading).rejects.toThrow('superseded');
+    expect(pushed).toEqual([CHUNK_BYTES]);
   });
 
   it('stops the other workers, without a warning, when joining a part throws', async () => {

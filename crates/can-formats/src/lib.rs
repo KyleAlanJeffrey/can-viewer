@@ -149,14 +149,15 @@ impl AnyParser {
     /// Whether the rest of the file can be read in parts, each from a line boundary by a parser
     /// of its own that read only the file's start (see [`AnyParser::prime`]), given what the
     /// file has set so far, and only between lines. A text format's lines depend only on its
-    /// header, except for ASC with relative timestamps. The binary formats are read whole.
+    /// header, and an ASC file's relative times on the sum the lines before them left, which is
+    /// carried from part to part (see [`PartTimes`]). The binary formats are read whole.
     #[must_use]
     pub fn splittable(&self) -> bool {
         match self {
             AnyParser::Candump(parser) => !parser.mid_line(),
             AnyParser::Trc(parser) => !parser.mid_line(),
             AnyParser::Csv(parser) => !parser.mid_line(),
-            AnyParser::Asc(parser) => !parser.relative() && !parser.mid_line(),
+            AnyParser::Asc(parser) => !parser.mid_line(),
             AnyParser::Blf(_) | AnyParser::Mf4(_) => false,
         }
     }
@@ -175,6 +176,26 @@ impl AnyParser {
         }
     }
 
+    /// The sum of relative times the lines read so far leave for the part after them: an ASC
+    /// file's, and 0 for the other formats.
+    #[must_use]
+    pub fn carried_ns(&self) -> i64 {
+        match self {
+            AnyParser::Asc(parser) => parser.carried_ns(),
+            _ => 0,
+        }
+    }
+
+    /// How the times of the part read since [`AnyParser::prime`] count on from the lines
+    /// before it.
+    #[must_use]
+    pub fn part_times(&self) -> PartTimes {
+        match self {
+            AnyParser::Asc(parser) => parser.part_times(),
+            _ => PartTimes::default(),
+        }
+    }
+
     /// Readies a parser of a [`AnyParser::splittable`] format to read a part of the file that
     /// starts at a line boundary further on: reads `head`, the start of the file, up to its
     /// last line break for what its header sets, dropping its frames, then counts lines,
@@ -189,6 +210,54 @@ impl AnyParser {
             AnyParser::Csv(parser) => parser.start_part(),
             AnyParser::Blf(_) | AnyParser::Mf4(_) => {}
         }
+    }
+}
+
+/// How the times of a part of a file, read by a parser of its own (see [`AnyParser::prime`]),
+/// count on from the lines before it. An ASC file's relative times add up from line to line,
+/// from the sum the lines before the part left ([`AnyParser::carried_ns`]), which the part's
+/// parser doesn't know. It counts from zero instead, and the times of the part's first `frames`
+/// frames are shifted by that sum as the part is joined; see [`PartTimes::join`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartTimes {
+    /// Frames at the start of the part timed from the sum before it.
+    pub frames: u64,
+    /// The part's sum still counts from the sum before it: no `Begin` line restarted it.
+    pub open: bool,
+    /// The part's sum, counted from the sum before it, at its end or where it was restarted.
+    pub from_base_ns: i64,
+    /// The part's sum at its end.
+    pub last_ns: i64,
+    /// A frame timed from the sum before the part came after one that wasn't, so the frames
+    /// to shift are not all at its start.
+    pub scattered: bool,
+}
+
+impl Default for PartTimes {
+    /// A part that leaves the sum as it found it.
+    fn default() -> Self {
+        Self {
+            frames: 0,
+            open: true,
+            from_base_ns: 0,
+            last_ns: 0,
+            scattered: false,
+        }
+    }
+}
+
+impl PartTimes {
+    /// The sum this part leaves, given `base`, the sum the parts before it left (which the
+    /// caller adds to the times of this part's first `frames` frames). None when that could time
+    /// a frame other than reading the whole file would: when the frames to shift are scattered,
+    /// or the sum overflows, which the whole file would have saturated.
+    #[must_use]
+    pub fn join(&self, base: i64) -> Option<i64> {
+        let carried = base.checked_add(self.from_base_ns)?;
+        if self.scattered {
+            return None;
+        }
+        Some(if self.open { carried } else { self.last_ns })
     }
 }
 

@@ -230,7 +230,7 @@ impl<'a> Frames<'a> {
             return Self {
                 list: Cow::Borrowed(&stats.frames),
                 len: usize::from(stats.min_len).min(MAX_PAYLOAD),
-                flips: Cow::Borrowed(&stats.bit_flips),
+                flips: stats.bit_flips(),
             };
         }
         let carries_data = |f: u32| {
@@ -1850,7 +1850,7 @@ impl Job {
             Frames {
                 list: Cow::Borrowed(&stats.frames),
                 len,
-                flips: Cow::Borrowed(&stats.bit_flips),
+                flips: stats.bit_flips(),
             },
             Frames::borrowed,
         )

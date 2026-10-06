@@ -50,6 +50,8 @@ export interface PartOptions {
   partSize?: number;
   /** Called when a part worker hasn't loaded within `READY_MS`. */
   onStalled?: () => void;
+  /** Aborting it closes the part workers at once and rejects the read with its reason. */
+  signal?: AbortSignal;
 }
 
 class Stalled extends Error {}
@@ -67,10 +69,14 @@ async function bytesOf(file: Blob, start: number, end: number): Promise<Uint8Arr
   return new Uint8Array(await file.slice(start, end).arrayBuffer());
 }
 
-/** Reads `file` from `from` in chunks through `push`, reporting the bytes read. */
-export async function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress: (bytes: number) => void, from = 0) {
+/**
+ * Reads `file` from `from` in chunks through `push`, reporting the bytes read. Aborting `signal`
+ * rejects with its reason before the next chunk is pushed.
+ */
+export async function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress: (bytes: number) => void, from = 0, signal?: AbortSignal) {
   for (let at = from; at < file.size; at += CHUNK_BYTES) {
     const chunk = await bytesOf(file, at, at + CHUNK_BYTES);
+    signal?.throwIfAborted();
     push(chunk);
     onProgress(at + chunk.length);
   }
@@ -103,18 +109,21 @@ export async function partBytes(file: Blob, start: number, end: number, scanByte
  * are. Otherwise the rest is read here in chunks.
  *
  * Returns false when a part was refused or a worker failed or didn't load in `READY_MS`: the
- * session then holds part of the log, and the log must be read again in a new session.
+ * session then holds part of the log, and the log must be read again in a new session. Rejects
+ * with the reason of `options.signal` once it is aborted, the session again holding part of the log.
  */
 export async function readInParts(file: Blob, session: ReadSession, options: PartOptions, onProgress: (bytes: number) => void): Promise<boolean> {
+  const { signal } = options;
   const partSize = options.partSize ?? PART_BYTES;
   const first = await bytesOf(file, 0, partSize);
+  signal?.throwIfAborted();
   const cut = first.lastIndexOf(10) + 1;
   session.push_chunk(first.subarray(0, cut));
   const format = cut > 0 ? session.segment_format() : undefined;
   if (!format || cut === file.size) {
     session.push_chunk(first.subarray(cut));
     onProgress(first.length);
-    await readChunks(file, (chunk) => session.push_chunk(chunk), onProgress, first.length);
+    await readChunks(file, (chunk) => session.push_chunk(chunk), onProgress, first.length, signal);
     return true;
   }
   onProgress(cut);
@@ -186,11 +195,16 @@ export async function readInParts(file: Blob, session: ReadSession, options: Par
     }
   };
 
+  // Failing first means the parts the closed workers no longer read draw no warning.
+  const stop = () => fail();
+  signal?.addEventListener('abort', stop);
   try {
     for (let i = 0; i < Math.min(options.workers, starts.length); i++) workers.push(options.startWorker());
     await Promise.all(workers.map(lane));
   } finally {
+    signal?.removeEventListener('abort', stop);
     for (const worker of workers) worker.close();
   }
+  signal?.throwIfAborted();
   return !failed && joined === starts.length;
 }

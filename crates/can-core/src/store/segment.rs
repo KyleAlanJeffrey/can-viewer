@@ -5,9 +5,14 @@
 //! cost of storing a frame. Joining it adds what depends on the frames before it: bit flips
 //! between the last frame of each kind before the part and the first in it, each a pair of
 //! frames compared over their bytes in common, and the gaps between frames, redone frame by
-//! frame so their floating-point sums come out the same. J1939 transfers are reassembled as the part is joined, since their
-//! packets may span parts; a part that completes one has its statistics worked out again frame
-//! by frame instead.
+//! frame so their floating-point sums come out the same. J1939 transfers are reassembled as
+//! the part is joined, since their packets may span parts; a part that completes one has its
+//! statistics worked out again frame by frame instead.
+//!
+//! A part whose times count on from the parts before it (an ASC file's relative times) is
+//! joined with a [`TimeShift`] added to the times of its first frames. The integer gaps between
+//! the shifted frames, and so their statistics, are the same as the part worked out; a part
+//! shifted only in part has its statistics worked out again frame by frame.
 
 use std::fmt;
 
@@ -15,7 +20,7 @@ use rustc_hash::FxHashSet;
 
 use crate::{flags, id_key, FrameKind, FrameRef, FrameSink, MAX_PAYLOAD};
 
-use super::{count_flips, count_pair, set_last_data, FrameStore, IdStats};
+use super::{count_pair, set_last_data, FlipTally, FrameStore, IdStats};
 
 const MAGIC: &[u8; 4] = b"FCS2";
 
@@ -26,6 +31,15 @@ pub enum SegmentError {
     Malformed,
     /// The segment ran out of bus numbers, so some of its buses share one.
     TooManyBuses,
+    /// A time shifted by the [`TimeShift`] it was joined with overflows.
+    TimeOverflow,
+}
+
+/// A time added to the times of a segment's first `frames` frames as it is joined.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TimeShift {
+    pub frames: usize,
+    pub ns: i64,
 }
 
 impl fmt::Display for SegmentError {
@@ -33,6 +47,7 @@ impl fmt::Display for SegmentError {
         f.write_str(match self {
             Self::Malformed => "malformed log segment",
             Self::TooManyBuses => "log segment with too many buses",
+            Self::TimeOverflow => "log segment with times out of range once shifted",
         })
     }
 }
@@ -85,9 +100,9 @@ impl FrameStore {
                 .frames
                 .iter()
                 .for_each(|f| out.extend_from_slice(&f.to_le_bytes()));
-            put_len(&mut out, stats.bit_flips.len());
-            stats
-                .bit_flips
+            let bit_flips = stats.bit_flips();
+            put_len(&mut out, bit_flips.len());
+            bit_flips
                 .iter()
                 .for_each(|n| out.extend_from_slice(&n.to_le_bytes()));
             put_len(&mut out, stats.pairs_by_len.len());
@@ -117,7 +132,22 @@ impl FrameStore {
     /// When the segment can't be joined. Frames may have been appended by then, so the store
     /// should be read again.
     pub fn append_segment(&mut self, bytes: &[u8]) -> Result<(), SegmentError> {
-        let segment = Segment::read(bytes)?;
+        self.append_shifted_segment(bytes, TimeShift::default())
+    }
+
+    /// [`FrameStore::append_segment`], with `shift` added to the times of the segment's first
+    /// frames.
+    ///
+    /// # Errors
+    /// As [`FrameStore::append_segment`], and when the shift is for more frames than the
+    /// segment has or takes a time out of range.
+    pub fn append_shifted_segment(
+        &mut self,
+        bytes: &[u8],
+        shift: TimeShift,
+    ) -> Result<(), SegmentError> {
+        let mut segment = Segment::read(bytes)?;
+        segment.shift(shift)?;
         // The last bus number is shared by every bus after it.
         if segment.channels.len() > usize::from(u8::MAX) {
             return Err(SegmentError::TooManyBuses);
@@ -139,9 +169,10 @@ impl FrameStore {
             self.append_row(&frame, stored);
             reassembled |= self.reassemble(&frame, false);
         }
-        if reassembled || !distinct_buses {
-            // Transfers come between the segment's frames, and buses that share a number mix
-            // their IDs' frames, so the statistics are worked out frame by frame.
+        if reassembled || !distinct_buses || segment.shifted_in_part() {
+            // Transfers come between the segment's frames, buses that share a number mix
+            // their IDs' frames, and a shift that stops partway changes the gaps where it
+            // stops, so the statistics are worked out frame by frame.
             let mut index = std::mem::take(&mut self.index);
             for i in first..self.len() {
                 index.observe(i as u32, &self.frame(i));
@@ -158,7 +189,7 @@ impl FrameStore {
                     index
                         .by_key
                         .insert(id_key(channel, part.id), index.ids.len());
-                    index.ids.push(part.stats(channel, first));
+                    index.ids.push(part.stats(channel, first, segment.shift_ns));
                 }
             }
         }
@@ -170,7 +201,7 @@ impl IdStats {
     /// Carries on with the frames of `part`, the same ID's frames in a segment whose first frame
     /// is now at `first`, as [`IdStats::observe`] would frame by frame.
     fn join(&mut self, part: &SegmentId<'_>, segment: &Segment<'_>, first: usize) {
-        grow_to(&mut self.bit_flips, part.bit_flips.len() / 4);
+        self.bit_flips.grow(part.bit_flips().len() / 8);
         for (kind, last_of_part) in part.last_data.iter().enumerate() {
             let Some(last_of_part) = last_of_part else {
                 continue;
@@ -178,17 +209,14 @@ impl IdStats {
             match &mut self.last_data[kind] {
                 Some(last) => {
                     let first_of_part = segment.first_payload_of_kind(part, kind);
-                    grow_to(&mut self.bit_flips, first_of_part.len().min(last.len()) * 8);
                     count_pair(&mut self.pairs_by_len, first_of_part.len().min(last.len()));
-                    count_flips(&mut self.bit_flips, last, first_of_part);
+                    self.bit_flips.add_pair(last, first_of_part);
                     set_last_data(last, last_of_part);
                 }
                 none => *none = Some(last_of_part.to_vec()),
             }
         }
-        for (count, flips) in self.bit_flips.iter_mut().zip(part.bit_flips()) {
-            *count += flips;
-        }
+        self.bit_flips.add_counts(part.bit_flips());
         grow_to(&mut self.pairs_by_len, part.pairs_by_len.len() / 4);
         for (count, pairs) in self.pairs_by_len.iter_mut().zip(u32s(part.pairs_by_len)) {
             *count += pairs;
@@ -224,6 +252,9 @@ struct Segment<'a> {
     data_start: &'a [u8],
     data: &'a [u8],
     ids: Vec<SegmentId<'a>>,
+    /// Added to the times of the first `shifted` frames.
+    shift_ns: i64,
+    shifted: usize,
 }
 
 /// One ID's statistics in a segment.
@@ -248,7 +279,7 @@ fn u32_at(bytes: &[u8], i: usize) -> u32 {
     u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
 }
 
-fn u32s(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
+fn u32s(bytes: &[u8]) -> impl ExactSizeIterator<Item = u32> + '_ {
     bytes
         .as_chunks::<4>()
         .0
@@ -277,6 +308,8 @@ impl<'a> Segment<'a> {
             data_start: r.list(len + 1, 4)?,
             data: &[],
             ids: Vec::new(),
+            shift_ns: 0,
+            shifted: 0,
             channels,
         };
         segment.data = r.take(u32_at(segment.data_start, len) as usize)?;
@@ -354,8 +387,36 @@ impl<'a> Segment<'a> {
         self.channel.len()
     }
 
-    fn ts(&self, j: usize) -> i64 {
+    fn shift(&mut self, shift: TimeShift) -> Result<(), SegmentError> {
+        if shift.frames > self.len() {
+            return Err(SegmentError::Malformed);
+        }
+        if shift.ns == 0 || shift.frames == 0 {
+            return Ok(());
+        }
+        if (0..shift.frames).any(|j| self.ts_as_read(j).checked_add(shift.ns).is_none()) {
+            return Err(SegmentError::TimeOverflow);
+        }
+        self.shift_ns = shift.ns;
+        self.shifted = shift.frames;
+        Ok(())
+    }
+
+    /// Whether some frames are shifted and others not.
+    fn shifted_in_part(&self) -> bool {
+        self.shifted != 0 && self.shifted != self.len()
+    }
+
+    fn ts_as_read(&self, j: usize) -> i64 {
         i64::from_le_bytes(self.ts_ns[j * 8..j * 8 + 8].try_into().unwrap())
+    }
+
+    fn ts(&self, j: usize) -> i64 {
+        if j < self.shifted {
+            self.ts_as_read(j).saturating_add(self.shift_ns)
+        } else {
+            self.ts_as_read(j)
+        }
     }
 
     /// The bytes stored for frame `j`: its payload, or a remote frame's DLC.
@@ -397,23 +458,23 @@ impl SegmentId<'_> {
         u32s(self.frames).map(|j| j as usize)
     }
 
-    fn bit_flips(&self) -> impl Iterator<Item = u32> + '_ {
+    fn bit_flips(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
         u32s(self.bit_flips)
     }
 
     /// The statistics of an ID first seen in this segment, on bus `channel`, with the segment's
-    /// first frame at `first`.
-    fn stats(&self, channel: u8, first: usize) -> IdStats {
+    /// first frame at `first` and every frame's time shifted by `shift_ns`.
+    fn stats(&self, channel: u8, first: usize, shift_ns: i64) -> IdStats {
         IdStats {
             channel,
             id: self.id,
             flags: self.flags,
             frames: self.frames().map(|j| (first + j) as u32).collect(),
-            first_ts_ns: self.first_ts_ns,
-            last_ts_ns: self.last_ts_ns,
+            first_ts_ns: self.first_ts_ns.saturating_add(shift_ns),
+            last_ts_ns: self.last_ts_ns.saturating_add(shift_ns),
             min_len: self.min_len,
             max_len: self.max_len,
-            bit_flips: self.bit_flips().collect(),
+            bit_flips: FlipTally::from_counts(self.bit_flips().collect()),
             pairs_by_len: u32s(self.pairs_by_len).collect(),
             last_data: self.last_data.map(|data| data.map(<[u8]>::to_vec)),
             gap_mean_ns: self.gap_mean_ns,
@@ -661,6 +722,63 @@ mod tests {
         }
         let every_frame: Vec<usize> = (1..frames.len()).collect();
         assert_parts_read_as_whole(&frames, &every_frame);
+    }
+
+    #[test]
+    fn a_segment_joins_with_its_first_frames_shifted_as_if_pushed_at_their_shifted_times() {
+        // Without the transfer too, which has the statistics worked out frame by frame anyway.
+        let mut without_transfer = log();
+        without_transfer.drain(10..13);
+        for frames in [log(), without_transfer] {
+            assert_shifted_parts_read_as_whole(&frames);
+        }
+    }
+
+    fn assert_shifted_parts_read_as_whole(frames: &[Pushed]) {
+        let mut whole = FrameStore::new();
+        push_into(&mut whole, frames);
+        whole.shrink_to_fit();
+        for cut in 0..=frames.len() {
+            for shifted in 0..=frames.len() - cut {
+                let mut store = FrameStore::new();
+                push_into(&mut store, &frames[..cut]);
+                let mut early = frames[cut..].to_vec();
+                for frame in &mut early[..shifted] {
+                    frame.ts_ns -= 5_000;
+                }
+                let mut part = FrameStore::for_segment();
+                push_into(&mut part, &early);
+                let shift = TimeShift {
+                    frames: shifted,
+                    ns: 5_000,
+                };
+                store
+                    .append_shifted_segment(&part.encode_segment(), shift)
+                    .unwrap();
+                store.shrink_to_fit();
+                assert_same(&store, &whole, &format!("cut at {cut}, {shifted} shifted"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_shift_past_the_segment_or_out_of_range_is_refused() {
+        let mut part = FrameStore::for_segment();
+        push_into(
+            &mut part,
+            &[
+                frame("can0", i64::MAX - 10, 0x100, &[1]),
+                frame("can0", 0, 0x100, &[2]),
+            ],
+        );
+        let bytes = part.encode_segment();
+        let join =
+            |frames, ns| FrameStore::new().append_shifted_segment(&bytes, TimeShift { frames, ns });
+        assert_eq!(join(1, 10), Ok(()));
+        assert_eq!(join(1, 11), Err(SegmentError::TimeOverflow));
+        assert_eq!(join(2, 11), Err(SegmentError::TimeOverflow));
+        assert_eq!(join(0, i64::MAX), Ok(()));
+        assert_eq!(join(3, 0), Err(SegmentError::Malformed));
     }
 
     #[test]

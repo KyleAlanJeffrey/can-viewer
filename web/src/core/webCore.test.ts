@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { FrameFilter, MessageSuggestions, ScopedDatabase } from './api';
+import { LOG_SUPERSEDED, type FrameFilter, type MessageSuggestions, type ScopedDatabase } from './api';
 import { WebCore } from './webCore';
 import type { Request } from './worker';
 
@@ -27,7 +27,7 @@ class FakeWorker {
   }
 
   /** Answers the oldest request for `method`. */
-  reply(method: Request['method'], answer: { result: unknown } | { error: string }) {
+  reply(method: Request['method'], answer: { result: unknown } | { error: string; aborted?: boolean }) {
     const request = this.requests.find((r) => r.method === method);
     if (!request) throw new Error(`No ${method} request`);
     this.onmessage?.({ data: { id: request.id, ...answer } } as MessageEvent);
@@ -87,6 +87,18 @@ describe('WebCore', () => {
     first.fail('Uncaught RuntimeError: unreachable');
     expect(FakeWorker.all).toHaveLength(2);
     expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an openLog that a newer one superseded with an AbortError, and other errors as they are', async () => {
+    const core = new WebCore();
+    const [worker] = FakeWorker.all;
+    const stale = core.openLog(new Blob(['x']), 'big.log', () => {});
+    worker.reply('openLog', { error: LOG_SUPERSEDED, aborted: true });
+    await expect(stale).rejects.toMatchObject({ name: 'AbortError', message: LOG_SUPERSEDED });
+    const broken = core.openLog(new Blob(['x']), 'broken.log', () => {});
+    worker.requests.shift();
+    worker.reply('openLog', { error: 'No CAN frames' });
+    await expect(broken).rejects.toMatchObject({ name: 'Error', message: 'No CAN frames' });
   });
 
   it('stops calling a listener once it unsubscribes', async () => {

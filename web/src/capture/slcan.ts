@@ -112,6 +112,8 @@ const FRAME_TYPES: Record<string, FrameType> = {
 };
 
 const HEX = /^[0-9A-Fa-f]+$/;
+/** The answer to `V`: hardware then software version, two hex digits each, such as `V1013`. */
+const VERSION_REPLY = /^[Vv][0-9A-Fa-f]{4}/;
 
 function hex(text: string): number | null {
   return HEX.test(text) ? parseInt(text, 16) : null;
@@ -210,11 +212,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Opens the CAN channel with `C` (in case it was left open), `S<n>` (or `s` with custom bit
- * timing), `Y<n>` for a CAN FD data bitrate, then `O`, or for listen only `V` and `L`, else `M1` (CANable's silent mode, which it takes
+ * timing), `Y<n>` for a CAN FD data bitrate, then `O`. For listen only it sends `V` and `L`, and
+ * if `L` is refused, or the adapter answers nothing, `M1` (CANable's silent mode, which it takes
  * only while off the bus) and `O`.
  * Whether the adapter answers commands at all is learnt from `S<n>` or `s`, which every Lawicel
  * adapter answers. Listen-only counts as confirmed only when an adapter answers `L` with CR, and
  * only once the version line it sends for `V` has shown that every earlier answer has come.
+ * An `L` that isn't refused but isn't confirmed either is left in place, without `M1` or `O`.
  * `Z1` asks for the adapter's own timestamps before the bus opens; frames that carry one are
  * timed by it (see `DeviceClock`), others by the host clock when their bytes arrive. Frames are
  * read only once `O` or `L` has been sent.
@@ -330,13 +334,22 @@ export class SlcanAdapter implements CaptureAdapter {
         return { listenOnly: false };
       }
       // CANable ignores L, so a silent adapter gets only M1, which CANable takes as silent mode.
-      let listenOnly: Answer | null = null;
       if (answers) {
         const drained = await this.drainAnswers(wait);
-        listenOnly = await this.expect('L', wait, null, busOpened);
+        const listenOnly = await this.expect('L', wait, null, busOpened);
         // Without the version line, this answer may still be an earlier command's.
-        if (!drained) listenOnly = 'no answer';
-        if (listenOnly === 'ok') return { listenOnly: true };
+        if (drained && listenOnly === 'ok') return { listenOnly: true };
+        if (listenOnly !== 'refused') {
+          // The channel is likely open in listen-only mode, where Lawicel adapters refuse M1 and
+          // O, so it is left as it is: the safer of the two.
+          if (settings.allowUnconfirmedListenOnly) return { listenOnly: false };
+          this.busOpen = false;
+          throw new ListenOnlyUnconfirmedError(
+            listenOnly === 'ok'
+              ? "This adapter was sent listen-only mode (L), but its answer couldn't be told from an earlier command's, so it may still acknowledge frames on the bus."
+              : "This adapter was sent listen-only mode (L) but didn't answer in time, so it may still acknowledge frames on the bus.",
+          );
+        }
         this.busOpen = false;
       }
       // Only L confirms listen-only: on Lawicel adapters M sets the acceptance code, so a CR for
@@ -344,7 +357,7 @@ export class SlcanAdapter implements CaptureAdapter {
       const silent = await this.expect('M1', wait, null);
       if (!settings.allowUnconfirmedListenOnly) {
         throw new ListenOnlyUnconfirmedError(
-          silent === 'refused' && listenOnly !== 'no answer'
+          silent === 'refused'
             ? "This adapter can't listen only, so it would acknowledge frames on the bus."
             : "This adapter didn't confirm listen-only mode. Silent mode (M1) was sent, which CANable firmware follows, but another adapter may still acknowledge frames on the bus.",
         );
@@ -537,7 +550,7 @@ export class SlcanAdapter implements CaptureAdapter {
           if (!this.awaitingVersion) this.answer('ok');
           break;
         case 'reply':
-          if (this.awaitingVersion && event.text.startsWith('V')) this.answer('ok');
+          if (this.awaitingVersion && VERSION_REPLY.test(event.text)) this.answer('ok');
           break;
         case 'error':
           if (this.awaitingVersion) break;

@@ -20,7 +20,7 @@ use rustc_hash::FxHashSet;
 
 use crate::{flags, id_key, FrameKind, FrameRef, FrameSink, MAX_PAYLOAD};
 
-use super::{count_flips, count_pair, set_last_data, FrameStore, IdStats};
+use super::{count_pair, set_last_data, FlipTally, FrameStore, IdStats};
 
 const MAGIC: &[u8; 4] = b"FCS2";
 
@@ -100,9 +100,9 @@ impl FrameStore {
                 .frames
                 .iter()
                 .for_each(|f| out.extend_from_slice(&f.to_le_bytes()));
-            put_len(&mut out, stats.bit_flips.len());
-            stats
-                .bit_flips
+            let bit_flips = stats.bit_flips();
+            put_len(&mut out, bit_flips.len());
+            bit_flips
                 .iter()
                 .for_each(|n| out.extend_from_slice(&n.to_le_bytes()));
             put_len(&mut out, stats.pairs_by_len.len());
@@ -201,7 +201,7 @@ impl IdStats {
     /// Carries on with the frames of `part`, the same ID's frames in a segment whose first frame
     /// is now at `first`, as [`IdStats::observe`] would frame by frame.
     fn join(&mut self, part: &SegmentId<'_>, segment: &Segment<'_>, first: usize) {
-        grow_to(&mut self.bit_flips, part.bit_flips.len() / 4);
+        self.bit_flips.grow(part.bit_flips().len() / 8);
         for (kind, last_of_part) in part.last_data.iter().enumerate() {
             let Some(last_of_part) = last_of_part else {
                 continue;
@@ -209,17 +209,14 @@ impl IdStats {
             match &mut self.last_data[kind] {
                 Some(last) => {
                     let first_of_part = segment.first_payload_of_kind(part, kind);
-                    grow_to(&mut self.bit_flips, first_of_part.len().min(last.len()) * 8);
                     count_pair(&mut self.pairs_by_len, first_of_part.len().min(last.len()));
-                    count_flips(&mut self.bit_flips, last, first_of_part);
+                    self.bit_flips.add_pair(last, first_of_part);
                     set_last_data(last, last_of_part);
                 }
                 none => *none = Some(last_of_part.to_vec()),
             }
         }
-        for (count, flips) in self.bit_flips.iter_mut().zip(part.bit_flips()) {
-            *count += flips;
-        }
+        self.bit_flips.add_counts(part.bit_flips());
         grow_to(&mut self.pairs_by_len, part.pairs_by_len.len() / 4);
         for (count, pairs) in self.pairs_by_len.iter_mut().zip(u32s(part.pairs_by_len)) {
             *count += pairs;
@@ -282,7 +279,7 @@ fn u32_at(bytes: &[u8], i: usize) -> u32 {
     u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
 }
 
-fn u32s(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
+fn u32s(bytes: &[u8]) -> impl ExactSizeIterator<Item = u32> + '_ {
     bytes
         .as_chunks::<4>()
         .0
@@ -461,7 +458,7 @@ impl SegmentId<'_> {
         u32s(self.frames).map(|j| j as usize)
     }
 
-    fn bit_flips(&self) -> impl Iterator<Item = u32> + '_ {
+    fn bit_flips(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
         u32s(self.bit_flips)
     }
 
@@ -477,7 +474,7 @@ impl SegmentId<'_> {
             last_ts_ns: self.last_ts_ns.saturating_add(shift_ns),
             min_len: self.min_len,
             max_len: self.max_len,
-            bit_flips: self.bit_flips().collect(),
+            bit_flips: FlipTally::from_counts(self.bit_flips().collect()),
             pairs_by_len: u32s(self.pairs_by_len).collect(),
             last_data: self.last_data.map(|data| data.map(<[u8]>::to_vec)),
             gap_mean_ns: self.gap_mean_ns,

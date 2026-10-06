@@ -116,11 +116,18 @@ The frame store's columns grow 4 MiB at a time rather than doubling, so wasm mem
 
 Natively (`sample-gen bench`) the in-order candump parses at 268 MB/s against 274 MB/s, and the sorted one at 145 MB/s against 155 MB/s. Smaller chunks cost more in wasm, where every allocation that grows the memory costs the JavaScript side: 64 KiB chunks loaded the candump 15% slower and 1 MiB chunks 4% slower, against about 2% for 4 MiB.
 
+The per-ID statistics worked out as each frame is stored (`IdIndex::observe`) were made cheaper on 2026-10-06, measured on Apple Silicon with the 1M-frame, 55 MB candump demo (best of several loads). They took 88 ns per frame natively, most of it a hard-to-predict branch per changed payload bit; bit flips are now added up in eight byte-wide counters per payload byte and moved into the per-bit counts every 255 pairs, and busy IDs are found in a small table of recent lookups before the hash map, for 20 ns per frame. The counts are the same bit for bit, and memory after the load is unchanged. The byte-wide counters take 8 bytes per payload byte of each ID until they are freed once the log is read, so a running capture holds them until it ends, and they count in its `heapBytes`.
+
+| Load (1M frames) | native before | native after | wasm before | wasm after |
+|---|---|---|---|---|
+| candump, in time order | 272 MB/s | 419 MB/s | 352 ms | 274 ms |
+| candump, first 1,000 lines moved to the end (sorted after reading) | 149 MB/s | 240 MB/s | 575 ms | 423 ms |
+
 ## Known gaps / next steps
 
 The larger ones; every open task is in [TODO.md](TODO.md).
 
 - **Formats:** candump, Vector ASC, Vector BLF (CAN objects), PEAK TRC, ASAM MF4 (CAN bus logging) and CSV (python-can, SavvyCAN and generic header-named layouts) are supported, all through the `LogParser` interface. MF4 is buffered and read when the file ends, up to 1 GiB, because its blocks link anywhere in the file; its data is then read a block at a time and the frames merged by time, so a 112 MB, 10M-frame MF4 takes about 490 MB of wasm memory (the file plus the frames). Not read: CAN XL, LIN, FlexRay and Ethernet frames, and MF4 files of decoded signals rather than bus frames.
-- **Parallel parsing:** large candump, TRC, CSV and ASC logs are read in 2 MiB parts by up to 6 workers and joined in order, 2 to 4 times faster on a 12-core machine in Chrome and Firefox (see "Reading logs in parts" in [COMPATIBILITY.md](COMPATIBILITY.md)); BLF, MF4 and Compare's log B are still read on one core.
+- **Parallel parsing:** large candump, TRC, CSV and ASC logs are read in 2 MiB parts by up to 6 workers and joined in order, 2 to 4 times faster on a 12-core machine in Chrome and Firefox (see "Reading logs in parts" in [COMPATIBILITY.md](COMPATIBILITY.md)), Compare's log B among them; BLF and MF4 are still read on one core.
 - **Reverse engineering:** drag-to-define signals on the heatmap, a scrubbable time window for bit flips, and DBC export are in. Suggested signals guesses counters, checksums, flags, enums, values, 32-bit floats and multiplexed pages from bit activity; next is opendbc fingerprinting.
 - **Live capture:** not yet tried with real adapters. One bus at a time, receive only, classic CAN on gs_usb, host-clock timestamps; see [TODO.md](TODO.md) for the follow-ups.

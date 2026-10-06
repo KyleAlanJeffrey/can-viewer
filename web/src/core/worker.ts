@@ -4,7 +4,7 @@
 
 import { LOG_SUPERSEDED, isAbort, type BitFlips, type CompareOptions, type Database, type DiscoveryHints, type ExportFormat, type FindRule, type FrameFilter, type LogInfo, type RawSignalSpec, type ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
-import { readChunks, readInParts, type PartTask, type PartWorker } from './readInParts';
+import { readChunks, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 /** Smaller logs are read in this worker alone: starting part workers would cost more than they save. */
 const PARTS_MIN_BYTES = 32 << 20;
@@ -87,6 +87,10 @@ function endReading(read: AbortController) {
  */
 let partWorkersFailed = false;
 
+const onStalled = () => {
+  partWorkersFailed = true;
+};
+
 /** How many part workers to read `file` with, or 0 to read it here. One core is left for this worker. */
 function partWorkerCount(file: Blob): number {
   if (file.size < PARTS_MIN_BYTES || typeof Worker === 'undefined' || partWorkersFailed) return 0;
@@ -159,6 +163,35 @@ function startPartWorker(): PartWorker {
   };
 }
 
+/**
+ * Reads `file` into `log`, in parts when it is large enough. When the parts fail, `restart` leaves
+ * `log` empty, as it was before the read, and the file is read again in this worker alone.
+ */
+async function readLog(file: Blob, log: ReadSession, restart: () => void, signal: AbortSignal) {
+  const workers = partWorkerCount(file);
+  const progress = progressOf(file);
+  const read = workers > 0 && (await readInParts(file, log, { workers, startWorker: startPartWorker, onStalled, signal }, progress));
+  if (read) return;
+  // It holds part of the log.
+  if (workers > 0) restart();
+  await readChunks(file, (chunk) => log.push_chunk(chunk), progress, 0, signal);
+}
+
+/** The open log, in whichever session is current. */
+const openLogInput: ReadSession = {
+  push_chunk: (chunk) => session.push_chunk(chunk),
+  segment_format: () => session.segment_format(),
+  push_segment: (segment) => session.push_segment(segment),
+  object_cuts: (chunk, partBytes) => session.object_cuts(chunk, partBytes),
+};
+
+const logBInput: ReadSession = {
+  push_chunk: (chunk) => session.compare_push_chunk(chunk),
+  segment_format: () => session.compare_segment_format(),
+  push_segment: (segment) => session.compare_push_segment(segment),
+  object_cuts: (chunk, partBytes) => session.compare_object_cuts(chunk, partBytes),
+};
+
 function freshSession(): Session {
   const next = new Session();
   if (databasesJson) next.set_databases(databasesJson);
@@ -191,24 +224,17 @@ const handlers = {
     compareMeta = null;
     const started = performance.now();
     try {
-      session.set_file_name(name);
-      session.reserve_for_bytes(file.size);
-      const workers = partWorkerCount(file);
-      const progress = progressOf(file);
-      const onStalled = () => {
-        partWorkersFailed = true;
+      const begin = () => {
+        session.set_file_name(name);
+        session.reserve_for_bytes(file.size);
       };
-      const read = workers > 0 && (await readInParts(file, session, { workers, startWorker: startPartWorker, onStalled, signal }, progress));
-      if (!read) {
-        if (workers > 0) {
-          // It holds part of the log.
-          session.free();
-          session = freshSession();
-          session.set_file_name(name);
-          session.reserve_for_bytes(file.size);
-        }
-        await readChunks(file, (chunk) => session.push_chunk(chunk), progress, 0, signal);
-      }
+      begin();
+      const restart = () => {
+        session.free();
+        session = freshSession();
+        begin();
+      };
+      await readLog(file, openLogInput, restart, signal);
       const json = session.finish();
       logMeta = { name, parseMs: performance.now() - started };
       return withMemory(json, logMeta);
@@ -277,8 +303,9 @@ const handlers = {
     compareMeta = null;
     const started = performance.now();
     try {
-      session.compare_begin(name, file.size);
-      await readChunks(file, (chunk) => session.compare_push_chunk(chunk), progressOf(file), 0, thisRead.signal);
+      const begin = () => session.compare_begin(name, file.size);
+      begin();
+      await readLog(file, logBInput, begin, thisRead.signal);
       const json = session.compare_finish();
       compareMeta = { name, parseMs: performance.now() - started };
       return withMemory(json, compareMeta);

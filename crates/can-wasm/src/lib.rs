@@ -379,22 +379,23 @@ impl LogInput {
     }
 
     /// The parser, if the rest of the log can be read in parts: see `AnyParser::splittable`.
-    /// A log read beside another is read whole, as the reads in parts don't count towards its
-    /// memory limit.
     fn splittable_parser(&self) -> Option<&AnyParser> {
         let parser = self.parser.as_ref()?;
         // A BLF file can be cut only where an object ends, which the web app learns from
         // `object_cuts`.
         let cut_right = parser.format() != Format::Blf || matches!(self.cuts, Cuts::Objects(_));
-        (self.limit.is_none() && !self.refused && parser.splittable() && cut_right)
-            .then_some(parser)
+        (!self.refused && parser.splittable() && cut_right).then_some(parser)
+    }
+
+    fn segment_format(&self) -> Option<String> {
+        self.splittable_parser()
+            .map(|parser| parser.format().name().to_owned())
     }
 
     /// See [`Session::object_cuts`].
     fn object_cuts(&mut self, chunk: &[u8], part_bytes: f64) -> Option<Vec<f64>> {
         if matches!(self.cuts, Cuts::Undecided) {
-            let blf = self.limit.is_none()
-                && self.parser.is_none()
+            let blf = self.parser.is_none()
                 && self.head.is_empty()
                 && Format::detect(&self.file_name, chunk) == Format::Blf;
             self.cuts = if blf {
@@ -410,8 +411,14 @@ impl LogInput {
     }
 
     /// Joins a part read by `parse_segment` onto the log, or refuses it, perhaps after storing
-    /// some of its frames.
+    /// some of its frames. Like `push`, sets `refused` once the store outgrows `limit`.
     fn push_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
+        let joined = self.join_part(bytes, store);
+        self.refuse_if_over_limit(store);
+        joined
+    }
+
+    fn join_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
         let parser = self.splittable_parser().ok_or(())?;
         let (state, carried_ns) = (parser.state(), parser.carried_ns());
         let rejected_before = self.stats().first_rejection.is_some();
@@ -745,9 +752,7 @@ impl Session {
         if self.capture.is_some() {
             return None;
         }
-        self.input
-            .splittable_parser()
-            .map(|parser| parser.format().name().to_owned())
+        self.input.segment_format()
     }
 
     /// For a log read in parts cut where its objects end (BLF), rather than at line breaks:

@@ -932,7 +932,9 @@ const info = await core.decodeRaw(summary.key, {
 seriesView(handle: number, t0: number, t1: number, buckets: number): Promise<[Float64Array, Float64Array]>
 ```
 
-The points of a series between `t0` and `t1` seconds, plus one neighbour on each side so lines reach the plot edges. Above `2 * buckets` points, each time bucket keeps only its minimum and maximum, in time order, so spikes stay visible. With `buckets` of 0 or `t1 <= t0`, the points are returned without decimation.
+The points of a series between `t0` and `t1` seconds, plus one neighbour on each side so lines reach the plot edges. Above `2 * buckets` points, each time bucket keeps only its minimum and maximum, in time order, so spikes stay visible; a bucket whose first value is NaN (a float signal) keeps only that point. With `buckets` of 0 or `t1 <= t0`, the points are returned without decimation.
+
+Cost: a view averaging at least 32 points a bucket reads the series' level-of-detail pyramid, the first lowest and highest value of each run of 8, 64, 512 ... points, so it takes time in proportion to `buckets` rather than to the points in range (0.6 ms for 1.8M points in 1,800 buckets, against 9.7 ms for a scan). The first such view of a series builds the pyramid, about 1.7 times as long as one scan, and it takes about 1.1 MB per million points, freed with the series. Series decoded while a capture runs (decoded again as frames come) and series whose times are out of order have no pyramid, and their views scan every point in range. The points returned are the same either way.
 
 **Parameters**
 

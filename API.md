@@ -92,11 +92,11 @@ One frame received by a live capture adapter. Passed to [`appendFrames`](#append
 
 ### The Progress object
 
-Passed to the `onProgress` callback of [`openLog`](#openlog).
+Passed to the `onProgress` callback of [`openLog`](#openlog) and [`openCompareLog`](#opencomparelog).
 
 **Attributes**
 
-- **`bytes`** `number` - Bytes read so far.
+- **`bytes`** `number` - How far the read has got, in bytes of the file: the bytes read so far. An MF4 log of 32 MiB or more is read whole before its frames are, so reading it counts for the first quarter of `total`. When its frames are then read in parts (see [`openLog`](#openlog)), each part merged counts for an even share of the rest, so `bytes` keeps rising while they are read; when its parts can't be planned, so that its frames are read in the core worker alone, it stays at a quarter until the call resolves. It never goes down.
 - **`total`** `number` - Size of the file in bytes.
 
 ### The IdSummary object
@@ -466,7 +466,7 @@ To close a log, open an empty Blob.
 
 - **`file`** `Blob` - The log file.
 - **`name`** `string` - The file name. Its extension suggests the format; it is also returned as `LogInfo.name`.
-- **`onProgress`** `(p: Progress) => void` - Called as the file is read, at most about every 100 ms.
+- **`onProgress`** `(p: Progress) => void` - Called as the file is read, and as the parts of an MF4 log's frames are merged, at most about every 100 ms.
 
 **Returns** a [`LogInfo`](#the-loginfo-object).
 
@@ -1098,7 +1098,7 @@ An [`openLog`](#openlog) or [`startCapture`](#startcapture) sent while log B is 
 
 - **`file`** `Blob` - The log file.
 - **`name`** `string` - The file name. Its extension suggests the format; it is also returned as `LogInfo.name`.
-- **`onProgress`** `(p: Progress) => void` - Called as the file is read, at most about every 100 ms.
+- **`onProgress`** `(p: Progress) => void` - Called as the file is read, and as the parts of an MF4 log's frames are merged, at most about every 100 ms.
 
 **Returns** log B's [`LogInfo`](#the-loginfo-object). A log with no frames is still kept; check `frames`.
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CHUNK_BYTES, READY_MS, lineStart, partBytes, rangeBytes, readChunks, readInParts, taskBytes, type FramePartTask, type PartTask, type PartWorker, type ReadSession } from './readInParts';
+import { CHUNK_BYTES, READY_MS, WHOLE_READ_SHARE, lineStart, partBytes, rangeBytes, readChunks, readInParts, taskBytes, type FramePartTask, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const realSetTimeout = globalThis.setTimeout;
@@ -432,8 +432,10 @@ describe('reading a log in parts', () => {
     expect(await readInParts(new Blob([content]), unsplittable, { workers: 4, partSize: 50, startWorker }, () => undefined)).toBe(true);
     expect(unsplittable.bytes).toBe(content);
     const small = new RecordingSession('candump');
-    expect(await readInParts(new Blob([content]), small, { workers: 4, partSize: 1 << 20, startWorker }, () => undefined)).toBe(true);
+    const progress: number[] = [];
+    expect(await readInParts(new Blob([content]), small, { workers: 4, partSize: 1 << 20, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
     expect(small.bytes).toBe(content);
+    expect(progress).toEqual([content.length]);
     expect(startWorker).not.toHaveBeenCalled();
   });
 
@@ -678,6 +680,16 @@ describe('reading a log in parts', () => {
       }
       expect(waits[0]).toBe(1);
       expect(waits[1]).toBeGreaterThan(2);
+    });
+
+    it('counts reading the file as a share of the progress and each part joined as an even share of the rest', async () => {
+      const session = new FrameSession(order);
+      const progress: number[] = [];
+      const startWorker = () => new FrameWorker((index) => index % 3);
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
+      const size = content.length;
+      const joined = order.map((_, i) => size * (WHOLE_READ_SHARE + ((1 - WHOLE_READ_SHARE) * (i + 1)) / order.length));
+      expect(progress).toEqual([size * WHOLE_READ_SHARE, ...joined].map(Math.round));
     });
 
     it('starts no more workers than there are parts', async () => {

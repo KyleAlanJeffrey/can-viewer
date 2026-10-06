@@ -20,6 +20,12 @@ const SCAN_BYTES = 64 << 10;
 export const READY_MS = 15_000;
 /** Bytes of an MF4 log's data, inflated, in each part of its frames. */
 export const FRAME_PART_BYTES = 4 << 20;
+/**
+ * Of the progress of a log read whole before its frames are read (MF4), the share that reading the
+ * file fills. Merging the frames of its parts takes most of the time, so it fills the rest, a part
+ * at a time.
+ */
+export const WHOLE_READ_SHARE = 0.25;
 
 /** The `Session` calls a read uses. */
 export interface ReadSession {
@@ -220,6 +226,9 @@ function objectRanges(file: Blob, session: ReadSession, cuts: Float64Array, from
  * to its last line break, or for a BLF log to the last object that ends in it; when it shows a log
  * that can be read in parts, the rest is read in parts of about `PART_BYTES` by `workers` workers,
  * and each joined as soon as the parts before it are. Otherwise the rest is read here in chunks.
+ * `onProgress` gets how far the read has got, in bytes of the file: the bytes read, but for a log
+ * read whole before its frames are read (MF4), `WHOLE_READ_SHARE` of them, the rest of the file
+ * standing for the parts of its frames joined.
  *
  * Returns false when a part was refused or a worker failed or didn't load in `READY_MS`: the
  * session then holds part of the log, and the log must be read again in a new session. Rejects
@@ -235,11 +244,15 @@ export async function readInParts(file: Blob, session: ReadSession, options: Par
   session.push_chunk(first.subarray(0, cut));
   const format = cut > 0 ? session.segment_format() : undefined;
   if (!format || cut === file.size) {
+    const share = format ? 1 : WHOLE_READ_SHARE;
+    const read = (bytes: number) => onProgress(Math.round(bytes * share));
     session.push_chunk(first.subarray(cut));
-    onProgress(first.length);
-    await readChunks(file, (chunk) => session.push_chunk(chunk), onProgress, first.length, signal);
+    read(first.length);
+    await readChunks(file, (chunk) => session.push_chunk(chunk), read, first.length, signal);
     const count = session.plan_parts(FRAME_PART_BYTES);
-    return count === undefined ? true : readFrameParts(file, session, count, options);
+    if (count === undefined) return true;
+    const joined = (parts: number) => onProgress(Math.round(file.size * (share + ((1 - share) * parts) / count)));
+    return readFrameParts(file, session, count, options, joined);
   }
   onProgress(cut);
 
@@ -336,15 +349,17 @@ export async function readInParts(file: Blob, session: ReadSession, options: Par
  * the parts' frames by time, so it asks for them in no fixed order. The workers read ahead in the
  * plan's order, which is about the order the session will ask for them in (by when each part
  * starts), at most two parts per worker beyond those joined, but the part the session waits for is
- * read next, so the read never stalls. Returns false, and rejects on abort, as `readInParts`.
+ * read next, so the read never stalls. `onJoined` gets the number of parts joined after each.
+ * Returns false, and rejects on abort, as `readInParts`.
  */
-async function readFrameParts(file: Blob, session: ReadSession, count: number, options: PartOptions): Promise<boolean> {
+async function readFrameParts(file: Blob, session: ReadSession, count: number, options: PartOptions, onJoined: (parts: number) => void): Promise<boolean> {
   const { signal } = options;
   const ahead = 2 * options.workers;
   const done = new Map<number, Uint8Array>();
   const started = new Uint8Array(count);
   let next = 0;
   let needs = 0;
+  let joinedParts = 0;
   let reading = 0;
   let failed = false;
   let wake: (() => void)[] = [];
@@ -389,6 +404,8 @@ async function readFrameParts(file: Blob, session: ReadSession, count: number, o
       }
       if (joined === -2) return;
       needs = joined;
+      joinedParts += 1;
+      onJoined(joinedParts);
     }
     // A log that ends at a limit leaves parts no one will ask for.
     if (needs === -1) for (const worker of workers) worker.close();

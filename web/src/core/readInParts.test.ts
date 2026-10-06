@@ -133,6 +133,18 @@ class FrameWorker implements PartWorker {
   }
 }
 
+/** A `FrameWorker` that is still loading until it is closed, which fails its load as a real one's. */
+class LoadingFrameWorker extends FrameWorker {
+  private stopLoading: (err: Error) => void = () => undefined;
+  ready = new Promise<void>((_, reject) => {
+    this.stopLoading = reject;
+  });
+  close() {
+    super.close();
+    this.stopLoading(new Error('closed'));
+  }
+}
+
 /**
  * A session for a log cut where its objects end, as a BLF file is: here each line is an object,
  * and the file is cut as `ObjectCuts` cuts it, at the last line end within `partBytes` of the
@@ -665,6 +677,40 @@ describe('reading a log in parts', () => {
       expect(workers.every((worker) => worker.closed)).toBe(true);
       // The slow reads of the parts after them were stopped, not waited for.
       expect(workers.flatMap((worker) => worker.partsRead).sort()).toEqual([0, 1, 2]);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('ends, without a warning, when the session has every frame while the read-ahead is full', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workers: FrameWorker[] = [];
+      // Part 9 is asked for once the read-ahead is full, and the read of part 3 is closed unfinished.
+      const session = new FrameSession([0, 1, 9], -1, 12);
+      const startWorker = () => {
+        const worker = new FrameWorker((index) => (index === 1 ? 10 : index === 3 ? 1000 : 0));
+        workers.push(worker);
+        return worker;
+      };
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
+      expect(session.joined).toEqual([0, 1, 9]);
+      expect(workers.every((worker) => worker.closed)).toBe(true);
+      expect(workers.flatMap((worker) => worker.partsRead)).not.toContain(3);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('counts a worker still loading when the session has every frame as closed, not failed', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workers: FrameWorker[] = [];
+      const session = new FrameSession([0, 1], -1, 5);
+      const startWorker = () => {
+        const worker = workers.length < 2 ? new FrameWorker() : new LoadingFrameWorker();
+        workers.push(worker);
+        return worker;
+      };
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
+      expect(session.joined).toEqual([0, 1]);
+      expect(workers.every((worker) => worker.closed)).toBe(true);
       expect(warn).not.toHaveBeenCalled();
       warn.mockRestore();
     });

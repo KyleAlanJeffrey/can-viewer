@@ -368,9 +368,10 @@ async function readFrameParts(file: Blob, session: ReadSession, count: number, o
     fail();
   };
 
-  /** The part to read next, -1 when none is left, or undefined to wait for a part to be joined. */
+  /** The part to read next, -1 when none is left to read, or undefined to wait for a part to be joined. */
   const pick = (): number | undefined => {
-    if (needs >= 0 && !started[needs]) return needs;
+    if (needs < 0) return -1;
+    if (!started[needs]) return needs;
     while (next < count && started[next]) next++;
     if (next === count) return -1;
     return reading + done.size < ahead ? next : undefined;
@@ -397,7 +398,8 @@ async function readFrameParts(file: Blob, session: ReadSession, count: number, o
     try {
       await withDeadline(worker.ready, READY_MS);
     } catch (err) {
-      giveUp(err);
+      // A worker still loading when the session has every frame was closed, not failed.
+      if (needs !== -1) giveUp(err);
       return;
     }
     while (!failed && needs >= 0) {

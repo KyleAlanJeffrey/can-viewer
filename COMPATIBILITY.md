@@ -155,7 +155,7 @@ ASAM MF4 support (`crates/can-formats/src/mf4.rs`), for CAN bus logging as ASAM 
 
 ### Reading logs in parts
 
-A text or BLF log of 32 MiB or more is read on several cores (`web/src/core/readInParts.ts`, `web/src/core/partWorker.ts`, `crates/can-wasm/src/parts.rs`):
+A text, BLF or MF4 log of 32 MiB or more is read on several cores (`web/src/core/readInParts.ts`, `web/src/core/partWorker.ts`, `crates/can-wasm/src/parts.rs`, `crates/can-formats/src/mf4/parts.rs`):
 
 - Read in parts: candump, TRC, CSV, ASC (with absolute or relative times), BLF and the records of MF4 (see below). Read in one worker: logs under 32 MiB (starting the workers costs more than they save there), and live captures. Compare's log B is read as the open log is, in parts when it can be, and is held to its memory budget (see "Browsers" above) as each part is joined. A CSV file whose first 64 KiB do not settle its time unit has its parts refused (see below), so it is read again in one worker.
 - The core worker reads the first 2 MiB itself, up to its last line break. The rest is cut into 2 MiB ranges; each part is the lines that start in its range, so parts meet on line breaks wherever a range ends (mid-line, between CR and LF). Each part worker gets up to 64 KiB of the file's start for the header (a TRC or CSV header, an ASC `base` line), reads its part into a frame store of its own and sends it back as one transferred buffer; no memory is shared, so the app needs no cross-origin isolation, and the part worker is a same-origin module script, which the CSP's `worker-src 'self'` allows.

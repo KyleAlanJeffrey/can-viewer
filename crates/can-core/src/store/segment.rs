@@ -400,7 +400,7 @@ impl<'a> Segment<'a> {
 
     fn ts(&self, j: usize) -> i64 {
         if j < self.shifted {
-            self.ts_as_read(j) + self.shift_ns
+            self.ts_as_read(j).saturating_add(self.shift_ns)
         } else {
             self.ts_as_read(j)
         }

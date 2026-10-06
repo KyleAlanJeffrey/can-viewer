@@ -477,21 +477,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_relative_asc_part_that_switches_to_absolute_times_and_back_is_refused() {
+    /// A relative ASC log that switches to absolute times for `between`, then back.
+    fn asc_log_switching_to_absolute_times(between: &str) -> Vec<u8> {
         let mut log = String::from("base hex  timestamps relative\n");
         for i in 0..900 {
             if i == 500 {
-                log.push_str("base hex  timestamps absolute\n   9.5 1  100  Rx   d 0\n");
+                log.push_str("base hex  timestamps absolute\n");
+                log.push_str(between);
                 log.push_str("base hex  timestamps relative\n");
             }
             writeln!(log, "   0.001 1  123  Rx   d 1 {:02X}", i % 256).unwrap();
         }
-        let log = log.into_bytes();
+        log.into_bytes()
+    }
+
+    #[test]
+    fn a_relative_asc_part_with_a_frame_at_an_absolute_time_between_its_frames_is_refused() {
+        let log = asc_log_switching_to_absolute_times("   9.5 1  100  Rx   d 0\n");
         // The part read from 4300 counts its first frames from the sum before it, then one
         // that isn't, then more that are.
         let reads = assert_parts_read_as_whole("drive.asc", &log, 4200, &[vec![4300]]);
         assert_eq!(reads, [Read::Refused]);
+        // Parts that split the frames that are from those that aren't join.
         let switch = log.windows(8).position(|w| w == b"absolute").unwrap();
         let reads = assert_parts_read_as_whole(
             "drive.asc",
@@ -500,6 +507,14 @@ mod tests {
             &[vec![switch - 300, switch + 60], vec![switch + 60]],
         );
         assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+    }
+
+    #[test]
+    fn a_relative_asc_part_that_switches_to_absolute_times_and_back_between_frames_joins() {
+        // An event that holds no frame doesn't move the sum in absolute times.
+        let log = asc_log_switching_to_absolute_times("   9.5 Start of measurement\n");
+        let reads = assert_parts_read_as_whole("drive.asc", &log, 4200, &[vec![4300]]);
+        assert_eq!(reads, [Read::InParts]);
     }
 
     #[test]
@@ -609,7 +624,13 @@ mod tests {
         assert_eq!(s.segment_format(), None, "mid-line");
         s.push_chunk(&log[line_end - 3..line_end]);
         assert_eq!(s.segment_format().as_deref(), Some("candump"));
-        assert!(!s.push_segment(b"FCP1"));
+        let part = read_part(Format::Candump, b"", b"(1.0) can0 123#00\n").unwrap();
+        // A part in the format from before relative ASC times were carried, and one cut short.
+        let mut old = part.clone();
+        old[..4].copy_from_slice(b"FCP1");
+        assert!(!s.push_segment(&old));
+        assert!(!s.push_segment(&part[..part.len() - 1]));
+        assert!(s.push_segment(&part));
         assert!(read_part(Format::Blf, b"", b"").is_none());
     }
 
@@ -685,7 +706,7 @@ mod tests {
             let len = rng.below(9);
             let mut data = rng.hex(len, " ");
             // A J1939 BAM of 10 bytes in two packets, from one of two sources.
-            if format == "candump" && transfer == 0 && rng.chance(5) {
+            if matches!(format, "candump" | "asc") && transfer == 0 && rng.chance(5) {
                 transfer = 3;
             }
             let j1939 = transfer > 0;
@@ -757,7 +778,9 @@ mod tests {
                         );
                     }
                     let bus = bus + 1;
-                    if rng.chance(3) {
+                    if j1939 {
+                        format!("   {t:.6} {bus}  {id:<15} Rx   d 8 {data}")
+                    } else if rng.chance(3) {
                         format!("   {t:.6} {bus}  ErrorFrame")
                     } else if rng.chance(5) {
                         format!("   {t:.6} {bus}  {id:<15} Tx   r")

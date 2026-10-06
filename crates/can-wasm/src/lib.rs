@@ -380,10 +380,10 @@ impl LogInput {
         if part.entry != parts.state {
             return Err(());
         }
-        let (shift_ns, carried_ns) = part.times.join(parts.carried_ns).ok_or(())?;
+        let carried_ns = part.times.join(parts.carried_ns).ok_or(())?;
         let shift = TimeShift {
             frames: usize::try_from(part.times.frames).map_err(|_| ())?,
-            ns: shift_ns,
+            ns: parts.carried_ns,
         };
         store
             .append_shifted_segment(part.frames, shift)

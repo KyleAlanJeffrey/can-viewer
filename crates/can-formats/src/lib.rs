@@ -247,17 +247,17 @@ impl Default for PartTimes {
 }
 
 impl PartTimes {
-    /// Given `base`, the sum the parts before this one left: the time to add to this part's
-    /// first `frames` frames, and the sum this part leaves. None when that could time a frame
-    /// other than reading the whole file would: when the frames to shift are scattered, or the
-    /// sum overflows, which the whole file would have saturated.
+    /// Given `base`, the sum the parts before this one left, which is added to the times of
+    /// this part's first `frames` frames: the sum this part leaves. None when that could time a
+    /// frame other than reading the whole file would: when the frames to shift are scattered,
+    /// or the sum overflows, which the whole file would have saturated.
     #[must_use]
-    pub fn join(&self, base: i64) -> Option<(i64, i64)> {
+    pub fn join(&self, base: i64) -> Option<i64> {
         let carried = base.checked_add(self.from_base_ns)?;
         if self.scattered {
             return None;
         }
-        Some((base, if self.open { carried } else { self.last_ns }))
+        Some(if self.open { carried } else { self.last_ns })
     }
 }
 

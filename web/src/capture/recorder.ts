@@ -1,4 +1,4 @@
-import type { CoreApi, LogInfo } from '../core/api';
+import type { CaptureFrame, CoreApi, LogInfo } from '../core/api';
 import { formatCount, formatCountOf, formatDuration } from '../format';
 import { errorText, formatBitrate, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { FrameBatcher, type BatcherOptions } from './batcher';
@@ -12,20 +12,29 @@ const RATE_WINDOW_MS = 2000;
  * capture need memory too.
  */
 const MEMORY_BUDGET_BYTES = 2 * 1024 ** 3;
-/** Roughly what a classic frame costs in the core, with room for its columns to grow. */
-const BYTES_PER_FRAME = 65;
+/** A frame's columns in the core besides its payload: time, ID, bus, flags, payload start, ID index row. */
+const FRAME_COLUMN_BYTES = 24;
 
-export interface CaptureLimits {
-  /** Frames after which the user is told to save soon. */
-  warnFrames: number;
-  /** Frames after which the capture stops by itself, so the core can't run out of memory. */
-  maxFrames: number;
+/** Roughly what `frame` costs in the core. Doubled, as the core's columns grow by doubling. */
+export function captureFrameBytes(frame: CaptureFrame): number {
+  return 2 * (FRAME_COLUMN_BYTES + frame.data.length);
 }
 
-/** Warns at half the budget, so there is room to save, and stops at three quarters. */
+/** In bytes of core memory, as `captureFrameBytes` counts them. */
+export interface CaptureLimits {
+  /** After this the user is told to save soon. */
+  warnBytes: number;
+  /** The capture stops by itself before this, so the core can't run out of memory. */
+  maxBytes: number;
+}
+
+/**
+ * Warns at half the budget, so there is room to save, and stops at three quarters: about 16.8
+ * and 25.2 million classic 8-byte frames, or 6.1 and 9.2 million 64-byte CAN FD frames.
+ */
 export const CAPTURE_LIMITS: CaptureLimits = {
-  warnFrames: Math.floor((MEMORY_BUDGET_BYTES * 0.5) / BYTES_PER_FRAME),
-  maxFrames: Math.floor((MEMORY_BUDGET_BYTES * 0.75) / BYTES_PER_FRAME),
+  warnBytes: MEMORY_BUDGET_BYTES * 0.5,
+  maxBytes: MEMORY_BUDGET_BYTES * 0.75,
 };
 
 export interface CaptureStatus {
@@ -37,7 +46,7 @@ export interface CaptureStatus {
   /** Lines that didn't parse, errors from the adapter or the serial port. */
   problems: number;
   lastProblem: string | null;
-  /** The capture is big enough that it should be saved soon; it stops at `maxFrames`. */
+  /** The capture is big enough that it should be saved soon; it stops before `maxBytes`. */
   nearLimit: boolean;
 }
 
@@ -91,11 +100,16 @@ export class CaptureRecorder {
     listenOnlyUnconfirmed: "Listen-only mode isn't confirmed for this adapter, so it may acknowledge the frames it receives.",
     problem: (status: CaptureStatus) => `The adapter reported a problem: ${status.lastProblem}`,
     sizeWarning: () =>
-      `This capture is getting large, so stop and save it soon. It stops by itself at ${formatCount(this.limits.maxFrames)} frames, so the app doesn't run out of memory.`,
+      "This capture is getting large, so stop and save it soon. It stops by itself before the app runs out of memory.",
   };
+  /** An adapter that hasn't started by then, such as a USB device that never answers, is given up on. */
+  startTimeoutMs = 10_000;
   /** Called once if the capture ends without `stop`: the adapter went away or the core failed. */
   onEnd: ((message: string) => void) | null = null;
   private frames = 0;
+  /** What the frames so far cost in the core, as `captureFrameBytes` counts it. */
+  private bytes = 0;
+  private full = false;
   private problems = 0;
   private lastProblem: string | null = null;
   private origin = 0;
@@ -131,18 +145,24 @@ export class CaptureRecorder {
   async start(settings: CaptureSettings): Promise<{ info: LogInfo; listenOnly: boolean }> {
     this.origin = this.clock.now();
     const startedAtMs = this.clock.wallNow();
-    const started = await this.adapter.start(
+    const starting = this.adapter.start(
       settings,
       {
         onFrames: (frames) => {
-          const room = this.limits.maxFrames - this.frames;
-          if (room <= 0) return;
-          const kept = frames.length > room ? frames.slice(0, room) : frames;
-          this.frames += kept.length;
-          this.batcher.add(kept);
-          if (this.frames >= this.limits.maxFrames) {
-            this.end(`The capture stopped at ${this.frames.toLocaleString('en-US')} frames, before the app ran out of memory.`);
+          if (this.full) return;
+          let fits = 0;
+          for (const frame of frames) {
+            const cost = captureFrameBytes(frame);
+            if (this.bytes + cost > this.limits.maxBytes) {
+              this.full = true;
+              break;
+            }
+            this.bytes += cost;
+            fits++;
           }
+          this.frames += fits;
+          this.batcher.add(fits < frames.length ? frames.slice(0, fits) : frames);
+          if (this.full) this.end(`The capture stopped at ${this.frames.toLocaleString('en-US')} frames, before the app ran out of memory.`);
         },
         onProblem: (message) => {
           this.problems += 1;
@@ -152,6 +172,7 @@ export class CaptureRecorder {
       },
       () => Math.round((this.clock.now() - this.origin) * 1e6),
     );
+    const started = await this.withinStartTimeout(starting);
     this.bitrate = settings.bitrate;
     this.listenOnly = started.listenOnly;
     try {
@@ -162,6 +183,21 @@ export class CaptureRecorder {
     }
     this.batcher.start();
     return { info: this.info, listenOnly: started.listenOnly };
+  }
+
+  /** `starting`, or a rejection once `startTimeoutMs` has passed, with the adapter stopped. */
+  private withinStartTimeout<T>(starting: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        this.ended = true;
+        // The stop cuts the start short, so it rejects rather than opening the bus later.
+        void this.adapter.stop();
+        starting.catch(() => undefined);
+        reject(new Error(`The adapter didn't start within ${this.startTimeoutMs / 1000} seconds. Unplug it, plug it back in and try again.`));
+      }, this.startTimeoutMs);
+    });
+    return Promise.race([starting, timedOut]).finally(() => clearTimeout(timer));
   }
 
   status(): CaptureStatus {
@@ -176,7 +212,7 @@ export class CaptureRecorder {
       elapsedS: (now - this.origin) / 1000,
       problems: this.problems,
       lastProblem: this.lastProblem,
-      nearLimit: this.frames >= this.limits.warnFrames,
+      nearLimit: this.bytes >= this.limits.warnBytes,
     };
   }
 

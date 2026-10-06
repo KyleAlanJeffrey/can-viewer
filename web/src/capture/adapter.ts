@@ -55,10 +55,31 @@ export interface CaptureAdapter {
    * nanoseconds since the capture started. Rejects with a message for the user.
    */
   start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture>;
-  /** Stop receiving and release the device. Never rejects. */
+  /**
+   * Stop receiving and release the device. Never rejects. Called during `start`, it cuts the
+   * start short: the start then rejects and leaves the device closed. A start before the last
+   * one has settled is refused.
+   */
   stop(): Promise<void>;
   /** As the page goes away: ask the device to stop, without waiting, as nothing more will run. */
   release?(): void;
+}
+
+/**
+ * A start cut short by `stop`, as when the recorder gave up waiting. Nobody sees it: the
+ * recorder has already rejected with its own message.
+ */
+export const START_CANCELLED = 'The capture was stopped while the adapter started.';
+
+/** Waits for `promise` to settle, but no longer than `ms`, as a hung device may never answer. Never rejects. */
+export function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)));
+  const settled = promise.then(
+    () => undefined,
+    () => undefined,
+  );
+  return Promise.race([settled, late]).finally(() => clearTimeout(timer));
 }
 
 /** An error's message. Some environments' DOMException isn't an Error, so any `message` will do. */

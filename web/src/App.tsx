@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, PanelRight, Save, Search, Square, X } from 'lucide-react';
 // Type-only, so the adapters stay out of the main chunk.
 import type { CaptureAdapter, CaptureSettings } from './capture/adapter';
@@ -9,6 +9,7 @@ import { EXPORT_FORMATS, ExportLogSheet } from './components/ExportLogSheet';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
+import { ChunkBoundary } from './components/ChunkBoundary';
 import { Sheet } from './components/Sheet';
 import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
@@ -129,9 +130,13 @@ export function App({ core }: { core: CoreApi }) {
   const [restoring, setRestoring] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const [captureOpen, setCaptureOpen] = useState(false);
+  // The sheet loads when first opened, then stays, keeping the chosen adapter.
+  const [captureSheetUsed, setCaptureSheetUsed] = useState(false);
   const [live, setLive] = useState<LiveCapture | null>(null);
   const [liveStatus, setLiveStatus] = useState<CaptureStatus | null>(null);
   const [stopping, setStopping] = useState(false);
+  // Set at once, as the state isn't seen by a drop until the next render.
+  const stoppingRef = useRef(false);
   /** The open log is a capture not yet saved to a file, which a reload would lose. */
   const [unsavedCapture, setUnsavedCapture] = useState(false);
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
@@ -307,6 +312,8 @@ export function App({ core }: { core: CoreApi }) {
     setNotKept(null);
     setUnsavedCapture(false);
     setCaptureNotice(null);
+    // A discard prompt left open would name no capture.
+    setDiscardThen(null);
     setLogVersion((v) => v + 1);
     viewState.clearScope('log');
     videoSession.close();
@@ -494,6 +501,7 @@ export function App({ core }: { core: CoreApi }) {
       const capture = liveRef.current;
       if (!capture) return;
       liveRef.current = null;
+      stoppingRef.current = true;
       setStopping(true);
       try {
         await serially(async () => {
@@ -522,6 +530,7 @@ export function App({ core }: { core: CoreApi }) {
         showNoLog();
         setError(`The capture couldn't be finished: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
+        stoppingRef.current = false;
         setStopping(false);
       }
     },
@@ -591,7 +600,8 @@ export function App({ core }: { core: CoreApi }) {
       async (write) => {
         if (!write) return;
         const saved = await run(label, async () => {
-          const blob = await core.exportLog('candump');
+          // Queued, so it comes after the last frames and the end of a capture still stopping.
+          const blob = await serially(() => core.exportLog('candump'));
           await write(blob);
           await keepSavedCapture(name, blob);
         });
@@ -704,7 +714,11 @@ export function App({ core }: { core: CoreApi }) {
           setLiveStatus(null);
         }
         showNoLog();
-        setError(capture ? 'The CAN core stopped and was restarted, so the capture was lost.' : 'The CAN core stopped and was restarted. Open the log again.');
+        setError(
+          capture || unsavedRef.current
+            ? 'The CAN core stopped and was restarted, so the capture was lost.'
+            : 'The CAN core stopped and was restarted. Open the log again.',
+        );
       }),
     [core, showNoLog],
   );
@@ -812,6 +826,10 @@ export function App({ core }: { core: CoreApi }) {
         setError('Stop the capture before opening a log or a video.');
         return;
       }
+      if (stoppingRef.current && files.some((f) => !isDbc(f))) {
+        setError('Wait for the capture to stop, then drop the files again.');
+        return;
+      }
       // A video goes with the open log, so only a log replaces the capture.
       const opensLog = files.some((f) => !isDbc(f) && !isVideoFile(f));
       if (opensLog) unlessUnsavedCapture(() => openFiles(files));
@@ -901,6 +919,13 @@ export function App({ core }: { core: CoreApi }) {
     if (narrow()) setSidebarOpen(false);
   };
 
+  /** The Live Capture sheet around `content`, while the sheet itself loads or if it can't. */
+  const captureFrame = (content: ReactNode) => (
+    <Sheet open={captureOpen} onClose={() => setCaptureOpen(false)} title="Live Capture">
+      {content}
+    </Sheet>
+  );
+
   const ctx: ViewContext = {
     core,
     log,
@@ -928,8 +953,14 @@ export function App({ core }: { core: CoreApi }) {
     busyLabel: () => busyRef.current?.label ?? null,
     setError,
     setView,
-    // Left unsettled if the discard prompt is cancelled, so the caller goes no further.
-    openLog: (file, name) => new Promise((resolve) => unlessUnsavedCapture(() => resolve(openLog(file, name, undefined, true)))),
+    openLog: (file, name) => {
+      if (stoppingRef.current) {
+        setError('Wait for the capture to stop, then open the log again.');
+        return Promise.resolve(false);
+      }
+      // Left unsettled if the discard prompt is cancelled, so the caller goes no further.
+      return new Promise((resolve) => unlessUnsavedCapture(() => resolve(openLog(file, name, undefined, true))));
+    },
     swapCompareLog,
     openLogPicker: () => logInput.current?.click(),
     openDbcPicker: () => dbcInput.current?.click(),
@@ -1064,7 +1095,12 @@ export function App({ core }: { core: CoreApi }) {
                 )}
                 <button
                   className="toolbar-button capture"
-                  onClick={() => unlessUnsavedCapture(() => setCaptureOpen(true))}
+                  onClick={() =>
+                    unlessUnsavedCapture(() => {
+                      setCaptureSheetUsed(true);
+                      setCaptureOpen(true);
+                    })
+                  }
                   disabled={!!busy || stopping}
                   title={'Capture\u2026'}
                 >
@@ -1097,6 +1133,7 @@ export function App({ core }: { core: CoreApi }) {
               e.target.value = '';
               if (!file) return;
               if (liveRef.current) setError('Stop the capture before opening a log.');
+              else if (stoppingRef.current) setError('Wait for the capture to stop, then open the log again.');
               else unlessUnsavedCapture(() => void openLog(file, file.name));
             }}
           />
@@ -1224,9 +1261,13 @@ export function App({ core }: { core: CoreApi }) {
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
       {dragOver && <div className="drop-overlay">Drop a log, DBC files or a video to open them</div>}
-      <Suspense fallback={null}>
-        <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
-      </Suspense>
+      {captureSheetUsed && (
+        <ChunkBoundary message="Couldn't load capture." frame={captureFrame}>
+          <Suspense fallback={captureFrame(<p className="hint">Loading&hellip;</p>)}>
+            <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
+          </Suspense>
+        </ChunkBoundary>
+      )}
       <Sheet
         open={discardThen !== null}
         onClose={() => setDiscardThen(null)}

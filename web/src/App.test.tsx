@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -144,12 +144,12 @@ describe('App live capture', () => {
 
   async function startCapture(port: FakeSerialPort) {
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    // The sheet loads on its own the first time.
-    const sheet = await screen.findByRole('dialog', { name: 'Live Capture' });
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Choose Adapter\u2026' }));
+    // The sheet shows as loading until its code arrives.
+    await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
+    const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
     await screen.findByRole('button', { name: 'Stop Capture' });
-    expect(port.commands).toEqual(['C', 'V', 'S6', 'L']);
+    expect(port.commands).toEqual(['C', 'S6', 'L']);
   }
 
   it('records from an slcan adapter, shows the frames as they come, and saves them as a candump log', async () => {
@@ -327,44 +327,127 @@ describe('App live capture', () => {
     expect(leave()).toBe(false);
 
     await startCapture(port);
-    expect(leave()).toBe(true);
+    // The listener is added by an effect, which can run a little after the button shows.
+    await waitFor(() => expect(leave()).toBe(true));
     port.send('t1230\r');
     await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
     await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
     await screen.findByText(/Not saved/);
-    expect(leave()).toBe(true);
+    await waitFor(() => expect(leave()).toBe(true));
 
     stubSavePicker();
     await userEvent.click(screen.getByRole('button', { name: 'Save Capture\u2026' }));
     await waitFor(() => expect(screen.queryByText(/Not saved/)).toBeNull());
-    expect(leave()).toBe(false);
+    await waitFor(() => expect(leave()).toBe(false));
   });
 
-  it('asks before recording from an adapter that answers nothing, and never claims listen-only for it', async () => {
+  it('asks before recording from a CANable, which confirms nothing, and never claims listen-only for it', async () => {
     const App = await freshApp();
     const port = new FakeSerialPort();
-    port.silence();
+    port.canable();
     withSerialPort(port);
     const { core, frames } = captureCore();
     render(<App core={core} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    const sheet = await screen.findByRole('dialog', { name: 'Live Capture' });
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Choose Adapter\u2026' }));
+    // The sheet shows as loading until its code arrives.
+    await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
+    const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
-    // A silent adapter takes its full wait for V.
-    expect((await within(sheet).findByRole('alert', {}, { timeout: 3000 })).textContent).toMatch(/can't confirm listen-only mode.*Start anyway\?$/);
+    // A silent adapter takes its full wait for S6.
+    expect((await within(sheet).findByRole('alert', {}, { timeout: 3000 })).textContent).toMatch(/didn't confirm listen-only mode\. Silent mode \(M1\) was sent.*Start anyway\?$/);
     expect(core.startCapture).not.toHaveBeenCalled();
     expect(port.commands).not.toContain('O');
 
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Anyway' }));
     await screen.findByRole('button', { name: 'Stop Capture' }, { timeout: 3000 });
     expect(port.commands.slice(-2)).toEqual(['M1', 'O']);
+    expect(port.silentMode).toBe(true);
     expect(screen.getByText(/Listen-only mode isn't confirmed for this adapter/)).toBeTruthy();
     expect(toolbarStatus()).toBe('Recording from USB serial device 16D0:117E.');
     port.send('t1230\r');
     await waitFor(() => expect(frames).toHaveLength(1));
     await screen.findByText(/1 frame \u00b7/);
     expect(screen.getByText('Recording').parentElement!.textContent).not.toMatch(/listen only/i);
+  });
+
+  /** Drops `files` on the window, as the browser does when files are dragged in. */
+  function drop(files: File[]) {
+    const event = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'dataTransfer', { value: { files } });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+  }
+
+  it('refuses a dropped log while the capture is stopping, then asks about the stopped capture', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    const stop = { finish: () => {} };
+    const finished = new Promise<void>((resolve) => (stop.finish = resolve));
+    const endCapture = core.endCapture;
+    core.endCapture = vi.fn<CoreApi['endCapture']>(async () => {
+      await finished;
+      return endCapture();
+    });
+    render(<App core={core} />);
+    await startCapture(port);
+    port.send('t1230\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await waitFor(() => expect(core.endCapture).toHaveBeenCalled());
+    drop([new File(['(1.0) can0 123#00\n'], 'other.log')]);
+    expect((await screen.findByRole('alert')).textContent).toBe('Wait for the capture to stop, then drop the files again.');
+    expect(screen.queryByRole('dialog', { name: 'Discard the capture?' })).toBeNull();
+
+    stop.finish();
+    await screen.findByText(/Not saved/);
+    drop([new File(['(1.0) can0 123#00\n'], 'other.log')]);
+    const confirm = await screen.findByRole('dialog', { name: 'Discard the capture?' });
+    expect(confirm.textContent).toMatch(/capture-\d{8}-\d{6}\.log hasn\u2019t been saved/);
+  });
+
+  /** A capture core whose engine restart the test triggers with `reset()`. */
+  function resettingCore() {
+    const { core } = captureCore();
+    let listener: (() => void) | null = null;
+    core.onReset = (l) => {
+      listener = l;
+      return () => (listener = null);
+    };
+    return { core, reset: () => act(() => listener?.()) };
+  }
+
+  it('says a stopped, unsaved capture was lost when the engine restarts, closing the discard prompt', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core, reset } = resettingCore();
+    render(<App core={core} />);
+    await unsavedCapture(port, core);
+    await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
+    expect(screen.getByRole('dialog', { name: 'Discard the capture?' })).toBeTruthy();
+
+    reset();
+    expect((await screen.findByRole('alert')).textContent).toBe('The CAN core stopped and was restarted, so the capture was lost.');
+    expect(screen.queryByRole('dialog', { name: 'Discard the capture?' })).toBeNull();
+  });
+
+  it('asks for a saved capture to be opened again when the engine restarts', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core, reset } = resettingCore();
+    render(<App core={core} />);
+    await unsavedCapture(port, core);
+    stubSavePicker();
+    await userEvent.click(screen.getByRole('button', { name: 'Save Capture\u2026' }));
+    await waitFor(() => expect(screen.queryByText(/Not saved/)).toBeNull());
+
+    reset();
+    expect((await screen.findByRole('alert')).textContent).toBe('The CAN core stopped and was restarted. Open the log again.');
   });
 
   it('keeps no log when no frames came, and says what to check', async () => {
@@ -398,7 +481,8 @@ describe('App live capture', () => {
     const App = await freshApp();
     render(<App core={fakeCore()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    expect(within(await screen.findByRole('dialog', { name: 'Live Capture' })).getByText(/needs Chrome or Edge/)).toBeTruthy();
+    expect(await screen.findByText(/needs Chrome or Edge/)).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Live Capture' })).toBeTruthy();
   });
 });
 

@@ -11,12 +11,19 @@ export class FakeSerialPort implements SerialPortLike {
   readonly commands: string[] = [];
   opened = false;
   closed = false;
+  /** Set by `canable()`'s firmware when it took M1. */
+  silentMode = false;
   /** What the adapter answers to a command, or null for no answer. */
   answer: (command: string) => string | null = (command) => (command === 'V' ? 'V1013\r' : '\r');
   /** Set to make `open` fail, as when another program holds the port. */
   openError: Error | null = null;
   /** Set to make writes fail, as when the adapter has hung. */
   writeError: Error | null = null;
+  /** Set to make writes never finish, as when the USB serial link has hung; abort ends them. */
+  hangWrites = false;
+  /** Set to make each write take this long, as over a slow link. */
+  writeDelayMs = 0;
+  private opening: Promise<void> | null = null;
   private controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   private written = '';
 
@@ -26,7 +33,19 @@ export class FakeSerialPort implements SerialPortLike {
     return this.info;
   }
 
+  /** Makes the next `open` wait until the returned function is called. */
+  delayOpen(): () => void {
+    let release = () => {};
+    this.opening = new Promise((resolve) => (release = resolve));
+    return release;
+  }
+
   async open() {
+    if (this.opening) {
+      const opening = this.opening;
+      this.opening = null;
+      await opening;
+    }
     if (this.openError) throw this.openError;
     this.opened = true;
     this.closed = false;
@@ -36,7 +55,9 @@ export class FakeSerialPort implements SerialPortLike {
       },
     });
     this.writable = new WritableStream<Uint8Array>({
-      write: (chunk) => {
+      write: async (chunk) => {
+        if (this.hangWrites) return new Promise<void>(() => {});
+        if (this.writeDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.writeDelayMs));
         if (this.writeError) throw this.writeError;
         this.written += new TextDecoder().decode(chunk);
         let end: number;
@@ -52,9 +73,25 @@ export class FakeSerialPort implements SerialPortLike {
     });
   }
 
-  /** The adapter answers no command, as CANable's slcan firmware doesn't. */
+  /** The adapter answers no command at all. */
   silence() {
     this.answer = () => null;
+  }
+
+  /**
+   * CANable's slcan firmware (canable-fw, canable2-fw): it answers `V` with a version line and
+   * nothing else, ignores `L`, and takes `M1` as silent mode only while the channel is closed.
+   */
+  canable() {
+    let busOpen = false;
+    this.answer = (command) => {
+      if (command === 'V') return 'b2c4e1f canable2-fw\r';
+      if (command === 'O') busOpen = true;
+      if (command === 'C') busOpen = false;
+      if (command === 'M1' && !busOpen) this.silentMode = true;
+      if (command === 'M0' && !busOpen) this.silentMode = false;
+      return null;
+    };
   }
 
   send(text: string | Uint8Array) {

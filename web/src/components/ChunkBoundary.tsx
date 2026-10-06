@@ -3,6 +3,8 @@ import { Component, type ReactNode } from 'react';
 interface Props {
   children: ReactNode;
   message?: string;
+  /** Puts the fallback where the children would have shown, such as in a sheet. */
+  frame?: (fallback: ReactNode) => ReactNode;
 }
 
 interface State {
@@ -22,7 +24,7 @@ export class ChunkBoundary extends Component<Props, State> {
 
   render() {
     if (!this.state.failed) return this.props.children;
-    return (
+    const fallback = (
       <div className="empty" role="alert">
         <div className="empty-inner">
           <p className="lede">{this.props.message ?? "Couldn't load this view."}</p>
@@ -32,5 +34,6 @@ export class ChunkBoundary extends Component<Props, State> {
         </div>
       </div>
     );
+    return this.props.frame ? this.props.frame(fallback) : fallback;
   }
 }

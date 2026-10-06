@@ -1437,10 +1437,10 @@ pub struct LogB {
 impl Session {
     /// Drop log B, then start reading a new one: the file's name and size, as for the open log.
     /// Push its bytes with [`Session::compare_push_chunk`], and perhaps its parts with
-    /// [`Session::compare_push_segment`], and end with [`Session::compare_finish`]. Log B may take what the open log leaves of
-    /// [`COMPARE_MEMORY_BUDGET`]; a file likely to need more is refused once its format is
-    /// known, and one that turns out to need more once it does, with an error from the next
-    /// call.
+    /// [`Session::compare_push_segment`], and end with [`Session::compare_finish`]. Log B may
+    /// take what the open log leaves of [`COMPARE_MEMORY_BUDGET`]; a file likely to need more
+    /// is refused once its format is known, and one that turns out to need more once it does,
+    /// with an error from the next call.
     pub fn compare_begin(&mut self, name: &str, total_bytes: f64) {
         self.log_b = None;
         let mut log = LogB::default();
@@ -1610,7 +1610,6 @@ impl Session {
             return Ok(false);
         };
         let joined = log.input.push_part(segment, &mut log.store).is_ok();
-        log.input.refuse_if_over_limit(&log.store);
         if log.input.refused {
             log.store = FrameStore::default();
             return Err(too_large(&log.input.file_name));

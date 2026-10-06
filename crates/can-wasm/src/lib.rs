@@ -370,8 +370,14 @@ impl LogInput {
     }
 
     /// Joins a part read by `parse_segment` onto the log, or refuses it, perhaps after storing
-    /// some of its frames.
+    /// some of its frames. Like `push`, sets `refused` once the store outgrows `limit`.
     fn push_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
+        let joined = self.join_part(bytes, store);
+        self.refuse_if_over_limit(store);
+        joined
+    }
+
+    fn join_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
         let parser = self.splittable_parser().ok_or(())?;
         let (state, carried_ns) = (parser.state(), parser.carried_ns());
         let part = Part::read(bytes).ok_or(())?;

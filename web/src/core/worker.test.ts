@@ -87,10 +87,13 @@ class FakeSession {
   }
   /** The part of log B `compare_push_segment` refuses, counted from 0. */
   static refusePart = -1;
+  /** The part of log B that takes it over its memory budget, counted from 0. */
+  static throwPart = -1;
   /** Parts of log B joined. */
   compareParts = 0;
   compare_push_segment() {
     if (this.compareParts === FakeSession.refusePart) return false;
+    if (this.compareParts === FakeSession.throwPart) throw new Error('door-lock.log is too large to read beside the open log in this browser\'s memory.');
     this.compareParts += 1;
     return true;
   }
@@ -311,6 +314,7 @@ describe('core worker', () => {
 
       afterEach(() => {
         FakeSession.refusePart = -1;
+        FakeSession.throwPart = -1;
       });
 
       it('is read in parts, each joined into log B, beside the open log', async () => {
@@ -342,6 +346,24 @@ describe('core worker', () => {
         expect(await call(port, 2, 'openCompareLog', bigLog(), 'door-lock.log')).toMatchObject({ id: 2, result: { name: 'door-lock.log' } });
         expect(AnsweringPartWorker.made).toBe(6);
         expect(withB.compareParts).toBe(3 + parts);
+      });
+
+      it('is not read again when it outgrows its memory budget in parts, and later logs are still read in parts', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const port = await startAnswering();
+        FakeSession.throwPart = 2;
+        const reply = (await call(port, 1, 'openCompareLog', bigLog(), 'door-lock.log')) as { error?: string };
+        expect(reply.error).toContain('too large');
+        const [withB] = FakeSession.made;
+        expect(withB.compareBegun).toBe(1);
+        expect(withB.compareRead).toBe(2 << 20);
+        expect(withB.compareClosed).toBe(1);
+        expect(warn).not.toHaveBeenCalled();
+
+        FakeSession.throwPart = -1;
+        expect(await call(port, 2, 'openCompareLog', bigLog(), 'door-lock.log')).toMatchObject({ id: 2, result: { name: 'door-lock.log' } });
+        expect(AnsweringPartWorker.made).toBe(6);
+        warn.mockRestore();
       });
     });
   });

@@ -199,6 +199,8 @@ struct Profile {
     /// Seconds the frames were taken from, to turn counts into rates.
     span_s: f64,
     max_len: usize,
+    /// A bit per payload length seen, with lengths past 127 sharing the top bit.
+    lengths: u128,
     /// Frames sent as CAN FD.
     fd_frames: u32,
     bytes: Vec<ByteProfile>,
@@ -226,6 +228,7 @@ fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profi
         frames: 0,
         span_s,
         max_len: 0,
+        lengths: 0,
         fd_frames: 0,
         bytes: vec![ByteProfile::new(); len],
         full_frames: 0,
@@ -241,6 +244,7 @@ fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profi
         let data = &frame.data[..frame.data.len().min(len)];
         p.frames += 1;
         p.max_len = p.max_len.max(data.len());
+        p.lengths |= 1 << data.len().min(127);
         if frame.flags & flags::FD != 0 {
             p.fd_frames += 1;
         }
@@ -953,7 +957,7 @@ fn rate_text(ratio: f64) -> String {
 /// Whether two profiles show different payloads: another length, or a byte value one shows
 /// and the other never does.
 fn payloads_differ(a: &Profile, b: &Profile) -> bool {
-    a.max_len != b.max_len
+    a.lengths != b.lengths
         || a.bytes.iter().zip(&b.bytes).any(|(x, y)| {
             (0..256)
                 .any(|v| (x.values[v] > 0) != (y.values[v] > 0) && x.values[v] + y.values[v] > 0)
@@ -2089,6 +2093,17 @@ mod tests {
         assert_eq!(found.reason, "Too few frames to compare");
         assert!(found.too_few_frames);
         assert!(!found.payloads_differ);
+
+        let mixed = store(&periodic(0x300, 1.0, 3.0, |i, _| {
+            if i == 0 {
+                vec![50, 0]
+            } else {
+                vec![50 + i as u8, 0, 0]
+            }
+        }));
+        let full = store(&periodic(0x300, 1.0, 3.0, |i, _| vec![50 + i as u8, 0, 0]));
+        let found = &compare_logs(&mixed, &full, NO_RULES)[0];
+        assert!(found.payloads_differ, "{found:?}");
     }
 
     #[test]

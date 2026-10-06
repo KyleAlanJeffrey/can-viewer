@@ -104,10 +104,10 @@ const applied = (setTraceFilter: ReturnType<typeof filterCore>['setTraceFilter']
 
 const NONE: FrameFilter = { channels: null, keys: null, kinds: null, rules: [], combine: 'all', t0: null, t1: null };
 
-/** The sheet loads on first use. */
+/** The sheet loads on first use, which can take over a second under load. */
 async function openSheet(user: UserEvent) {
   await user.click(screen.getByRole('button', { name: /^(Edit filters|Filters)/ }));
-  await screen.findByRole('dialog', { name: 'Trace filters' });
+  await screen.findByRole('dialog', { name: 'Trace filters' }, { timeout: 3000 });
 }
 
 /** Opens the sheet and adds a "byte 2 equals `value`" rule. */

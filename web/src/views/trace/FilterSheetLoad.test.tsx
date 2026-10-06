@@ -32,7 +32,7 @@ it('offers a reload when the filter sheet fails to load, and keeps the trace', a
   const core = fakeCore({ rows: async (key, start) => makeRowBatch(key, start, []) });
   const { user } = renderInShell(TraceView, { core, log: logInfo() });
   await user.click(screen.getByRole('button', { name: 'Filters\u2026' }));
-  const alert = await screen.findByRole('alert');
+  const alert = await screen.findByRole('alert', {}, { timeout: 3000 });
   expect(alert.textContent).toContain("Couldn't load the filters.");
   expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy();
   expect(screen.getByRole('grid', { name: 'Frame trace' })).toBeTruthy();

@@ -96,8 +96,10 @@ pub struct Mf4Parser {
     stats: ParseStats,
     file: Vec<u8>,
     too_large: bool,
-    /// The frames, once the file is planned to be read in parts.
+    /// The frames, once the file is planned to be read in parts, until they are all joined.
     join: Option<Box<parts::Join>>,
+    /// Every part is joined, so `finish` reads nothing.
+    joined: bool,
 }
 
 impl Mf4Parser {
@@ -126,7 +128,7 @@ impl Mf4Parser {
     /// instead of reading it in `finish`. None, the parser left as it was, for a file that
     /// must be read whole: see [`parts`].
     pub fn plan_parts(&mut self, part_bytes: u64) -> Option<usize> {
-        if self.too_large || self.join.is_some() {
+        if self.too_large || self.reads_in_parts() {
             return None;
         }
         let mut stats = self.stats.clone();
@@ -154,16 +156,24 @@ impl Mf4Parser {
         part: &[u8],
         sink: &mut S,
     ) -> Option<Joined> {
-        self.join
+        let joined = self
+            .join
             .as_mut()?
             .join(index, part, &mut self.stats, sink)
-            .ok()
+            .ok()?;
+        if joined == Joined::Done {
+            // Its windows, reads and variable length data would otherwise live as long as
+            // the parser, which is kept for its stats.
+            self.join = None;
+            self.joined = true;
+        }
+        Some(joined)
     }
 
     /// Whether the frames are read in parts, so `finish` reads none.
     #[must_use]
     pub fn reads_in_parts(&self) -> bool {
-        self.join.is_some()
+        self.join.is_some() || self.joined
     }
 }
 
@@ -185,7 +195,7 @@ impl LogParser for Mf4Parser {
 
     fn finish<S: FrameSink>(&mut self, sink: &mut S) {
         let file = std::mem::take(&mut self.file);
-        if self.too_large || self.join.is_some() {
+        if self.too_large || self.reads_in_parts() {
             return;
         }
         if let Err(reason) = read_file(&file, &mut self.stats, sink) {
@@ -391,7 +401,7 @@ fn read_file<S: FrameSink>(
         start_ns,
         mut walk,
         sources,
-    } = prepare(file, stats)?;
+    } = prepare(file, stats, false)?;
     merge(sources, start_ns, &mut walk, stats, sink);
     Ok(())
 }
@@ -403,7 +413,13 @@ struct Prepared<'a> {
     sources: Vec<Source<'a>>,
 }
 
-fn prepare<'a>(file: &'a [u8], stats: &mut ParseStats) -> Result<Prepared<'a>, &'static str> {
+/// When `for_parts`, a file whose records can't be read in parts ends with an error before
+/// its variable length data is read (see [`parts::splittable`]).
+fn prepare<'a>(
+    file: &'a [u8],
+    stats: &mut ParseStats,
+    for_parts: bool,
+) -> Result<Prepared<'a>, &'static str> {
     let repairs = check_identification(file)?;
     let header = Block::typed(file, 64, b"##HD").ok_or("MF4 header block missing")?;
     let start_ns = header
@@ -450,6 +466,9 @@ fn prepare<'a>(file: &'a [u8], stats: &mut ParseStats) -> Result<Prepared<'a>, &
         let reader = &mut source.reader;
         if repairs.last_data_block {
             reader.records.run_on_last_block(&walk.starts);
+        }
+        if for_parts && !parts::splittable(file, reader, repairs) {
+            return Err(parts::NOT_SPLITTABLE);
         }
         if reader.record_id_size != 0 {
             reader.variable = variable_data(
@@ -1831,6 +1850,7 @@ fn f64_at(bytes: &[u8], at: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::parts::MAX_PARTS;
     use super::test_file::*;
     use super::*;
     use crate::testing::{assert_chunking_does_not_matter, parse_chunked, VecSink};
@@ -1873,6 +1893,8 @@ mod tests {
         {
             needs = next;
         }
+        assert!(parser.join.is_none(), "the join is dropped once done");
+        assert!(parser.part_task(0).is_none() && parser.reads_in_parts());
         parser.finish(&mut sink);
         Some((sink, parser.stats().clone()))
     }
@@ -1943,6 +1965,38 @@ mod tests {
                 (1_001_000_000_000, 0, 0x7FF, 0, vec![]),
             ]
         );
+    }
+
+    #[test]
+    fn fields_that_start_inside_a_byte_are_read_from_their_bit_offset() {
+        // The ID's 29 bits start 3 bits into its first byte, below 3 bits of other data.
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let sd = b.variable_data(&[&[5]]);
+        let records: Vec<u8> = (0..300u32)
+            .flat_map(|i| {
+                let id = ((0x7F0 + i % 16) << 3) | (i % 8);
+                data_record(f64::from(i) / 1e3, 1, id, false, (1, 1), 0, [false; 4])
+            })
+            .collect();
+        let mut members = data_frame_members(sd);
+        members[1] = Member {
+            bit_offset: 3,
+            ..member("CAN_DataFrame.ID", UNSIGNED, 9, 29)
+        };
+        let dt = b.data_block(&records);
+        let structure = b.structure("CAN_DataFrame", &members);
+        let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+        let cg = b.channel_group(0, 0, DATA_RECORD_LEN, time, 0);
+        let dg = b.data_group(0, cg, dt);
+        b.set_link(hd, 0, dg);
+
+        let (sink, stats) = parse(&b.bytes);
+        assert!(parse_in_parts(&b.bytes, 1000).is_some(), "read in parts");
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        let ids: Vec<u32> = sink.frames.iter().map(|frame| frame.2).collect();
+        let expected: Vec<u32> = (0..300).map(|i| 0x7F0 + i % 16).collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]
@@ -2332,6 +2386,10 @@ mod tests {
         b.set_link(hd, 0, dg);
 
         let (sink, stats) = parse(&b.bytes);
+        assert!(
+            parse_in_parts(&b.bytes, 1 << 14).is_some(),
+            "the window spans parts"
+        );
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(sink.frames.len(), count as usize + 1);
         let remote = sink.frames.iter().position(|frame| frame.0 == 0).unwrap();
@@ -2364,6 +2422,92 @@ mod tests {
             Some("more frames than the file's size allows")
         );
         assert_eq!(sink.frames.len(), b.bytes.len() / FILE_BYTES_PER_FRAME);
+    }
+
+    /// Plans `input` in parts of `part_bytes`, checking that the plan is small and quick to
+    /// make, and returns how many parts it has (0 for a file read whole).
+    fn plan_of(input: &[u8], part_bytes: u64, max_parts: usize) -> usize {
+        let mut parser = Mf4Parser::new();
+        parser.push(input, &mut VecSink::default());
+        let started = std::time::Instant::now();
+        let Some(count) = parser.plan_parts(part_bytes) else {
+            return 0;
+        };
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(count <= max_parts, "{count} parts");
+        let task_bytes: usize = (0..count)
+            .map(|index| parser.part_task(index).unwrap().task.len())
+            .sum();
+        assert!(task_bytes < 1 << 20, "{task_bytes} bytes of tasks");
+        count
+    }
+
+    /// A file whose data list links `block` `links` times, in one data group of `members`
+    /// with records of `record_len` (and record IDs of 1 byte when `record_id`).
+    fn fan_out(block: &[u8], links: usize, record_len: u32, record_id: bool) -> Vec<u8> {
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let dt = b.data_block(block);
+        let dl = b.data_list(&vec![dt; links]);
+        let mut members = data_frame_members(0);
+        members[5].cn_type = 0;
+        let structure = b.structure("CAN_DataFrame", &members);
+        let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+        let id = u64::from(record_id);
+        let cg = b.channel_group(id, 0, record_len, time, 0);
+        let dg = b.data_group(u8::from(record_id), cg, dl);
+        b.set_link(hd, 0, dg);
+        b.bytes
+    }
+
+    #[test]
+    fn data_lists_that_fan_out_are_planned_only_as_far_as_the_budgets_allow() {
+        // A sorted group whose data list links one block 20,000 times: a read stops at the
+        // frame budget, a tenth of the way into the stream.
+        let records: Vec<u8> = (0..2000)
+            .flat_map(|i| data_record(f64::from(i) / 1e3, 1, 0x100, false, (8, 8), 7, [false; 4]))
+            .collect();
+        let sorted = fan_out(&records, 20_000, DATA_RECORD_LEN, false);
+        // An unsorted one whose records hold 1,000 bytes after their ID, from a block of 1 MiB
+        // linked 2,000 times: a read stops at the data budget.
+        let record: Vec<u8> = [
+            &[1u8][..],
+            &data_record(0.5, 1, 0x100, false, (8, 8), 7, [false; 4]),
+        ]
+        .concat();
+        let mut block = Vec::new();
+        while block.len() + record.len() + 1000 - DATA_RECORD_LEN as usize <= 1 << 20 {
+            block.extend_from_slice(&record);
+            block.resize(block.len() + 1000 - DATA_RECORD_LEN as usize, 0);
+        }
+        let unsorted = fan_out(&block, 2000, 1000, true);
+        // Records of nothing but an ID, each rejected, until a read stops at the frame budget.
+        let ids = fan_out(&[1; 1 << 20], 2000, 0, true);
+        for (input, reason, part_bytes) in [
+            (&sorted, "more frames than the file's size allows", 4 << 20),
+            (&unsorted, "more data than the file's size allows", 4 << 20),
+            (&ids, "bad time value", 1 << 18),
+        ] {
+            let (whole, stats) = parse_chunked(Mf4Parser::new(), input, usize::MAX);
+            assert_eq!(
+                stats.first_rejection.map(|(_, reason)| reason),
+                Some(reason)
+            );
+            assert!(
+                stats.lines < input.len() as u64 + 2,
+                "{reason}: stopped by a budget"
+            );
+            let parts = plan_of(input, part_bytes, 64);
+            assert!(parts > 1, "{reason}: read whole");
+            plan_of(input, 1 << 16, MAX_PARTS);
+            // Parts so small that there would be too many are read whole.
+            assert_eq!(plan_of(input, 1, MAX_PARTS), 0);
+            for part_bytes in [part_bytes, 1 << 17] {
+                let (joined, joined_stats) = parse_in_parts(input, part_bytes).unwrap();
+                assert_eq!(joined.frames, whole.frames, "{reason}");
+                assert_eq!(joined_stats, stats, "{reason}");
+            }
+        }
     }
 
     /// A zlib stream of `data` in a stored block, after `empty` empty stored blocks.
@@ -2909,5 +3053,13 @@ mod tests {
         assert_eq!(untranspose(&transpose(&records, 5), 5), records);
         assert_eq!(untranspose(&transpose(&records, 23), 23), records);
         assert_eq!(untranspose(&records, 0), records);
+        // Bands of rows, and the rows past the last full band, with bytes left over.
+        for rows in [63, 64, 65, 128, 130, 200] {
+            for columns in [1, 3, 7, 28] {
+                let records: Vec<u8> = (0..rows * columns + 5).map(|i| (i * 7) as u8).collect();
+                let restored = untranspose(&transpose(&records, columns), columns);
+                assert_eq!(restored, records, "{rows} rows of {columns}");
+            }
+        }
     }
 }

@@ -14,9 +14,11 @@
 //! A frame whose payload is in variable length data is finished in the core, which keeps that
 //! data from reading the file up to the frames.
 //!
-//! A file is read whole when a data block's header doesn't give its length, when an unsorted
-//! data group has compressed blocks, or when the offsets of values in VLSD channel groups were
-//! never written (an unfinalized file), as they then follow from every record before.
+//! The plan and the reads keep to the file's budgets for data and frames, as a read of each
+//! data group alone would: a data list that links the same blocks over and over is planned no
+//! further than a read of the whole file gets. A file is read whole when it can't be split
+//! ([`splittable`]), when a data block's header doesn't give its length, or when the plan
+//! would have too many parts.
 
 use super::*;
 
@@ -33,7 +35,8 @@ const FRAME: u8 = 4;
 const PENDING: u8 = 5;
 
 /// What a read can fail or be rejected with, sent by its place here.
-const REASONS: [&str; 20] = [
+const REASONS: [&str; 21] = [
+    "more data than the file's size allows",
     "bad data block",
     "data list inside a data list",
     "unknown data block type",
@@ -81,43 +84,132 @@ struct SizedBlock {
     end: u64,
     id: [u8; 4],
     compressed: bool,
-    /// The data reading it charges.
+    /// The data reading it charges, and that the blocks before it in the stream charge.
     charge: u64,
+    charged_before: u64,
     /// Where its bytes start in the stream, and how many it gives.
     start: u64,
     len: u64,
 }
 
+/// Planned parts at most, and blocks named in all their tasks at most: past either, the file is
+/// read whole. Links that fan out to the same blocks again and again can make a stream far
+/// longer than the file, which a read stops at its budgets but which would otherwise make as
+/// many parts.
+pub(super) const MAX_PARTS: usize = 4096;
+const MAX_PIECES: usize = 1 << 18;
+
+/// The error [`prepare`] stops with for a file whose records can't be read in parts.
+pub(super) const NOT_SPLITTABLE: &str = "read whole";
+
+/// Whether a data group's records can be read in parts: not when a sorted group's records have
+/// no length, when an unsorted group has compressed blocks (where its records end is known
+/// only by inflating them all), or when the offsets of values in VLSD channel groups were
+/// never written (an unfinalized file), as they then follow from every record before.
+pub(super) fn splittable(file: &[u8], reader: &RecordReader<'_>, repairs: Repairs) -> bool {
+    if reader.record_id_size == 0 && reader.groups[0].record_len == 0 {
+        return false;
+    }
+    if reader.record_id_size != 0 {
+        let compressed = reader.records.blocks.as_slice().iter().any(|&at| {
+            usize::try_from(at)
+                .ok()
+                .and_then(|at| file.get(at..at.checked_add(4)?))
+                == Some(b"##DZ".as_slice())
+        });
+        if compressed {
+            return false;
+        }
+    }
+    let vlsd_in_group = reader.groups.iter().any(|group| {
+        matches!(
+            &group.bus,
+            Some(BusGroup {
+                data_bytes: Some(DataBytes::Variable {
+                    store: VariableStore::Group(_),
+                    ..
+                }),
+                ..
+            })
+        )
+    });
+    !(repairs.vlsd_offsets && vlsd_in_group)
+}
+
+/// What reading a file may charge for data and frames at most, as [`Walk::new`] allows.
+#[derive(Clone, Copy)]
+struct Budget {
+    data: u64,
+    frames: u64,
+}
+
 /// Plans reading the frames of `file` in parts of about `part_bytes` of stream each, after
 /// reading it up to them with `stats`. None for a file read whole (see the module's docs).
+///
+/// A data group's stream is planned only as far as a read of it alone could get within the
+/// file's budgets for data and frames: a read of the whole file stops there or sooner.
 pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Option<Join> {
-    let Prepared { walk, sources, .. } = prepare(file, stats).ok()?;
-    let start_ns = Block::typed(file, 64, b"##HD")
-        .and_then(|header| i64::try_from(u64_at(header.data, 0)).ok())?;
+    let Prepared {
+        start_ns,
+        walk,
+        mut sources,
+    } = prepare(file, stats, true).ok()?;
     let part_bytes = part_bytes.max(1);
+    let full = Walk::new(file.len(), Repairs::default());
+    let budget = Budget {
+        data: full.data_left,
+        frames: full.frames_left as u64,
+    };
     // Each part with the data group it reads and how far into its stream it starts.
     let mut planned: Vec<(f64, usize, PartTask)> = Vec::new();
+    let mut pieces = 0;
     for (s, source) in sources.iter().enumerate() {
         let reader = &source.reader;
-        let spec = spec(start_ns, reader, walk.repairs)?;
-        let blocks = sized_blocks(file, &reader.records)?;
-        let total = blocks.last().map_or(0, |block| block.start + block.len);
-        let cuts = if reader.record_id_size == 0 {
+        let spec = spec(start_ns, reader);
+        let mut blocks = sized_blocks(file, &reader.records)?;
+        let stream_blocks = blocks.len();
+        // Blocks past the one whose charge takes the stream over the data budget are never
+        // entered, and the reads of the stream end in that one.
+        let over = blocks
+            .iter()
+            .position(|block| block.charged_before.saturating_add(block.charge) > budget.data);
+        let mut data_end = None;
+        if let Some(over) = over {
+            blocks.truncate(over + 1);
+            data_end = Some(blocks[over].start + 1);
+        }
+        let ends_open = reader.records.ends_open() && blocks.len() == stream_blocks;
+        let (cuts, stop) = if reader.record_id_size == 0 {
             let record_len = reader.groups[0].record_len as u64;
-            sorted_cuts(&blocks, record_len, part_bytes)
+            // A read ends with the frame that takes it over the frame budget, if not before.
+            let frames_end = budget.frames.saturating_add(1).saturating_mul(record_len);
+            let total = blocks.last().map_or(0, |block| block.start + block.len);
+            let end = data_end.map_or(frames_end, |end| end.min(frames_end));
+            let cuts = sorted_cuts(&blocks, record_len, part_bytes, end)
                 .into_iter()
                 .map(|at| Some((at, vec![usize::try_from(at / record_len).ok()?])))
-                .collect::<Option<Vec<_>>>()?
-        } else if blocks.iter().any(|block| block.compressed) {
-            return None;
+                .collect::<Option<Vec<_>>>()?;
+            (cuts, (end < total).then_some(end))
         } else {
-            walked_cuts(reader, part_bytes)
+            walked_cuts(reader, part_bytes, budget)
         };
+        let total = blocks.last().map_or(0, |block| block.start + block.len);
         for (i, (from, indexes)) in cuts.iter().enumerate() {
-            let to = cuts.get(i + 1).map(|(at, _)| *at);
-            let ends_open = reader.records.ends_open();
-            let task = part_task(&spec, &blocks, ends_open, *from, to, indexes);
+            let to = cuts.get(i + 1).map(|(at, _)| *at).or(stop);
+            let task = part_task(
+                &spec,
+                &blocks,
+                ends_open,
+                *from,
+                to,
+                indexes,
+                budget,
+                &mut pieces,
+            );
             planned.push((*from as f64 / total.max(1) as f64, s, task));
+            if planned.len() > MAX_PARTS || pieces > MAX_PIECES {
+                return None;
+            }
         }
     }
     if planned.len() < 2 {
@@ -125,10 +217,11 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
     }
     // Parts are handed out about in the order the merge by time will want them.
     planned.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut payloads = Vec::new();
     let mut join_sources: Vec<JoinSource> = sources
-        .iter()
+        .iter_mut()
         .map(|source| JoinSource {
-            variable: variable_payloads(&source.reader),
+            variable: variable_payloads(&mut source.reader, &mut payloads),
             window: Window::new(source.window.len),
             ended: false,
             parts: Vec::new(),
@@ -150,6 +243,7 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
         walk,
         pending: (0..join_sources.len()).rev().collect(),
         sources: join_sources,
+        payloads,
         part_sources,
         order: BinaryHeap::new(),
         buses: Buses::default(),
@@ -162,6 +256,7 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
 fn sized_blocks(file: &[u8], records: &BlockReader<'_>) -> Option<Vec<SizedBlock>> {
     let list = records.blocks.as_slice();
     let mut start = 0;
+    let mut charged_before = 0u64;
     let mut blocks = Vec::with_capacity(list.len());
     for (i, &at) in list.iter().enumerate() {
         let (block, end) = match records.open_end {
@@ -189,10 +284,12 @@ fn sized_blocks(file: &[u8], records: &BlockReader<'_>) -> Option<Vec<SizedBlock
             id: block.id,
             compressed,
             charge,
+            charged_before,
             start,
             len,
         });
         start += len;
+        charged_before = charged_before.saturating_add(charge);
     }
     Some(blocks)
 }
@@ -209,11 +306,14 @@ fn inflated_len(block: &Block<'_>) -> Option<(u64, u64)> {
     (original_len <= MAX_STREAM).then_some((original_len as u64, compressed_len as u64))
 }
 
-/// Where a sorted data group's parts start: on a record boundary at the start of a block about
-/// `part_bytes` after the last, or within an uncompressed block, which costs nothing to start
-/// in.
-fn sorted_cuts(blocks: &[SizedBlock], record_len: u64, part_bytes: u64) -> Vec<u64> {
-    let total = blocks.last().map_or(0, |block| block.start + block.len);
+/// Where a sorted data group's parts start, before `end`: on a record boundary at the start of
+/// a block about `part_bytes` after the last, or within an uncompressed block, which costs
+/// nothing to start in.
+fn sorted_cuts(blocks: &[SizedBlock], record_len: u64, part_bytes: u64, end: u64) -> Vec<u64> {
+    let total = blocks
+        .last()
+        .map_or(0, |block| block.start + block.len)
+        .min(end);
     let mut cuts = vec![0];
     let mut last = 0u64;
     for block in blocks {
@@ -238,39 +338,60 @@ fn sorted_cuts(blocks: &[SizedBlock], record_len: u64, part_bytes: u64) -> Vec<u
 }
 
 /// Where an unsorted data group's parts start, about `part_bytes` apart, each where a frame
-/// record ends, with the records read in each channel group before it.
-fn walked_cuts(reader: &RecordReader<'_>, part_bytes: u64) -> Vec<(u64, Vec<usize>)> {
+/// record ends, with the records read in each channel group before it; and where the reads of
+/// the stream stop short of its end, if they do: at an error, or at the frame or data that
+/// takes them over `budget`.
+fn walked_cuts(
+    reader: &RecordReader<'_>,
+    part_bytes: u64,
+    budget: Budget,
+) -> (Vec<(u64, Vec<usize>)>, Option<u64>) {
     let groups = &reader.groups;
     let is_frame = |index: usize| groups[index].bus.is_some() && !groups[index].vlsd;
     let mut records = reader.records.unread_copy();
     let mut walk = Walk::unlimited(Repairs::default());
+    walk.data_left = budget.data;
     let mut indexes = vec![0; groups.len()];
     let mut cuts = vec![(0, indexes.clone())];
     let mut last = 0;
-    while let Ok(Some((group_index, _))) = next_record(
-        &mut records,
-        groups,
-        reader.record_id_size,
-        &mut walk,
-        is_frame,
-    ) {
+    let mut frames = 0u64;
+    loop {
+        let group_index = match next_record(
+            &mut records,
+            groups,
+            reader.record_id_size,
+            &mut walk,
+            is_frame,
+        ) {
+            Ok(Some((group_index, _))) => group_index,
+            Ok(None) => return (cuts, None),
+            // The read that failed starts at or before where this one stopped.
+            Err(_) => return (cuts, Some(records.position() + 1)),
+        };
         indexes[group_index] += 1;
+        frames += 1;
         let at = records.position();
+        if frames > budget.frames {
+            return (cuts, Some(at));
+        }
         if at - last >= part_bytes {
             cuts.push((at, indexes.clone()));
             last = at;
         }
     }
-    cuts
 }
 
 /// The task of a part whose reads start at `from` in the stream, with `indexes` records read
-/// in each channel group before it, and end at `to`, or at the end of the stream.
+/// in each channel group before it, and end at `to`, or at the end of the stream. `pieces`
+/// counts the blocks named in tasks.
 ///
 /// It names the blocks the reads go through, and the bytes of the file to fetch for them: a
 /// compressed block whole, and of an uncompressed one only the bytes read, which the worker
 /// makes a block of its own around. The reads start in the first block at `from`, or just
-/// before the second.
+/// before the second. It also gives what the reads may charge for data and frames once the
+/// parts before have charged theirs, so that a part ends where a read of its data group
+/// alone would run out of budget.
+#[allow(clippy::too_many_arguments)]
 fn part_task(
     spec: &[u8],
     blocks: &[SizedBlock],
@@ -278,6 +399,8 @@ fn part_task(
     from: u64,
     to: Option<u64>,
     indexes: &[usize],
+    budget: Budget,
+    pieces_named: &mut usize,
 ) -> PartTask {
     // The last block with bytes before `from`, which the reads start in or just after.
     let before = blocks
@@ -293,6 +416,7 @@ fn part_task(
         None => blocks.len(),
     };
     let through = &blocks[first.min(last)..last];
+    *pieces_named += through.len();
 
     // Each block's bytes in the file, and whether the worker makes a block around them.
     let pieces: Vec<(u64, u64, bool)> = through
@@ -319,16 +443,16 @@ fn part_task(
             _ => ranges.push((at, end)),
         }
     }
-    // Where a place in the file is in the bytes fetched.
+    // Where each range starts in the bytes fetched.
+    let mut fetched_at = Vec::with_capacity(ranges.len());
+    let mut fetched = 0;
+    for &(start, end) in &ranges {
+        fetched_at.push(fetched);
+        fetched += end - start;
+    }
     let place = |at: u64| -> u64 {
-        let mut offset = 0;
-        for &(start, end) in &ranges {
-            if (start..=end).contains(&at) {
-                return offset + at - start;
-            }
-            offset += end - start;
-        }
-        offset
+        let range = ranges.partition_point(|&(start, _)| start <= at) - 1;
+        fetched_at[range] + at - ranges[range].0
     };
 
     let mut task = MAGIC.to_vec();
@@ -357,41 +481,82 @@ fn part_task(
         put_u64(&mut task, index as u64);
     }
     put_u64(&mut task, to.unwrap_or(u64::MAX));
+    // The charges of the blocks entered before: the first given was, when the reads start
+    // inside it.
+    let entered = first + usize::from(in_first);
+    let charged = blocks.get(entered).map_or_else(
+        || {
+            blocks
+                .last()
+                .map_or(0, |block| block.charged_before + block.charge)
+        },
+        |block| block.charged_before,
+    );
+    let frames_before: u64 = indexes.iter().map(|&count| count as u64).sum();
+    put_u64(&mut task, budget.data.saturating_sub(charged));
+    put_u64(&mut task, budget.frames.saturating_sub(frames_before));
     PartTask { ranges, task }
 }
 
 /// For each channel group whose frames' payloads are in variable length data, its frame kind
-/// and that data.
-fn variable_payloads(reader: &RecordReader<'_>) -> Vec<Option<VariableData>> {
-    reader
-        .groups
-        .iter()
-        .map(|group| {
-            let bus = group.bus.as_ref()?;
-            let Some(DataBytes::Variable { store, .. }) = &bus.data_bytes else {
-                return None;
-            };
-            let data = match store {
-                VariableStore::Block(block) => Ok(block.to_vec()),
-                VariableStore::Group(at) => reader
-                    .variable
+/// and where that data is in `payloads`, where each SD block and VLSD channel group's data is
+/// kept once, taken from `reader`.
+fn variable_payloads(
+    reader: &mut RecordReader<'_>,
+    payloads: &mut Vec<Result<Vec<u8>, &'static str>>,
+) -> Vec<Option<VariableData>> {
+    // Where the data of each block and VLSD group is in `payloads`.
+    let mut blocks: Vec<(*const u8, usize, usize)> = Vec::new();
+    let mut groups: Vec<(u64, usize)> = Vec::new();
+    let mut found = Vec::with_capacity(reader.groups.len());
+    for group in &reader.groups {
+        let Some(bus) = &group.bus else {
+            found.push(None);
+            continue;
+        };
+        let Some(DataBytes::Variable { store, .. }) = &bus.data_bytes else {
+            found.push(None);
+            continue;
+        };
+        let data = match store {
+            VariableStore::Block(block) => {
+                match blocks
                     .iter()
-                    .find(|group| group.at == *at)
-                    .map(|group| group.data.clone())
-                    .ok_or("data bytes refer to a missing group"),
-            };
-            Some(VariableData {
-                kind: bus.kind,
-                data,
-            })
-        })
-        .collect()
+                    .find(|known| known.0 == block.as_ptr() && known.1 == block.len())
+                {
+                    Some(known) => known.2,
+                    None => {
+                        payloads.push(Ok(block.to_vec()));
+                        blocks.push((block.as_ptr(), block.len(), payloads.len() - 1));
+                        payloads.len() - 1
+                    }
+                }
+            }
+            VariableStore::Group(at) => match groups.iter().find(|known| known.0 == *at) {
+                Some(known) => known.1,
+                None => {
+                    let values = reader.variable.iter_mut().find(|values| values.at == *at);
+                    payloads.push(
+                        values
+                            .map(|values| std::mem::take(&mut values.data))
+                            .ok_or("data bytes refer to a missing group"),
+                    );
+                    groups.push((*at, payloads.len() - 1));
+                    payloads.len() - 1
+                }
+            },
+        };
+        found.push(Some(VariableData {
+            kind: bus.kind,
+            data,
+        }));
+    }
+    found
 }
 
 /// What a part worker needs to read a data group's records: the start time, record ID size
-/// and channel groups. None when the offsets of values in VLSD channel groups were never
-/// written.
-fn spec(start_ns: i64, reader: &RecordReader<'_>, repairs: Repairs) -> Option<Vec<u8>> {
+/// and channel groups.
+fn spec(start_ns: i64, reader: &RecordReader<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     put_u64(&mut out, start_ns as u64);
     out.push(reader.record_id_size as u8);
@@ -447,16 +612,13 @@ fn spec(start_ns: i64, reader: &RecordReader<'_>, repairs: Repairs) -> Option<Ve
                 out.push(1);
                 put_field(&mut out, Some(field));
             }
-            Some(DataBytes::Variable { field, store }) => {
-                if repairs.vlsd_offsets && matches!(store, VariableStore::Group(_)) {
-                    return None;
-                }
+            Some(DataBytes::Variable { field, .. }) => {
                 out.push(2);
                 put_field(&mut out, Some(field));
             }
         }
     }
-    Some(out)
+    out
 }
 
 fn put_u64(out: &mut Vec<u8>, value: u64) {
@@ -637,6 +799,8 @@ pub fn read_part(task: &[u8], fetched: &[u8]) -> Option<Vec<u8>> {
         indexes.push(t.usize()?);
     }
     let end = t.u64()?;
+    let data_left = t.u64()?;
+    let frames_left = t.usize()?;
     if !t.0.is_empty() || indexes.len() != groups.len() {
         return None;
     }
@@ -684,7 +848,11 @@ pub fn read_part(task: &[u8], fetched: &[u8]) -> Option<Vec<u8>> {
         indexes,
         defer_variable: true,
     };
+    // The reads stop where a read of the data group alone would run out of budget, which a
+    // read of the whole file does there or sooner.
     let mut walk = Walk::unlimited(Repairs::default());
+    walk.data_left = data_left;
+    walk.frames_left = frames_left;
     walk.charges = Some(Vec::new());
     let mut charges = charges.into_iter();
     while reader.records.position() < end {
@@ -707,7 +875,7 @@ pub fn read_part(task: &[u8], fetched: &[u8]) -> Option<Vec<u8>> {
                 break;
             }
             Outcome::Rejected(reason) => put_reason(&mut out, REJECTED, reason)?,
-            Outcome::Pending(pending) => {
+            Outcome::Pending(ref pending) => {
                 let fields = &pending.fields;
                 out.push(PENDING);
                 put_u64(&mut out, pending.group as u64);
@@ -731,6 +899,9 @@ pub fn read_part(task: &[u8], fetched: &[u8]) -> Option<Vec<u8>> {
                 out.extend_from_slice(&frame.data[..usize::from(frame.len)]);
             }
         }
+        if walk.take_frame().is_err() {
+            break;
+        }
     }
     Some(out)
 }
@@ -753,6 +924,8 @@ pub(super) struct Join {
     /// What reading the file may still cost.
     walk: Walk,
     sources: Vec<JoinSource>,
+    /// The variable length data payloads are found in, as [`variable_payloads`] gives it.
+    payloads: Vec<Result<Vec<u8>, &'static str>>,
     /// Each part's data group, by part number.
     part_sources: Vec<usize>,
     /// The data groups by the time of the next frame each delivers, as in [`merge`].
@@ -779,7 +952,8 @@ struct JoinSource {
 
 struct VariableData {
     kind: FrameKind,
-    data: Result<Vec<u8>, &'static str>,
+    /// Its place in [`Join::payloads`].
+    data: usize,
 }
 
 enum Next {
@@ -853,6 +1027,7 @@ impl Join {
                 &mut source.at,
                 &mut self.walk,
                 &source.variable,
+                &self.payloads,
             )
             .ok_or(())?;
             source.ended = account(outcome, &mut source.window, &mut self.walk, stats);
@@ -862,12 +1037,13 @@ impl Join {
 }
 
 /// The outcome of the read at `*at` in a part's `reads`, after making the charges it made,
-/// with payloads found in `variable`.
+/// with payloads found through `variable` in `payloads`.
 fn replay(
     reads: &[u8],
     at: &mut usize,
     walk: &mut Walk,
     variable: &[Option<VariableData>],
+    payloads: &[Result<Vec<u8>, &'static str>],
 ) -> Option<Outcome> {
     let mut t = Take(reads.get(*at..)?);
     let outcome = loop {
@@ -915,7 +1091,7 @@ fn replay(
                     dlc: t.number()?,
                     data_length: t.number()?,
                 };
-                let payload = match &group.data {
+                let payload = match payloads.get(group.data)? {
                     Ok(data) => variable_value(data, offset).ok_or("data offset outside the data"),
                     Err(reason) => Err(*reason),
                 };

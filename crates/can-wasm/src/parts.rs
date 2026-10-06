@@ -1889,6 +1889,13 @@ mod tests {
             let fixed = rng.chance(30);
             let (records, values) = data_records(rng, count, None, None, fixed);
             let mut members = data_frame_members(0);
+            if rng.chance(30) {
+                // The ID read from 3 bits into its first byte.
+                members[1] = Member {
+                    bit_offset: 3,
+                    ..member("CAN_DataFrame.ID", UNSIGNED, 9, 29)
+                };
+            }
             if fixed {
                 members[5].cn_type = 0;
             } else {
@@ -2063,7 +2070,7 @@ mod tests {
             info["firstRejection"][1],
             "more frames than the file's size allows"
         );
-        let reads = assert_mf4_parts_read_as_whole(&b.bytes, &[1.0, 5000.0, 1e6]);
+        let reads = assert_mf4_parts_read_as_whole(&b.bytes, &[1.0, 5000.0, 100_000.0]);
         assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
     }
 

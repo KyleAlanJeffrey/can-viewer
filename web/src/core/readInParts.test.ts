@@ -62,6 +62,8 @@ class FrameSession extends RecordingSession {
   constructor(
     private readonly order: number[],
     private readonly refuseNth = -1,
+    /** Parts planned, when the log ends at a limit before the session asks for them all. */
+    private readonly count = order.length,
   ) {
     super(undefined);
   }
@@ -69,13 +71,13 @@ class FrameSession extends RecordingSession {
     return Float64Array.from([index * 9, index * 9 + 4, index * 9 + 6, index * 9 + 7]);
   }
   plan_parts(_partBytes: number) {
-    return this.order.length;
+    return this.count;
   }
   part_task(index: number) {
-    return index < this.order.length ? Uint8Array.of(index) : undefined;
+    return index < this.count ? Uint8Array.of(index) : undefined;
   }
   part_ranges(index: number) {
-    return index < this.order.length ? this.ranges(index) : undefined;
+    return index < this.count ? this.ranges(index) : undefined;
   }
   join_part(index: number, part: Uint8Array) {
     const { task, body } = JSON.parse(text(part)) as { task: number; body: string };
@@ -94,6 +96,7 @@ class FrameWorker implements PartWorker {
   static reading = 0;
   static mostReading = 0;
   closed = false;
+  private stops: (() => void)[] = [];
   ready = Promise.resolve();
   constructor(
     private readonly delay: (index: number) => number = () => 0,
@@ -107,13 +110,21 @@ class FrameWorker implements PartWorker {
     const held = FrameWorker.reading - (this.session?.joined.length ?? 0);
     FrameWorker.mostReading = Math.max(FrameWorker.mostReading, held);
     const body = text(await rangeBytes(task.file, task.ranges));
-    await new Promise((resolve) => setTimeout(resolve, this.delay(task.task[0])));
+    // Closing stops a read at once, as terminating the real worker does.
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, this.delay(task.task[0]));
+      this.stops.push(() => {
+        clearTimeout(timer);
+        reject(new Error('closed'));
+      });
+    });
     if (this.closed) throw new Error('closed');
     if (task.task[0] === this.failAt) throw new Error('out of memory');
     return new TextEncoder().encode(JSON.stringify({ task: task.task[0], body }));
   }
   close() {
     this.closed = true;
+    for (const stop of this.stops) stop();
   }
 }
 
@@ -633,6 +644,24 @@ describe('reading a log in parts', () => {
       expect(await readInParts(new Blob([content]), session, { workers: 6, startWorker }, () => undefined)).toBe(true);
       expect(session.joined).toEqual([0, 1]);
       expect(workers).toHaveLength(2);
+    });
+
+    it('stops reading parts, without a warning, once the session has every frame it will join', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workers: FrameWorker[] = [];
+      const session = new FrameSession([0, 2, 1], -1, 40);
+      const startWorker = () => {
+        const worker = new FrameWorker((index) => (index < 3 ? 0 : 50));
+        workers.push(worker);
+        return worker;
+      };
+      const started = performance.now();
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
+      expect(performance.now() - started).toBeLessThan(40);
+      expect(session.joined).toEqual([0, 2, 1]);
+      expect(workers.every((worker) => worker.closed)).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
     });
 
     it('gives up, closing every worker, when a part is refused or a worker fails', async () => {

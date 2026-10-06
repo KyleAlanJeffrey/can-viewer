@@ -21,6 +21,8 @@ pub struct Member {
     pub cn_type: u8,
     pub data_type: u8,
     pub byte_offset: u32,
+    /// Bits to skip in the first byte.
+    pub bit_offset: u8,
     pub bit_count: u32,
     pub conversion: u64,
     pub data: u64,
@@ -32,6 +34,7 @@ pub fn member(name: &'static str, data_type: u8, byte_offset: u32, bit_count: u3
         cn_type: 0,
         data_type,
         byte_offset,
+        bit_offset: 0,
         bit_count,
         conversion: 0,
         data: 0,
@@ -111,7 +114,7 @@ impl Builder {
 
     pub fn channel(&mut self, member: &Member, next: u64, composition: u64) -> u64 {
         let name = self.text(member.name);
-        let mut data = vec![member.cn_type, 1, member.data_type, 0];
+        let mut data = vec![member.cn_type, 1, member.data_type, member.bit_offset];
         data.extend_from_slice(&member.byte_offset.to_le_bytes());
         data.extend_from_slice(&member.bit_count.to_le_bytes());
         data.resize(72, 0);

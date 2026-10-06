@@ -388,6 +388,8 @@ async function readFrameParts(file: Blob, session: ReadSession, count: number, o
       if (joined === -2) return;
       needs = joined;
     }
+    // A log that ends at a limit leaves parts no one will ask for.
+    if (needs === -1) for (const worker of workers) worker.close();
     wakeAll();
   };
 
@@ -413,7 +415,7 @@ async function readFrameParts(file: Blob, session: ReadSession, count: number, o
         if (!task || !ranges) throw new Error(`part ${index} of the log isn't planned`);
         done.set(index, await worker.read({ file, task, ranges }));
       } catch (err) {
-        giveUp(err);
+        if (needs !== -1) giveUp(err);
         return;
       } finally {
         reading -= 1;

@@ -451,7 +451,7 @@ struct Planned {
 /// part comes first, in group order (part 0 is the first it asks for); then the others by
 /// when they start, as far as the plan knows. Parts of data groups with no known times are
 /// placed by how far into their streams they start, as if the streams all spanned the times
-/// known.
+/// known. The order sets only what is read ahead, so how fast: never the join's result or bounds.
 fn order_by_time(planned: &mut [Planned]) {
     let (first, last) = planned
         .iter()

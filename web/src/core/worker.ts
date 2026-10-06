@@ -43,19 +43,30 @@ const withMemory = (json: string, meta: LogMeta) => ({ ...JSON.parse(json), ...m
 let currentId = 0;
 
 /**
- * Reports the bytes of `file` read so far, at most every 100 ms. A log read again in one worker
- * after its parts failed starts from 0, so the bar holds at the most it showed until then.
+ * Reports how far the read of `file` has got, at most every 100 ms, and with `flush` the last of it
+ * if that wasn't reported. A log read again in one worker after its parts failed starts from 0, so
+ * the bar holds at the most it showed until then.
  */
-function progressOf(file: Blob): (bytes: number) => void {
+function progressOf(file: Blob): { report: (bytes: number) => void; flush: () => void } {
   let lastReport = 0;
   let most = 0;
-  return (bytes) => {
-    most = Math.max(most, bytes);
-    const now = performance.now();
-    if (now - lastReport > 100) {
-      lastReport = now;
-      port.postMessage({ event: 'progress', id: currentId, bytes: most, total: file.size });
-    }
+  let reported = 0;
+  const post = () => {
+    reported = most;
+    port.postMessage({ event: 'progress', id: currentId, bytes: most, total: file.size });
+  };
+  return {
+    report(bytes) {
+      most = Math.max(most, bytes);
+      const now = performance.now();
+      if (now - lastReport > 100) {
+        lastReport = now;
+        post();
+      }
+    },
+    flush() {
+      if (most > reported) post();
+    },
   };
 }
 
@@ -170,11 +181,13 @@ function startPartWorker(): PartWorker {
 async function readLog(file: Blob, log: ReadSession, restart: () => void, signal: AbortSignal) {
   const workers = partWorkerCount(file);
   const progress = progressOf(file);
-  const read = workers > 0 && (await readInParts(file, log, { workers, startWorker: startPartWorker, onStalled, signal }, progress));
-  if (read) return;
-  // It holds part of the log.
-  if (workers > 0) restart();
-  await readChunks(file, (chunk) => log.push_chunk(chunk), progress, 0, signal);
+  const read = workers > 0 && (await readInParts(file, log, { workers, startWorker: startPartWorker, onStalled, signal }, progress.report));
+  if (!read) {
+    // It holds part of the log.
+    if (workers > 0) restart();
+    await readChunks(file, (chunk) => log.push_chunk(chunk), progress.report, 0, signal);
+  }
+  progress.flush();
 }
 
 /** The open log, in whichever session is current. */

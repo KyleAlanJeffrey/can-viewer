@@ -96,7 +96,7 @@ Passed to the `onProgress` callback of [`openLog`](#openlog) and [`openCompareLo
 
 **Attributes**
 
-- **`bytes`** `number` - How far the read has got, in bytes of the file: the bytes read so far. An MF4 log of 32 MiB or more is read whole before its frames are, so reading it counts for the first quarter of `total`. When its frames are then read in parts (see [`openLog`](#openlog)), each part merged counts for an even share of the rest, so `bytes` keeps rising while they are read; when its parts can't be planned, so that its frames are read in the core worker alone, it stays at a quarter until the call resolves. It never goes down.
+- **`bytes`** `number` - How far the read has got, in bytes of the file: the bytes read so far. When an MF4 log is read with part workers (32 MiB or more, and part workers available: see [`openLog`](#openlog)), it is read whole before its frames are, so reading it counts for the first quarter of `total`, and each part of its frames merged for an even share of the rest, so `bytes` keeps rising while they are read; when its parts can't be planned, `bytes` goes to `total` once the file is read, and its frames are then read in the core worker alone. Without part workers (2 logical cores or fewer, or part workers that failed to start), every log reports the bytes read. It never goes down, and the last progress of a read that completes has `bytes` equal to `total`.
 - **`total`** `number` - Size of the file in bytes.
 
 ### The IdSummary object

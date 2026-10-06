@@ -428,9 +428,12 @@ describe('reading a log in parts', () => {
   it('reads a log that the session says cannot be split, or a small one, whole and in order', async () => {
     const content = log(30);
     const startWorker = vi.fn();
+    // Parsed as it is pushed, so its progress is the bytes read, whatever the session says next.
     const unsplittable = new RecordingSession(undefined);
-    expect(await readInParts(new Blob([content]), unsplittable, { workers: 4, partSize: 50, startWorker }, () => undefined)).toBe(true);
+    const wholeProgress: number[] = [];
+    expect(await readInParts(new Blob([content]), unsplittable, { workers: 4, partSize: 50, startWorker }, (bytes) => wholeProgress.push(bytes))).toBe(true);
     expect(unsplittable.bytes).toBe(content);
+    expect(wholeProgress).toEqual([50, content.length]);
     const small = new RecordingSession('candump');
     const progress: number[] = [];
     expect(await readInParts(new Blob([content]), small, { workers: 4, partSize: 1 << 20, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
@@ -682,14 +685,25 @@ describe('reading a log in parts', () => {
       expect(waits[1]).toBeGreaterThan(2);
     });
 
-    it('counts reading the file as a share of the progress and each part joined as an even share of the rest', async () => {
-      const session = new FrameSession(order);
+    it('counts reading an MF4 file as a share of the progress and each part joined as an even share of the rest', async () => {
+      for (const id of ['MDF     ', 'UnFinMF ']) {
+        const mf4 = id + content;
+        const session = new FrameSession(order);
+        const progress: number[] = [];
+        const startWorker = () => new FrameWorker((index) => index % 3);
+        expect(await readInParts(new Blob([mf4]), session, { workers: 3, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
+        const size = mf4.length;
+        const joined = order.map((_, i) => size * (WHOLE_READ_SHARE + ((1 - WHOLE_READ_SHARE) * (i + 1)) / order.length));
+        expect(progress).toEqual([size * WHOLE_READ_SHARE, ...joined].map(Math.round));
+      }
+    });
+
+    it('ends the progress of an MF4 file whose parts the session cannot plan at its size', async () => {
+      const mf4 = 'MDF     ' + content;
+      const session = new RecordingSession(undefined);
       const progress: number[] = [];
-      const startWorker = () => new FrameWorker((index) => index % 3);
-      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
-      const size = content.length;
-      const joined = order.map((_, i) => size * (WHOLE_READ_SHARE + ((1 - WHOLE_READ_SHARE) * (i + 1)) / order.length));
-      expect(progress).toEqual([size * WHOLE_READ_SHARE, ...joined].map(Math.round));
+      expect(await readInParts(new Blob([mf4]), session, { workers: 3, startWorker: () => new FrameWorker() }, (bytes) => progress.push(bytes))).toBe(true);
+      expect(progress).toEqual([Math.round(mf4.length * WHOLE_READ_SHARE), mf4.length]);
     });
 
     it('starts no more workers than there are parts', async () => {
@@ -714,7 +728,9 @@ describe('reading a log in parts', () => {
         workers.push(worker);
         return worker;
       };
-      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
+      const progress: number[] = [];
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
+      expect(progress.at(-1)).toBe(content.length);
       expect(session.joined).toEqual([0, 2, 1]);
       expect(workers.every((worker) => worker.closed)).toBe(true);
       // The slow reads of the parts after them were stopped, not waited for.

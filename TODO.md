@@ -40,6 +40,7 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Video sync: in Firefox, close a popped-out video with the window's own close button, use its play and seek controls, and press Cmd+Option+Shift+] (Ctrl+Shift+] on Windows and Linux); these need real OS input, which WebDriver BiDi doesn't reach (owner)
 - [x] Export log as other formats (Export Log...: candump, ASC, BLF, TRC, MF4, CSV)
 - [x] Works offline and installable: a web app manifest with icons, and a service worker that precaches the app shell, keeps the demo after its first run and offers Reload when a new version is ready
+- [x] CI screenshots of the landing site and the app at 1440 and 390 px, under their real CSP, failing on console errors, CSP violations, uncaught exceptions, failed requests, a service worker that doesn't install and site pages wider than a phone (`scripts/screenshots.mjs`, the `screenshots` job in `ci.yml`)
 
 ## Landing page
 

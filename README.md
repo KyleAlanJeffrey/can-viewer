@@ -86,7 +86,7 @@ These use the 10M-frame demo: a 552 MB candump file, about 5 h of driving, 11 ID
 |---|---|
 | Native parse (`sample-gen bench`) | 285 MB/s, 5.2M frames/s |
 | Browser parse (wasm, one worker) | 2.7 s, 207 MB/s |
-| wasm memory after load | 654 MB. Frame data is about 350 MB; the rest is `Vec` growth slack (see below) |
+| wasm memory after load | 383 MB with chunked columns (see below); 654 MB before them, mostly `Vec` growth slack |
 | Trace page (40 rows) round trip | 0.5 ms |
 | Plot re-query, 1.8M points decimated to 1,800 | 0.6 ms with the level-of-detail pyramid (see below); 9.7 ms before it |
 | Decoder vs cantools | 1,622,498 values from 300k frames, all equal |
@@ -104,12 +104,23 @@ Plot queries were measured again on 2026-10-05 (Apple Silicon, the wasm build in
 
 The first view that uses a series' pyramid builds it: about 16 ms in wasm (11 ms natively) for 1.8M points, against 9.8 ms for one scan. It takes about 1.1 MB per million points, beside the 16 MB the series' times and values take. Views averaging under 32 points a bucket scan the points, which is quicker there.
 
+The frame store's columns grow 4 MiB at a time rather than doubling, so wasm memory stays close to the frames' own size. Measured on 2026-10-05 (Apple Silicon, the wasm build in Node; best of three loads, wasm memory after the load):
+
+| Log (10M frames unless noted) | wasm before | wasm after | memory before | memory after |
+|---|---|---|---|---|
+| 552 MB candump, in time order | 3.65 s | 3.73 s | 645 MB | 383 MB |
+| 112 MB MF4 | 5.41 s | 5.44 s | 606 MB | 486 MB |
+| 178 MB MF4, 16M frames | 8.76 s | 8.68 s | 921 MB | 781 MB |
+| candump, first 1,000 lines moved to the end (sorted after reading) | 5.88 s | 6.29 s | 768 MB | 583 MB |
+| The candump as Compare's log B beside itself | 3.63 s | 3.73 s | 1,167 MB | 817 MB |
+
+Natively (`sample-gen bench`) the in-order candump parses at 268 MB/s against 274 MB/s, and the sorted one at 145 MB/s against 155 MB/s. Smaller chunks cost more in wasm, where every allocation that grows the memory costs the JavaScript side: 64 KiB chunks loaded the candump 15% slower and 1 MiB chunks 4% slower, against about 2% for 4 MiB.
+
 ## Known gaps / next steps
 
 The larger ones; every open task is in [TODO.md](TODO.md).
 
-- **Memory:** the store's columns are plain `Vec`s, and doubling on growth nearly doubles peak memory. Switch to fixed-size chunked columns to hold wasm memory close to the actual data size.
-- **Formats:** candump, Vector ASC, Vector BLF (CAN objects), PEAK TRC, ASAM MF4 (CAN bus logging) and CSV (python-can, SavvyCAN and generic header-named layouts) are supported, all through the `LogParser` interface. MF4 is buffered and read when the file ends, up to 1 GiB, because its blocks link anywhere in the file; its data is then read a block at a time and the frames merged by time, so a 112 MB, 10M-frame MF4 takes about 610 MB of wasm memory (the file plus the frames). Not read: CAN XL, LIN, FlexRay and Ethernet frames, and MF4 files of decoded signals rather than bus frames.
+- **Formats:** candump, Vector ASC, Vector BLF (CAN objects), PEAK TRC, ASAM MF4 (CAN bus logging) and CSV (python-can, SavvyCAN and generic header-named layouts) are supported, all through the `LogParser` interface. MF4 is buffered and read when the file ends, up to 1 GiB, because its blocks link anywhere in the file; its data is then read a block at a time and the frames merged by time, so a 112 MB, 10M-frame MF4 takes about 490 MB of wasm memory (the file plus the frames). Not read: CAN XL, LIN, FlexRay and Ethernet frames, and MF4 files of decoded signals rather than bus frames.
 - **Parallel parsing:** add a pool of workers parsing `Blob.slice` ranges for multi-core throughput.
 - **Reverse engineering:** drag-to-define signals on the heatmap, a scrubbable time window for bit flips, and DBC export are in. Suggested signals guesses counters, checksums, flags, enums, values, 32-bit floats and multiplexed pages from bit activity; next is opendbc fingerprinting.
 - **Live capture:** not yet tried with real adapters. One bus at a time, receive only, classic CAN on gs_usb, host-clock timestamps; see [TODO.md](TODO.md) for the follow-ups.

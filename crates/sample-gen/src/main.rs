@@ -63,10 +63,7 @@ fn main() -> ExitCode {
 /// `sort` puts the frames in time order, as the app does; without it they stay in log order.
 fn load_store(path: &str, sort: bool) -> Result<(FrameStore, AnyParser, f64), String> {
     let mut file = File::open(path).map_err(|e| format!("{path}: {e}"))?;
-    let size = file.metadata().map_err(|e| e.to_string())?.len();
     let mut store = FrameStore::new();
-    let frames = (size / 40) as usize;
-    store.reserve(frames, frames * 8);
     let mut parser = None;
     let mut buf = vec![0u8; CHUNK];
     let started = Instant::now();
@@ -84,6 +81,7 @@ fn load_store(path: &str, sort: bool) -> Result<(FrameStore, AnyParser, f64), St
     if sort {
         store.sort_by_time();
     }
+    store.shrink_to_fit();
     Ok((store, parser, started.elapsed().as_secs_f64()))
 }
 

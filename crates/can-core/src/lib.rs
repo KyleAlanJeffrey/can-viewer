@@ -1,5 +1,6 @@
 //! Frame types and the columnar in-memory frame store shared by the web and desktop builds.
 
+mod chunked;
 pub mod filter;
 mod store;
 pub mod tp;

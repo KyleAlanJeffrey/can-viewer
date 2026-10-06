@@ -308,10 +308,13 @@ export class SlcanAdapter implements CaptureAdapter {
       const answers = bitrate !== 'no answer';
       const wait = answers ? this.timing.commandMs : this.timing.settleMs;
       if (dataCode !== null) {
-        await this.expect(`Y${dataCode}`, wait, 'The adapter refused the CAN FD data bitrate. Only CAN FD adapters, such as a CANable 2, take it.');
+        const dataBitrate = await this.expect(`Y${dataCode}`, wait, 'The adapter refused the CAN FD data bitrate. Only CAN FD adapters, such as a CANable 2, take it.');
+        await this.settleUnanswered(dataBitrate, answers);
       }
       // Taken only while the channel is closed. An adapter that refuses it sends no timestamps.
-      this.timestampsAsked = (await this.expect('Z1', wait, null)) !== 'refused';
+      const timestamps = await this.expect('Z1', wait, null);
+      this.timestampsAsked = timestamps !== 'refused';
+      await this.settleUnanswered(timestamps, answers);
       // Frames can follow the answer to O or L in the same chunk, so read them once the command is out.
       const busOpened = () => {
         this.busOpen = true;
@@ -443,6 +446,15 @@ export class SlcanAdapter implements CaptureAdapter {
     const stopped = this.stopped.then(() => false);
     if (!(await Promise.race([written, stopped]))) this.answerAll('write failed');
     return answered;
+  }
+
+  /**
+   * Waits a little after an adapter that answers commands gave none, as one writing a setting to
+   * its EEPROM may answer late: an answer that comes while no command waits is dropped, rather
+   * than taken for the next command's, which for L would confirm listen-only falsely.
+   */
+  private async settleUnanswered(answer: Answer, answers: boolean) {
+    if (answers && answer === 'no answer') await sleep(this.timing.settleMs);
   }
 
   /** Hands `answer` to the oldest command waiting for one. False when none is waiting. */

@@ -214,6 +214,22 @@ describe('SlcanAdapter', () => {
     await adapter.stop();
   });
 
+  it('does not take a late answer to Z1 for an answer to L', async () => {
+    const port = new FakeSerialPort();
+    port.answer = (command) => {
+      if (command === 'Z1') {
+        // Later than the command wait, as an adapter writing its EEPROM might answer.
+        setTimeout(() => port.send('\r'), 60);
+        return null;
+      }
+      return command === 'L' || command === 'M1' ? null : '\r';
+    };
+    const adapter = new SlcanAdapter(port, { commandMs: 50, settleMs: 30 });
+    const refusal = await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0).catch((e: unknown) => e);
+    expect(isListenOnlyUnconfirmed(refusal)).toBe(true);
+    expect(port.commands.slice(0, 5)).toEqual(['C', 'S6', 'Z1', 'L', 'M1']);
+  });
+
   it("carries on when the channel wasn't open to close", async () => {
     const port = new FakeSerialPort();
     port.answer = (command) => (command === 'C' ? '\x07' : '\r');

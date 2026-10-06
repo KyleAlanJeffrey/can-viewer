@@ -90,28 +90,50 @@ export interface CaptureAdapter {
 export const START_CANCELLED = 'The capture was stopped while the adapter started.';
 
 /**
+ * How far past the host clock an adapter's timestamp may put a frame. A frame stamped further
+ * ahead (a glitch in the adapter's clock) is held to it, as a rolling capture drops frames in
+ * the order they came and can't drop past a frame until the window reaches its time.
+ */
+export const MAX_AHEAD_OF_HOST_NS = 1e9;
+
+/** How fast `DeviceClock` moves its anchor back to follow an adapter clock that runs fast: 1000 ppm. */
+const MAX_SLEW = 1e-3;
+
+/**
  * An adapter's own timestamps, from a counter that wraps every `wrapNs`, as capture times:
- * anchored to the host clock once, and unwrapped by taking the number of wraps that brings the
- * time counted nearest to what the host clock says has passed. Times stay absolute, and the
- * host's USB and scheduling jitter is left out.
+ * anchored to the host clock, and unwrapped by taking the number of wraps that brings the time
+ * counted nearest to what the host clock says has passed. Times stay absolute, and the host's
+ * USB and scheduling jitter is left out. A frame can't really be timed after it arrived, so
+ * when one is, the anchor is moved back by up to `MAX_SLEW` of the adapter time since the latest
+ * adapter time seen: that undoes an anchor taken late and follows an adapter clock that runs fast, while
+ * times keep rising. A time still more than `MAX_AHEAD_OF_HOST_NS` past the host clock is held
+ * to it and leaves the anchor alone.
  */
 export class DeviceClock {
   private anchor: { deviceNs: number; hostNs: number } | null = null;
+  /** The furthest adapter time since the anchor timed so far, which each slew is measured from. */
+  private lastElapsedNs = 0;
 
   constructor(private readonly wrapNs: number) {}
 
   /** The device read `deviceNs` at host time `hostNs`. Without it, the first frame anchors. */
   sync(deviceNs: number, hostNs: number) {
     this.anchor = { deviceNs, hostNs };
+    this.lastElapsedNs = 0;
   }
 
   /** The capture time of a frame the device stamped `deviceNs`, which arrived at host time `hostNs`. */
   time(deviceNs: number, hostNs: number): number {
     if (!this.anchor) this.sync(deviceNs, hostNs);
-    const { deviceNs: deviceAnchor, hostNs: hostAnchor } = this.anchor!;
-    const counted = deviceNs - deviceAnchor;
-    const wraps = Math.round((hostNs - hostAnchor - counted) / this.wrapNs);
-    return hostAnchor + counted + wraps * this.wrapNs;
+    const anchor = this.anchor!;
+    const counted = deviceNs - anchor.deviceNs;
+    const wraps = Math.round((hostNs - anchor.hostNs - counted) / this.wrapNs);
+    const elapsedNs = counted + wraps * this.wrapNs;
+    const aheadNs = anchor.hostNs + elapsedNs - hostNs;
+    if (aheadNs > MAX_AHEAD_OF_HOST_NS) return hostNs + MAX_AHEAD_OF_HOST_NS;
+    if (aheadNs > 0) anchor.hostNs -= Math.min(aheadNs, MAX_SLEW * Math.max(0, elapsedNs - this.lastElapsedNs));
+    this.lastElapsedNs = Math.max(this.lastElapsedNs, elapsedNs);
+    return anchor.hostNs + elapsedNs;
   }
 }
 

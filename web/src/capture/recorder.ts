@@ -1,6 +1,6 @@
 import type { CaptureFrame, CoreApi, LogInfo } from '../core/api';
 import { formatCount, formatCountOf, formatDuration } from '../format';
-import { errorText, formatBitrate, type CaptureAdapter, type CaptureSettings } from './adapter';
+import { errorText, formatBitrate, MAX_AHEAD_OF_HOST_NS, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { FrameBatcher, type BatcherOptions } from './batcher';
 
 /** The bus name a capture's frames are stored under when the settings name none. */
@@ -11,11 +11,6 @@ export const CAPTURE_CHANNEL = 'can0';
  */
 const TRIM_SLACK_SHARE = 0.1;
 const MIN_TRIM_SLACK_NS = 10e9;
-/**
- * How far past the computer's clock a frame's time may move a rolling capture's window, so one
- * frame timed far ahead (a glitch in the adapter's clock) can't drop the frames still in it.
- */
-const MAX_AHEAD_OF_HOST_NS = 1e9;
 /** The frame rate is averaged over about this long. */
 const RATE_WINDOW_MS = 2000;
 /**
@@ -226,6 +221,7 @@ export class CaptureRecorder {
       bytes += captureFrameBytes(frame);
     }
     this.sent.push({ firstNs, lastNs, bytes });
+    // Backstop for `DeviceClock`'s cap.
     const hostNs = (this.clock.now() - this.origin) * 1e6;
     this.latestNs = Math.max(this.latestNs, Math.min(lastNs, hostNs + MAX_AHEAD_OF_HOST_NS));
     const cutoff = this.latestNs - keepNs;

@@ -427,6 +427,7 @@ export interface CoreApi {
    * Empty when `byteCount` is above 1785, the longest payload.
    */
   rowBytes(key: number, start: number, count: number, first: number, byteCount: number): Promise<Uint16Array>;
+  /** Per-bit change counts of one ID, each frame compared with the previous frame of its kind. */
   bitFlips(key: number): Promise<Uint32Array>;
   /** Parse a DBC file. Nothing changes until it is passed to `setDatabases`. */
   parseDbc(file: Blob, name: string): Promise<Database>;
@@ -456,7 +457,7 @@ export interface CoreApi {
   bitFlipsBetween(key: number, t0: number, t1: number): Promise<Uint32Array>;
   /**
    * Payload bits that changed, per bucket, for one ID across [t0, t1] seconds: an activity strip.
-   * Each frame is compared with the previous frame of the ID, even if that one is before t0.
+   * Each frame is compared with the previous frame of the ID and kind, even if that one is before t0.
    */
   changeActivity(key: number, t0: number, t1: number, buckets: number): Promise<Uint32Array>;
   /** Decode any bit range of one ID across the log, for signals not (yet) in the database. */

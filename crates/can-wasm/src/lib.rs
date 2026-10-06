@@ -870,8 +870,8 @@ impl Session {
         }
     }
 
-    /// Payload bits of ID `key` that changed from its previous frame, summed in `buckets`
-    /// buckets between `t0` and `t1` seconds.
+    /// Payload bits of ID `key` that changed from its previous frame of the same kind, summed in
+    /// `buckets` buckets between `t0` and `t1` seconds.
     pub fn change_activity(&self, key: f64, t0: f64, t1: f64, buckets: u32) -> Vec<u32> {
         match self.filter(key) {
             Ok(Some(stats)) => {

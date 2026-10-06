@@ -745,7 +745,7 @@ if (count !== null) showPreview(`${count} of ${log.frames} frames match`);
 bitFlips(key: number): Promise<Uint32Array>
 ```
 
-How often each payload bit of one ID changed between consecutive frames, over the whole log. The counts are kept while parsing, so this is cheap.
+How often each payload bit of one ID changed from the previous frame of the ID and the same kind (data, remote, error or reassembled, as `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) compares them), over the whole log, so a polled ID's remote frames don't hide the changes between its data frames. A bit changes at most once per frame after the first of its kind, so for an ID with frames of more than one kind, a share worked out over `count - 1` frames reads low. The counts are kept while parsing, so this is cheap.
 
 **Parameters**
 
@@ -765,7 +765,7 @@ console.log(`byte ${busiest >> 3}, bit ${busiest & 7}`);
 bitFlipsBetween(key: number, t0: number, t1: number): Promise<Uint32Array>
 ```
 
-Like [`bitFlips`](#bitflips), counting only changes between consecutive frames that are both inside `[t0, t1]` seconds.
+Like [`bitFlips`](#bitflips), counting only changes between frames that are both inside `[t0, t1]` seconds.
 
 **Parameters**
 
@@ -785,7 +785,7 @@ const flips = await core.bitFlipsBetween(summary.key, 120, 135);
 changeActivity(key: number, t0: number, t1: number, buckets: number): Promise<Uint32Array>
 ```
 
-The number of payload bits that changed, per time bucket, for one ID across `[t0, t1]` seconds: an activity strip. Buckets are equal in width, and `t1` falls in the last one. Each frame is compared with the previous frame of the ID, even if that one is before `t0`. The ID's first frame in the log adds nothing.
+The number of payload bits that changed, per time bucket, for one ID across `[t0, t1]` seconds: an activity strip. Buckets are equal in width, and `t1` falls in the last one. Each frame is compared with the previous frame of the ID and the same kind, as in [`bitFlips`](#bitflips), even if that one is before `t0`. The ID's first frame of each kind in the log adds nothing.
 
 **Parameters**
 

@@ -123,7 +123,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Trace filters: data rules match any byte of a reassembled J1939 transfer, but matched bytes are only outlined in the first 64 the row carries
 - [ ] Trace filters: Apply filters the log again even when the preview just counted the same filters; keeping the preview's matches would cost 4 bytes per match for every draft
 - [ ] Trace filters: "Any byte changes" ignores a payload that only grows or shrinks; say so in the sheet's hint if that confuses people
-- [ ] Bit flips (`IdStats::bit_flips`) and change activity still compare each frame with the previous frame of its ID whatever its kind, so a polled ID's remote frames hide the changes between its data frames there too; the trace's changed bytes and the filter now skip them
+- [x] Bit flips (`IdStats::bit_flips`, `bitFlipsBetween`) and change activity compare each frame with the previous frame of its ID and kind, as the trace's changed bytes and the filter do, so a polled ID's remote frames no longer hide the changes between its data frames; the Inspector heatmap, Reverse Engineer's Bit Activity and window strip, and Suggested signals all read these counts
 - [ ] Trace filters: check the sheet, the ID combobox and the range handles with a real screen reader (VoiceOver or NVDA) (owner)
 - [ ] Memory: the store's columns are plain `Vec`s, and doubling on growth nearly doubles peak memory; switch to fixed-size chunked columns
 - [ ] Parallel parsing: a pool of workers parsing `Blob.slice` ranges for multi-core throughput

@@ -246,7 +246,7 @@ enum Cuts {
     #[default]
     Undecided,
     Lines,
-    Objects(ObjectCuts),
+    Objects(Box<ObjectCuts>),
 }
 
 /// What the parts joined on so far counted, and the header state and sum of relative times
@@ -268,8 +268,10 @@ impl LogInput {
             Some(parser) => parser.push(chunk, store),
             None => {
                 self.head.extend_from_slice(chunk);
-                // A log cut where its objects end is known to be BLF.
-                if self.head.len() >= SNIFF_BYTES || matches!(self.cuts, Cuts::Objects(_)) {
+                // A log cut where its objects end is known to be BLF, once there is a head to
+                // tell it by: the name alone may say otherwise.
+                let blf = matches!(self.cuts, Cuts::Objects(_)) && !self.head.is_empty();
+                if self.head.len() >= SNIFF_BYTES || blf {
                     self.choose_parser(store);
                 }
             }
@@ -399,7 +401,7 @@ impl LogInput {
                 && self.head.is_empty()
                 && Format::detect(&self.file_name, chunk) == Format::Blf;
             self.cuts = if blf {
-                Cuts::Objects(ObjectCuts::new(part_bytes as u64))
+                Cuts::Objects(Box::new(ObjectCuts::new(part_bytes as u64)))
             } else {
                 Cuts::Lines
             };

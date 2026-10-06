@@ -303,19 +303,23 @@ impl PartStart {
 /// The first place in `bytes`, from `from`, that starts an object longer than its header and
 /// followed by another, or where to look on from once there are more bytes. Bytes inside an
 /// object may look like the start of one; [`InnerJoin::join`] refuses a part whose guess was
-/// wrong.
+/// wrong. A place whose next object isn't in yet is passed over for a later one that shows
+/// its next: a false one, claiming to run far, would otherwise hold the search to the end of
+/// the part.
 fn object_start(bytes: &[u8], mut from: usize) -> Result<usize, usize> {
+    let mut waiting = None;
     loop {
         let Some(found) = memchr::memmem::find(&bytes[from..], OBJECT_SIGNATURE) else {
-            return Err(bytes
+            let searched = bytes
                 .len()
                 .saturating_sub(OBJECT_SIGNATURE.len() - 1)
-                .max(from));
+                .max(from);
+            return Err(waiting.unwrap_or(searched));
         };
         let at = from + found;
         let rest = &bytes[at..];
         if rest.len() < BASE_HEADER {
-            return Err(at);
+            return Err(waiting.unwrap_or(at));
         }
         let header_size = usize::from(u16_at(rest, 4));
         let object_size = u32_at(rest, 8) as usize;
@@ -326,9 +330,8 @@ fn object_start(bytes: &[u8], mut from: usize) -> Result<usize, usize> {
             let next = at + object_size;
             let seen = next + MAX_PADDING + OBJECT_SIGNATURE.len();
             if bytes.len() < seen {
-                return Err(at);
-            }
-            if memchr::memmem::find(&bytes[next..seen], OBJECT_SIGNATURE).is_some() {
+                waiting.get_or_insert(at);
+            } else if memchr::memmem::find(&bytes[next..seen], OBJECT_SIGNATURE).is_some() {
                 return Ok(at);
             }
         }
@@ -404,6 +407,9 @@ pub struct ObjectEnds {
     header: FileHeader,
     header_bytes: u64,
     stream: ObjectStream,
+    /// An object run on from an earlier push: where it ends in the stream, and how many of
+    /// its bytes are still to come.
+    passing: Option<(u64, usize)>,
     stats: ParseStats,
 }
 
@@ -416,16 +422,36 @@ impl ObjectEnds {
     /// Takes the next bytes of the file, from its start, and calls `on_end` with the offset in
     /// the file where each object ending in them ends.
     pub fn push(&mut self, chunk: &[u8], mut on_end: impl FnMut(u64)) {
-        let rest = self.header.take(chunk, &mut self.stats);
+        let mut rest = self.header.take(chunk, &mut self.stats);
         if self.header.state != HeaderState::Done {
             self.header_bytes += chunk.len() as u64;
             return;
         }
         self.header_bytes += (chunk.len() - rest.len()) as u64;
         let header_bytes = self.header_bytes;
+        if let Some((end, left)) = self.passing {
+            let passed = left.min(rest.len());
+            rest = &rest[passed..];
+            self.stream.pushed += passed as u64;
+            if passed < left {
+                self.passing = Some((end, left - passed));
+                return;
+            }
+            self.passing = None;
+            on_end(header_bytes + end);
+        }
         self.stream.push(rest, &mut self.stats, |object, _| {
             on_end(header_bytes + object.end);
         });
+        // Pass over the rest of an object whose header is in by its size, rather than
+        // carrying it whole as the parser does to read it.
+        let carried = self.stream.carry.len();
+        let size = self.stream.carried_object_size();
+        if carried >= BASE_HEADER && size > carried {
+            let end = self.stream.pushed - carried as u64 + size as u64;
+            self.passing = Some((end, size - carried));
+            self.stream.carry = Vec::new();
+        }
     }
 }
 
@@ -1243,5 +1269,43 @@ mod tests {
             stats.first_rejection,
             Some((1, "CAN message object too short"))
         );
+    }
+
+    #[test]
+    fn an_object_start_is_found_past_a_false_one_that_claims_to_run_on() {
+        let frame = object(1, NS, 0, &[0; 16]);
+        let mut false_start = object(1, NS, 0, &[0; 16]);
+        false_start[8..12].copy_from_slice(&(1u32 << 20).to_le_bytes());
+        let bytes = [&[7u8; 5][..], &false_start, &frame, &frame].concat();
+        let real = 5 + false_start.len();
+        assert_eq!(object_start(&bytes, 0), Ok(real));
+        // Until a later start shows its next object, the search resumes at the false one.
+        let cut = real + frame.len();
+        assert_eq!(object_start(&bytes[..cut], 0), Err(5));
+        assert_eq!(object_start(&bytes[..3], 0), Err(0));
+    }
+
+    #[test]
+    fn object_ends_are_found_however_the_file_comes_in() {
+        let frame = object(1, NS, 0, &[0; 16]);
+        let big = object(65, NS, 0, &[9; 5000]);
+        let mut objects = Vec::new();
+        let mut ends = Vec::new();
+        for part in [&frame, &big, &[1u8, 2][..], &frame, &big, &big, &frame] {
+            objects.extend_from_slice(part);
+            if part.starts_with(OBJECT_SIGNATURE) {
+                ends.push(144 + objects.len() as u64);
+            }
+        }
+        let file = [file_header(None), objects].concat();
+        for size in [1, 7, 16, 100, 4999, file.len()] {
+            let mut found = Vec::new();
+            let mut object_ends = ObjectEnds::new();
+            for chunk in file.chunks(size) {
+                object_ends.push(chunk, |end| found.push(end));
+                assert!(object_ends.stream.carry.len() < BASE_HEADER);
+            }
+            assert_eq!(found, ends, "{size}");
+        }
     }
 }

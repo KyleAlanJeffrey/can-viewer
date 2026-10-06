@@ -84,6 +84,20 @@ class ObjectSession extends RecordingSession {
   }
 }
 
+/**
+ * `content` as a file whose reads of a whole chunk, which only the walk for where objects end
+ * makes here, first wait for `walk`, or fail with it.
+ */
+function walkedFile(content: string, walk: () => Promise<void>): Blob {
+  const blob = new Blob([content]);
+  const slice = (start: number, end: number) => {
+    const part = blob.slice(start, end);
+    if (end - start !== CHUNK_BYTES) return part;
+    return { arrayBuffer: () => walk().then(() => part.arrayBuffer()) };
+  };
+  return { size: blob.size, slice } as unknown as Blob;
+}
+
 /** Reads its part's lines as the real worker does, answering after `delay(task)` ms. */
 class EchoWorker implements PartWorker {
   static tasks: PartTask[] = [];
@@ -216,6 +230,45 @@ describe('reading a log in parts', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(read).toBe(false);
     expect(session.cutsAfterRead).toBe(false);
+  });
+
+  it('lets the walk for where objects end finish its read, then stop, before an aborted read rejects', async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const session = new ObjectSession();
+    const cuts = vi.spyOn(session, 'object_cuts');
+    const stop = new AbortController();
+    let settled = false;
+    const reading = readInParts(walkedFile(log(400), () => gate), session, { workers: 2, partSize: 100, signal: stop.signal, startWorker: () => new EchoWorker(100) }, () => undefined);
+    reading.catch(() => undefined).finally(() => (settled = true));
+    await vi.waitUntil(() => cuts.mock.calls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const reason = new DOMException('superseded', 'AbortError');
+    stop.abort(reason);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    release();
+    await expect(reading).rejects.toBe(reason);
+    expect(cuts).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the log again in one worker when the walk for where objects end fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const options = { workers: 2, partSize: 100, startWorker: () => new EchoWorker(100) };
+    const unreadable = walkedFile(log(400), () => Promise.reject(new Error('NotReadableError')));
+    expect(await readInParts(unreadable, new ObjectSession(), options, () => undefined)).toBe(false);
+
+    const session = new ObjectSession();
+    const cuts = session.object_cuts.bind(session);
+    session.object_cuts = (chunk, partBytes) => {
+      if (session.seen > 0) throw new WebAssembly.RuntimeError('unreachable');
+      return cuts(chunk, partBytes);
+    };
+    expect(await readInParts(new Blob([log(400)]), session, options, () => undefined)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
   });
 
   it('holds at most two parts per worker ahead of the next to join', async () => {

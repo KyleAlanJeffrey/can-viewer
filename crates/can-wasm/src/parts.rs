@@ -857,6 +857,34 @@ mod tests {
         assert!(!s.push_segment(&part));
     }
 
+    /// The web app's read when no object ends in the start it reads: nothing is pushed for
+    /// the core's own part, then the whole file in chunks.
+    #[test]
+    fn a_blf_file_with_no_object_end_in_its_first_part_is_read_whole_by_its_content() {
+        let one_container = blf::file(&blf::containers(&blf::frames(300), &[1 << 20], 0));
+        let mut bad_header_size = one_container.clone();
+        bad_header_size[4..8].copy_from_slice(&7u32.to_le_bytes());
+        for log in [one_container, bad_header_size] {
+            for which in [Log::Open, Log::B] {
+                let mut whole = which.begin("drive.bin", log.len());
+                which.push_chunk(&mut whole, &log);
+                let info = which.finish(&mut whole);
+
+                let mut s = which.begin("drive.bin", log.len());
+                let first = &log[..1000];
+                assert_eq!(which.object_cuts(&mut s, first, 1000.0), Some(Vec::new()));
+                which.push_chunk(&mut s, &first[..0]);
+                which.push_chunk(&mut s, first);
+                which.push_chunk(&mut s, &log[first.len()..]);
+                assert_eq!(which.finish(&mut s), info, "{which:?}");
+                assert_eq!(
+                    format!("{:?}", s.store.ids()),
+                    format!("{:?}", whole.store.ids())
+                );
+            }
+        }
+    }
+
     /// BLF files for the tests: objects as CANoe writes them, packed into log containers that
     /// split objects anywhere.
     mod blf {
@@ -1643,7 +1671,10 @@ mod demo {
 
         for workers in [2, 4, 8] {
             let started = Instant::now();
-            let mut s = read_on_threads(name, &log, workers);
+            let Some(mut s) = read_on_threads(name, &log, workers) else {
+                println!("{name}: read whole, not in parts");
+                return;
+            };
             let joined = s.finish();
             let secs = started.elapsed().as_secs_f64();
             println!("{workers} workers: {secs:.3} s, {:.2}x", whole_s / secs);
@@ -1658,13 +1689,14 @@ mod demo {
     /// Parts of a BLF file, cut where its objects end, as the web app cuts them.
     const BLF_PART: usize = 2 << 20;
 
-    fn read_on_threads(name: &str, log: &[u8], workers: usize) -> Session {
+    /// None for a log that isn't read in parts.
+    fn read_on_threads(name: &str, log: &[u8], workers: usize) -> Option<Session> {
         let mut s = Session::new();
         s.set_file_name(name);
         let first = &log[..CHUNK.min(log.len())];
         let cuts = s.object_cuts(first, BLF_PART as f64);
         let exact = cuts.is_some();
-        let (cut, parts) = match cuts {
+        let (cut, parts): (usize, Vec<(usize, usize)>) = match cuts {
             Some(mut cuts) => {
                 for chunk in log[first.len()..].chunks(CHUNK) {
                     cuts.extend(s.object_cuts(chunk, BLF_PART as f64).unwrap());
@@ -1687,10 +1719,8 @@ mod demo {
             }
         };
         s.push_chunk(&log[..cut]);
-        let format = s.segment_format().expect("the log can be read in parts");
-        let format = Format::from_name(&format).unwrap();
+        let format = Format::from_name(&s.segment_format()?).unwrap();
         let head = &log[..cut.min(64 << 10)];
-        let parts: Vec<(usize, usize)> = parts;
         let next = AtomicUsize::new(0);
         std::thread::scope(|scope| {
             let (sender, results) = mpsc::channel();
@@ -1722,7 +1752,7 @@ mod demo {
                 }
             }
         });
-        s
+        Some(s)
     }
 
     fn line_start(log: &[u8], at: usize) -> usize {

@@ -277,32 +277,44 @@ describe('reading a log in parts', () => {
     EchoWorker.tasks = [];
     let outstanding = 0;
     let most = 0;
+    let laterPartsRead = 0;
+    let releaseFirst = () => {};
+    const firstHeld = new Promise<void>((resolve) => (releaseFirst = resolve));
     const session = new RecordingSession('candump');
     const pushSegment = session.push_segment.bind(session);
     session.push_segment = (segment) => {
       outstanding -= 1;
       return pushSegment(segment);
     };
-    const read = await readInParts(
+    const reading = readInParts(
       file,
       session,
       {
         workers: 2,
         partSize,
         startWorker: () => {
-          const worker = new EchoWorker(partSize, (task) => (task === EchoWorker.tasks[0] ? 30 : 0));
+          const worker = new EchoWorker(partSize);
           const readPart = worker.read.bind(worker);
-          worker.read = (task) => {
+          worker.read = async (task) => {
+            const first = EchoWorker.tasks.length === 0;
             outstanding += 1;
             most = Math.max(most, outstanding);
-            return readPart(task);
+            const part = await readPart(task);
+            if (first) await firstHeld;
+            else laterPartsRead += 1;
+            return part;
           };
           return worker;
         },
       },
       () => undefined,
     );
-    expect(read).toBe(true);
+    // While the first part is held, the other worker reads three more and then waits for it,
+    // rather than starting a fifth read.
+    await vi.waitFor(() => expect(laterPartsRead).toBeGreaterThanOrEqual(3), { timeout: 3000 });
+    expect(outstanding).toBe(4);
+    releaseFirst();
+    expect(await reading).toBe(true);
     expect(most).toBe(4);
   });
 

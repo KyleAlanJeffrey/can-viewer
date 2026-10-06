@@ -61,7 +61,8 @@ async function openByteValues(suggestions: Suggestion[], others: Suggestion[] = 
   const { core, scan } = discoveryCore(overrides);
   const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [car], selected: first.key });
   await screen.findByRole('complementary', { name: 'Suggested signals' });
-  expect(scan.keys).toEqual([first.key, second.key]);
+  // The panel starts the scan from an effect, a moment after it shows.
+  await waitFor(() => expect(scan.keys).toEqual([first.key, second.key]));
   act(() => {
     scan.progress(1, 2, found(first.key, suggestions));
     scan.progress(2, 2, found(second.key, others));

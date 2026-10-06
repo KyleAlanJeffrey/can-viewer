@@ -690,7 +690,7 @@ const share = flips[0] / Math.max(1, frames - 1);
 setTraceFilter(filter: FrameFilter | null): Promise<number>
 ```
 
-Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, starting a capture or ending one (which may reorder its frames); until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames. The kept rows cost 4 bytes per matching frame. During a capture, frames appended after the call do not join the rows; the web app turns filters off while recording.
+Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, swapping logs with [`swapCompareLog`](#swapcomparelog), starting a capture or ending one (which may reorder its frames); until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames. The kept rows cost 4 bytes per matching frame. During a capture, frames appended after the call do not join the rows; the web app turns filters off while recording.
 
 **Parameters**
 
@@ -1045,7 +1045,7 @@ Drops log B and frees its memory. Does nothing without one.
 swapCompareLog(): Promise<LogInfo>
 ```
 
-Makes log B the open log and the open log log B, without reading either again. Every series is dropped and handles restart from 0, as after [`openLog`](#openlog), and ID keys now name the new open log's IDs: call [`idSummary`](#idsummary) again.
+Makes log B the open log and the open log log B, without reading either again. Every series and the trace filter's rows are dropped and handles restart from 0, as after [`openLog`](#openlog), and ID keys now name the new open log's IDs: call [`idSummary`](#idsummary) again.
 
 **Returns** the new open log's [`LogInfo`](#the-loginfo-object).
 

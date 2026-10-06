@@ -293,6 +293,8 @@ describe('CaptureKeeper', () => {
     keeper.add(frames(0, 3));
     await keeper.stop();
     const forgotten = keeper.forget();
+    // Marked at once, so a tab closed before the late write lands doesn't restore it.
+    expect(JSON.parse(localStorage.getItem('freecan-studio.forgotten-captures') ?? '[]')).toEqual([id]);
     diskFree();
     await forgotten;
     expect(await keptCaptures()).toEqual([]);

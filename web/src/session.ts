@@ -293,12 +293,17 @@ const FORGOTTEN_KEY = 'freecan-studio.forgotten-captures';
 const forgottenCaptures = () => storedIds(FORGOTTEN_KEY);
 const setForgottenCaptures = (ids: string[]) => storeIds(FORGOTTEN_KEY, ids);
 
+/** Marks a kept capture as forgotten ahead of deleting it, so no page load restores it meanwhile. */
+export function markCaptureForgotten(id: string) {
+  setForgottenCaptures([...forgottenCaptures().filter((other) => other !== id), id]);
+}
+
 /**
  * Deletes a kept capture and its chunks, trying twice. Resolves false if storage refused; it
  * stays marked as forgotten, so no page load restores it, and the next claim deletes it.
  */
 export async function forgetCapture(id: string): Promise<boolean> {
-  setForgottenCaptures([...forgottenCaptures().filter((other) => other !== id), id]);
+  markCaptureForgotten(id);
   for (let tries = 0; tries < 2; tries++) {
     try {
       await transaction('readwrite', (store) => {

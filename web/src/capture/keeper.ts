@@ -1,7 +1,7 @@
 import type { CaptureFrame } from '../core/api';
 import { packFrames } from '../core/captureFrames';
 import { settleWithin } from './adapter';
-import { canKeepCaptures, forgetCapture, KEPT_CAPTURE_LAYOUT, keptCaptures, lockCapture, writeKeptCapture, type HeldCapture, type KeptCapture } from '../session';
+import { canKeepCaptures, forgetCapture, KEPT_CAPTURE_LAYOUT, keptCaptures, lockCapture, markCaptureForgotten, writeKeptCapture, type HeldCapture, type KeptCapture } from '../session';
 
 export interface KeeperOptions {
   /** How often the frames that have arrived are written. */
@@ -182,6 +182,7 @@ export class CaptureKeeper implements HeldCapture {
     this.deleted = true;
     this.clearTimer();
     this.clearParts();
+    if (stored) markCaptureForgotten(this.capture!.id);
     // A write under way lands first, so the delete takes it too.
     await this.writing;
     // Held on to if the delete fails, so no other tab restores what was saved or replaced.

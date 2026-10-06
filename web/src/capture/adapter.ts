@@ -90,10 +90,18 @@ export interface CaptureAdapter {
 export const START_CANCELLED = 'The capture was stopped while the adapter started.';
 
 /**
+ * How far past the host clock an adapter's timestamp may put a frame. A frame stamped further
+ * ahead (a glitch in the adapter's clock) is held to it, as a rolling capture drops frames in
+ * the order they came and can't drop past a frame until the window reaches its time.
+ */
+export const MAX_AHEAD_OF_HOST_NS = 1e9;
+
+/**
  * An adapter's own timestamps, from a counter that wraps every `wrapNs`, as capture times:
  * anchored to the host clock once, and unwrapped by taking the number of wraps that brings the
  * time counted nearest to what the host clock says has passed. Times stay absolute, and the
- * host's USB and scheduling jitter is left out.
+ * host's USB and scheduling jitter is left out. No time is more than `MAX_AHEAD_OF_HOST_NS`
+ * past the host clock.
  */
 export class DeviceClock {
   private anchor: { deviceNs: number; hostNs: number } | null = null;
@@ -111,7 +119,7 @@ export class DeviceClock {
     const { deviceNs: deviceAnchor, hostNs: hostAnchor } = this.anchor!;
     const counted = deviceNs - deviceAnchor;
     const wraps = Math.round((hostNs - hostAnchor - counted) / this.wrapNs);
-    return hostAnchor + counted + wraps * this.wrapNs;
+    return Math.min(hostAnchor + counted + wraps * this.wrapNs, hostNs + MAX_AHEAD_OF_HOST_NS);
   }
 }
 

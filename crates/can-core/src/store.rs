@@ -170,6 +170,9 @@ pub struct FrameStore {
     reassembled_frames: usize,
     /// A frame came earlier than one before it, so [`FrameStore::sort_by_time`] has work.
     out_of_order: bool,
+    /// [`FrameStore::drop_before`] dropped frames, perhaps the first packets of transfers
+    /// already reassembled.
+    trimmed: bool,
 }
 
 /// The [`IdStats`] of every ID, in order of first appearance.
@@ -568,6 +571,7 @@ impl FrameStore {
         self.id.drain(..count);
         self.channel.drain(..count);
         self.flags.drain(..count);
+        self.trimmed = true;
         // Freed first to make room.
         self.index = IdIndex::default();
         let mut index = IdIndex::default();
@@ -581,6 +585,8 @@ impl FrameStore {
     /// Puts the frames in time order if any came earlier than a frame before them, keeping
     /// the order of frames with the same time, and redoes what was worked out in the order
     /// they came: the per-ID statistics and the J1939 transfers. Call it once the log is read.
+    /// A store that dropped its oldest frames keeps the transfers it reassembled instead, sorted
+    /// with the frames, since the packets that began some of them may be gone.
     ///
     /// The columns are rebuilt in turn, so beyond the store this needs 4 bytes per frame, the
     /// J1939 transfers, and the data with its offsets or one other column at a time. A store
@@ -605,16 +611,18 @@ impl FrameStore {
     fn sort_columns_by_time(&mut self) -> Result<(), TryReserveError> {
         let mut order: Vec<u32> = Vec::new();
         order.try_reserve_exact(self.len())?;
-        order.extend(
-            (0..self.len() as u32).filter(|&i| self.flags[i as usize] & flags::REASSEMBLED == 0),
-        );
+        order.extend((0..self.len() as u32).filter(|&i| {
+            self.trimmed || self.flags[i as usize] & flags::REASSEMBLED == 0
+        }));
         order.sort_unstable_by_key(|&i| (self.ts_ns[i as usize], i));
 
         let mut reassembler = tp::Reassembler::default();
         let mut transfers = Vec::new();
-        for (position, &i) in order.iter().enumerate() {
-            if let Some(transfer) = reassembler.push(&self.frame(i as usize)) {
-                transfers.push((position, transfer));
+        if !self.trimmed {
+            for (position, &i) in order.iter().enumerate() {
+                if let Some(transfer) = reassembler.push(&self.frame(i as usize)) {
+                    transfers.push((position, transfer));
+                }
             }
         }
         let rows = order.len() + transfers.len();
@@ -632,7 +640,9 @@ impl FrameStore {
         data_start.try_reserve_exact(rows)?;
         self.out_of_order = false;
         self.reassembler = reassembler;
-        self.reassembled_frames = transfers.len();
+        if !self.trimmed {
+            self.reassembled_frames = transfers.len();
+        }
         for_each_row(&order, &transfers, |row| {
             data_start.push(data.len());
             match row {
@@ -1160,6 +1170,24 @@ mod tests {
         s.drop_before(21);
         assert_eq!(s.reassembled_frames(), 0);
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn sorting_after_a_drop_keeps_transfers_whose_first_packets_are_gone() {
+        let mut s = FrameStore::new();
+        push(&mut s, 0, 0x100, &[0]);
+        push_bam(&mut s, 0, 10, 0x00, &[7; 9]);
+        assert_eq!(s.reassembled_frames(), 1);
+        // The announcement at 10 goes; the packets at 11 and 12 and the transfer stay.
+        s.drop_before(11);
+        push(&mut s, 5, 0x100, &[1]);
+        s.sort_by_time();
+        assert_eq!(s.reassembled_frames(), 1);
+        let kinds: Vec<(i64, u8)> = (0..s.len())
+            .map(|i| (s.frame(i).ts_ns, s.frame(i).flags))
+            .collect();
+        assert_eq!(kinds, [(5, 0), (11, 0), (12, 0), (12, flags::REASSEMBLED)]);
+        assert_eq!(s.frame(3).data, &[7; 9]);
     }
 
     #[test]

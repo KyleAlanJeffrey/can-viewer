@@ -36,8 +36,14 @@ function testCore(overrides: Partial<CoreApi> = {}): CoreApi {
 }
 
 /** The shell's part of ViewContext, with the selection and pinned time held in state. */
-function Shell({ core, ids, inspector = null }: { core: CoreApi; ids: IdSummary[]; inspector?: HTMLElement | null }) {
+/** What the view asked of the shell's inspector, for the tests to check. */
+interface InspectorState {
+  hidden: boolean;
+}
+
+function Shell({ core, ids, inspector = null, state }: { core: CoreApi; ids: IdSummary[]; inspector?: HTMLElement | null; state: InspectorState }) {
   const [selected, select] = useState(-1);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [pinnedTime, setPinnedTime] = useState<number | null>(null);
   const [store] = useState(() => new ViewStateStore());
   const unused = () => Promise.reject(new Error('not used by this test'));
@@ -71,8 +77,14 @@ function Shell({ core, ids, inspector = null }: { core: CoreApi; ids: IdSummary[
     busyLabel: () => null,
     setError: () => {},
     setView: () => {},
-    setInspectorHidden: () => {},
+    setInspectorHidden: (hidden) => {
+      state.hidden = hidden;
+    },
+    inspectorOpen,
+    toggleInspector: () => setInspectorOpen((o) => !o),
     openInspector: () => {},
+    setViewPrimary: () => {},
+    showSidebar: () => {},
     openLog: unused,
     swapCompareLog: unused,
     openLogPicker: () => {},
@@ -87,9 +99,12 @@ function Shell({ core, ids, inspector = null }: { core: CoreApi; ids: IdSummary[
   );
 }
 
+const inspectorState: InspectorState = { hidden: false };
+
 function renderView(ids = [brakes, unknown, engine], core = testCore(), inspector: HTMLElement | null = null) {
   const user = userEvent.setup();
-  render(<Shell core={core} ids={ids} inspector={inspector} />);
+  inspectorState.hidden = false;
+  render(<Shell core={core} ids={ids} inspector={inspector} state={inspectorState} />);
   return user;
 }
 
@@ -145,8 +160,10 @@ describe('Byte Values', () => {
 
   it('selects a byte and pins it', async () => {
     const user = renderView();
-    expect(screen.getByText(/^Select a byte to pin it/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Pin byte' }).hasAttribute('disabled')).toBe(true);
+    // The selection's footer and its actions appear only once a byte is selected.
+    expect(screen.queryByRole('button', { name: 'Pin byte' })).toBeNull();
+    // With nothing pinned, the references card is one row.
+    expect(screen.getByRole('heading', { name: 'Pin a signal for comparison' })).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: /^100 byte 2/ }));
     const cell = screen.getByRole('button', { name: /^100 byte 2/ });
@@ -156,19 +173,73 @@ describe('Byte Values', () => {
     expect(within(screen.getAllByRole('rowheader')[0]).getByRole('button').getAttribute('aria-pressed')).toBe('true');
     // The cursor parks where the cell was clicked, so the cell shows that frame's byte.
     await waitFor(() => expect(screen.getByRole('button', { name: '100 byte 2, 33 hex' })).toBeTruthy());
+    expect(screen.getByText('(51)')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Pin byte' }));
     expect(screen.getByRole('button', { name: 'Unpin byte' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^100 byte 2, .*pinned$/ })).toBeTruthy();
     expect(await screen.findByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeTruthy();
 
+    expect(screen.getByRole('heading', { name: 'Pinned references' })).toBeTruthy();
+
     await user.click(screen.getByRole('button', { name: 'Unpin byte' }));
     expect(screen.getByRole('button', { name: 'Pin byte' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeNull();
+
+    // Clearing the selection puts the footer away and leaves focus on the byte.
+    await user.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(screen.queryByRole('button', { name: 'Pin byte' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^100 byte 2/ }));
+    expect(screen.getByRole('button', { name: /^100 byte 2/ }).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('offers Open in Advanced for a message picked without a byte, and clears it', async () => {
+    const user = renderView();
+    const head = () => within(screen.getAllByRole('rowheader')[0]).getByRole('button');
+    await user.click(head());
+    expect(screen.getByRole('button', { name: /^Open in Advanced/ })).toBeTruthy();
+    // There is no byte to pin yet.
+    expect(screen.queryByRole('button', { name: 'Pin byte' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(screen.queryByRole('button', { name: /^Open in Advanced/ })).toBeNull();
+    expect(head().getAttribute('aria-pressed')).toBe('false');
+    expect(document.activeElement).toBe(head());
+  });
+
+  it('gives focus to the matrix when the cleared byte is filtered out of the table', async () => {
+    const user = renderView();
+    // Brakes never changes, so Changing bytes only takes its row out.
+    await user.click(screen.getByRole('button', { name: /^300 byte 1/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Changing bytes only' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^300 byte 1/ })).toBeNull());
+
+    await user.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Byte values' }));
   });
 });
 
 describe('Advanced', () => {
+  it('hides the inspector until a message is picked, then lets Details toggle it', async () => {
+    const user = renderView();
+    // Byte Values has no inspector.
+    expect(inspectorState.hidden).toBe(true);
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    const details = screen.getByRole('button', { name: 'Details' });
+    expect(inspectorState.hidden).toBe(true);
+    expect(details).toHaveProperty('disabled', true);
+    expect(details.getAttribute('title')).toBe('Select a message to define its signals');
+
+    await user.click(screen.getByRole('tab', { name: 'Byte Values' }));
+    await user.click(within(screen.getAllByRole('rowheader')[0]).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(inspectorState.hidden).toBe(false);
+    expect(screen.getByRole('button', { name: 'Details' })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: 'Details' }).getAttribute('aria-pressed')).toBe('true');
+    await user.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByRole('button', { name: 'Details' }).getAttribute('aria-pressed')).toBe('false');
+  });
+
   it('says the candidate is only NaN in the window when every value is', async () => {
     const core = testCore({ seriesView: async () => [Float64Array.of(40, 70), Float64Array.of(NaN, NaN)] });
     const inspector = document.createElement('aside');

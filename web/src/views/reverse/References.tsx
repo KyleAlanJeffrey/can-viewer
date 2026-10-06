@@ -38,21 +38,23 @@ export function References({ core, references, window: win, cursor, candidate, o
   const unitOf = (unit: string) => (unit ? ` ${unit}` : '');
 
   return (
-    <section className="card re-card re-refs" aria-labelledby="re-refs-title">
+    <section className={`card re-card re-refs${rows === 0 ? ' collapsed' : ''}`} aria-label="Pinned references">
       <div className="re-card-head">
         <PinIcon size={16} strokeWidth={1.5} aria-hidden="true" className="re-refs-icon" />
-        <h3 className="section-title" id="re-refs-title">
-          Pinned references
-        </h3>
-        <span className="re-card-note">Shared time {'\u00b7'} separate scales</span>
-        <button type="button" className="button re-refs-pin" onClick={onPinSignal}>
+        {/* With nothing pinned, the card shrinks to one row that says what it is for. */}
+        <h3 className="section-title">{rows === 0 ? 'Pin a signal for comparison' : 'Pinned references'}</h3>
+        {rows > 0 && <span className="re-card-note">Shared time {'\u00b7'} separate scales</span>}
+        <button
+          type="button"
+          className="button re-refs-pin"
+          onClick={onPinSignal}
+          title={rows === 0 ? 'Compare a decoded signal or a raw byte with the bytes on the same timeline. Pins stay while you change messages.' : undefined}
+        >
           <Plus size={16} strokeWidth={1.5} aria-hidden="true" />
           Pin signal&hellip;
         </button>
       </div>
-      {rows === 0 ? (
-        <p className="hint re-refs-empty">Pin a signal or plot a suggestion to compare it with raw bytes on the same timeline. Pins stay while you change messages.</p>
-      ) : (
+      {rows > 0 && (
         <div className="re-ref-rows">
           {references.map((ref, i) => (
             <ReferenceRow

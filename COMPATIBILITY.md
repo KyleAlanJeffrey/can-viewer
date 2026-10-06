@@ -26,7 +26,7 @@ Used when present, with a fallback otherwise:
 | Feature | Used for |
 |---|---|
 | `showSaveFilePicker` (File System Access API, Chromium only) | Export DBC... and Save Capture... save through the browser's save dialog, and the DBC counts as exported (the capture as saved) only once the file is written; a cancelled dialog leaves it as it was. Elsewhere they are downloads, which give no completion signal, so they count as done once the download starts. Export Log... works the same way: with the save dialog the log is converted only once a file is chosen, and its button reads Export...; elsewhere it reads Download and the converted file is downloaded. |
-| Web Serial (`navigator.serial`, Chromium desktop only) | Live capture from slcan adapters (see "Live capture" below). Without it, Capture... explains that live capture needs Chrome or Edge on a desktop computer. |
+| Web Serial (`navigator.serial`, Chromium desktop only) | Live capture from slcan adapters (see "Live capture" below). Without it, Connect live... explains that live capture needs Chrome or Edge on a desktop computer. |
 | WebUSB (`navigator.usb`, Chromium only) | Live capture from gs_usb (candleLight) adapters. |
 | Workers started from a worker (nested workers: Chrome, Edge, Firefox, Safari 15.5+) and `navigator.hardwareConcurrency` | Reading a large log on several cores (see "Reading logs in parts" below). Without them, or on a machine with two cores or fewer, logs are read in one worker. Electron's browser starts no nested workers; the first log then fails over to one worker and later logs go straight to it. |
 | Service workers and Cache Storage | Opening the app with no network (see "Offline and install" below). Without them the app works online only. |
@@ -209,9 +209,9 @@ Memory: the core builds the whole file in its own memory, in 8 MiB chunks, befor
 
 ## Live capture
 
-Capture... records frames from a CAN adapter plugged into the computer, in the browser. Nothing is uploaded: frames go from the adapter to the tab's own engine.
+Connect live... records frames from a CAN adapter plugged into the computer, in the browser. Nothing is uploaded: frames go from the adapter to the tab's own engine.
 
-Browsers: Chrome or Edge on a desktop computer (Windows, macOS, Linux, ChromeOS), over HTTPS or from `localhost`. Live capture uses Web Serial (Chrome and Edge 89 and later) and WebUSB (61 and later); the app looks for the APIs rather than the browser, so another Chromium browser that has them works too. Firefox and Safari have neither: Capture... then explains what is needed, and the rest of the app works as before.
+Browsers: Chrome or Edge on a desktop computer (Windows, macOS, Linux, ChromeOS), over HTTPS or from `localhost`. Live capture uses Web Serial (Chrome and Edge 89 and later) and WebUSB (61 and later); the app looks for the APIs rather than the browser, so another Chromium browser that has them works too. Firefox and Safari have neither: Connect live... then explains what is needed, and the rest of the app works as before.
 
 Adapters:
 

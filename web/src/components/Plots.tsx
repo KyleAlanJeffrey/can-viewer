@@ -56,9 +56,8 @@ export function Plots({ core, specs, duration, pinnedTime, onPin, onRemove, onCl
     setPointer(pointerRef.current);
   }, []);
 
-  if (specs.length === 0) {
-    return <p className="plots-hint">Select an ID, then tick Plot next to a signal to chart it here.</p>;
-  }
+  // Nothing plotted takes no room: the trace gets it all.
+  if (specs.length === 0) return null;
   const zoomed = range[0] > 0 || range[1] < duration;
   return (
     <section className="plots-card" aria-label="Signal plots">

@@ -85,9 +85,22 @@ function readoutRow(label: string): string[] {
 }
 
 describe('Plot signal tree', () => {
+  it('hands the amber button back to the shell as it unmounts', () => {
+    const { state, unmount } = renderPlot();
+    expect(state.viewPrimary).toBe(true);
+    // A restore can change the view without the shell's setView, which would reset it.
+    unmount();
+    expect(state.viewPrimary).toBeNull();
+  });
+
   it('adds a lane for each ticked signal and removes it when unticked or removed', async () => {
     const { user, state } = renderPlot();
-    expect(screen.getByText('Choose signals in the sidebar to plot them')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Choose signals to plot' })).toBeTruthy();
+    // Until something is plotted, the view's next step is its own amber button.
+    expect(state.viewPrimary).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Choose Signals' }));
+    expect(state.sidebarShown).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(within(tree()).getAllByRole('button')[0]));
     // Only messages a DBC describes are listed, and they start closed.
     expect(within(tree()).getAllByRole('button').map((b) => b.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
     expectSignals([]);
@@ -97,6 +110,7 @@ describe('Plot signal tree', () => {
 
     await user.click(within(tree()).getByRole('checkbox', { name: /^EngineSpeed/ }));
     await waitFor(() => expect(lanes()).toEqual(['EngineSpeed (rpm)']));
+    expect(state.viewPrimary).toBe(false);
     await user.click(within(tree()).getByRole('checkbox', { name: /^Throttle/ }));
     await waitFor(() => expect(lanes()).toEqual(['EngineSpeed (rpm)', 'Throttle (%)']));
     expect(within(tree()).getByRole('checkbox', { name: /^EngineSpeed/ })).toHaveProperty('checked', true);
@@ -139,8 +153,11 @@ describe('Plot signal tree', () => {
 
   it('asks for a DBC when none is loaded', () => {
     renderPlot({ dbcs: [] });
-    expect(within(tree()).getByRole('button', { name: 'Open DBC\u2026' })).toBeTruthy();
+    expect(within(tree()).getByText('Signals come from a DBC. Open one to list the signals in this log.')).toBeTruthy();
     expect(screen.getByText('Signals come from a DBC, so open one first.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Choose Signals' })).toBeNull();
+    // One in the view, not another in the sidebar beside it.
+    expect(screen.getAllByRole('button', { name: 'Open DBC\u2026' })).toHaveLength(1);
   });
 });
 

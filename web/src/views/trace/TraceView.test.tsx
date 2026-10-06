@@ -96,10 +96,13 @@ const clickRow = (row: number) =>
 
 describe('Trace', () => {
   it('shows every frame, then only the ID picked in the sidebar', async () => {
-    const { user, rows } = renderTrace();
+    const { user, rows, state } = renderTrace();
     expect(trace().getAttribute('aria-rowcount')).toBe(String(FRAMES + 1));
     await waitFor(() => expect(rows).toHaveBeenCalledWith(ALL_IDS, 0, VISIBLE + 1));
-    expect(screen.getByText('Select an ID to see which bits change and the signals it carries.')).toBeTruthy();
+    // With All frames there is nothing to inspect, so the inspector gives the table its room.
+    expect(state.inspectorHidden).toBe(true);
+    const details = screen.getByRole('button', { name: 'Details' });
+    expect(details.hasAttribute('disabled')).toBe(true);
 
     const sidebar = screen.getByRole('navigation', { name: 'Messages' });
     await user.click(within(sidebar).getByRole('button', { name: /^100/ }));
@@ -108,9 +111,15 @@ describe('Trace', () => {
     const inspector = screen.getByRole('complementary', { name: 'Inspector' });
     expect(within(inspector).getByRole('heading', { name: /^100\s*Engine$/ })).toBeTruthy();
     expect(within(inspector).getByRole('checkbox', { name: 'Plot EngineSpeed' })).toBeTruthy();
+    expect(state.inspectorHidden).toBe(false);
+    expect(details.hasAttribute('disabled')).toBe(false);
+    expect(details.getAttribute('aria-pressed')).toBe('true');
+    await user.click(details);
+    expect(details.getAttribute('aria-pressed')).toBe('false');
 
     await user.click(within(sidebar).getByRole('button', { name: /^All frames/ }));
     expect(trace().getAttribute('aria-rowcount')).toBe(String(FRAMES + 1));
+    expect(state.inspectorHidden).toBe(true);
   });
 
   it('starts at the newest frames while capturing, for every ID picked', async () => {

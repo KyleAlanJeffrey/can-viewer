@@ -286,6 +286,8 @@ export function BitGrid(props: Props) {
       setShowFocus(true);
       onSelect(current, current);
     } else if (e.key === 'Escape' && selected.length > 0) {
+      // Only the selection goes; the floating inspector stays.
+      e.preventDefault();
       onClear();
       setAnnouncement('Selection cleared.');
     }

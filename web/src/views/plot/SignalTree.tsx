@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type Ref } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { formatId, type IdSummary, type MessageDef, type SignalDef } from '../../core/api';
 import { formatPeriod } from '../../format';
@@ -20,7 +20,7 @@ const toggled = (set: Set<number>, key: number) => {
 };
 
 /** The sidebar's signal picker: DBC-described messages per bus, each expanding to checkable signals. */
-export function SignalTree({ ctx }: { ctx: ViewContext }) {
+export function SignalTree({ ctx, navRef }: { ctx: ViewContext; navRef?: Ref<HTMLElement> }) {
   const { ids, messageOf, query, log, dbcs, plots } = ctx;
   // Messages that already have a plotted signal start open.
   const [open, setOpen] = useState<Set<number>>(() => new Set(plots.map((p) => Number(p.id.slice(0, p.id.indexOf(':'))))));
@@ -50,14 +50,8 @@ export function SignalTree({ ctx }: { ctx: ViewContext }) {
 
   let body;
   if (dbcs.length === 0) {
-    body = (
-      <div className="pv-tree-empty">
-        <p>Signals come from a DBC. Open one to list the signals in this log.</p>
-        <button className="button" onClick={ctx.openDbcPicker}>
-          Open DBC&hellip;
-        </button>
-      </div>
-    );
+    // The view's own Open DBC... button is beside this, and the toolbar's.
+    body = <p className="pv-tree-empty">Signals come from a DBC. Open one to list the signals in this log.</p>;
   } else if (groups.length === 0) {
     const none = dbcs.length === 1 ? 'The DBC describes no message in this log.' : 'No loaded DBC describes a message in this log.';
     body = <p className="pv-tree-empty">{q ? 'No signals match.' : none}</p>;
@@ -115,7 +109,7 @@ export function SignalTree({ ctx }: { ctx: ViewContext }) {
 
   return (
     <SidebarSlot>
-      <nav className="pv-tree" aria-label="Signals">
+      <nav ref={navRef} className="pv-tree" aria-label="Signals">
         {body}
       </nav>
     </SidebarSlot>

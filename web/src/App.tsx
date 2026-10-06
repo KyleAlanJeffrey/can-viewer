@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, PanelRight, Save, Search, Square, X } from 'lucide-react';
+import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, Save, Search, Square, X } from 'lucide-react';
 // Type-only, so the adapters stay out of the main chunk.
 import type { CaptureAdapter, CaptureSettings } from './capture/adapter';
 import type { CaptureRecorder, CaptureStatus } from './capture/recorder';
@@ -8,10 +8,12 @@ import { ALL_IDS, EXT_FLAG, type CaptureFrame, type CoreApi, type Database, type
 import { unpackFrames } from './core/captureFrames';
 import { EXPORT_FORMATS, ExportLogSheet } from './components/ExportLogSheet';
 import { Logo } from './components/Logo';
+import { MenuButton, type MenuItem } from './components/MenuButton';
 import type { PlotSpec } from './components/Plots';
 import { Segmented } from './components/Segmented';
 import { ChunkBoundary } from './components/ChunkBoundary';
 import { Sheet } from './components/Sheet';
+import { FIXED_WIDTH, useToolbarLayout, type SpareAction } from './components/toolbarLayout';
 import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import {
@@ -126,7 +128,18 @@ const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 /** Loaded apart from the app, with the adapters behind it, as most visits never capture. */
 const CaptureSheet = lazy(() => import('./capture/CaptureSheet').then((m) => ({ default: m.CaptureSheet })));
 
+// Keep these in step with the media queries in styles.css.
+/** The sidebar floats over the content. */
 const narrow = () => window.matchMedia('(max-width: 900px)').matches;
+/** The inspector floats over the content, so view headers and tables keep their room. */
+const INSPECTOR_FLOATS = '(max-width: 1240px)';
+const inspectorFloats = () => window.matchMedia(INSPECTOR_FLOATS).matches;
+
+/** Puts the floating inspector away. Focus inside it would fall to the page, so it goes back to the Details toggle. */
+function closeInspector(setInspectorOpen: (open: boolean) => void) {
+  if (document.activeElement?.closest('#inspector')) document.querySelector<HTMLElement>('.details-toggle')?.focus();
+  setInspectorOpen(false);
+}
 
 const splitPlotId = (id: string): [number, string] => {
   const at = id.indexOf(':');
@@ -226,8 +239,10 @@ export function App({ core }: { core: CoreApi }) {
   const [exportEnded, setExportEnded] = useState(false);
   const [query, setQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(() => !narrow());
-  const [inspectorOpen, setInspectorOpen] = useState(() => !narrow());
+  const [inspectorOpen, setInspectorOpen] = useState(() => !inspectorFloats());
   const [inspectorHidden, setInspectorHidden] = useState(false);
+  /** Set by a view whose own amber button comes and goes; null leaves it to the view's meta. */
+  const [viewPrimary, setViewPrimary] = useState<boolean | null>(null);
   const [sidebarSlot, setSidebarSlot] = useState<HTMLElement | null>(null);
   const [inspectorSlot, setInspectorSlot] = useState<HTMLElement | null>(null);
   const [viewState] = useState(() => new ViewStateStore());
@@ -235,6 +250,8 @@ export function App({ core }: { core: CoreApi }) {
   const dbcInput = useRef<HTMLInputElement>(null);
   const exportButton = useRef<HTMLButtonElement>(null);
   const openLogButton = useRef<HTMLButtonElement>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const toolbar = useRef<HTMLElement>(null);
   /** Set when Cancel is pressed or goes away with focus, to give focus somewhere once there is a place for it. */
   const [focusAfterCancel, setFocusAfterCancel] = useState(false);
   const cancelElement = useRef<HTMLButtonElement | null>(null);
@@ -257,6 +274,8 @@ export function App({ core }: { core: CoreApi }) {
   logRef.current = log;
   const plotsRef = useRef(plots);
   plotsRef.current = plots;
+  const pinnedRef = useRef(pinnedTime);
+  pinnedRef.current = pinnedTime;
   /** The UI as a reload restores it, to reopen the log shown with it. */
   const currentUi = useRef(() => uiSnapshot(view, selected, pinnedTime, plots));
   currentUi.current = () => uiSnapshot(view, selected, pinnedTime, plots);
@@ -273,6 +292,7 @@ export function App({ core }: { core: CoreApi }) {
   // Database works on DBCs alone; every other view needs a log.
   const showView = !!log || (!meta.needsLog && dbcs.length > 0);
   const showInspector = showView && meta.hasInspector && !inspectorHidden;
+  const hasPrimary = showView && (viewPrimary ?? meta.hasPrimary);
 
   const resolved = useMemo(() => {
     const map = new Map<number, Resolved>();
@@ -329,7 +349,8 @@ export function App({ core }: { core: CoreApi }) {
     setExportEnded(false);
     const focused = document.activeElement;
     const lost = !focused || focused === document.body || focused.closest('dialog:not([open])') !== null;
-    if (lost || focused === exportButton.current) exportButton.current?.focus();
+    // Export Log may be in the More menu, which keeps focus instead.
+    if (lost || focused === exportButton.current) (exportButton.current ?? moreButton.current)?.focus();
   }, [exportEnded, busy]);
 
   // Cancel goes away when the read ends or is cancelled, and focus would fall to the page. It goes
@@ -345,6 +366,7 @@ export function App({ core }: { core: CoreApi }) {
     setViewState(next);
     setQuery('');
     setInspectorHidden(false);
+    setViewPrimary(null);
   }, []);
 
   const decodePlot = useCallback(
@@ -1158,15 +1180,28 @@ export function App({ core }: { core: CoreApi }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      setPinnedTime(null);
-      if (narrow()) {
-        setSidebarOpen(false);
-        setInspectorOpen(false);
+      // Escape that closes a sheet, or that a field or grid used, isn't also meant for the panes.
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]')) return;
+      // A parked cursor goes first, so Escape meant for it leaves the panes open.
+      if (pinnedRef.current !== null) {
+        setPinnedTime(null);
+        return;
       }
+      if (narrow()) setSidebarOpen(false);
+      if (inspectorFloats()) closeInspector(setInspectorOpen);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // A window narrowed past the breakpoint would otherwise float the open inspector over the content.
+  useEffect(() => {
+    const query = window.matchMedia(INSPECTOR_FLOATS);
+    const onChange = (e: MediaQueryListEvent) => {
+      if (e.matches) closeInspector(setInspectorOpen);
+    };
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
   }, []);
 
   // Covers Clear, removing the last plot and opening a new log, which all empty the plots.
@@ -1335,7 +1370,11 @@ export function App({ core }: { core: CoreApi }) {
     openLogPicker: () => logInput.current?.click(),
     openDbcPicker: () => dbcInput.current?.click(),
     setInspectorHidden,
+    inspectorOpen: showInspector && inspectorOpen,
+    toggleInspector: () => setInspectorOpen((o) => !o),
     openInspector: () => setInspectorOpen(true),
+    setViewPrimary,
+    showSidebar: () => setSidebarOpen(true),
   };
 
   const skipped = log && log.rejected > 0 && !skippedDismissed;
@@ -1344,9 +1383,66 @@ export function App({ core }: { core: CoreApi }) {
 
   // On narrow windows the panes float over the content; a tap outside or Escape puts them away.
   const closeOverlays = () => {
-    setSidebarOpen(false);
-    setInspectorOpen(false);
+    if (narrow()) setSidebarOpen(false);
+    closeInspector(setInspectorOpen);
   };
+
+  const openCaptureSheet = () =>
+    unlessUnsavedCapture(() => {
+      setCaptureSheetUsed(true);
+      setCaptureOpen(true);
+    });
+  // Recording, the status line needs the room more than buttons that can't be used.
+  const spare: SpareAction[] = live ? ['open-dbc'] : ['open-dbc', 'export-log', ...(log?.format === 'capture' ? (['save-capture'] as const) : []), 'capture'];
+  const spareActions: Record<SpareAction, { label: string; icon: ReactNode; onSelect: () => void; disabled: boolean }> = {
+    'open-dbc': { label: 'Open DBC\u2026', icon: <FileText size={16} strokeWidth={1.5} aria-hidden="true" />, onSelect: () => dbcInput.current?.click(), disabled: !!busy },
+    'export-log': {
+      label: 'Export Log\u2026',
+      icon: <FileDown size={16} strokeWidth={1.5} aria-hidden="true" />,
+      onSelect: () => setExportOpen(true),
+      disabled: !!busy || !log || stopping,
+    },
+    'save-capture': { label: 'Save Capture\u2026', icon: <Save size={16} strokeWidth={1.5} aria-hidden="true" />, onSelect: () => saveCapture(), disabled: !!busy || stopping },
+    capture: { label: 'Connect live\u2026', icon: <Cable size={16} strokeWidth={1.5} aria-hidden="true" />, onSelect: openCaptureSheet, disabled: !!busy || stopping },
+  };
+  const layout = useToolbarLayout(
+    toolbar,
+    spare,
+    (live ? FIXED_WIDTH.stopCapture : FIXED_WIDTH.openLog) + (readingLog ? FIXED_WIDTH.cancel : 0) + FIXED_WIDTH.more,
+    !!log || dbcs.length > 0,
+  );
+  // Recording, the status line gets the first row to itself.
+  const oneRow = layout.oneRow && !live;
+  const menuItems: MenuItem[] = spare
+    .filter((id) => !layout.inline.has(id))
+    .map((id) => ({ id, label: spareActions[id].label, icon: spareActions[id].icon, onSelect: spareActions[id].onSelect, disabled: spareActions[id].disabled }));
+  if (log && !live) {
+    menuItems.push({
+      id: 'close',
+      label: `Close ${log.name}`,
+      // The label is cut short in the menu when the name is long.
+      title: `Close ${log.name}`,
+      icon: <X size={16} strokeWidth={1.5} aria-hidden="true" />,
+      onSelect: () =>
+        unlessUnsavedCapture(() => {
+          void closeLog();
+          // The More button goes too if nothing else is in it; focus then moves to Open Log.
+          setFocusAfterCancel(true);
+        }),
+      disabled: !!busy || stopping,
+      separated: menuItems.length > 0,
+    });
+  }
+  const viewSwitcher =
+    log || dbcs.length > 0 ? (
+      <Segmented
+        label="View"
+        className="view-switcher"
+        options={VIEWS.map((v) => ({ value: v.id, label: v.label, disabled: v.needsLog && !log }))}
+        value={view}
+        onChange={setView}
+      />
+    ) : null;
 
   return (
     <div className={`app${sidebarOpen ? '' : ' sidebar-hidden'}`} data-busy={busy ? '' : undefined}>
@@ -1375,7 +1471,11 @@ export function App({ core }: { core: CoreApi }) {
       </aside>
 
       <div className="main">
-        <header className={live ? 'toolbar recording' : 'toolbar'} data-reading-log={readingLog ? '' : undefined}>
+        <header
+          ref={toolbar}
+          className={`toolbar${live ? ' recording' : ''}${oneRow ? ' one-row' : viewSwitcher ? ' two-rows' : ''}`}
+          data-reading-log={readingLog ? '' : undefined}
+        >
           <div className="toolbar-leading">
             <button
               className="icon-button"
@@ -1411,75 +1511,22 @@ export function App({ core }: { core: CoreApi }) {
                             : 'Open a CAN log to begin'}
               </p>
             </div>
-            {log && !live && (
-              <button
-                className="icon-button small"
-                onClick={() => unlessUnsavedCapture(closeLog)}
-                disabled={!!busy || stopping}
-                aria-label={`Close ${log.name}`}
-                title="Close log"
-              >
-                <X size={14} strokeWidth={1.75} />
-              </button>
-            )}
           </div>
-          {(log || dbcs.length > 0) && (
-            <Segmented
-              label="View"
-              className="view-switcher"
-              options={VIEWS.map((v) => ({ value: v.id, label: v.label, disabled: v.needsLog && !log }))}
-              value={view}
-              onChange={setView}
-            />
-          )}
           <div className="toolbar-actions">
-            <button className="toolbar-button open-dbc" onClick={() => dbcInput.current?.click()} disabled={!!busy} title={'Open DBC\u2026'}>
-              <FileText size={16} strokeWidth={1.5} />
-              <span className="label">Open DBC&hellip;</span>
-            </button>
-            {/* Recording, the status line needs the room more than buttons that can't be used. */}
-            {!live && (
-              <button
-                ref={exportButton}
-                className="toolbar-button export-log"
-                onClick={() => setExportOpen(true)}
-                disabled={!!busy || !log || stopping}
-                title={'Export Log\u2026'}
-              >
-                <FileDown size={16} strokeWidth={1.5} />
-                <span className="label">Export Log&hellip;</span>
-              </button>
-            )}
-            {live ? (
-              <button className={showView && meta.hasPrimary ? 'button' : 'primary'} onClick={() => void stopCapture()} disabled={stopping}>
-                <Square size={14} strokeWidth={2} aria-hidden="true" />
-                <span>
-                  Stop <span className="stop-capture-rest">Capture</span>
-                </span>
-              </button>
-            ) : (
-              <>
-                {log?.format === 'capture' && (
-                  <button className="toolbar-button save-capture" onClick={() => saveCapture()} disabled={!!busy || stopping} title={'Save Capture\u2026'}>
-                    <Save size={16} strokeWidth={1.5} />
-                    <span className="label">Save Capture&hellip;</span>
-                  </button>
-                )}
-                <button
-                  className="toolbar-button capture"
-                  onClick={() =>
-                    unlessUnsavedCapture(() => {
-                      setCaptureSheetUsed(true);
-                      setCaptureOpen(true);
-                    })
-                  }
-                  disabled={!!busy || stopping}
-                  title={'Capture\u2026'}
-                >
-                  <Cable size={16} strokeWidth={1.5} />
-                  <span className="label">Capture&hellip;</span>
+            {spare.filter((id) => layout.inline.has(id)).map((id) => {
+              const action = spareActions[id];
+              return (
+                <button key={id} ref={id === 'export-log' ? exportButton : undefined} className={`toolbar-button ${id}`} onClick={action.onSelect} disabled={action.disabled}>
+                  {action.icon}
+                  <span className="label">{action.label}</span>
                 </button>
-              </>
+              );
+            })}
+            {live && (
+              <button className={hasPrimary ? 'button' : 'primary'} onClick={() => void stopCapture()} disabled={stopping}>
+                <Square size={14} strokeWidth={2} aria-hidden="true" />
+                Stop Capture
+              </button>
             )}
             {readingLog && (
               <button
@@ -1496,23 +1543,18 @@ export function App({ core }: { core: CoreApi }) {
             {!live && (
               <button
                 ref={openLogButton}
-                className={showView && meta.hasPrimary ? 'button' : 'primary'}
+                className={hasPrimary ? 'button' : 'primary'}
                 onClick={() => logInput.current?.click()}
                 disabled={(!!busy && !readingLog) || stopping}
               >
                 Open Log&hellip;
               </button>
             )}
-            <button
-              className="icon-button"
-              onClick={() => setInspectorOpen((o) => !o)}
-              aria-pressed={showInspector && inspectorOpen}
-              aria-label={inspectorOpen ? 'Hide inspector' : 'Show inspector'}
-              disabled={!showInspector}
-            >
-              <PanelRight size={18} strokeWidth={1.5} />
-            </button>
+            <MenuButton label="More actions" items={menuItems} buttonRef={moreButton} />
           </div>
+          {/* Last, as on two rows, and always this element, so a focused tab keeps focus as the
+              views move between rows; on one row CSS places them between the log and its actions. */}
+          {viewSwitcher && <div className="toolbar-views">{viewSwitcher}</div>}
           <input
             ref={logInput}
             type="file"
@@ -1682,10 +1724,18 @@ export function App({ core }: { core: CoreApi }) {
             )}
           </section>
 
-          <aside ref={setInspectorSlot} className="inspector" aria-label="Inspector" />
+          <aside ref={setInspectorSlot} id="inspector" className="inspector" aria-label="Inspector" />
         </div>
       </div>
-      {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
+      {(sidebarOpen || (showInspector && inspectorOpen)) && (
+        <div
+          className={`scrim${showInspector && inspectorOpen ? ' under-inspector' : ''}`}
+          aria-hidden="true"
+          // Keeps focus where it was, so closing can tell whether it was in the inspector.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={closeOverlays}
+        />
+      )}
       {dragOver && <div className="drop-overlay">Drop a log, DBC files or a video to open them</div>}
       {captureSheetUsed && (
         <ChunkBoundary message="Couldn't load capture." frame={captureFrame}>

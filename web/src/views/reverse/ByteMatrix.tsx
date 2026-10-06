@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import { ArrowRight, Pin as PinIcon, PinOff } from 'lucide-react';
+import { ArrowRight, Pin as PinIcon, PinOff, X } from 'lucide-react';
 import { FLAG_FD, FLAG_REASSEMBLED, formatId, type ByteLane, type IdSummary, type MessageDef } from '../../core/api';
 import { formatCount } from '../../format';
 import { useViewState } from '../shared/viewState';
@@ -50,6 +50,8 @@ interface Props {
   onPark: (t: number) => void;
   onTogglePin: (pin: Pin) => void;
   onOpenAdvanced: () => void;
+  /** Clears the selected byte, and the suggestion it came from. */
+  onClearSelection: () => void;
 }
 
 /** Whether the selection is the suggestion's. Picking another byte selects that byte; the outline stays. */
@@ -71,7 +73,8 @@ const specKey = (key: number, first: number) => `${key}:${first}`;
  * window and cursor. Selecting a byte never hides other rows; the bus and search filters do.
  */
 export function ByteMatrix(props: Props) {
-  const { ctx, rows, window: win, cursor, bus, onBus, selectedByte, suggestion, pins, onSelectRow, onSelectByte, onHover, onPark, onTogglePin, onOpenAdvanced } = props;
+  const { ctx, rows, window: win, cursor, bus, onBus, selectedByte, suggestion, pins, onSelectRow, onSelectByte, onHover, onPark, onTogglePin, onOpenAdvanced, onClearSelection } =
+    props;
   const { core, log, logVersion, messageOf, selected } = ctx;
   const [changingOnly, setChangingOnly] = useViewState('re.changingOnly', false);
   const [expanded, setExpanded] = useViewState<number[]>('re.expanded', [], 'log');
@@ -89,6 +92,9 @@ export function ByteMatrix(props: Props) {
 
   const lanes = useByteLanes(core, specs, win, logVersion);
   const markedCell = useRef<HTMLButtonElement>(null);
+  const selectedCell = useRef<HTMLButtonElement | null>(null);
+  const selectedRowHead = useRef<HTMLButtonElement | null>(null);
+  const matrix = useRef<HTMLElement>(null);
   const markId = suggestion ? `${suggestion.key}:${suggestion.number}` : null;
   const lastMark = useRef(markId);
   // Rows grow once their sparklines arrive, so scrolling waits for the marked row's.
@@ -135,17 +141,21 @@ export function ByteMatrix(props: Props) {
   const selectedSummary = selected === -1 ? null : (rows.find((s) => s.key === selected) ?? null);
   const bytePin: Pin | null = selectedByte ? { kind: 'byte', key: selectedByte.key, byte: selectedByte.byte } : null;
   const bytePinned = bytePin ? pinnedBytes.has(pinId(bytePin)) : false;
-  const selectionLabel = suggestion && onSuggestion(suggestion, selectedByte)
-    ? `${idText(ctx.ids, suggestion.key)} \u00b7 ${describeBytes(suggestion.bytes)} \u00b7 ${suggestion.bits}`
-    : selectedByte
-    ? `${idText(ctx.ids, selectedByte.key)} \u00b7 Byte ${selectedByte.byte}`
-    : selectedSummary
-      ? idText(rows, selectedSummary.key)
-      : null;
+  // The footer and its actions show only once a message, a byte or a suggestion's bytes are selected.
+  const selectionLabel =
+    suggestion && onSuggestion(suggestion, selectedByte)
+      ? `${idText(ctx.ids, suggestion.key)} \u00b7 ${describeBytes(suggestion.bytes)} \u00b7 ${suggestion.bits}`
+      : selectedByte
+        ? `${idText(ctx.ids, selectedByte.key)} \u00b7 Byte ${selectedByte.byte}`
+        : selectedSummary
+          ? idText(ctx.ids, selectedSummary.key)
+          : null;
+  const selectedValue =
+    selectedByte && cursor !== null && frame?.key === selectedByte.key && selectedByte.byte < frame.data.length ? frame.data[selectedByte.byte] : null;
 
   return (
     <>
-      <section className="card re-card re-matrix" aria-labelledby="re-matrix-title">
+      <section ref={matrix} tabIndex={-1} className="card re-card re-matrix" aria-labelledby="re-matrix-title">
         <div className="re-card-head">
           <h3 className="section-title" id="re-matrix-title">
             Byte values
@@ -202,7 +212,15 @@ export function ByteMatrix(props: Props) {
                     <tr key={specKey(key, first)} className={isSelectedRow ? 're-row-selected' : undefined}>
                       <th scope="row">
                         {first === 0 ? (
-                          <button type="button" className="re-row-head" onClick={() => onSelectRow(key)} aria-pressed={isSelectedRow}>
+                          <button
+                            ref={(el) => {
+                              if (isSelectedRow) selectedRowHead.current = el;
+                            }}
+                            type="button"
+                            className="re-row-head"
+                            onClick={() => onSelectRow(key)}
+                            aria-pressed={isSelectedRow}
+                          >
                             <span className="re-row-id">
                               <span className="mono">{id}</span>
                               {message ? (
@@ -242,7 +260,10 @@ export function ByteMatrix(props: Props) {
                           <td key={k}>
                             {carried ? (
                               <button
-                                ref={marked && byte === mark.bytes[0] ? markedCell : undefined}
+                                ref={(el) => {
+                                  if (marked && byte === mark.bytes[0]) markedCell.current = el;
+                                  if (isSelected) selectedCell.current = el;
+                                }}
                                 type="button"
                                 className={`re-cell${isSelected ? ' selected' : ''}${marked ? ' suggested' : ''}${still ? ' still' : ''}`}
                                 aria-pressed={isSelected}
@@ -282,24 +303,46 @@ export function ByteMatrix(props: Props) {
           </div>
         )}
       </section>
-      <div className="re-matrix-foot">
-        {selectionLabel ? (
+      {selectionLabel && (
+        <div className="re-matrix-foot">
           <span className="re-matrix-sel">
             <span className="mono">{selectionLabel}</span>
             {markHidden && <span className="re-matrix-hint"> Its row is filtered out of the table.</span>}
           </span>
-        ) : (
-          <span className="re-matrix-hint">Select a byte to pin it beside the references, or open its message in Advanced.</span>
-        )}
-        <button type="button" className="button" disabled={!bytePin} onClick={() => bytePin && onTogglePin(bytePin)}>
-          {bytePinned ? <PinOff size={16} strokeWidth={1.5} aria-hidden="true" /> : <PinIcon size={16} strokeWidth={1.5} aria-hidden="true" />}
-          {bytePinned ? 'Unpin byte' : 'Pin byte'}
-        </button>
-        <button type="button" className="button" disabled={!selectedSummary} onClick={onOpenAdvanced}>
-          Open in Advanced
-          <ArrowRight size={16} strokeWidth={1.5} aria-hidden="true" />
-        </button>
-      </div>
+          {selectedValue !== null && cursor !== null && (
+            <span className="re-matrix-value">
+              Value at <span className="num">{cursor.toFixed(3)}</span> s: <span className="mono">{hexByte(selectedValue)}</span> <span className="num">({selectedValue})</span>
+            </span>
+          )}
+          <span className="re-matrix-actions">
+            {bytePin && (
+              <button type="button" className="button" onClick={() => onTogglePin(bytePin)}>
+                {bytePinned ? <PinOff size={16} strokeWidth={1.5} aria-hidden="true" /> : <PinIcon size={16} strokeWidth={1.5} aria-hidden="true" />}
+                {bytePinned ? 'Unpin byte' : 'Pin byte'}
+              </button>
+            )}
+            <button type="button" className="button" disabled={!selectedSummary} onClick={onOpenAdvanced}>
+              Open in Advanced
+              <ArrowRight size={16} strokeWidth={1.5} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="icon-button small"
+              aria-label="Clear selection"
+              title="Clear selection"
+              onClick={() => {
+                // The footer goes with its focused button. The selected cell or row stays, unless
+                // a filter has taken it out of the table; then the matrix takes focus.
+                const target = [selectedCell.current, selectedRowHead.current].find((el) => el?.isConnected) ?? matrix.current;
+                onClearSelection();
+                target?.focus();
+              }}
+            >
+              <X size={14} strokeWidth={1.75} />
+            </button>
+          </span>
+        </div>
+      )}
     </>
   );
 }

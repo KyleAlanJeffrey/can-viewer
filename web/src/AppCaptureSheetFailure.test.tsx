@@ -16,7 +16,7 @@ describe('App Capture sheet', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     render(<App core={fakeCore()} />);
     // A worker's first render, and the lazy import failing, can each take over a second under load.
-    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }, { timeout: 3000 }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect live\u2026' }, { timeout: 3000 }));
     await screen.findByText("Couldn't load capture.", {}, { timeout: 3000 });
     // The fallback's sheet is opened by an effect, a moment after its text is on the page.
     const sheet = await screen.findByRole('dialog', { name: 'Live Capture' });

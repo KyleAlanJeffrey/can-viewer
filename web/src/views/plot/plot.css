@@ -122,35 +122,37 @@
 /* Empty state */
 .pv-empty {
   flex: 1;
-  display: grid;
-  place-content: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 32px 24px;
   text-align: center;
 }
 
+.pv-empty-icon {
+  margin-bottom: 6px;
+  color: var(--slate);
+}
+
 .pv-empty-title {
-  font-size: 15px;
-  line-height: 20px;
+  font-size: 17px;
+  line-height: 22px;
   font-weight: 600;
 }
 
 .pv-empty-hint {
+  max-width: 44ch;
   color: var(--slate);
 }
 
-/* Content header */
-.pv-header {
-  flex-wrap: wrap;
-  row-gap: 8px;
-}
-
-/* Beside a docked video the actions run out of room before the summary does. */
-.pv-header .content-actions {
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  min-width: 0;
+.pv-empty-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .pv-summary {
@@ -591,8 +593,4 @@
 
 .pv-lane-host .u-over {
   cursor: crosshair;
-}
-
-.pv-empty-action {
-  margin-top: 10px;
 }

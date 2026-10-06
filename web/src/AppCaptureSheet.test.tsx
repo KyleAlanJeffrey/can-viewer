@@ -18,14 +18,14 @@ vi.mock('./capture/CaptureSheet', async (importOriginal) => {
 });
 
 describe('App Capture sheet', () => {
-  it('loads the sheet only once Capture... is clicked, showing it as loading until then', async () => {
+  it('loads the sheet only once Connect live... is clicked, showing it as loading until then', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
     render(<App core={fakeCore()} />);
     // A worker's first render, and loading the real sheet's code, can each take over a second under load.
     await screen.findByRole('heading', { name: 'Open a CAN log to get started' }, { timeout: 3000 });
     expect(sheet.loaded).toBe(0);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Connect live\u2026' }));
     const loading = await screen.findByRole('dialog', { name: 'Live Capture' });
     expect(await within(loading).findByText('Loading\u2026')).toBeTruthy();
     expect(sheet.loaded).toBe(1);

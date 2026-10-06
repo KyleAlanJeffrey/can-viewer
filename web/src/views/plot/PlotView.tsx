@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type uPlot from 'uplot';
-import { ImageDown, MapPin } from 'lucide-react';
+import { ChartLine, ImageDown, MapPin } from 'lucide-react';
 import type { PlotSpec } from '../../components/Plots';
 import { Segmented } from '../../components/Segmented';
 import { formatDuration } from '../../format';
@@ -54,6 +54,7 @@ export function PlotView({ ctx }: ViewProps) {
   const [stackH, setStackH] = useState(0);
   const [area, setArea] = useState<Area | null>(null);
   const stackRef = useRef<HTMLDivElement>(null);
+  const treeRef = useRef<HTMLElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
   const lanePlots = useRef(new Map<string, uPlot>());
@@ -132,6 +133,13 @@ export function PlotView({ ctx }: ViewProps) {
   const samples = useCursorSamples(core, plots, cursorA, b);
   const video = useVideo();
 
+  // Until something is plotted, the next step is the view's own amber button.
+  const { setViewPrimary } = ctx;
+  useLayoutEffect(() => {
+    setViewPrimary(!hasPlots);
+    return () => setViewPrimary(null);
+  }, [setViewPrimary, hasPlots]);
+
   if (!log) return null;
 
   const laneSpace = stackH - RAIL_H - STACK_CHROME_H - AXIS_H;
@@ -185,6 +193,14 @@ export function PlotView({ ctx }: ViewProps) {
     );
   };
 
+  // The signals are listed in the sidebar, so this shows it and moves there.
+  const chooseSignals = () => {
+    ctx.showSidebar();
+    requestAnimationFrame(() => treeRef.current?.querySelector<HTMLElement>('button, input')?.focus());
+  };
+  const hasSignals = ctx.ids.some((s) => (ctx.messageOf(s.key)?.signals.length ?? 0) > 0);
+  const noSignals = ctx.dbcs.length === 0 ? 'Signals come from a DBC, so open one first.' : 'No loaded DBC describes a message in this log. Open one that does.';
+
   const railCursors = [
     ...(cursorA !== null ? [{ id: 'a' as const, time: cursorA }] : []),
     ...(b !== null ? [{ id: 'b' as const, time: b }] : []),
@@ -192,24 +208,30 @@ export function PlotView({ ctx }: ViewProps) {
 
   return (
     <>
-      <SignalTree ctx={ctx} />
+      <SignalTree ctx={ctx} navRef={treeRef} />
       <VideoWorkspace logDuration={duration} cursor={cursorA} onCursor={(t) => moveCursor('a', t)}>
         {!hasPlots ? (
           <div className="pv-empty">
-            <p className="pv-empty-title">Choose signals in the sidebar to plot them</p>
-            <p className="pv-empty-hint">
-              {ctx.dbcs.length > 0 ? 'Up to six signals share one time axis, with cursors and markers.' : 'Signals come from a DBC, so open one first.'}
-            </p>
-            {/* A video lines up with a finished log, not one still being recorded. */}
-            {!video && !ctx.capturing && (
-              <p className="pv-empty-action">
-                <AddVideoButton log={log} />
-              </p>
-            )}
+            <ChartLine className="pv-empty-icon" size={32} strokeWidth={1.5} aria-hidden="true" />
+            <h2 className="pv-empty-title">Choose signals to plot</h2>
+            <p className="pv-empty-hint">{hasSignals ? 'Pick signals from your DBC to compare them over time.' : noSignals}</p>
+            <div className="pv-empty-actions">
+              {hasSignals ? (
+                <button className="primary" onClick={chooseSignals}>
+                  Choose Signals
+                </button>
+              ) : (
+                <button className="primary" onClick={ctx.openDbcPicker}>
+                  Open DBC&hellip;
+                </button>
+              )}
+              {/* A video lines up with a finished log, not one still being recorded. */}
+              {!video && !ctx.capturing && <AddVideoButton log={log} />}
+            </div>
           </div>
         ) : (
           <>
-            <header className="content-header pv-header">
+            <header className="content-header">
               <div className="pv-summary">
                 <p className="content-sub pv-summary-text" title="Drag across a plot or scroll to zoom. Shift-scroll pans. Double-click resets.">
                   {plots.length} {plots.length === 1 ? 'signal' : 'signals'} &middot;{' '}

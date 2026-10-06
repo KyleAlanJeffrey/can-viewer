@@ -423,7 +423,7 @@
 
 /* Stacked under the matrix, the panel's few lines go to the cards: the title, message, scope and
    hide button share a row, and the caution sits beside the scan overview. */
-@container re-split (max-width: 1100px) {
+@container re-split (max-width: 1027px) {
   .re-sugpanel-grip,
   .re-sugpanel-foot {
     display: none;

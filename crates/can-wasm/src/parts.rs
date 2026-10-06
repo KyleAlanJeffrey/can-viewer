@@ -161,6 +161,7 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fmt::Write;
 
     use super::*;
@@ -195,9 +196,13 @@ mod tests {
         Refused,
     }
 
+    /// The start of the file the web app gives each part worker for the header.
+    const HEAD_BYTES: usize = 64 << 10;
+
     /// Reads `log` as the web app's workers do: the core reads its first `first` bytes up to the
     /// last line break, then each part starting at a byte of `starts` (anywhere, its lines
-    /// running to the next) is read with the start of the file as its head and joined on.
+    /// running to the next) is read with up to `HEAD_BYTES` of the file's start as its head
+    /// and joined on.
     fn read_in_parts(name: &str, log: &[u8], first: usize, starts: &[usize]) -> (Session, Read) {
         let first = &log[..first.min(log.len())];
         let cut = first
@@ -215,7 +220,8 @@ mod tests {
         for pair in bounds.windows(2) {
             let start = line_start_at_or_after(log, pair[0]);
             let end = line_start_at_or_after(log, pair[1]).max(start);
-            let part = parse_segment(&format, &log[..cut], &log[start..end]).unwrap();
+            let head = &log[..cut.min(HEAD_BYTES)];
+            let part = parse_segment(&format, head, &log[start..end]).unwrap();
             if !s.push_segment(&part) {
                 return (s, Read::Refused);
             }
@@ -546,9 +552,15 @@ mod tests {
         }
     }
 
-    /// A log in `format` of random frames, buses, J1939 transfers, bad lines, CRLFs and times
-    /// that sometimes go back.
+    /// A log in `format` of random frames (error and CAN FD frames among them), buses, J1939
+    /// transfers with packets sometimes lost, bad lines, CRLFs, times that sometimes go back,
+    /// and sometimes a byte order mark.
     fn random_log(rng: &mut Rng, format: &str) -> Vec<u8> {
+        let bom: &[u8] = if rng.chance(30) {
+            "\u{feff}".as_bytes()
+        } else {
+            b""
+        };
         let mut log: Vec<u8> = match format {
             "asc" => {
                 b"date Tue Sep 30 10:00:00.000 am 2025\nbase hex  timestamps absolute\n\
@@ -560,8 +572,10 @@ mod tests {
             "csv" => b"Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\r\n".to_vec(),
             _ => Vec::new(),
         };
+        log.splice(0..0, bom.iter().copied());
         let mut t = 1_000_000u64;
-        let lines = 400 + rng.below(1200);
+        // Some logs run past the 64 KiB head.
+        let lines = 400 + rng.below(4000);
         let mut transfer = 0;
         for n in 0..lines {
             t += 1 + rng.below(3000) as u64;
@@ -584,7 +598,8 @@ mod tests {
             if format == "candump" && transfer == 0 && rng.chance(5) {
                 transfer = 3;
             }
-            if transfer > 0 {
+            let j1939 = transfer > 0;
+            if j1939 {
                 let source = if n % 2 == 0 { 0x21 } else { 0x22 };
                 id = match transfer {
                     3 => 0x18EC_FF00 | source,
@@ -596,6 +611,9 @@ mod tests {
                     _ => format!("02 {}", rng.hex(7, " ")),
                 };
                 transfer -= 1;
+                if transfer < 2 && rng.chance(15) {
+                    continue;
+                }
             }
             let eol: &[u8] = if rng.chance(20) { b"\r\n" } else { b"\n" };
             if rng.chance(3) {
@@ -610,18 +628,24 @@ mod tests {
             let line = match format {
                 "candump" => {
                     let bus = ["can0", "vcan1", "c\u{fffd}2"][bus];
-                    let frame = if transfer == 0 && rng.chance(5) {
-                        "R".to_owned()
+                    let plain = !j1939;
+                    let (id, frame) = if plain && rng.chance(3) {
+                        (0x2000_0000 | id & 0x1FF, format!("#{}", rng.hex(8, "")))
+                    } else if plain && rng.chance(8) {
+                        let len = [0, 1, 8, 12, 16, 32, 64][rng.below(7)];
+                        (id, format!("##{}{}", rng.below(4), rng.hex(len, "")))
+                    } else if plain && rng.chance(5) {
+                        (id, "#R".to_owned())
                     } else {
-                        compact
+                        (id, format!("#{compact}"))
                     };
-                    let id = if transfer > 0 || id > 0x7FF || ext {
+                    let id = if !plain || id > 0x7FF || ext {
                         format!("{id:08X}")
                     } else {
                         format!("{id:03X}")
                     };
                     format!(
-                        "({}.{:06}) {bus} {id}#{frame}",
+                        "({}.{:06}) {bus} {id}{frame}",
                         us / 1_000_000,
                         us % 1_000_000
                     )
@@ -632,12 +656,15 @@ mod tests {
                     } else {
                         format!("{id:X}")
                     };
-                    let body = if rng.chance(5) {
-                        "Tx   r".to_owned()
+                    let t = us as f64 / 1e6;
+                    let bus = bus + 1;
+                    if rng.chance(3) {
+                        format!("   {t:.6} {bus}  ErrorFrame")
+                    } else if rng.chance(5) {
+                        format!("   {t:.6} {bus}  {id:<15} Tx   r")
                     } else {
-                        format!("Rx   d {len} {data}")
-                    };
-                    format!("   {:.6} {}  {id:<15} {body}", us as f64 / 1e6, bus + 1)
+                        format!("   {t:.6} {bus}  {id:<15} Rx   d {len} {data}")
+                    }
                 }
                 "trc" => format!(
                     "{:>7} {:>13.3} DT {}  {} Rx -  {len}  {data}",
@@ -680,7 +707,8 @@ mod tests {
 
     #[test]
     fn random_logs_read_the_same_in_parts_as_whole() {
-        let iterations = if cfg!(debug_assertions) { 4 } else { 30 };
+        let iterations = if cfg!(debug_assertions) { 2 } else { 30 };
+        let mut in_parts = BTreeMap::new();
         for seed in 1..=iterations {
             let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed);
             for (format, name) in [
@@ -704,8 +732,15 @@ mod tests {
                     !reads.contains(&Read::Whole) || format == "csv",
                     "seed {seed} {format}: {reads:?}"
                 );
+                *in_parts.entry(format).or_insert(0) +=
+                    reads.iter().filter(|read| **read == Read::InParts).count();
             }
         }
+        // Refusing every part would pass the checks above.
+        assert!(
+            in_parts.values().all(|&count| count > 0) && in_parts.len() == 4,
+            "{in_parts:?}"
+        );
     }
 }
 

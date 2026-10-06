@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import { cssVar, useFontsReady } from '../../format';
+import { aligned, isolatedDots, withGaps } from '../../plotGaps';
 import { formatTick, formatYTick } from '../plot/model';
 import { formatSeconds, pointAt, type TimeWindow, type Trace } from './bits';
 
@@ -62,7 +63,6 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
     const font = `400 11px ${cssVar('--font-ui')}`;
     const grid = { stroke: cssVar('--gridline'), width: 1 };
     const graphite = cssVar('--graphite');
-    const line = { width: 1.5, spanGaps: true, points: { show: false } };
     const u = new uPlot(
       {
         width: Math.max(1, host.clientWidth),
@@ -81,8 +81,8 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
         },
         series: [
           {},
-          { ...line, stroke: color, dash: dashed ? [4, 3] : undefined },
-          ...(hasOverlay ? [{ ...line, width: 1.25, stroke: graphite, dash: [4, 3] }] : []),
+          { width: 1.5, stroke: color, dash: dashed ? [4, 3] : undefined, points: isolatedDots(color) },
+          ...(hasOverlay ? [{ width: 1.25, stroke: graphite, dash: [4, 3], points: isolatedDots(graphite) }] : []),
         ],
         axes: [
           showTimeAxis
@@ -156,7 +156,7 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
 
   const data = useMemo<uPlot.AlignedData>(() => {
     if (!trace) return [new Float64Array(0), new Float64Array(0)];
-    if (!overlay) return [trace.x as number[], trace.y as number[]];
+    if (!overlay) return [trace.x as number[], withGaps(trace.y as number[])];
     return aligned(trace, overlay);
   }, [trace, overlay]);
 
@@ -197,30 +197,4 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
   }, [cursor, win, trace, overlay, data, generation, plotWidth]);
 
   return <div className="re-ref-plot" ref={hostRef} role="img" aria-label={label} />;
-}
-
-/** Two traces on one time axis: the union of their times, with nulls where one has no point. */
-function aligned(a: Trace, b: Trace): uPlot.AlignedData {
-  const xs: number[] = [];
-  const ya: (number | null)[] = [];
-  const yb: (number | null)[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.x.length || j < b.x.length) {
-    const ta = i < a.x.length ? a.x[i] : Infinity;
-    const tb = j < b.x.length ? b.x[j] : Infinity;
-    if (ta <= tb) {
-      xs.push(ta);
-      ya.push(a.y[i]);
-      yb.push(ta === tb ? b.y[j] : null);
-      i++;
-      if (ta === tb) j++;
-    } else {
-      xs.push(tb);
-      ya.push(null);
-      yb.push(b.y[j]);
-      j++;
-    }
-  }
-  return [xs, ya, yb];
 }

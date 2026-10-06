@@ -400,7 +400,10 @@ export interface ByteComparison {
   len: number;
   framesA: number;
   framesB: number;
-  /** Bit toggles between consecutive frames in each log, indexed `byte * 8 + bit` as in `bitFlips`. */
+  /** Data frames and reassembled transfers, the frames `flipsA` and `flipsB` pair up. */
+  payloadsA: number;
+  payloadsB: number;
+  /** Bit toggles from the previous frame of the same kind in each log, indexed `byte * 8 + bit` and counted as in `bitFlips`. */
   flipsA: number[];
   flipsB: number[];
   /** 0 to 1 per bit, indexed the same way: how differently the bit behaves. 0 for ignored bits. */
@@ -464,7 +467,7 @@ export interface CoreApi {
   /** Parse a DBC file. Nothing changes until it is passed to `setDatabases`. */
   parseDbc(file: Blob, name: string): Promise<Database>;
   decodeSignal(key: number, signal: string): Promise<SeriesInfo>;
-  /** Min/max-decimated points between t0 and t1 seconds, about `2 * buckets` of them. */
+  /** Min/max-decimated points between t0 and t1 seconds, about `2 * buckets` of them (up to `3 * buckets` with NaN). */
   seriesView(handle: number, t0: number, t1: number, buckets: number): Promise<[Float64Array, Float64Array]>;
   dropSeries(handle: number): Promise<void>;
   /**

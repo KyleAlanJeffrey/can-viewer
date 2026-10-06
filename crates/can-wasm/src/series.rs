@@ -75,8 +75,8 @@ impl Series {
 
     /// Points in `[t0, t1]` plus one neighbour on each side so lines reach the plot edges.
     /// Above `2 * buckets` points, each time bucket keeps only its min and max (in time order),
-    /// which preserves spikes that averaging or striding would hide. A bucket whose first value
-    /// is NaN keeps only that point.
+    /// which preserves spikes that averaging or striding would hide. A bucket holding NaN also
+    /// keeps its first NaN, and the min and max skip NaN.
     ///
     /// Returns x values followed by y values.
     pub fn view(&self, t0: f64, t1: f64, buckets: usize) -> Vec<f64> {
@@ -101,30 +101,28 @@ impl Series {
         };
         let (t, v) = (&self.t, &self.v);
         let width = (t1 - t0) / buckets as f64;
-        let mut xs = Vec::with_capacity(buckets * 2 + 2);
-        let mut ys = Vec::with_capacity(buckets * 2 + 2);
+        let mut xs = Vec::with_capacity(buckets * 3 + 2);
+        let mut ys = Vec::with_capacity(buckets * 3 + 2);
         let mut i = lo;
         while i < hi {
             let bucket_end = t0 + (((t[i] - t0) / width).floor() + 1.0) * width;
             // Starting past `i` keeps going when rounding puts `bucket_end` at or before `t[i]`.
-            let (next, lo_i, hi_i) = match pyramid {
+            let (next, mut kept) = match pyramid {
                 Some(pyramid) => {
                     let next = i + 1 + first_at_or_after(&t[i + 1..hi], bucket_end);
-                    if v[i].is_nan() {
-                        (next, i, i)
-                    } else {
-                        let found = pyramid.extremes(v, i, next);
-                        (next, found.lo as usize, found.hi as usize)
-                    }
+                    let [lowest, highest] = pyramid.extremes(v, i, next).points();
+                    (next, [pyramid.first_nan(v, i, next), lowest, highest])
                 }
                 None => scan_bucket(t, v, i, hi, bucket_end),
             };
-            let (a, b) = (lo_i.min(hi_i), lo_i.max(hi_i));
-            xs.push(t[a]);
-            ys.push(v[a]);
-            if b != a {
-                xs.push(t[b]);
-                ys.push(v[b]);
+            kept.sort_unstable();
+            let mut last = None;
+            for p in kept.into_iter().flatten() {
+                if last != Some(p) {
+                    xs.push(t[p]);
+                    ys.push(v[p]);
+                    last = Some(p);
+                }
             }
             i = next;
         }
@@ -144,28 +142,36 @@ fn first_at_or_after(t: &[f64], end: f64) -> usize {
     from + t[from..(bound + 1).min(t.len())].partition_point(|&x| x < end)
 }
 
-/// The end of the bucket that starts at point `i`, and its first lowest and first highest
-/// points, found by comparing each point before `hi` and `bucket_end` with the lowest and
-/// highest so far.
+/// The end of the bucket that starts at point `i`, and the points it keeps: its first NaN and
+/// its first lowest and first highest other values, found by comparing each point before `hi`
+/// and `bucket_end` with the lowest and highest so far.
 fn scan_bucket(
     t: &[f64],
     v: &[f64],
     i: usize,
     hi: usize,
     bucket_end: f64,
-) -> (usize, usize, usize) {
-    let (mut lo_i, mut hi_i) = (i, i);
-    let mut j = i + 1;
-    while j < hi && t[j] < bucket_end {
-        if v[j] < v[lo_i] {
-            lo_i = j;
-        }
-        if v[j] > v[hi_i] {
-            hi_i = j;
+) -> (usize, [Option<usize>; 3]) {
+    let mut first_nan = None;
+    let mut extremes: Option<(usize, usize)> = None;
+    let mut j = i;
+    while j < hi && (j == i || t[j] < bucket_end) {
+        let x = v[j];
+        if x.is_nan() {
+            first_nan = first_nan.or(Some(j));
+        } else if let Some((lowest, highest)) = &mut extremes {
+            if x < v[*lowest] {
+                *lowest = j;
+            }
+            if x > v[*highest] {
+                *highest = j;
+            }
+        } else {
+            extremes = Some((j, j));
         }
         j += 1;
     }
-    (j, lo_i, hi_i)
+    (j, [first_nan, extremes.map(|e| e.0), extremes.map(|e| e.1)])
 }
 
 #[cfg(test)]
@@ -244,6 +250,49 @@ mod tests {
         assert_eq!(split(&out).0, [9.0]);
     }
 
+    #[test]
+    fn nan_buckets_keep_their_first_nan_and_extremes() {
+        let mut v = vec![0.0; 256];
+        // Buckets of 64 points: NaN first, NaN between the extremes, all NaN, and none.
+        v[0] = f64::NAN;
+        v[10] = -5.0;
+        v[20] = 7.0;
+        v[70] = 3.0;
+        v[80] = f64::NAN;
+        v[90] = f64::NAN;
+        v[100] = -2.0;
+        v[128..192].fill(f64::NAN);
+        v[200] = f64::INFINITY;
+        v[250] = f64::NEG_INFINITY;
+        let indexed = Series {
+            t: (0..256).map(f64::from).collect(),
+            v,
+            pyramid: OnceCell::new(),
+        };
+        let scanned = Series {
+            t: indexed.t.clone(),
+            v: indexed.v.clone(),
+            pyramid: OnceCell::new(),
+        }
+        .without_pyramid();
+        let expected_x = [0.0, 10.0, 20.0, 70.0, 80.0, 100.0, 128.0, 200.0, 250.0];
+        let expected_y = [
+            f64::NAN,
+            -5.0,
+            7.0,
+            3.0,
+            f64::NAN,
+            -2.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        let expected = bits(&[expected_x, expected_y].concat());
+        assert_eq!(bits(&indexed.view(0.0, 256.0, 4)), expected);
+        assert!(indexed.has_pyramid());
+        assert_eq!(bits(&scanned.view(0.0, 256.0, 4)), expected);
+    }
+
     /// xorshift64*, so the property test needs no dependency.
     struct Rng(u64);
 
@@ -265,7 +314,7 @@ mod tests {
     }
 
     /// Times with repeats and long gaps (a multiplexed signal switched out), and values with
-    /// many ties, signed zeros, infinities and, in some series, NaN.
+    /// many ties, signed zeros, infinities and, in some series, NaN scattered or in long runs.
     fn random_series(rng: &mut Rng, n: usize) -> Series {
         let mut t = Vec::with_capacity(n);
         let mut now = rng.unit() * 100.0 - 50.0;
@@ -277,16 +326,25 @@ mod tests {
             };
             t.push(now);
         }
-        let nan_share = [0, 0, 5, 50, 100][rng.below(5) as usize];
+        let nan_mode = rng.below(6) as usize;
+        let nan_share = [0, 0, 5, 50, 100, 0][nan_mode];
+        let nan_runs = nan_mode == 5;
+        let mut in_nan_run = false;
         let ints = rng.below(2) == 0;
         let v = (0..n)
-            .map(|_| match rng.below(100) {
-                x if x < nan_share => f64::NAN,
-                _ if rng.below(50) == 0 => {
-                    [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY][rng.below(4) as usize]
+            .map(|_| {
+                if nan_runs && rng.below(200) == 0 {
+                    in_nan_run = !in_nan_run;
                 }
-                _ if ints => rng.below(5) as f64,
-                _ => rng.unit() * 2.0 - 1.0,
+                match rng.below(100) {
+                    _ if in_nan_run => any_nan(rng),
+                    x if x < nan_share => any_nan(rng),
+                    _ if rng.below(50) == 0 => {
+                        [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY][rng.below(4) as usize]
+                    }
+                    _ if ints => rng.below(5) as f64,
+                    _ => rng.unit() * 2.0 - 1.0,
+                }
             })
             .collect();
         Series {
@@ -294,6 +352,12 @@ mod tests {
             v,
             pyramid: OnceCell::new(),
         }
+    }
+
+    /// A quiet NaN with a random payload and sign, as a float signal's raw bits may hold.
+    fn any_nan(rng: &mut Rng) -> f64 {
+        let sign = rng.next() & (1 << 63);
+        f64::from_bits(sign | 0x7ff8_0000_0000_0000 | (rng.next() & 0x0007_ffff_ffff_ffff))
     }
 
     fn bits(out: &[f64]) -> Vec<u64> {

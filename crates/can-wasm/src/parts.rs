@@ -2,17 +2,18 @@
 //! itself, then each part after it, from a line boundary, is read by [`parse_segment`] in a
 //! worker of its own and joined onto the open log, in file order, by `Session::push_segment`.
 //! The result is the log read whole: the frame store joins the parts' frames and statistics
-//! (see `FrameStore::append_segment`), line numbers carry on from part to part, and a part read
+//! (see `FrameStore::append_segment`), line numbers carry on from part to part, an ASC file's
+//! relative times carry on from the sum the part before left (see `PartTimes`), and a part read
 //! in another header state than the parts before it left is refused, so the log is read again
 //! in one worker.
 
 use can_core::FrameStore;
-use can_formats::{AnyParser, Format, LogParser, ParseStats};
+use can_formats::{AnyParser, Format, LogParser, ParseStats, PartTimes};
 use wasm_bindgen::prelude::*;
 
 use crate::{clock, js_err};
 
-const MAGIC: &[u8; 4] = b"FCP1";
+const MAGIC: &[u8; 4] = b"FCP2";
 
 /// What reading a log counted, as `LogInfo` reports it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,7 +56,7 @@ impl ReadStats {
 /// Reads `part`, the lines of a log in `format` (a `LogInfo.format` name) from a line
 /// boundary after the first, with `head`, the start of the file, for its header. Returns the
 /// part for `Session::push_segment`: its counts, the header state it was read in and the one
-/// it left, and its frames.
+/// it left, how its times carry on from the part before, and its frames.
 ///
 /// # Errors
 /// For a format that can't be read in parts.
@@ -95,6 +96,11 @@ fn read_part(format: Format, head: &[u8], part: &[u8]) -> Option<Vec<u8>> {
     }
     put_text(&mut out, &entry);
     put_text(&mut out, &parser.state());
+    let times = parser.part_times();
+    out.extend_from_slice(&times.frames.to_le_bytes());
+    out.extend_from_slice(&times.from_base_ns.to_le_bytes());
+    out.extend_from_slice(&times.last_ns.to_le_bytes());
+    out.push(u8::from(times.open) | u8::from(times.scattered) << 1);
     out.extend_from_slice(&frames);
     Some(out)
 }
@@ -110,7 +116,8 @@ pub(crate) struct Part<'a> {
     /// The header state the part was read in, and the one it left.
     pub(crate) entry: &'a str,
     pub(crate) exit: &'a str,
-    /// For `FrameStore::append_segment`.
+    pub(crate) times: PartTimes,
+    /// For `FrameStore::append_shifted_segment`.
     pub(crate) frames: &'a [u8],
 }
 
@@ -131,10 +138,28 @@ impl<'a> Part<'a> {
             [1] => stats.first_rejection = Some((r.u64()?, r.text()?.to_owned())),
             _ => return None,
         }
+        let entry = r.text()?;
+        let exit = r.text()?;
+        let frames = r.u64()?;
+        let from_base_ns = r.u64()? as i64;
+        let last_ns = r.u64()? as i64;
+        let &[bits] = r.take(1)? else {
+            return None;
+        };
+        if bits > 0b11 {
+            return None;
+        }
         Some(Self {
             stats,
-            entry: r.text()?,
-            exit: r.text()?,
+            entry,
+            exit,
+            times: PartTimes {
+                frames,
+                open: bits & 1 != 0,
+                from_base_ns,
+                last_ns,
+                scattered: bits & 2 != 0,
+            },
             frames: r.0,
         })
     }
@@ -410,6 +435,13 @@ mod tests {
             if i % 50 == 7 {
                 writeln!(log, "   {t:.6} CANFD 1 Rx  300  EngineData  1 0 d 32 {}  200000  400 3000 1234abcd 460800 2000000 460800 2000000", "0F ".repeat(32).trim_end()).unwrap();
                 writeln!(log, "   {t:.6} 1  ErrorFrame").unwrap();
+                // Events that hold no frame still move relative times on.
+                writeln!(
+                    log,
+                    "   0.000123456 1  Statistic: D 1 R 0 XD 0 XR 0 E 0 O 0 B 0.00%"
+                )
+                .unwrap();
+                writeln!(log, "   1.2.3 1  123             Rx   d 1 00").unwrap();
             }
             if i == 300 {
                 log.push_str(
@@ -423,24 +455,95 @@ mod tests {
     }
 
     #[test]
-    fn an_asc_log_reads_the_same_in_parts_unless_its_times_are_relative() {
-        let log = asc_log("absolute");
-        let header_end = log.windows(6).position(|w| w == b"0.0000").unwrap();
-        let mut starts = around(&[header_end, 4200, 9000]);
-        for step in [53, 777, 5000] {
-            starts.push(every(step, 4300, log.len()));
+    fn an_asc_log_reads_the_same_in_parts_with_absolute_or_relative_times() {
+        for timestamps in ["absolute", "relative"] {
+            let log = asc_log(timestamps);
+            let header_end = log.windows(6).position(|w| w == b"0.0000").unwrap();
+            let begin = log
+                .windows(19)
+                .rposition(|w| w == b"\nBegin TriggerBlock")
+                .unwrap();
+            let mut starts = around(&[header_end, 4200, 9000, begin, begin + 60]);
+            for step in [53, 777, 5000] {
+                starts.push(every(step, 4300, log.len()));
+            }
+            for first in [4200, begin + 60] {
+                let reads = assert_parts_read_as_whole("drive.asc", &log, first, &starts);
+                assert!(
+                    reads.iter().all(|read| *read == Read::InParts),
+                    "{timestamps} from {first}: {reads:?}"
+                );
+            }
         }
-        let reads = assert_parts_read_as_whole("drive.asc", &log, 4200, &starts);
-        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+    }
 
-        let relative = asc_log("relative");
+    /// A relative ASC log that switches to absolute times for `between`, then back.
+    fn asc_log_switching_to_absolute_times(between: &str) -> Vec<u8> {
+        let mut log = String::from("base hex  timestamps relative\n");
+        for i in 0..900 {
+            if i == 500 {
+                log.push_str("base hex  timestamps absolute\n");
+                log.push_str(between);
+                log.push_str("base hex  timestamps relative\n");
+            }
+            writeln!(log, "   0.001 1  123  Rx   d 1 {:02X}", i % 256).unwrap();
+        }
+        log.into_bytes()
+    }
+
+    #[test]
+    fn a_relative_asc_part_with_a_frame_at_an_absolute_time_between_its_frames_is_refused() {
+        let log = asc_log_switching_to_absolute_times("   9.5 1  100  Rx   d 0\n");
+        // The part read from 4300 counts its first frames from the sum before it, then one
+        // that isn't, then more that are.
+        let reads = assert_parts_read_as_whole("drive.asc", &log, 4200, &[vec![4300]]);
+        assert_eq!(reads, [Read::Refused]);
+        // Parts that split the frames that are from those that aren't join.
+        let switch = log.windows(8).position(|w| w == b"absolute").unwrap();
         let reads = assert_parts_read_as_whole(
             "drive.asc",
-            &relative,
+            &log,
             4200,
-            &[every(500, 4300, relative.len())],
+            &[vec![switch - 300, switch + 60], vec![switch + 60]],
         );
-        assert_eq!(reads, [Read::Whole]);
+        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+    }
+
+    #[test]
+    fn a_relative_asc_part_that_switches_to_absolute_times_and_back_between_frames_joins() {
+        // An event that holds no frame doesn't move the sum in absolute times.
+        let log = asc_log_switching_to_absolute_times("   9.5 Start of measurement\n");
+        let reads = assert_parts_read_as_whole("drive.asc", &log, 4200, &[vec![4300]]);
+        assert_eq!(reads, [Read::InParts]);
+    }
+
+    #[test]
+    fn relative_asc_times_that_overflow_are_refused_in_parts() {
+        let mut log = String::from("base hex  timestamps relative\n");
+        for i in 0..900 {
+            // The sum passes the largest time an i64 holds in nanoseconds, which the whole file
+            // saturates.
+            let t = if i < 600 { "0.001" } else { "4000000000" };
+            writeln!(log, "   {t} 1  123  Rx   d 1 {:02X}", i % 256).unwrap();
+        }
+        let log = log.into_bytes();
+        let near_end = log.len() - 200;
+        let reads = assert_parts_read_as_whole(
+            "drive.asc",
+            &log,
+            4200,
+            &[every(1000, 4300, log.len()), vec![near_end]],
+        );
+        assert_eq!(reads, [Read::Refused, Read::Refused]);
+        // The parts before the sum overflows join.
+        let before = log.windows(10).position(|w| w == b"4000000000").unwrap();
+        let reads = assert_parts_read_as_whole(
+            "drive.asc",
+            &log[..before],
+            4200,
+            &[every(1000, 4300, before)],
+        );
+        assert_eq!(reads, [Read::InParts]);
     }
 
     #[test]
@@ -521,7 +624,13 @@ mod tests {
         assert_eq!(s.segment_format(), None, "mid-line");
         s.push_chunk(&log[line_end - 3..line_end]);
         assert_eq!(s.segment_format().as_deref(), Some("candump"));
-        assert!(!s.push_segment(b"FCP1"));
+        let part = read_part(Format::Candump, b"", b"(1.0) can0 123#00\n").unwrap();
+        // A part in the format from before relative ASC times were carried, and one cut short.
+        let mut old = part.clone();
+        old[..4].copy_from_slice(b"FCP1");
+        assert!(!s.push_segment(&old));
+        assert!(!s.push_segment(&part[..part.len() - 1]));
+        assert!(s.push_segment(&part));
         assert!(read_part(Format::Blf, b"", b"").is_none());
     }
 
@@ -561,12 +670,14 @@ mod tests {
         } else {
             b""
         };
+        let relative = format == "asc" && rng.chance(50);
         let mut log: Vec<u8> = match format {
-            "asc" => {
-                b"date Tue Sep 30 10:00:00.000 am 2025\nbase hex  timestamps absolute\n\
-                       internal events logged\nBegin TriggerBlock Tue Sep 30 10:00:00.000 am 2025\n"
-                    .to_vec()
-            }
+            "asc" => format!(
+                "date Tue Sep 30 10:00:00.000 am 2025\nbase hex  timestamps {}\n\
+                 internal events logged\nBegin TriggerBlock Tue Sep 30 10:00:00.000 am 2025\n",
+                if relative { "relative" } else { "absolute" }
+            )
+            .into_bytes(),
             "trc" => b";$FILEVERSION=2.1\r\n;$STARTTIME=45930.5\r\n;$COLUMNS=N,O,T,B,I,d,R,L,D\r\n"
                 .to_vec(),
             "csv" => b"Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\r\n".to_vec(),
@@ -595,7 +706,7 @@ mod tests {
             let len = rng.below(9);
             let mut data = rng.hex(len, " ");
             // A J1939 BAM of 10 bytes in two packets, from one of two sources.
-            if format == "candump" && transfer == 0 && rng.chance(5) {
+            if matches!(format, "candump" | "asc") && transfer == 0 && rng.chance(5) {
                 transfer = 3;
             }
             let j1939 = transfer > 0;
@@ -656,9 +767,20 @@ mod tests {
                     } else {
                         format!("{id:X}")
                     };
-                    let t = us as f64 / 1e6;
+                    let t = if relative {
+                        rng.below(3000) as f64 / 1e6
+                    } else {
+                        us as f64 / 1e6
+                    };
+                    if relative && rng.chance(1) {
+                        log.extend_from_slice(
+                            b"End TriggerBlock\nBegin TriggerBlock Tue Sep 30 10:00:00.000 am 2025\n",
+                        );
+                    }
                     let bus = bus + 1;
-                    if rng.chance(3) {
+                    if j1939 {
+                        format!("   {t:.6} {bus}  {id:<15} Rx   d 8 {data}")
+                    } else if rng.chance(3) {
                         format!("   {t:.6} {bus}  ErrorFrame")
                     } else if rng.chance(5) {
                         format!("   {t:.6} {bus}  {id:<15} Tx   r")

@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { formatId, type ByteLane, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo } from '../../core/api';
+import { formatId, type ByteLane, type IdSummary, type MessageDef, type MuxSpec, type RawSignalSpec, type SeriesInfo } from '../../core/api';
 import { formatCount } from '../../format';
 import { InspectorSlot } from '../slots';
 import type { ViewContext } from '../types';
@@ -143,7 +143,10 @@ export function Workspace(props: Props) {
   );
   const selected = useMemo(() => (range ? rangeBits(range) : []), [range]);
   const scale = parseScale(form);
-  const spec: RawSignalSpec | null = range && scale ? { ...range, signed: form.signed, ...scale } : null;
+  const float = !!form.float && range?.size === 32;
+  const mux = form.mux ?? null;
+  const spec: RawSignalSpec | null =
+    range && scale ? { ...range, signed: form.signed && !float, ...(float && { float }), ...scale, ...(mux && { mux }) } : null;
   const currentKey = spec ? JSON.stringify(spec) : '';
   const specKey = useDebounced(currentKey, 200);
 
@@ -215,7 +218,12 @@ export function Workspace(props: Props) {
     return full;
   }, [selected]);
 
-  const patch = (p: Partial<FormState>) => setForms((all) => ({ ...all, [summary.key]: { ...(all[summary.key] ?? BLANK_FORM), ...p } }));
+  const patch = (p: Partial<FormState>) => {
+    // A suggestion's multiplexing goes with its bits.
+    const movesBits = 'startBit' in p || 'size' in p || 'byteOrder' in p;
+    const page = movesBits && !('mux' in p) ? { mux: null, multiplexor: false } : {};
+    setForms((all) => ({ ...all, [summary.key]: { ...(all[summary.key] ?? BLANK_FORM), ...page, ...p } }));
+  };
   const setRange = (r: BitRange | null) => {
     if (r) patch({ startBit: String(r.startBit), size: String(r.size), fromGrid: true, limits: null });
   };
@@ -240,19 +248,22 @@ export function Workspace(props: Props) {
   const { results, dismissed, accepted } = discovery;
   // Held steady across renders so the grid redraws only when the suggestions change.
   const listed = useMemo(
-    () => shownSuggestions({ results, dismissed, accepted }, summary.key, owners, true),
-    [results, dismissed, accepted, summary.key, owners],
+    () => shownSuggestions({ results, dismissed, accepted }, summary.key, message, bytes * 8, true),
+    [results, dismissed, accepted, summary.key, message, bytes],
   );
   const shown = showDismissed ? listed : listed.filter((s) => !dismissed.has(s.id));
   const dismissedCount = listed.length - listed.filter((s) => !dismissed.has(s.id)).length;
-  const regions = useMemo(
-    () =>
-      listed
-        .filter((s) => !dismissed.has(s.id))
-        .map((s) => ({ id: s.id, number: s.number, label: `Suggestion ${s.number}, ${KIND_LABELS[s.suggestion.kind]}`, bits: s.bits })),
-    [listed, dismissed],
-  );
-  const selectedSuggestion = range ? (shown.find((s) => sameBits(s.suggestion.spec, range))?.id ?? null) : null;
+  const regions = useMemo(() => {
+    // Cells on different multiplexed pages share bits; the grid outlines the first of them.
+    const outlined = new Set<number>();
+    return listed
+      .filter((s) => !dismissed.has(s.id) && !s.bits.some((b) => outlined.has(b)))
+      .map((s) => {
+        for (const b of s.bits) outlined.add(b);
+        return { id: s.id, number: s.number, label: `Suggestion ${s.number}, ${KIND_LABELS[s.suggestion.kind]}`, bits: s.bits };
+      });
+  }, [listed, dismissed]);
+  const selectedSuggestion = range ? (shown.find((s) => sameBits(s.suggestion.spec, range) && samePage(s.suggestion.spec.mux, mux))?.id ?? null) : null;
   const plotPin = (s: ShownSuggestion): Pin => ({
     kind: 'range',
     key: summary.key,
@@ -270,6 +281,9 @@ export function Workspace(props: Props) {
       size: String(spec.size),
       byteOrder: spec.byteOrder,
       signed: spec.signed,
+      float: !!spec.float,
+      multiplexor: s.suggestion.kind === 'multiplexor',
+      mux: spec.mux ?? null,
       fromGrid: false,
       limits: null,
       ...(fit && { factor: plainNumber(spec.factor), offset: plainNumber(spec.offset), unit: fit.unit }),
@@ -285,14 +299,14 @@ export function Workspace(props: Props) {
   };
   // Whatever way its bits got into the form, a suggestion added to a DBC counts as accepted.
   const onAdded = (added: AddedSignal) => {
-    const match = shown.find((s) => sameBits(s.suggestion.spec, added.signal));
+    const match = shown.find((s) => sameBits(s.suggestion.spec, added.signal) && (s.suggestion.spec.mux?.value ?? null) === added.signal.muxValue);
     if (!match) return;
     const { dbc, messageId, createdMessage, createdDbc } = added;
     discovery.markAccepted(match.id, { signal: added.signal.name, dbc, messageId, createdMessage, createdDbc });
   };
 
   const windowFrames = activity && !activity.wholeLog ? activity.frames : (summary.count * (settled[1] - settled[0])) / Math.max(duration, 1e-9);
-  const layout = range ? layoutString(range, form.signed) : null;
+  const layout = range ? layoutString(range, form.signed && !float, float) : null;
   const matching = <T extends { key: string }>(x: T | null) => (x && x.key === currentKey ? x : null);
   const trace: Trace | null = matching(view);
 
@@ -467,4 +481,8 @@ export function Workspace(props: Props) {
 
 function sameBits(a: BitRange, b: BitRange): boolean {
   return a.startBit === b.startBit && a.size === b.size && a.byteOrder === b.byteOrder;
+}
+
+function samePage(a: MuxSpec | null | undefined, b: MuxSpec | null | undefined): boolean {
+  return a && b ? sameBits(a, b) && a.value === b.value : !a && !b;
 }

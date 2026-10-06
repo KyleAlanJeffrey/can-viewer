@@ -68,7 +68,10 @@ impl<T> Default for Column<T> {
 }
 
 impl<T> Column<T> {
-    const SHIFT: u32 = CHUNK_BYTES_SHIFT - size_of::<T>().trailing_zeros();
+    const SHIFT: u32 = {
+        assert!(size_of::<T>().is_power_of_two());
+        CHUNK_BYTES_SHIFT - size_of::<T>().trailing_zeros()
+    };
     /// Entries in a full chunk.
     pub const CHUNK_LEN: usize = 1 << Self::SHIFT;
     const MASK: usize = Self::CHUNK_LEN - 1;
@@ -224,7 +227,7 @@ const LONGEST_PAYLOAD: usize = if tp::MAX_TRANSFER > MAX_PAYLOAD {
 /// chunk. A payload that does not fit at the end of a chunk starts the next, so a chunk can end
 /// in up to [`LONGEST_PAYLOAD`] unused bytes.
 ///
-/// A payload is found by its position: `chunk << 20 | offset`.
+/// A payload is found by its position: `chunk << 22 | offset`.
 #[derive(Debug, Default)]
 pub struct Payloads {
     /// The last one is being filled.
@@ -240,7 +243,8 @@ impl Payloads {
     /// Appends `payload` and returns its position.
     #[inline]
     pub fn push(&mut self, payload: &[u8]) -> usize {
-        debug_assert!(payload.len() <= LONGEST_PAYLOAD);
+        // A longer one could overrun its chunk and corrupt every position after it.
+        assert!(payload.len() <= LONGEST_PAYLOAD);
         let fits = self.chunks.last().is_some_and(|chunk| {
             chunk.len() < PAYLOAD_CHUNK
                 && chunk.len() + payload.len() <= chunk.capacity().min(PAYLOAD_CHUNK)

@@ -591,7 +591,7 @@ impl FrameStore {
     /// A store that dropped its oldest frames keeps the transfers it reassembled instead, sorted
     /// with the frames, since the packets that began some of them may be gone.
     ///
-    /// The frames are sorted by time with 16 bytes per frame, then the columns are rebuilt in
+    /// The frames are sorted by time with up to 20 bytes per frame, then the columns are rebuilt in
     /// turn, so beyond the store this needs 4 bytes per frame, the J1939 transfers, and the
     /// data with its offsets or one other column at a time. A store already in order costs
     /// nothing.

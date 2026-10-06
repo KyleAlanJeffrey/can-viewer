@@ -1535,6 +1535,8 @@ impl Session {
         std::mem::swap(&mut self.input, &mut log.input);
         self.series.clear();
         self.filtered = None;
+        self.count = None;
+        self.preview = None;
         self.export = VecDeque::new();
         Ok(())
     }

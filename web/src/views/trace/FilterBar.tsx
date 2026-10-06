@@ -14,16 +14,14 @@ interface BarProps {
   onEdit: () => void;
   onRemove: (chip: FilterChip) => void;
   onClear: () => void;
-  /** Why filtering is off for now, shown in place of the count. */
-  disabledReason?: string;
 }
 
 /** The Filters button over the trace, then the applied filters as removable chips and their count. */
-export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onRemove, onClear, disabledReason }: BarProps) {
+export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onRemove, onClear }: BarProps) {
   const filtered = chips.length > 0;
   return (
     <div className="tv-bar">
-      <button ref={editRef} type="button" className="button" onClick={onEdit} disabled={disabledReason !== undefined}>
+      <button ref={editRef} type="button" className="button" onClick={onEdit}>
         <SlidersHorizontal size={16} strokeWidth={1.5} aria-hidden="true" />
         {filtered ? 'Edit filters\u2026' : 'Filters\u2026'}
       </button>
@@ -46,7 +44,6 @@ export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onR
         </>
       )}
       <p className="tv-count" role="status">
-        {disabledReason}
         {filtered &&
           (matches == null ? (
             'Filtering\u2026'

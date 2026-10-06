@@ -162,9 +162,8 @@ describe('App live capture', () => {
 
     expect(screen.getByText('Recording').parentElement!.textContent).toMatch(/^Recording \u00b7 Listen only \u00b7 0 frames/);
     expect(toolbarStatus()).toBe('Recording from USB serial device 16D0:117E, listen only.');
-    // Filtered rows are found once, so filters wait for the capture to stop.
-    expect((screen.getByRole('button', { name: 'Filters\u2026' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('Filters apply once the capture stops.')).toBeTruthy();
+    // The core adds the frames that match to the filtered rows as they come.
+    expect((screen.getByRole('button', { name: 'Filters\u2026' }) as HTMLButtonElement).disabled).toBe(false);
     // Buttons that can't be used while recording give the status line their room.
     expect(screen.queryByRole('button', { name: 'Open Log\u2026' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Export Log\u2026' })).toBeNull();

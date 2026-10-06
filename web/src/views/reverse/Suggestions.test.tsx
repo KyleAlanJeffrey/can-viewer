@@ -5,7 +5,7 @@ import { fakeCore, lane, makeRowBatch, message, seriesInfo, signal, summary } fr
 import { renderInShell } from '../../test/shell';
 import type { LoadedDbc } from '../types';
 import { ReverseView } from './ReverseView';
-import { parseMarker } from './Suggestions';
+import { isAcceptedSignal, parseMarker } from './Suggestions';
 
 const engine = summary({ id: 0x100, name: 'Engine' });
 const first = summary({ id: 0x200 });
@@ -327,9 +327,22 @@ describe('Suggested signals', () => {
     expect(parseMarker('12.5 s')).toBe(12.5);
     expect(parseMarker('12,5 s')).toBe(12.5);
     expect(parseMarker('Bremse bei 3,25')).toBe(3.25);
+    // A thousands group is too easily misread.
+    expect(parseMarker('1,000 s')).toBeNull();
     expect(parseMarker('I pressed the brake at 7 s')).toBe(7);
     expect(parseMarker('brake 2 at 12 s')).toBe(12);
     expect(parseMarker('pedal 3: 45.5 sec')).toBe(45.5);
     expect(parseMarker('soon')).toBeNull();
+  });
+});
+
+describe('Undo of an accepted suggestion', () => {
+  it('takes out only the signal accepted, not another added in its place', () => {
+    const id = '512:16:16:intel';
+    expect(isAcceptedSignal(signal('VehicleSpeed', { startBit: 16, size: 16 }), id, 'VehicleSpeed')).toBe(true);
+    // Deleted, then a new signal of the same name on other bits, or another name on the same bits.
+    expect(isAcceptedSignal(signal('VehicleSpeed', { startBit: 0, size: 8 }), id, 'VehicleSpeed')).toBe(false);
+    expect(isAcceptedSignal(signal('Speed2', { startBit: 16, size: 16 }), id, 'VehicleSpeed')).toBe(false);
+    expect(isAcceptedSignal(signal('VehicleSpeed', { startBit: 16, size: 16, byteOrder: 'motorola' }), id, 'VehicleSpeed')).toBe(false);
   });
 });

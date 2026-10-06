@@ -545,7 +545,8 @@ fn byte_lanes_in(
         let byte = byte as usize;
         let series = Series::decode(store, frames, origin, |data| {
             data.get(byte).map(|&b| f64::from(b))
-        });
+        })
+        .without_pyramid();
         let view = series.view(t0, t1, buckets as usize);
         out.push((view.len() / 2) as f64);
         out.extend_from_slice(&view);
@@ -906,9 +907,7 @@ impl Session {
         let sig = message
             .signal(signal)
             .ok_or_else(|| js_err("unknown signal"))?;
-        let series = Series::decode(&self.store, &stats.frames, self.origin_ns(), |data| {
-            message.decode(sig, data)
-        });
+        let series = self.decode_series(&stats.frames, |data| message.decode(sig, data));
         // Owned because `sig` borrows all of `self`, and `add_series` borrows `self.series` mutably.
         let (name, unit) = (sig.name.clone(), sig.unit.clone());
         Ok(add_series(&mut self.series, series, &name, &unit))
@@ -929,7 +928,7 @@ impl Session {
                 "the bit range must be 1 to 64 bits and fit in this ID's frames",
             ));
         }
-        let series = Series::decode(&self.store, &stats.frames, self.origin_ns(), |data| {
+        let series = self.decode_series(&stats.frames, |data| {
             let raw = bits::extract(data, spec.start_bit, spec.size, spec.byte_order)?;
             let value = if spec.signed {
                 bits::sign_extend(raw, spec.size) as f64
@@ -1107,6 +1106,16 @@ impl Session {
         let mut file = ChunkedFile::default();
         writer::write_log(format, &self.store, clock::local_time(), &mut file)?;
         Ok(file.into_chunks())
+    }
+
+    /// A running capture's series are decoded again as frames come, each to be viewed about
+    /// once, so they get no pyramid.
+    fn decode_series(&self, frames: &[u32], value: impl FnMut(&[u8]) -> Option<f64>) -> Series {
+        let series = Series::decode(&self.store, frames, self.origin_ns(), value);
+        match &self.capture {
+            Some(capture) if !capture.finished => series.without_pyramid(),
+            _ => series,
+        }
     }
 
     /// Times cross the boundary as seconds from the first frame, as in [`Session::rows`].
@@ -1535,6 +1544,28 @@ mod tests {
             s.push_capture_records(&remote),
             Err("a captured remote frame has a DLC over 15")
         );
+    }
+
+    #[test]
+    fn only_series_decoded_outside_a_running_capture_get_a_pyramid() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let batch: Vec<u8> = (0..2000u16)
+            .flat_map(|i| capture_record(f64::from(i) * 1e6, 0x123, 0, &i.to_le_bytes()))
+            .collect();
+        s.push_frames(&batch).unwrap();
+        let decode = |s: &mut Session| {
+            let info = json(
+                &s.decode_raw(key_123(), &spec(0, 16, "intel", false).to_string())
+                    .unwrap(),
+            );
+            let handle = info["handle"].as_u64().unwrap() as usize;
+            assert_eq!(s.series_view(handle, 0.0, 2.0, 10).len(), 40);
+            s.series[handle].as_ref().unwrap().has_pyramid()
+        };
+        assert!(!decode(&mut s));
+        s.finish_capture().unwrap();
+        assert!(decode(&mut s));
     }
 
     #[test]

@@ -181,18 +181,29 @@ pub fn detect(frames: &[&[u8]], byte: usize, len: usize, min_share: f64) -> Opti
             .map(|(k, &n)| (k, n))
             .expect("256 counts")
     };
+    // Most bytes follow no rule, and long CAN FD frames make each try costly, so each rule is
+    // first tried on frames spread across the log, which a stretch at its start can't mislead.
     let screen = frames.len().min(SCREEN_FRAMES);
+    let stride = frames.len() / screen;
+    let screened = |i: usize| i.is_multiple_of(stride) && i / stride < screen;
     let mut best: Option<ChecksumMatch> = None;
     for check in &CHECKS {
-        let mut counts = [0usize; 256];
-        for (i, data) in frames.iter().enumerate() {
-            // Most bytes follow no rule, and long CAN FD frames make each try costly.
-            if i == screen && (mode(&counts).1 as f64) < 0.5 * screen as f64 {
-                break;
-            }
+        let key = |data: &[u8]| {
             let rest = others(data);
             let result = check.rule.apply(rest[..len - 1].iter().copied());
-            counts[usize::from(check.relation.key(data[byte], result))] += 1;
+            usize::from(check.relation.key(data[byte], result))
+        };
+        let mut counts = [0usize; 256];
+        for k in 0..screen {
+            counts[key(frames[k * stride])] += 1;
+        }
+        if (mode(&counts).1 as f64) < 0.5 * screen as f64 {
+            continue;
+        }
+        for (i, data) in frames.iter().enumerate() {
+            if !screened(i) {
+                counts[key(data)] += 1;
+            }
         }
         let (constant, hits) = mode(&counts);
         let share = hits as f64 / frames.len() as f64;
@@ -323,6 +334,19 @@ mod tests {
         let m = found(&frames, 7).unwrap();
         assert_eq!(m.name, "CRC-8 SAE J1850");
         assert!((m.share - 0.95).abs() < 1e-9, "{}", m.share);
+    }
+
+    #[test]
+    fn a_rule_that_starts_late_is_still_found() {
+        // The ECU sends 0 for its checksum while it starts up.
+        let mut frames = frames(3000, 7, j1850);
+        for f in &mut frames[..150] {
+            f[7] = 0;
+        }
+        let m = found(&frames, 7).unwrap();
+        assert_eq!(m.name, "CRC-8 SAE J1850");
+        // A zero is also the right checksum for the odd frame.
+        assert!((0.95..0.96).contains(&m.share), "{}", m.share);
     }
 
     #[test]

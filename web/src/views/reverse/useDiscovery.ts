@@ -155,9 +155,9 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
           todo,
           {},
           (done, total, found) => {
-            if (abort.signal.aborted) return;
+            // The message in hand when the scan was cancelled still counts: it may be the one open.
             if (found) store(found, logVersion);
-            setProgress({ done, total });
+            if (!abort.signal.aborted) setProgress({ done, total });
           },
           abort.signal,
           // Passes over a message suggested for out of turn, as when opened during the scan.

@@ -140,6 +140,20 @@ describe('Suggested signals', () => {
     expect(within(panel()).getByText('1 suggestion across 1 message')).toBeTruthy();
   });
 
+  it('keeps the open message suggested for when the scan is cancelled while on it', async () => {
+    const { core, scan } = discoveryCore();
+    const { user } = await openAdvanced(core);
+    expect(scan.keys[0]).toBe(first.key);
+
+    await user.click(within(panel()).getByRole('button', { name: 'Cancel' }));
+    act(() => {
+      scan.progress(1, 2, found(first.key, [counter]));
+      scan.fail(new DOMException('The scan was cancelled.', 'AbortError'));
+    });
+    expect(await within(panel()).findByText('Counter')).toBeTruthy();
+    expect(within(panel()).queryByText('Not scanned yet.')).toBeNull();
+  });
+
   it('stops the scan on Cancel and offers to scan the rest', async () => {
     const { core, scan } = discoveryCore();
     const { user } = await openAdvanced(core);

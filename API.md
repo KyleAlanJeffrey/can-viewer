@@ -63,7 +63,7 @@ Describes the current log, or the comparison log. Returned by [`openLog`](#openl
 - **`format`** `LogFormat` - The format the log was read as: `'candump'`, `'asc'` (Vector ASC), `'blf'` (Vector BLF), `'trc'` (PEAK TRC), `'mf4'` (ASAM MF4) or `'csv'`. The engine chooses it from the file name's extension, confirmed or corrected by the file's first bytes (see "Log formats" in COMPATIBILITY.md). `'capture'` for frames recorded live with [`startCapture`](#startcapture).
 - **`frames`** `number` - Frames stored.
 - **`bytes`** `number` - Bytes read from the file. 0 for a capture.
-- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records. For a capture, the frames received.
+- **`lines`** `number` - Lines read, including blank lines, or for a binary format (BLF, MF4) the frame records read plus any rejected records. For a capture, the frames received and still kept (see [`trimCapture`](#trimcapture)).
 - **`rejected`** `number` - Lines or records that did not parse as a frame.
 - **`firstRejection`** `[number, string] | null` - The 1-based line number (for a binary format, record number) and reason of the first rejected line or record, or null if none.
 - **`durationS`** `number` - Seconds from the first frame to the last.
@@ -524,6 +524,26 @@ Adds frames to the running capture, in the order received. Once it resolves, eve
 
 ```ts
 const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xde, 0xad) }]);
+```
+
+### trimCapture
+
+```ts
+trimCapture(beforeNs: number): Promise<LogInfo>
+```
+
+Drops the oldest frames of the running capture, for a rolling capture that keeps only the last few minutes. Frames are dropped from the front of the store up to the first frame timed at or after `beforeNs`, so a frame that arrived late stays with its neighbours. The per-ID statistics (counts, periods, jitter, bit flips) are redone from the frames kept, so the call takes time in proportion to them; the web app calls it only once the oldest frame is a tenth of the window, or 10 s, past it. Row numbers and times shift with the frames dropped: times count from the oldest frame kept, as for any log, and the trace filter is cleared. Decoded series are not touched; decode them again.
+
+**Parameters**
+
+- **`beforeNs`** `number` - Nanoseconds since the capture started, as in `CaptureFrame.timeNs`.
+
+**Returns** the capture so far, its `frames` and `lines` counting only the frames kept.
+
+**Errors** Rejects with `no capture is running` or `the capture has ended`.
+
+```ts
+const log = await core.trimCapture(latestNs - 5 * 60e9);
 ```
 
 ### endCapture

@@ -7,6 +7,8 @@ import { parseBtr, SERIAL_BAUD_RATE, SERIAL_BAUD_RATES, sja1000Bitrate } from '.
 
 const DEFAULT_BITRATE = 500_000;
 const DEFAULT_BUS = 'can0';
+/** Windows offered for a rolling capture, in minutes. */
+const KEEP_MINUTES = [1, 5, 10, 30, 60];
 /** Channels offered for gs_usb adapters; multi-channel ones have two to four. */
 const CHANNELS = 8;
 
@@ -33,6 +35,8 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
   const [dataBitrate, setDataBitrate] = useState(0);
   const [listenOnly, setListenOnly] = useState(true);
   const [bus, setBus] = useState(DEFAULT_BUS);
+  // 0: every frame.
+  const [keepMinutes, setKeepMinutes] = useState(0);
   const [serialBaudRate, setSerialBaudRate] = useState(SERIAL_BAUD_RATE);
   // From 0, shown from 1.
   const [channel, setChannel] = useState(0);
@@ -100,6 +104,7 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
         dataBitrate: dataBitrate > 0 ? dataBitrate : undefined,
         channel: !slcan && channel > 0 ? channel : undefined,
         bus: bus.trim(),
+        keepMinutes: keepMinutes > 0 ? keepMinutes : undefined,
         listenOnly,
         allowUnconfirmedListenOnly: unconfirmed !== null,
         serialBaudRate: slcan && serialBaudRate !== SERIAL_BAUD_RATE ? serialBaudRate : undefined,
@@ -199,30 +204,55 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
           </div>
         </div>
         <div className="field">
-          <label htmlFor={`${ids}bus`} className="field-label">
-            Bus name
-          </label>
-          <input
-            id={`${ids}bus`}
-            className="input mono cap-bus"
-            value={bus}
-            onChange={(e) => setBus(e.target.value)}
-            list={buses.length > 0 ? `${ids}buses` : undefined}
-            spellCheck={false}
-            autoComplete="off"
-            disabled={starting}
-            aria-invalid={busProblem !== null}
-            aria-describedby={`${ids}bushint`}
-          />
-          {buses.length > 0 && (
-            <datalist id={`${ids}buses`}>
-              {buses.map((b) => (
-                <option key={b} value={b} />
-              ))}
-            </datalist>
-          )}
+          <div className="cap-row">
+            <div className="field">
+              <label htmlFor={`${ids}bus`} className="field-label">
+                Bus name
+              </label>
+              <input
+                id={`${ids}bus`}
+                className="input mono cap-bus"
+                value={bus}
+                onChange={(e) => setBus(e.target.value)}
+                list={buses.length > 0 ? `${ids}buses` : undefined}
+                spellCheck={false}
+                autoComplete="off"
+                disabled={starting}
+                aria-invalid={busProblem !== null}
+                aria-describedby={`${ids}bushint`}
+              />
+              {buses.length > 0 && (
+                <datalist id={`${ids}buses`}>
+                  {buses.map((b) => (
+                    <option key={b} value={b} />
+                  ))}
+                </datalist>
+              )}
+            </div>
+            <div className="field">
+              <label htmlFor={`${ids}keep`} className="field-label">
+                Keep
+              </label>
+              <select
+                id={`${ids}keep`}
+                className="select cap-bitrate"
+                value={keepMinutes}
+                onChange={(e) => setKeepMinutes(Number(e.target.value))}
+                disabled={starting}
+                aria-describedby={`${ids}bushint`}
+              >
+                <option value={0}>Every frame</option>
+                {KEEP_MINUTES.map((m) => (
+                  <option key={m} value={m}>
+                    Last {m} min
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
           <p id={`${ids}bushint`} className={busProblem ? 'field-error' : 'cap-hint'}>
-            {busProblem ?? 'The frames are stored under this name, so a DBC set to this bus decodes them.'}
+            {busProblem ?? 'The frames are stored under the bus name, so a DBC set to that bus decodes them.'}
+            {!busProblem && keepMinutes > 0 && ' Older frames are dropped as new ones arrive, so a rolling capture can run for days; only what is kept is saved.'}
           </p>
         </div>
         <div className="field">

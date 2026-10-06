@@ -128,6 +128,56 @@ describe('CaptureRecorder', () => {
   });
 });
 
+describe('CaptureRecorder rolling capture', () => {
+  it('drops frames older than the window in the core, now and then, and frees their memory', async () => {
+    const { adapter, state } = fakeAdapter();
+    const core = fakeCore({
+      startCapture: () => Promise.resolve(logInfo()),
+      appendFrames: () => Promise.resolve(logInfo()),
+      trimCapture: vi.fn(() => Promise.resolve(logInfo({ frames: 3 }))),
+      endCapture: () => Promise.resolve(logInfo()),
+    });
+    const cost = captureFrameBytes(frame(0));
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock(), { intervalMs: 5 }, { warnBytes: 3 * cost, maxBytes: 4 * cost });
+    const ended = vi.fn();
+    recorder.onEnd = ended;
+    await recorder.start({ ...settings, keepMinutes: 1 });
+    const send = async (seconds: number) => {
+      state.events!.onFrames([frame(seconds * 1e9)]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+
+    await send(0);
+    await send(30);
+    // 65 s: the frame at 0 is past the minute, but not by the 10 s of slack.
+    await send(65);
+    expect(core.trimCapture).not.toHaveBeenCalled();
+    expect(recorder.status().nearLimit).toBe(true);
+    await send(75);
+    expect(core.trimCapture).toHaveBeenCalledWith(15e9);
+    expect(recorder.status().nearLimit).toBe(true);
+    // Without the frame at 0 counted, a fifth fits.
+    await send(80);
+    expect(ended).not.toHaveBeenCalled();
+    expect(recorder.status().frames).toBe(5);
+    expect(recorder.text.title(recorder.status())).toMatch(/\nKeeping only about the last 1 min\./);
+    await recorder.stop();
+  });
+
+  it('keeps every frame unless asked to roll', async () => {
+    const { adapter, state } = fakeAdapter();
+    const core = fakeCore({ startCapture: () => Promise.resolve(logInfo()), appendFrames: () => Promise.resolve(logInfo()), endCapture: () => Promise.resolve(logInfo()) });
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock(), { intervalMs: 5 });
+    // The fake core's trimCapture fails, which would end the capture.
+    recorder.onEnd = vi.fn();
+    await recorder.start(settings);
+    state.events!.onFrames([frame(0), frame(3600e9)]);
+    await recorder.stop();
+    expect(recorder.onEnd).not.toHaveBeenCalled();
+    expect(recorder.text.title(recorder.status())).not.toMatch(/Keeping/);
+  });
+});
+
 describe('CaptureRecorder status text', () => {
   it('leads with errors and listen-only, and keeps the whole status for the tooltip', async () => {
     const { adapter, state } = fakeAdapter(true);

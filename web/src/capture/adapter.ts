@@ -11,6 +11,8 @@ export interface CaptureSettings {
   bitrate: number;
   /** The CAN FD data phase bitrate, one of `DATA_BITRATES`; not given for classic CAN. */
   dataBitrate?: number;
+  /** Keep only about the last this many minutes, dropping older frames; every frame when not given. Adapters ignore it. */
+  keepMinutes?: number;
   /** gs_usb: the device channel to capture, from 0; the first when not given. */
   channel?: number;
   /** The bus name the frames are stored under, `can0` when not given. Adapters ignore it. */

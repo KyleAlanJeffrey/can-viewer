@@ -500,6 +500,48 @@ impl FrameStore {
                 .sum::<usize>()
     }
 
+    /// Drops the frames before the first one timestamped at or after `ts_ns`, in store order
+    /// rather than time order, so a frame that came late stays with its neighbours. Returns how
+    /// many were dropped. For a rolling live capture: the per-ID statistics are rebuilt from the
+    /// frames kept, so this costs time in proportion to them, not to the frames dropped.
+    pub fn drop_before(&mut self, ts_ns: i64) -> usize {
+        let count = self.ts_ns.iter().take_while(|&&t| t < ts_ns).count();
+        if count == 0 {
+            return 0;
+        }
+        let dropped_flags = &self.flags[..count];
+        self.error_frames -= dropped_flags
+            .iter()
+            .filter(|&&f| f & flags::ERROR != 0)
+            .count();
+        self.reassembled_frames -= dropped_flags
+            .iter()
+            .filter(|&&f| f & flags::REASSEMBLED != 0)
+            .count();
+        let data_dropped = self
+            .data_start
+            .get(count)
+            .copied()
+            .unwrap_or(self.data.len());
+        self.data.drain(..data_dropped);
+        self.data_start.drain(..count);
+        for start in &mut self.data_start {
+            *start -= data_dropped;
+        }
+        self.ts_ns.drain(..count);
+        self.id.drain(..count);
+        self.channel.drain(..count);
+        self.flags.drain(..count);
+        // Freed first to make room.
+        self.index = IdIndex::default();
+        let mut index = IdIndex::default();
+        for i in 0..self.len() {
+            index.observe(i as u32, &self.frame(i));
+        }
+        self.index = index;
+        count
+    }
+
     /// Puts the frames in time order if any came earlier than a frame before them, keeping
     /// the order of frames with the same time, and redoes what was worked out in the order
     /// they came: the per-ID statistics and the J1939 transfers. Call it once the log is read.
@@ -961,6 +1003,68 @@ mod tests {
             .map(|i| s.frame(i))
             .map(|f| (f.ts_ns, f.id, f.data.to_vec()))
             .collect()
+    }
+
+    #[test]
+    fn dropping_old_frames_keeps_the_rest_and_redoes_the_statistics() {
+        let mut s = FrameStore::new();
+        push(&mut s, 10, 0x100, &[0x00, 1]);
+        push_on(&mut s, 20, 0, ERR_FLAG | 4, flags::ERROR, &[0, 0, 8]);
+        push(&mut s, 30, 0x100, &[0xff, 2]);
+        push(&mut s, 25, 0x200, &[7]);
+        push(&mut s, 40, 0x100, &[0x0f, 3]);
+        assert_eq!(s.drop_before(5), 0);
+        assert_eq!(s.len(), 5);
+
+        // The late frame at 25 goes only with the frames before it in the store.
+        assert_eq!(s.drop_before(26), 2);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.error_frames(), 0);
+        assert_eq!(s.frame(0).ts_ns, 30);
+        assert_eq!(s.frame(0).data, &[0xff, 2]);
+        assert_eq!(s.frame(1).data, &[7]);
+        assert_eq!(s.frame(2).data, &[0x0f, 3]);
+        assert_eq!(s.first_ts_ns(), Some(30));
+        let ids: Vec<u32> = s.ids().iter().map(|i| i.id).collect();
+        assert_eq!(ids, [0x100, 0x200]);
+        let stats = s.id_stats(id_key(0, 0x100)).unwrap();
+        assert_eq!(stats.frames, [0, 2]);
+        assert_eq!(stats.first_ts_ns, 30);
+        // Only the change from [0xff, 2] to [0x0f, 3] is left: four bits, then one.
+        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 4 + 1);
+        assert!(s.id_stats(id_key(0, ERR_FLAG | 4)).is_none());
+
+        assert_eq!(s.drop_before(i64::MAX), 3);
+        assert!(s.is_empty());
+        assert!(s.ids().is_empty());
+        push(&mut s, 50, 0x300, &[1]);
+        assert_eq!(s.frame(0).data, &[1]);
+    }
+
+    #[test]
+    fn dropping_old_frames_keeps_the_count_of_reassembled_transfers() {
+        let mut s = FrameStore::new();
+        // A BAM announcing 9 bytes of PGN 0xFECA from 0x00, then its two packets.
+        let bam = [0x20, 9, 0, 2, 0xff, 0xca, 0xfe, 0];
+        push(&mut s, 0, EXT_FLAG | 0x1CEC_FF00, &bam);
+        push(
+            &mut s,
+            10,
+            EXT_FLAG | 0x1CEB_FF00,
+            &[1, 1, 2, 3, 4, 5, 6, 7],
+        );
+        push(
+            &mut s,
+            20,
+            EXT_FLAG | 0x1CEB_FF00,
+            &[2, 8, 9, 0xff, 0xff, 0xff, 0xff, 0xff],
+        );
+        assert_eq!(s.reassembled_frames(), 1);
+        s.drop_before(15);
+        assert_eq!(s.reassembled_frames(), 1);
+        s.drop_before(21);
+        assert_eq!(s.reassembled_frames(), 0);
+        assert!(s.is_empty());
     }
 
     #[test]

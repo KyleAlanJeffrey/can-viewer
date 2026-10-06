@@ -5,6 +5,12 @@ import { FrameBatcher, type BatcherOptions } from './batcher';
 
 /** The bus name a capture's frames are stored under when the settings name none. */
 export const CAPTURE_CHANNEL = 'can0';
+/**
+ * A rolling capture is trimmed once its oldest frame is this share of the window past it, or
+ * this long, whichever is more, so the store is rebuilt now and then rather than every batch.
+ */
+const TRIM_SLACK_SHARE = 0.1;
+const MIN_TRIM_SLACK_NS = 10e9;
 /** The frame rate is averaged over about this long. */
 const RATE_WINDOW_MS = 2000;
 /**
@@ -93,6 +99,7 @@ export class CaptureRecorder {
         `Recording ${this.bus} from ${this.adapter.label}${this.channel ? ` channel ${this.channel + 1}` : ''} at ${formatBitrate(this.bitrate)}${this.dataBitrate ? `, CAN FD data ${formatBitrate(this.dataBitrate)}` : ''}, ${this.listenOnly ? 'listen only' : 'not listen only'}.`,
         `${formatCountOf(status.frames, 'frame', 'frames')}${rate} in ${formatDuration(status.elapsedS)}.`,
       ];
+      if (this.keepNs !== null) lines.push(`Keeping only about the last ${this.keepNs / 60e9} min.`);
       if (status.problems > 0) lines.push(`${formatCountOf(status.problems, 'error', 'errors')}. The last: ${status.lastProblem}`);
       return lines.join('\n');
     },
@@ -121,6 +128,11 @@ export class CaptureRecorder {
   /** Whether the adapter confirmed listen-only mode. */
   private listenOnly = false;
   private samples: [number, number][] = [];
+  /** For a rolling capture, how long to keep; null keeps every frame. */
+  private keepNs: number | null = null;
+  /** For a rolling capture: each batch sent to the core and its cost, oldest first. */
+  private sent: { firstNs: number; lastNs: number; bytes: number }[] = [];
+  private latestNs = -Infinity;
   private ended = false;
   private stopping: Promise<LogInfo> | null = null;
   private readonly batcher: FrameBatcher;
@@ -136,6 +148,7 @@ export class CaptureRecorder {
     this.batcher = new FrameBatcher(
       async (frames) => {
         this.info = await this.core.appendFrames(frames);
+        if (this.keepNs !== null) await this.dropOld(frames, this.keepNs);
       },
       (e) => this.end(`The capture stopped because the CAN core failed: ${errorText(e)}`),
       batching,
@@ -178,6 +191,7 @@ export class CaptureRecorder {
     );
     const started = await this.withinStartTimeout(starting);
     this.bitrate = settings.bitrate;
+    this.keepNs = settings.keepMinutes ? settings.keepMinutes * 60e9 : null;
     this.dataBitrate = settings.dataBitrate;
     this.channel = settings.channel;
     this.bus = settings.bus || CAPTURE_CHANNEL;
@@ -190,6 +204,29 @@ export class CaptureRecorder {
     }
     this.batcher.start();
     return { info: this.info, listenOnly: started.listenOnly };
+  }
+
+  /**
+   * Notes `frames`, just sent, and once the oldest frame kept is well past `keepNs` before the
+   * latest, drops what is older in the core. A batch counts towards the memory limit until
+   * all of it is dropped.
+   */
+  private async dropOld(frames: CaptureFrame[], keepNs: number) {
+    let firstNs = Infinity;
+    let lastNs = -Infinity;
+    let bytes = 0;
+    for (const frame of frames) {
+      firstNs = Math.min(firstNs, frame.timeNs);
+      lastNs = Math.max(lastNs, frame.timeNs);
+      bytes += captureFrameBytes(frame);
+    }
+    this.sent.push({ firstNs, lastNs, bytes });
+    this.latestNs = Math.max(this.latestNs, lastNs);
+    const cutoff = this.latestNs - keepNs;
+    const slack = Math.max(MIN_TRIM_SLACK_NS, keepNs * TRIM_SLACK_SHARE);
+    if (this.sent[0].firstNs >= cutoff - slack) return;
+    this.info = await this.core.trimCapture(cutoff);
+    while (this.sent.length > 0 && this.sent[0].lastNs < cutoff) this.bytes -= this.sent.shift()!.bytes;
   }
 
   /** `starting`, or a rejection once `startTimeoutMs` has passed, with the adapter stopped. */

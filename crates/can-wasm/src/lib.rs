@@ -535,6 +535,13 @@ impl Session {
         Ok(self.log_info())
     }
 
+    /// Drop the running capture's frames timed before `before_ns` nanoseconds since it started,
+    /// for a rolling capture; see [`FrameStore::drop_before`]. Returns a JSON `LogInfo`.
+    pub fn trim_capture(&mut self, before_ns: f64) -> Result<String, JsError> {
+        self.drop_captured_before(before_ns).map_err(js_err)?;
+        Ok(self.log_info())
+    }
+
     /// End the capture, putting its frames in time order if they are not. Returns a JSON
     /// `LogInfo`.
     pub fn finish_capture(&mut self) -> Result<String, JsError> {
@@ -1034,6 +1041,23 @@ impl Session {
         Ok(())
     }
 
+    fn drop_captured_before(&mut self, before_ns: f64) -> Result<(), &'static str> {
+        let started_at_ns = match &self.capture {
+            Some(c) if !c.finished => c.started_at_ns,
+            Some(_) => return Err("the capture has ended"),
+            None => return Err("no capture is running"),
+        };
+        if self
+            .store
+            .drop_before(started_at_ns.saturating_add(before_ns.round() as i64))
+            > 0
+        {
+            // Filtered rows name frames by their old places.
+            self.filtered = None;
+        }
+        Ok(())
+    }
+
     fn filter(&self, key: f64) -> Result<Option<&IdStats>, ()> {
         if key < 0.0 {
             return Ok(None);
@@ -1282,6 +1306,27 @@ mod tests {
              (1700000000.002000) slcan0 321##1070707070707070707070707\n\
              (1700000000.003000) slcan0 20000080#0000000000000000\n"
         );
+    }
+
+    #[test]
+    fn a_rolling_capture_drops_its_oldest_frames() {
+        let mut s = Session::new();
+        assert_eq!(s.drop_captured_before(0.0), Err("no capture is running"));
+        s.start_capture("can0", 1_700_000_000_000.0);
+        let mut batch = capture_record(0.0, 0x123, 0, &[1]);
+        batch.extend(capture_record(1e9, 0x456, 0, &[2]));
+        batch.extend(capture_record(2e9, 0x123, 0, &[3]));
+        s.push_capture_records(&batch).unwrap();
+        s.drop_captured_before(1.5e9).unwrap();
+        let info = json(&s.log_info());
+        assert_eq!(info["frames"], 1);
+        assert_eq!(info["durationS"], 0.0);
+        let ids = json(&s.id_summary());
+        assert_eq!(ids.as_array().unwrap().len(), 1);
+        assert_eq!(ids[0]["count"], 1);
+        assert_eq!(s.store.first_ts_ns(), Some(1_700_000_002_000_000_000));
+        s.finish_capture().unwrap();
+        assert_eq!(s.drop_captured_before(3e9), Err("the capture has ended"));
     }
 
     #[test]

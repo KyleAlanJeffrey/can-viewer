@@ -412,6 +412,13 @@ export interface CoreApi {
    * this resolves. Returns the capture so far. Rejects when no capture is running.
    */
   appendFrames(frames: CaptureFrame[]): Promise<LogInfo>;
+  /**
+   * For a rolling capture: drop the running capture's frames timed before `beforeNs`
+   * nanoseconds since it started, from the front of the store up to the first frame at or after
+   * it. Per-ID statistics are redone from the frames kept, so this takes time in proportion to
+   * them. Returns the capture so far. Rejects when no capture is running.
+   */
+  trimCapture(beforeNs: number): Promise<LogInfo>;
   /** End the running capture, putting its frames in time order if they are not. Returns it. */
   endCapture(): Promise<LogInfo>;
   idSummary(): Promise<IdSummary[]>;

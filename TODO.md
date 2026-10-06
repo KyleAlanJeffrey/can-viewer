@@ -59,6 +59,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land
 - [x] Recheck the CSP quoted on the home page if `web/public/_headers` changes (CI now runs `scripts/check-csp-quote.sh`)
 - [x] Make live capture clear on the site: the home page lead and a hero line mention it, a Live capture section (adapters, what updates while recording, saving, what it needs, still experimental) with a screenshot of the Capture sheet, a Live Capture link in every page's nav, and a live capture question on the CANalyzer alternative page
+- [x] Mobile refinements of the site (the 2026-10-06 "Mobile website" mockup in docs/screens.md): the home H1 "Open a CAN log or capture a live bus." with the experimental and desktop-only qualifier in the lead, a readable message-list preview on phones, a "Two ways to start" strip, a menu button on phones, the longer privacy and capture setup detail in collapsible sections, one guide template (CTA and Try the Demo, 3 steps, collapsible questions, guide chips) for the BLF, MF4, DBC and CANalyzer pages, a shorter 404 with two buttons, and a new og-image with the new headline. No script: the menu and the collapsible sections are `details` elements
 
 ## Live capture
 

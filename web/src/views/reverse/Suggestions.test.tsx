@@ -326,6 +326,8 @@ describe('Suggested signals', () => {
     expect(parseMarker('12')).toBe(12);
     expect(parseMarker('12.5 s')).toBe(12.5);
     expect(parseMarker('12,5 s')).toBe(12.5);
+    expect(parseMarker('12,5s')).toBe(12.5);
+    expect(parseMarker('at 12,25s')).toBe(12.25);
     expect(parseMarker('Bremse bei 3,25')).toBe(3.25);
     // A thousands group is too easily misread.
     expect(parseMarker('1,000 s')).toBeNull();

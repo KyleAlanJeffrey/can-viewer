@@ -104,8 +104,8 @@ function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndo
  */
 export function parseMarker(text: string): number | null {
   if (/\d,\d{3}/.test(text)) return null;
-  const labelled = /\bat\s+(-?\d+(?:(?:\.|,(?=\d{1,2}\b))\d+)?)|(-?\d+(?:(?:\.|,(?=\d{1,2}\b))\d+)?)\s*(?:s|secs?|seconds?)\b/i.exec(text);
-  const number = labelled ? (labelled[1] ?? labelled[2]) : /-?\d+(?:(?:\.|,(?=\d{1,2}\b))\d+)?/.exec(text)?.[0];
+  const labelled = /\bat\s+(-?\d+(?:(?:\.|,(?=\d{1,2}(?!\d)))\d+)?)|(-?\d+(?:(?:\.|,(?=\d{1,2}(?!\d)))\d+)?)\s*(?:s|secs?|seconds?)\b/i.exec(text);
+  const number = labelled ? (labelled[1] ?? labelled[2]) : /-?\d+(?:(?:\.|,(?=\d{1,2}(?!\d)))\d+)?/.exec(text)?.[0];
   return number === undefined ? null : Number(number.replace(',', '.'));
 }
 

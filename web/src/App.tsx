@@ -606,6 +606,8 @@ export function App({ core }: { core: CoreApi }) {
       }
       let restored = false;
       const noteLeaving = () => markRestoreLeft(capture.id);
+      // A frozen page that comes back is restoring again, and a crash then counts.
+      const noteBack = () => takeRestoreLeft(capture.id);
       await run(`Restoring ${capture.name}\u2026`, (report) =>
         serially(async () => {
           const tries = failed + 1;
@@ -613,6 +615,7 @@ export function App({ core }: { core: CoreApi }) {
           window.addEventListener('pagehide', noteLeaving);
           // Chrome may discard a frozen background tab without a pagehide.
           document.addEventListener('freeze', noteLeaving);
+          document.addEventListener('resume', noteBack);
           try {
             // Counted first, so a restore that takes the page down counts too.
             await writeKeptCapture({ ...capture, failedRestores: tries, lastRestoreError: undefined }).catch(() => undefined);
@@ -633,6 +636,8 @@ export function App({ core }: { core: CoreApi }) {
             if (capture.trimmedBeforeNs !== undefined) await core.trimCapture(capture.trimmedBeforeNs);
             info = await core.endCapture();
             if (info.frames === 0) throw new DamagedCapture('none of its frames were found');
+            // Before the listeners go, so a page that goes away now still counts as having left.
+            await writeKeptCapture({ ...capture, failedRestores: 0, lastRestoreError: undefined }).catch(() => undefined);
           } catch (e) {
             // As Close does, so the core holds no half-restored capture.
             await core.openLog(new Blob([]), '', () => {}).catch(() => undefined);
@@ -653,10 +658,10 @@ export function App({ core }: { core: CoreApi }) {
           } finally {
             window.removeEventListener('pagehide', noteLeaving);
             document.removeEventListener('freeze', noteLeaving);
+            document.removeEventListener('resume', noteBack);
             // A frozen page that came back finished the restore after all.
             takeRestoreLeft(capture.id);
           }
-          void writeKeptCapture({ ...capture, failedRestores: 0, lastRestoreError: undefined }).catch(() => undefined);
           restored = true;
           const nextIds = await core.idSummary();
           showOpenedLog(info, nextIds);
@@ -1606,6 +1611,10 @@ export function App({ core }: { core: CoreApi }) {
                 <button className="button" onClick={() => setDeletingStuckCapture(true)}>
                   Delete&hellip;
                 </button>
+                {/* For this session only: it is still held, so no other tab restores it meanwhile. */}
+                <button className="icon-button small" onClick={() => setStuckCapture(null)} aria-label="Dismiss">
+                  <X size={14} strokeWidth={1.75} />
+                </button>
               </div>
             )}
             {notKept && (
@@ -1701,7 +1710,7 @@ export function App({ core }: { core: CoreApi }) {
             </button>
             <button
               type="button"
-              className="primary"
+              className="button"
               onClick={() => {
                 setDeletingStuckCapture(false);
                 setStuckCapture(null);

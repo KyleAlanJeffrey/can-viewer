@@ -6,7 +6,7 @@ import { claimKeptCapture, forgetCapture, keptCaptures, readCaptureChunks, write
 import { installLocks, removeLocks, type FakeLocks } from '../test/fakeLocks';
 import { CaptureKeeper, KEEPER_DEFAULTS, notKeptDetail } from './keeper';
 
-const failure = vi.hoisted(() => ({ next: null as unknown, forget: false, hang: false }));
+const failure = vi.hoisted(() => ({ next: null as unknown, forget: false, gate: null as Promise<void> | null }));
 vi.mock('../session', async (importOriginal) => {
   const real = await importOriginal<typeof import('../session')>();
   return {
@@ -14,8 +14,9 @@ vi.mock('../session', async (importOriginal) => {
     writeKeptCapture: (...args: Parameters<typeof real.writeKeptCapture>) => {
       const error = failure.next;
       failure.next = null;
-      if (failure.hang) return new Promise<void>(() => {});
-      return error ? Promise.reject(error) : real.writeKeptCapture(...args);
+      if (error) return Promise.reject(error);
+      // Held until the gate opens, as by a busy disk.
+      return failure.gate ? failure.gate.then(() => real.writeKeptCapture(...args)) : real.writeKeptCapture(...args);
     },
     forgetCapture: (id: string) => (failure.forget ? Promise.resolve(false) : real.forgetCapture(id)),
   };
@@ -42,7 +43,7 @@ async function onlyKept() {
 let locks: FakeLocks;
 beforeEach(async () => {
   failure.forget = false;
-  failure.hang = false;
+  failure.gate = null;
   localStorage.clear();
   vi.stubGlobal('indexedDB', new IDBFactory());
   locks = installLocks();
@@ -236,16 +237,67 @@ describe('CaptureKeeper', () => {
     await keeper.forget();
   });
 
-  it('finishes a stop when storage hangs, giving up keeping the capture', async () => {
+  /** Holds every write from now until the returned function is called. */
+  function busyDisk(): () => void {
+    let open = () => {};
+    failure.gate = new Promise<void>((resolve) => (open = resolve));
+    return () => {
+      failure.gate = null;
+      open();
+    };
+  }
+
+  it('finishes a stop on a busy disk, and keeps the whole capture once the last write lands', async () => {
     const keeper = new CaptureKeeper({ stopWaitMs: 50 });
     const notKept = vi.fn();
     keeper.onNotKept = notKept;
     await keeper.begin(info);
-    failure.hang = true;
+    keeper.add(frames(0, 3));
+    await keeper.flush();
+    const { id } = await onlyKept();
+    const diskFree = busyDisk();
+    keeper.add(frames(3, 2));
+    await keeper.stop();
+    expect(keeper.kept).toBe(true);
+    expect(await storedTimes(id)).toEqual([0, 1, 2]);
+    diskFree();
+    await vi.waitFor(async () => expect(await storedTimes(id)).toEqual([0, 1, 2, 3, 4]));
+    expect(notKept).not.toHaveBeenCalled();
+    expect(await onlyKept()).toMatchObject({ frames: 5 });
+  });
+
+  it('keeps a capture stopped while it waits for the capture it replaces to be deleted', async () => {
+    let deleted = () => {};
+    const replaced: HeldCapture = { kept: true, forget: vi.fn(() => new Promise<void>((resolve) => (deleted = resolve))), letGo: vi.fn(async () => {}) };
+    const keeper = new CaptureKeeper({ stopWaitMs: 50 });
+    keeper.replaces = replaced;
+    void keeper.begin(info);
     keeper.add(frames(0, 3));
     await keeper.stop();
-    expect(notKept).toHaveBeenCalledWith('slow');
-    expect(keeper.kept).toBe(false);
+    expect(await keptCaptures()).toEqual([]);
+    deleted();
+    await vi.waitFor(async () => expect(await keptCaptures()).toMatchObject([{ frames: 3 }]));
+    await vi.waitFor(() => expect(keeper.kept).toBe(true));
+    expect(await storedTimes((await onlyKept()).id)).toEqual([0, 1, 2]);
+    // Stopped: nothing more is written.
+    keeper.add(frames(3, 1));
+    await keeper.flush();
+    expect(await storedTimes((await onlyKept()).id)).toEqual([0, 1, 2]);
+  });
+
+  it('never brings back, with a write that lands late, a capture forgotten meanwhile', async () => {
+    const keeper = new CaptureKeeper({ stopWaitMs: 50 });
+    await keeper.begin(info);
+    const { id } = await onlyKept();
+    const diskFree = busyDisk();
+    keeper.add(frames(0, 3));
+    await keeper.stop();
+    const forgotten = keeper.forget();
+    diskFree();
+    await forgotten;
+    expect(await keptCaptures()).toEqual([]);
+    expect(await storedTimes(id)).toEqual([]);
+    expect(locks.holds(`freecan-studio-capture-${id}`)).toBe(false);
   });
 
   it('holds on to a capture it could not delete, so no other tab restores it', async () => {

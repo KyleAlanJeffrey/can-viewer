@@ -281,9 +281,33 @@ describe('kept captures', () => {
     const session = await openTab();
     expect(session.takeRestoreLeft('a')).toBe(false);
     session.markRestoreLeft('a');
-    expect(session.takeRestoreLeft('b')).toBe(false);
+    // Another tab's restore, cut short too, keeps its own note.
+    (await openTab()).markRestoreLeft('b');
+    expect(session.takeRestoreLeft('c')).toBe(false);
     expect(session.takeRestoreLeft('a')).toBe(true);
     expect(session.takeRestoreLeft('a')).toBe(false);
+    expect(session.takeRestoreLeft('b')).toBe(true);
+  });
+
+  it('writes nothing for a capture being deleted, or no longer wanted, once storage is open', async () => {
+    const session = await openTab();
+    await session.writeKeptCapture(capture('a', 1), chunk(1), 0, () => false);
+    expect(await session.keptCaptures()).toEqual([]);
+    localStorage.setItem('freecan-studio.forgotten-captures', JSON.stringify(['a']));
+    await session.writeKeptCapture(capture('a', 1), chunk(1));
+    expect(await session.keptCaptures()).toEqual([]);
+    expect(await chunksOf(session, 'a')).toEqual([]);
+  });
+
+  it('drops the notes of deletes that have since landed', async () => {
+    const session = await openTab();
+    await session.writeKeptCapture(capture('a', 1), chunk(1));
+    await session.writeKeptCapture(capture('b', 2), chunk(2));
+    // b's delete failed; gone's landed, but its note stayed.
+    localStorage.setItem('freecan-studio.forgotten-captures', JSON.stringify(['gone', 'b']));
+    expect((await session.claimKeptCapture())?.capture.id).toBe('a');
+    expect(localStorage.getItem('freecan-studio.forgotten-captures')).toBeNull();
+    expect((await session.keptCaptures()).map((c) => c.id)).toEqual(['a']);
   });
 
   it('claims nothing without Web Locks, as it could not tell whether another tab has the capture', async () => {

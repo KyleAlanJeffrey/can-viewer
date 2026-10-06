@@ -408,6 +408,17 @@ describe('App unsaved capture across a reload', () => {
     await waitFor(async () => expect(await session.keptCaptures()).toMatchObject([{ failedRestores: 0 }]));
   });
 
+  it('hides the question for this session on Dismiss, still holding the capture', async () => {
+    const { session, capture } = await storedCapture({ failedRestores: 2, lastRestoreError: 'There isn\u2019t enough memory' });
+    const App = await freshApp();
+    render(<App core={captureCore().core} />);
+    expect(await screen.findByText(/There isn\u2019t enough memory\. It\u2019s still kept in this browser/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(/couldn\u2019t be restored after/)).toBeNull();
+    expect(locks.holds(`freecan-studio-capture-${capture.id}`)).toBe(true);
+    expect(await session.keptCaptures()).toHaveLength(1);
+  });
+
   it('keeps a capture that fails to restore for a reload to try again, then asks, and deletes it only when told', async () => {
     const { session, capture } = await storedCapture();
     const brokenCore = () => {

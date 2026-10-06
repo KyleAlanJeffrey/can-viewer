@@ -228,10 +228,12 @@ function transaction(mode: IDBTransactionMode, run: (store: IDBObjectStore) => v
   );
 }
 
+const listKeptCaptures = () => request<KeptCapture[]>('readonly', (s) => s.getAll(capturesRange()));
+
 /** Every capture kept, whoever holds it. */
 export async function keptCaptures(): Promise<KeptCapture[]> {
   try {
-    return await request<KeptCapture[]>('readonly', (s) => s.getAll(capturesRange()));
+    return await listKeptCaptures();
   } catch {
     return [];
   }
@@ -249,12 +251,15 @@ export async function keptCapture(id: string): Promise<KeptCapture | undefined> 
 /**
  * Stores `capture` with `chunk` as its chunk number `seq` (if any), deleting its chunks before
  * `dropBefore`, all at once. Rejects with the browser's error, a `QuotaExceededError` when full.
+ * Writes nothing if, once storage is open, the capture is being deleted or `wanted` says no.
  */
-export function writeKeptCapture(capture: KeptCapture, chunk?: { seq: number; bytes: ArrayBuffer }, dropBefore = 0): Promise<void> {
+export function writeKeptCapture(capture: KeptCapture, chunk?: { seq: number; bytes: ArrayBuffer }, dropBefore = 0, wanted = () => true): Promise<void> {
   // Relaxed: a chunk lost to a power cut is acceptable, and not waiting for the disk keeps writes cheap.
   return transaction(
     'readwrite',
     (store) => {
+      // A write that waited on storage must not bring back a capture deleted meanwhile.
+      if (!wanted() || forgottenCaptures().includes(capture.id)) return;
       if (dropBefore > 0) store.delete(chunksRange(capture.id, 0, dropBefore));
       if (chunk) store.put(chunk.bytes, ['capture-chunk', capture.id, chunk.seq]);
       store.put(capture, ['capture', capture.id]);
@@ -263,26 +268,30 @@ export function writeKeptCapture(capture: KeptCapture, chunk?: { seq: number; by
   );
 }
 
-const FORGOTTEN_KEY = 'freecan-studio.forgotten-captures';
-
-/** Kept captures meant to be deleted, in case a delete fails or the page goes first. */
-function forgottenCaptures(): string[] {
+/** The capture IDs in `localStorage` under `key`, shared by every tab. */
+function storedIds(key: string): string[] {
   try {
-    const ids: unknown = JSON.parse(localStorage.getItem(FORGOTTEN_KEY) ?? '[]');
+    const ids: unknown = JSON.parse(localStorage.getItem(key) ?? '[]');
     return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
   } catch {
     return [];
   }
 }
 
-function setForgottenCaptures(ids: string[]) {
+function storeIds(key: string, ids: string[]) {
   try {
-    if (ids.length > 0) localStorage.setItem(FORGOTTEN_KEY, JSON.stringify(ids));
-    else localStorage.removeItem(FORGOTTEN_KEY);
+    if (ids.length > 0) localStorage.setItem(key, JSON.stringify(ids));
+    else localStorage.removeItem(key);
   } catch {
-    // Without localStorage, a delete that fails is retried only by the tab holding the capture.
+    // Without localStorage, what these IDs note is lost, which costs at most one restore.
   }
 }
+
+const FORGOTTEN_KEY = 'freecan-studio.forgotten-captures';
+
+/** Kept captures meant to be deleted, in case a delete fails or the page goes first. */
+const forgottenCaptures = () => storedIds(FORGOTTEN_KEY);
+const setForgottenCaptures = (ids: string[]) => storeIds(FORGOTTEN_KEY, ids);
 
 /**
  * Deletes a kept capture and its chunks, trying twice. Resolves false if storage refused; it
@@ -309,22 +318,15 @@ const RESTORE_LEFT_KEY = 'freecan-studio.restore-interrupted';
 
 /** Notes, as the page goes away, that its restore of capture `id` was cut short by a reload or a close, not a crash. */
 export function markRestoreLeft(id: string) {
-  try {
-    localStorage.setItem(RESTORE_LEFT_KEY, id);
-  } catch {
-    // The restore then counts as failed.
-  }
+  storeIds(RESTORE_LEFT_KEY, [...storedIds(RESTORE_LEFT_KEY).filter((other) => other !== id), id]);
 }
 
 /** Whether the last restore of capture `id` was cut short by the page going away, forgetting the note. */
 export function takeRestoreLeft(id: string): boolean {
-  try {
-    if (localStorage.getItem(RESTORE_LEFT_KEY) !== id) return false;
-    localStorage.removeItem(RESTORE_LEFT_KEY);
-    return true;
-  } catch {
-    return false;
-  }
+  const left = storedIds(RESTORE_LEFT_KEY);
+  if (!left.includes(id)) return false;
+  storeIds(RESTORE_LEFT_KEY, left.filter((other) => other !== id));
+  return true;
 }
 
 /** Calls `each` with each chunk of a kept capture in order, reading a few at a time. */
@@ -378,8 +380,15 @@ export const canKeepCaptures = () => typeof navigator !== 'undefined' && !!navig
  */
 export async function claimKeptCapture(): Promise<{ capture: KeptCapture; held: HeldCapture } | undefined> {
   if (!canKeepCaptures()) return undefined;
-  const kept = (await keptCaptures()).sort((a, b) => b.startedAtMs - a.startedAtMs);
-  const forgotten = forgottenCaptures();
+  let kept: KeptCapture[];
+  try {
+    kept = (await listKeptCaptures()).sort((a, b) => b.startedAtMs - a.startedAtMs);
+  } catch {
+    return undefined;
+  }
+  // Deleted since; another tab writing the list meanwhile may lose an ID, costing one restore.
+  const forgotten = forgottenCaptures().filter((id) => kept.some((c) => c.id === id));
+  setForgottenCaptures(forgotten);
   for (const listed of kept) {
     const release = await lockCapture(listed.id);
     if (!release) continue;

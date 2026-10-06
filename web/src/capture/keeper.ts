@@ -1,5 +1,6 @@
 import type { CaptureFrame } from '../core/api';
 import { packFrames } from '../core/captureFrames';
+import { settleWithin } from './adapter';
 import { canKeepCaptures, forgetCapture, KEPT_CAPTURE_LAYOUT, keptCaptures, lockCapture, writeKeptCapture, type HeldCapture, type KeptCapture } from '../session';
 
 export interface KeeperOptions {
@@ -13,7 +14,7 @@ export interface KeeperOptions {
   recountEvery: number;
   /** Give up once this many packed bytes wait for storage that doesn't keep up. */
   maxWaitingBytes: number;
-  /** How long a stop waits for the last write before giving up keeping, so it always finishes. */
+  /** How long a stop waits for the last write, which otherwise lands later, so it always finishes. */
   stopWaitMs: number;
 }
 
@@ -54,6 +55,10 @@ export class CaptureKeeper implements HeldCapture {
   private capture: KeptCapture | null = null;
   private release: () => void = () => {};
   private beginning: Promise<void> = Promise.resolve();
+  private begun = false;
+  private finishing: Promise<void> | null = null;
+  /** Set once its copy is being deleted, so no write still to land can bring it back. */
+  private deleted = false;
   /** What other tabs' captures stored when last looked at. */
   private othersBytes = 0;
   private sinceRecount = 0;
@@ -85,6 +90,7 @@ export class CaptureKeeper implements HeldCapture {
 
   /** Starts keeping the capture the core has just started. Never rejects. */
   begin(info: Pick<KeptCapture, 'name' | 'bus' | 'startedAtMs' | 'bitrate'>): Promise<void> {
+    this.begun = true;
     this.beginning = this.start(info);
     return this.beginning;
   }
@@ -151,31 +157,29 @@ export class CaptureKeeper implements HeldCapture {
   }
 
   /**
-   * Writes the last frames and stops writing, still holding the capture. Gives up keeping it
-   * if storage takes longer than `stopWaitMs`.
+   * Writes the last frames and stops writing, still holding the capture. Resolves after
+   * `stopWaitMs` at most: storage that is slower goes on beginning or writing in the background.
    */
   async stop(): Promise<void> {
-    const stopping = (async () => {
+    // Stopped before it began, it never will.
+    if (this.state === 'idle' && !this.begun) {
+      this.state = 'stopped';
+      return;
+    }
+    this.finishing ??= (async () => {
       await this.beginning;
       this.clearTimer();
       await this.flush();
+      if (this.state === 'keeping') this.state = 'stopped';
     })();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<'late'>((resolve) => (timer = setTimeout(() => resolve('late'), this.options.stopWaitMs)));
-    const outcome = await Promise.race([stopping, late]);
-    clearTimeout(timer);
-    if (outcome === 'late') {
-      this.clearTimer();
-      void this.giveUp('slow');
-    }
-    // Stopped before it began, it never will.
-    if (this.state === 'keeping' || this.state === 'idle') this.state = 'stopped';
+    await settleWithin(this.finishing, this.options.stopWaitMs);
   }
 
   async forget(): Promise<void> {
     if (this.state === 'gone') return;
     const stored = this.kept;
     this.state = 'gone';
+    this.deleted = true;
     this.clearTimer();
     this.clearParts();
     // A write under way lands first, so the delete takes it too.
@@ -215,7 +219,7 @@ export class CaptureKeeper implements HeldCapture {
     const seq = this.nextSeq;
     const capture: KeptCapture = { ...this.capture, frames: this.frames + frames, bytes: this.bytes + bytes.length, trimmedBeforeNs };
     try {
-      await writeKeptCapture(capture, bytes.length > 0 ? { seq, bytes: bytes.buffer as ArrayBuffer } : undefined, dropBefore);
+      await writeKeptCapture(capture, bytes.length > 0 ? { seq, bytes: bytes.buffer as ArrayBuffer } : undefined, dropBefore, () => !this.deleted);
     } catch (e) {
       await this.giveUp((e as { name?: unknown } | null)?.name === 'QuotaExceededError' ? 'full' : 'failed');
       return;
@@ -233,6 +237,7 @@ export class CaptureKeeper implements HeldCapture {
     // Not begun yet, nothing is stored, and `start` lets go.
     const stored = this.state === 'keeping';
     this.state = 'gone';
+    this.deleted = true;
     this.clearTimer();
     this.clearParts();
     // Said at once: storage that is too slow may take a long time to delete too.

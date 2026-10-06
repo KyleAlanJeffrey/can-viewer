@@ -1,8 +1,8 @@
 // Screenshots of the landing site (site/public) and the built app (web/dist) at desktop and phone
 // widths, taken in headless Chrome over the DevTools protocol. Both are served with their _headers,
 // so the shots run under the real Content-Security-Policy. Fails on any console error, CSP
-// violation, uncaught exception or failed same-origin request, and on a site page wider than the
-// window, and on a service worker that fails to install. No dependencies: needs Node 22 (for
+// violation, uncaught exception or failed same-origin request, on a site page or a step of the
+// app's welcome wider than the window, and on a service worker that fails to install. No dependencies: needs Node 22 (for
 // WebSocket) and Chrome.
 //
 // Usage: node scripts/screenshots.mjs
@@ -14,6 +14,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import { startStaticServer } from './serve-static.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -217,6 +218,33 @@ class Tab {
     return null;
   }
 
+  /** Gives the file input `selector` these files, as choosing them in the browser's picker does. */
+  async setFiles(selector, files) {
+    const { result } = await this.send('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(selector)})` });
+    if (!result.objectId) return 'not in the page';
+    await this.send('DOM.setFileInputFiles', { files, objectId: result.objectId });
+    return null;
+  }
+
+  /** Clicks `selector`, failing the step if it can't. Returns whether it could. */
+  async press(selector, what) {
+    const reason = await this.click(selector);
+    if (reason) this.problem('unreachable', `${what}: ${reason}`);
+    return !reason;
+  }
+
+  /** Fails the step if anything in the app reaches past the window's edges. The app clips its own overflow, so the page never scrolls to show it. */
+  async checkAppFits() {
+    const wide = await this.evaluate(`(() => {
+      const w = document.documentElement.clientWidth;
+      return [...document.querySelectorAll('.app *')]
+        .filter((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && (r.right > w + 0.5 || r.left < -0.5); })
+        .slice(0, 5)
+        .map((el) => el.tagName.toLowerCase() + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\\s+/).join('.') : ''));
+    })()`);
+    if (wide.length > 0) this.problem('horizontal overflow', `past the edge: ${wide.join(', ')}`);
+  }
+
   async screenshot(file, { fullPage }) {
     const params = { format: 'png' };
     if (fullPage) {
@@ -356,8 +384,48 @@ async function shootSite(tab, origin, viewport, shots) {
   tab.expectedStatus = null;
 }
 
-async function shootApp(tab, origin, viewport, shots, notes) {
-  const status = `(document.querySelector('.doc-sub[role=status]')?.textContent ?? '')`;
+/** The welcome's steps: the source, then the setup of a log and of a live capture, here and where the browser can't capture. */
+async function shootWelcome(tab, origin, viewport, shoot, samples) {
+  const welcomeShown = (heading) => `document.querySelector('.wel-title')?.textContent === ${JSON.stringify(heading)}`;
+
+  tab.step = `app-welcome-file-${viewport.name}.png`;
+  if (!(await tab.press('.wel-actions .primary', 'Continue with a log'))) return;
+  if (!(await tab.waitFor('the log setup did not open', welcomeShown('Choose your log'), 10_000))) return;
+  for (const [selector, file] of [
+    ['.wel input[type=file]:not([accept])', samples.log],
+    ['.wel input[type=file][accept=".dbc"]', samples.dbc],
+  ]) {
+    const reason = await tab.setFiles(selector, [file]);
+    if (reason) tab.problem('unreachable', `${selector}: ${reason}`);
+  }
+  await tab.waitFor('the chosen log and DBC did not show', `document.querySelector('.wel-file .wel-file-label')?.textContent === 'demo.log' && !!document.querySelector('.wel-dbcs')`, 10_000);
+  await tab.checkAppFits();
+  await shoot(tab.step, 'welcome, log setup with a log and DBC chosen');
+
+  tab.step = `app-welcome-live-${viewport.name}.png`;
+  if (!(await tab.press('.wel-back', 'Back'))) return;
+  if (!(await tab.press('.wel-choice[data-source="live"] input', 'Connect live'))) return;
+  if (!(await tab.press('.wel-actions .primary', 'Continue with live capture'))) return;
+  // The live settings load with the capture code.
+  await tab.waitFor('the live setup did not load', `${welcomeShown('Connect to a CAN bus')} && !!document.querySelector('.wel-start .primary')`, 30_000);
+  await tab.checkAppFits();
+  await shoot(tab.step, 'welcome, live setup');
+
+  tab.step = `app-welcome-live-unsupported-${viewport.name}.png`;
+  // As in Firefox, Safari and phones without Web Serial or WebUSB.
+  const { identifier } = await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: 'delete Navigator.prototype.serial; delete Navigator.prototype.usb;' });
+  await tab.navigate(`${origin}/`);
+  await tab.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+  if (!(await tab.waitFor('the welcome did not show', welcomeShown('How would you like to start?'), 30_000))) return;
+  if (!(await tab.press('.wel-choice[data-source="live"] input', 'Connect live'))) return;
+  if (!(await tab.press('.wel-actions .primary', 'Continue with live capture'))) return;
+  await tab.waitFor('the live guidance did not show', welcomeShown('Live capture needs a compatible computer'), 10_000);
+  await tab.checkAppFits();
+  await shoot(tab.step, 'welcome, live capture unavailable in this browser');
+}
+
+async function shootApp(tab, origin, viewport, shots, notes, samples) {
+  const status = `(document.querySelector('.toolbar [role=status]')?.textContent ?? '')`;
   const idle = `!document.querySelector('.app[data-busy]')`;
   const shoot = async (file, what) => {
     await tab.settle();
@@ -366,12 +434,14 @@ async function shootApp(tab, origin, viewport, shots, notes) {
     console.log(`  ${file}`);
   };
 
-  tab.step = `app-empty-${viewport.name}.png`;
+  tab.step = `app-welcome-source-${viewport.name}.png`;
   await tab.navigate(`${origin}/`);
-  await tab.waitFor('the app did not finish starting', `${idle} && ${status} !== '' && !${status}.startsWith('Restoring')`, 30_000);
-  await shoot(tab.step, 'empty state');
+  await tab.waitFor('the app did not finish starting', `${idle} && !!document.querySelector('.wel-title')`, 30_000);
+  await tab.checkAppFits();
+  await shoot(tab.step, 'welcome, choosing a source');
   // The app works offline only once its service worker has installed.
   await tab.waitFor('the service worker did not install', `navigator.serviceWorker.getRegistration().then((r) => !!r?.active)`, 30_000);
+  await shootWelcome(tab, origin, viewport, shoot, samples);
 
   tab.step = `app-demo-${viewport.name}.png`;
   await tab.navigate(`${origin}/?demo=1`);
@@ -480,6 +550,9 @@ async function main() {
   if (chromeError) throw new Error(chromeError);
   if (!existsSync(portFile)) throw new Error('Chrome did not open its DevTools port within 30 s');
   const [port, path] = readFileSync(portFile, 'utf8').trim().split('\n');
+  // The welcome's log setup is shown with the demo chosen, as a user would pick it from disk.
+  const samples = { log: join(resources.profile, 'demo.log'), dbc: join(appDir, 'demo/demo.dbc') };
+  writeFileSync(samples.log, gunzipSync(readFileSync(join(appDir, 'demo/demo.log.gz'))));
   const cdp = await Cdp.connect(`ws://127.0.0.1:${port}${path}`);
   resources.cdp = cdp;
 
@@ -499,7 +572,7 @@ async function main() {
     const siteTab = await openTab(cdp, tabs, problems, viewport, mobileUserAgent);
     await shootSite(siteTab, site.origin, viewport, shots);
     const appTab = await openTab(cdp, tabs, problems, viewport, mobileUserAgent);
-    await shootApp(appTab, app.origin, viewport, shots, notes);
+    await shootApp(appTab, app.origin, viewport, shots, notes, samples);
     for (const tab of [siteTab, appTab]) await cdp.send('Target.disposeBrowserContext', { browserContextId: tab.contextId });
   }
 

@@ -7,6 +7,7 @@ import type { KeptCapture } from './session';
 import { FakeSerialPort } from './test/fakeSerial';
 import { installLocks, removeLocks, type FakeLocks } from './test/fakeLocks';
 import { fakeCore, logInfo, summary } from './test/fixtures';
+import { openLiveSetup } from './test/welcome';
 
 /** Each load is a fresh copy of the app's modules, as after a reload. */
 async function freshApp() {
@@ -80,9 +81,9 @@ function captureCore() {
 }
 
 async function startCapture() {
-  await userEvent.click(await screen.findByRole('button', { name: 'Connect live\u2026' }));
+  await openLiveSetup();
   await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
-  await userEvent.click(within(screen.getByRole('dialog', { name: 'Live Capture' })).getByRole('button', { name: 'Start Capture' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
   await screen.findByRole('button', { name: 'Stop Capture' });
 }
 
@@ -124,7 +125,7 @@ const alertText = async () => (await screen.findByRole('alert')).textContent;
 const stubSavePicker = () =>
   vi.stubGlobal('showSaveFilePicker', async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {} }) }));
 
-const emptyState = () => screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+const emptyState = () => screen.findByRole('heading', { name: 'How would you like to start?' });
 
 describe('App unsaved capture across a reload', () => {
   it('brings an unsaved capture back after a reload, still to be saved', async () => {

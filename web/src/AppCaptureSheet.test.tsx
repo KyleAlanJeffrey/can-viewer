@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from './App';
-import { fakeCore } from './test/fixtures';
+import { fakeCore, logInfo } from './test/fixtures';
 
 // One way of loading per file: a mocked module is loaded once per file, whatever resetModules does.
 const sheet = vi.hoisted(() => {
@@ -20,9 +20,13 @@ vi.mock('./capture/CaptureSheet', async (importOriginal) => {
 describe('App Capture sheet', () => {
   it('loads the sheet only once Connect live... is clicked, showing it as loading until then', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
-    render(<App core={fakeCore()} />);
+    const { container } = render(<App core={fakeCore({ openLog: async () => logInfo(), idSummary: async () => [] })} />);
     // A worker's first render, and loading the real sheet's code, can each take over a second under load.
-    await screen.findByRole('heading', { name: 'Open a CAN log to get started' }, { timeout: 3000 });
+    await screen.findByRole('heading', { name: 'How would you like to start?' }, { timeout: 3000 });
+    // The welcome's first step doesn't load the capture code either.
+    await userEvent.click(screen.getByRole('radio', { name: 'Connect live' }));
+    await userEvent.upload(container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!, new File(['(1.0) can0 123#00\n'], 'x.log'));
+    await screen.findByText('candump \u00b7 1,000 frames \u00b7 1 min 40 s');
     expect(sheet.loaded).toBe(0);
 
     await userEvent.click(screen.getByRole('button', { name: 'Connect live\u2026' }));

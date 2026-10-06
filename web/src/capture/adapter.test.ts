@@ -27,8 +27,7 @@ describe('DeviceClock', () => {
       maxAheadNs = Math.max(maxAheadNs, timeNs - hostNs);
     }
     // Unslewed, the last frame would be 5.4 s ahead.
-    expect(maxAheadNs).toBeLessThan(1e6);
-    expect(maxAheadNs).toBeLessThan(MAX_AHEAD_OF_HOST_NS);
+    expect(maxAheadNs).toBeLessThanOrEqual(0);
     expect(rising(times)).toBe(true);
   });
 
@@ -42,10 +41,18 @@ describe('DeviceClock', () => {
     let hostNs = 0;
     for (let ms = 20; ms <= 60_000; ms += 10) {
       hostNs = ms * 1e6 + 1e6;
-      times.push(clock.time(ms * 1e6, hostNs));
+      times.push(clock.time((ms * 1e6) % 60e9, hostNs));
     }
     expect(times.at(-1)! - hostNs).toBeCloseTo(0, 0);
     expect(rising(times)).toBe(true);
+  });
+
+  it('slews by the adapter time past the latest seen, so a frame stamped in the past keeps the next in order', () => {
+    const clock = new DeviceClock(60e9);
+    clock.sync(0, 0.5e9);
+    const before = clock.time(10e9, 10e9);
+    clock.time(5e9, 10.1e9);
+    expect(clock.time(10.001e9, 10.2e9)).toBeGreaterThan(before);
   });
 
   it('holds a time more than a second ahead to a second past the host clock, leaving the anchor and slew alone', () => {

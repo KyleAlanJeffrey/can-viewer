@@ -104,8 +104,8 @@ const MAX_SLEW = 1e-3;
  * anchored to the host clock, and unwrapped by taking the number of wraps that brings the time
  * counted nearest to what the host clock says has passed. Times stay absolute, and the host's
  * USB and scheduling jitter is left out. A frame can't really be timed after it arrived, so
- * when one is, the anchor is moved back by up to `MAX_SLEW` of the adapter time since the last
- * frame: that undoes an anchor taken late and follows an adapter clock that runs fast, while
+ * when one is, the anchor is moved back by up to `MAX_SLEW` of the adapter time since the latest
+ * adapter time seen: that undoes an anchor taken late and follows an adapter clock that runs fast, while
  * times keep rising. A time still more than `MAX_AHEAD_OF_HOST_NS` past the host clock is held
  * to it and leaves the anchor alone.
  */

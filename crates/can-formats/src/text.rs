@@ -85,11 +85,11 @@ pub(crate) fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-/// A UTC date and time of day as nanoseconds since the Unix epoch. Years outside 1970 to
-/// 2262 (where the nanoseconds run out) give `None`: no log is that old, and a year past it
-/// is a broken field.
+/// A UTC date and time of day as nanoseconds since the Unix epoch. Years outside 1678 to
+/// 2262 (where the nanoseconds run out) give `None`, as a broken field. Years before 1970 are
+/// kept, since the export of a log with times before the epoch starts in one.
 pub(crate) fn unix_ns(year: i64, month: u32, day: u32, ns_of_day: i64) -> Option<i64> {
-    if !(1970..=2262).contains(&year) {
+    if !(1678..=2262).contains(&year) {
         return None;
     }
     days_from_civil(year, month, day)
@@ -164,7 +164,9 @@ mod tests {
         assert_eq!(unix_ns(2025, 9, 30, 0), Some(1_759_190_400_000_000_000));
         assert_eq!(unix_ns(2262, 4, 11, 0), Some(9_223_286_400_000_000_000));
         assert_eq!(unix_ns(2262, 12, 31, 0), None);
-        assert_eq!(unix_ns(1969, 12, 31, 0), None);
+        assert_eq!(unix_ns(1969, 12, 31, 0), Some(-86_400_000_000_000));
+        assert_eq!(unix_ns(1678, 1, 1, 0), Some(-9_214_560_000_000_000_000));
+        assert_eq!(unix_ns(1677, 12, 31, 0), None);
         assert_eq!(unix_ns(i64::MAX, 1, 1, 0), None);
     }
 

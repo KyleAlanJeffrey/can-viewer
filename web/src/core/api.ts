@@ -400,6 +400,9 @@ export interface ByteComparison {
   len: number;
   framesA: number;
   framesB: number;
+  /** Data frames and reassembled transfers, the frames `flipsA` and `flipsB` pair up. */
+  payloadsA: number;
+  payloadsB: number;
   /** Bit toggles from the previous frame of the same kind in each log, indexed `byte * 8 + bit` and counted as in `bitFlips`. */
   flipsA: number[];
   flipsB: number[];

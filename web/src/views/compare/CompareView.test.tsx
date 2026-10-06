@@ -58,6 +58,8 @@ function bytes(fields: Partial<ByteComparison> = {}): ByteComparison {
     len: 8,
     framesA: 1000,
     framesB: 500,
+    payloadsA: 1000,
+    payloadsB: 500,
     flipsA: Array(64).fill(0),
     flipsB: Array(64).fill(0),
     bitScores,
@@ -288,6 +290,14 @@ describe('results', () => {
     expect(byte3.className).toContain('changed');
     expect(byte3.getAttribute('aria-pressed')).toBe('true');
     await waitFor(() => expect(byte3.textContent).toBe('Byte 3A 00B 01 (differs)Changed'));
+  });
+
+  it('says an ID of remote frames only has no payload bytes to show', async () => {
+    const empty = { len: 0, payloadsA: 0, payloadsB: 0, flipsA: [], flipsB: [], bitScores: [], byteScores: [], byteReasons: [], newValues: [], firstOnlyInA: [] };
+    renderInShell(CompareView, { core: compareCore(RESULTS, { compareBytes: async () => bytes(empty) }) });
+    expect(await screen.findByText('No payload bytes in log A.')).toBeTruthy();
+    expect(screen.getByText('No payload bytes in log B.')).toBeTruthy();
+    expect(screen.queryByText(/Loading/, { selector: '.cmp-grid-empty' })).toBeNull();
   });
 
   it('opens the selected ID and byte in Reverse Engineer on log A', async () => {

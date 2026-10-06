@@ -787,8 +787,8 @@ fn selector(scored: &[Scored], sample: &Sample) -> Option<(Range, usize)> {
     Some((best.range, pages))
 }
 
-/// Whether the range reads like a multiplexed cell: it moves much more from one frame to the
-/// next than from one frame of a page to the next frame of that page.
+/// Whether the range reads like part of a multiplexed cell: it moves much more from one frame to
+/// the next than from one frame of a page to the next frame of that page.
 fn changes_with_the_page(sample: &Sample, range: Range, pages: usize) -> bool {
     let values: Vec<u64> = sample.data.iter().map(|d| range.read(d)).collect();
     let (mut steps, mut each_frame, mut each_page) = (0u64, 0u64, 0u64);
@@ -803,6 +803,15 @@ fn changes_with_the_page(sample: &Sample, range: Range, pages: usize) -> bool {
             .min(u64::from(u32::MAX));
     }
     each_frame > 3 * each_page + steps / 20
+}
+
+/// How many bits of `byte` change from one frame to the next, on average.
+fn changed_bits_per_step(sample: &Sample, byte: usize) -> f64 {
+    let changed: u32 = (1..sample.len())
+        .filter(|&i| sample.follows[i])
+        .map(|i| (sample.data[i][byte] ^ sample.data[i - 1][byte]).count_ones())
+        .sum();
+    f64::from(changed) / sample.steps().max(1) as f64
 }
 
 /// Whether the range starts at bit 0 of a byte and covers whole bytes.
@@ -1552,15 +1561,19 @@ pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
     }
 
     // Cells of a multiplexed message take turns with the selector, which read frame to frame
-    // can pass for toggles and values; nothing is suggested in them.
+    // can pass for toggles and values; nothing is suggested in them. A byte is a cell when many
+    // of its bits change with the page; elsewhere each candidate is judged on its own, apart from
+    // counters: a heartbeat bit, or a second counter whose period divides the pages, moves the
+    // same way.
     if let Some((selector, pages)) = selector(&scored, &sample) {
         let selector_mask = selector.mask();
+        let overlaps = |a: &[u64], b: &[u64]| a.iter().zip(b).any(|(x, y)| x & y != 0);
         let mut cells = [0u64; MAX_PAYLOAD / 8];
         for byte in 0..len {
-            let range = Range::intel(byte * 8, 8);
-            let mask = range.mask();
-            if !mask.iter().zip(&selector_mask).any(|(a, b)| a & b != 0)
-                && changes_with_the_page(&sample, range, pages)
+            let mask = Range::intel(byte * 8, 8).mask();
+            if !overlaps(&mask, &selector_mask)
+                && changed_bits_per_step(&sample, byte) > 1.5
+                && changes_with_the_page(&sample, Range::intel(byte * 8, 8), pages)
             {
                 for (c, m) in cells.iter_mut().zip(mask) {
                     *c |= m;
@@ -1568,7 +1581,11 @@ pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
             }
         }
         scored.retain(|s| {
-            s.kind == Kind::Checksum || !s.range.mask().iter().zip(&cells).any(|(m, c)| m & c != 0)
+            let mask = s.range.mask();
+            s.kind == Kind::Checksum
+                || overlaps(&mask, &selector_mask)
+                || (!overlaps(&mask, &cells)
+                    && (s.kind == Kind::Counter || !changes_with_the_page(&sample, s.range, pages)))
         });
     }
 
@@ -2364,6 +2381,36 @@ mod tests {
         );
         let rest: Vec<Range> = all[1..].iter().map(|s| s.range).collect();
         assert_eq!(rest, [Range::intel(24, 8)]);
+
+        // A 2-bit alive counter, with a heartbeat bit toggling each frame and a door flag in
+        // another byte: neither is a cell, though the heartbeat repeats with the pages.
+        let s = store(6000, |i, _| {
+            let door = u8::from((i / 700) % 2 == 1);
+            [
+                (wave(i) * 200.0) as u8,
+                0,
+                (i % 2) as u8 | door << 1,
+                ((i % 4) as u8) << 4,
+                0,
+                0,
+                0,
+                0,
+            ]
+        });
+        let mut got: Vec<(Kind, Range)> = run(&s, &Hints::default())
+            .iter()
+            .map(|s| (s.kind, s.range))
+            .collect();
+        got.sort_by_key(|g| g.1.start_bit);
+        assert_eq!(
+            got,
+            [
+                (Kind::Continuous, Range::intel(0, 8)),
+                (Kind::Counter, Range::intel(16, 1)),
+                (Kind::Flag, Range::intel(17, 1)),
+                (Kind::Counter, Range::intel(28, 2)),
+            ]
+        );
     }
 
     #[test]

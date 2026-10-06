@@ -101,8 +101,8 @@ impl Series {
         };
         let (t, v) = (&self.t, &self.v);
         let width = (t1 - t0) / buckets as f64;
-        let mut xs = Vec::with_capacity(buckets * 2 + 2);
-        let mut ys = Vec::with_capacity(buckets * 2 + 2);
+        let mut xs = Vec::with_capacity(buckets * 3 + 2);
+        let mut ys = Vec::with_capacity(buckets * 3 + 2);
         let mut i = lo;
         while i < hi {
             let bucket_end = t0 + (((t[i] - t0) / width).floor() + 1.0) * width;
@@ -111,7 +111,7 @@ impl Series {
                 Some(pyramid) => {
                     let next = i + 1 + first_at_or_after(&t[i + 1..hi], bucket_end);
                     let [lowest, highest] = pyramid.extremes(v, i, next).points();
-                    (next, [pyramid.first_nan(i, next), lowest, highest])
+                    (next, [pyramid.first_nan(v, i, next), lowest, highest])
                 }
                 None => scan_bucket(t, v, i, hi, bucket_end),
             };
@@ -152,23 +152,26 @@ fn scan_bucket(
     hi: usize,
     bucket_end: f64,
 ) -> (usize, [Option<usize>; 3]) {
-    let (mut first_nan, mut lowest, mut highest) = (None, None, None);
+    let mut first_nan = None;
+    let mut extremes: Option<(usize, usize)> = None;
     let mut j = i;
     while j < hi && (j == i || t[j] < bucket_end) {
         let x = v[j];
         if x.is_nan() {
             first_nan = first_nan.or(Some(j));
+        } else if let Some((lowest, highest)) = &mut extremes {
+            if x < v[*lowest] {
+                *lowest = j;
+            }
+            if x > v[*highest] {
+                *highest = j;
+            }
         } else {
-            if lowest.is_none_or(|l| x < v[l]) {
-                lowest = Some(j);
-            }
-            if highest.is_none_or(|h| x > v[h]) {
-                highest = Some(j);
-            }
+            extremes = Some((j, j));
         }
         j += 1;
     }
-    (j, [first_nan, lowest, highest])
+    (j, [first_nan, extremes.map(|e| e.0), extremes.map(|e| e.1)])
 }
 
 #[cfg(test)]
@@ -334,8 +337,8 @@ mod tests {
                     in_nan_run = !in_nan_run;
                 }
                 match rng.below(100) {
-                    _ if in_nan_run => f64::NAN,
-                    x if x < nan_share => f64::NAN,
+                    _ if in_nan_run => any_nan(rng),
+                    x if x < nan_share => any_nan(rng),
                     _ if rng.below(50) == 0 => {
                         [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY][rng.below(4) as usize]
                     }
@@ -349,6 +352,12 @@ mod tests {
             v,
             pyramid: OnceCell::new(),
         }
+    }
+
+    /// A quiet NaN with a random payload and sign, as a float signal's raw bits may hold.
+    fn any_nan(rng: &mut Rng) -> f64 {
+        let sign = rng.next() & (1 << 63);
+        f64::from_bits(sign | 0x7ff8_0000_0000_0000 | (rng.next() & 0x0007_ffff_ffff_ffff))
     }
 
     fn bits(out: &[f64]) -> Vec<u64> {

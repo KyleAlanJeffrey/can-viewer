@@ -74,8 +74,9 @@ fn scan(v: &[f64], points: Range<usize>) -> Extremes {
 /// last node of a level may cover fewer.
 pub struct Pyramid {
     levels: Vec<Vec<Extremes>>,
-    /// The NaN points in order, which the levels skip. Empty for most series.
-    nans: Vec<u32>,
+    /// The first point of each run of NaN values, in order; the levels skip NaN. Empty for most
+    /// series.
+    nan_runs: Vec<u32>,
 }
 
 impl Pyramid {
@@ -94,13 +95,12 @@ impl Pyramid {
             below = above;
         }
         levels.push(below);
-        let nans = v
-            .iter()
-            .enumerate()
-            .filter(|(_, x)| x.is_nan())
-            .map(|(i, _)| i as u32)
+        let mut nan_runs: Vec<u32> = (0..v.len())
+            .filter(|&i| v[i].is_nan() && (i == 0 || !v[i - 1].is_nan()))
+            .map(|i| i as u32)
             .collect();
-        Self { levels, nans }
+        nan_runs.shrink_to_fit();
+        Self { levels, nan_runs }
     }
 
     #[cfg(test)]
@@ -109,13 +109,19 @@ impl Pyramid {
             .iter()
             .map(|level| level.capacity() * size_of::<Extremes>())
             .sum::<usize>()
-            + self.nans.capacity() * size_of::<u32>()
+            + self.nan_runs.capacity() * size_of::<u32>()
     }
 
-    /// The first NaN point of `start..end`.
-    pub fn first_nan(&self, start: usize, end: usize) -> Option<usize> {
-        let k = self.nans.partition_point(|&i| (i as usize) < start);
-        self.nans.get(k).map(|&i| i as usize).filter(|&i| i < end)
+    /// The first NaN point of `start..end`: `start` itself, or else the start of a run.
+    pub fn first_nan(&self, v: &[f64], start: usize, end: usize) -> Option<usize> {
+        if start < end && v[start].is_nan() {
+            return Some(start);
+        }
+        let k = self.nan_runs.partition_point(|&i| (i as usize) < start);
+        self.nan_runs
+            .get(k)
+            .map(|&i| i as usize)
+            .filter(|&i| i < end)
     }
 
     /// The [`Extremes`] of points `start..end`: whole nodes where they fit, single points only
@@ -191,13 +197,37 @@ mod tests {
             v[i] = f64::NAN;
         }
         let pyramid = Pyramid::new(&v);
-        assert_eq!(pyramid.first_nan(0, 100), Some(3));
-        assert_eq!(pyramid.first_nan(3, 4), Some(3));
-        assert_eq!(pyramid.first_nan(4, 40), None);
-        assert_eq!(pyramid.first_nan(4, 41), Some(40));
-        assert_eq!(pyramid.first_nan(41, 100), Some(41));
-        assert_eq!(pyramid.first_nan(42, 99), None);
-        assert_eq!(pyramid.first_nan(42, 100), Some(99));
-        assert_eq!(Pyramid::new(&[1.0, 2.0]).first_nan(0, 2), None);
+        assert_eq!(pyramid.first_nan(&v, 0, 100), Some(3));
+        assert_eq!(pyramid.first_nan(&v, 3, 4), Some(3));
+        assert_eq!(pyramid.first_nan(&v, 4, 40), None);
+        assert_eq!(pyramid.first_nan(&v, 4, 41), Some(40));
+        assert_eq!(pyramid.first_nan(&v, 41, 100), Some(41));
+        assert_eq!(pyramid.first_nan(&v, 41, 41), None);
+        assert_eq!(pyramid.first_nan(&v, 42, 99), None);
+        assert_eq!(pyramid.first_nan(&v, 42, 100), Some(99));
+        let finite = [1.0, 2.0];
+        assert_eq!(Pyramid::new(&finite).first_nan(&finite, 0, 2), None);
+    }
+
+    #[test]
+    fn keeps_one_entry_per_run_of_nan() {
+        let n = 1 << 20;
+        let mut v: Vec<f64> = (0..n).map(f64::from).collect();
+        for run in [
+            0..1000,
+            5000..5001,
+            300_000..700_000,
+            n as usize - 10..n as usize,
+        ] {
+            v[run].fill(f64::NAN);
+        }
+        let pyramid = Pyramid::new(&v);
+        assert_eq!(pyramid.nan_runs, [0, 5000, 300_000, n - 10]);
+        assert_eq!(pyramid.nan_runs.capacity(), 4);
+        let bytes = Pyramid::new(&vec![f64::NAN; n as usize]).heap_bytes();
+        assert!(
+            bytes <= (n as usize / 7 + 8) * size_of::<Extremes>() + 4,
+            "{bytes} bytes"
+        );
     }
 }

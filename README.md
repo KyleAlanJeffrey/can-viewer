@@ -21,7 +21,7 @@ It works offline and can be installed as an app. After one visit, a service work
 | `crates/can-core` | Frame types; columnar frame store with per-ID stats and bit-flip counts |
 | `crates/can-formats` | Streaming log parsers: candump, Vector ASC and BLF, PEAK TRC, ASAM MF4 and CSV, chosen by file name and content; writers for the same formats (`writer/`) |
 | `crates/can-dbc-model` | DBC loading via `can-dbc`, our own editable model, signal decode and encode |
-| `crates/can-wasm` | wasm-bindgen `Session` used by the web worker; min/max plot decimation |
+| `crates/can-wasm` | wasm-bindgen `Session` used by the web worker; min/max plot decimation over level-of-detail pyramids |
 | `crates/sample-gen` | Dev tool: synthetic demo log + DBC, native benchmark, decode dumps, log conversion |
 | `web/` | Vite + React UI: canvas trace table, bit heatmap, uPlot plots, video sync |
 | `web/src/capture` | Live capture: slcan (Web Serial) and gs_usb (WebUSB) adapters, frame batching, the Capture sheet |
@@ -88,9 +88,21 @@ These use the 10M-frame demo: a 552 MB candump file, about 5 h of driving, 11 ID
 | Browser parse (wasm, one worker) | 2.7 s, 207 MB/s |
 | wasm memory after load | 654 MB. Frame data is about 350 MB; the rest is `Vec` growth slack (see below) |
 | Trace page (40 rows) round trip | 0.5 ms |
-| Plot re-query, 1.8M points decimated to 1,800 | 9.7 ms |
+| Plot re-query, 1.8M points decimated to 1,800 | 0.6 ms with the level-of-detail pyramid (see below); 9.7 ms before it |
 | Decoder vs cantools | 1,622,498 values from 300k frames, all equal |
 | Web bundle (gzip) | 99 kB JS + 117 kB wasm |
+
+Plot queries were measured again on 2026-10-05 (Apple Silicon, the wasm build in Node, which runs the same V8 as Chromium, and natively), with the median of 31 views of one signal of 1.8M points; Cell1, a multiplexed signal present on 1 frame in 20, has 91k points:
+
+| View (1,800 buckets) | wasm before | wasm after | native before | native after |
+|---|---|---|---|---|
+| Whole log, 1.8M points | 9.7 ms | 0.6 ms | 8.3 ms | 0.6 ms |
+| Whole log, 1,000 buckets | 9.7 ms | 0.35 ms | 8.3 ms | 0.3 ms |
+| A tenth of the log, 181k points | 0.88 ms | 0.30 ms | 0.76 ms | 0.24 ms |
+| A hundredth, 18k points (scanned) | 0.06 ms | 0.07 ms | 0.05 ms | 0.05 ms |
+| Cell1, whole log, 91k points | 0.39 ms | 0.25 ms | 0.32 ms | 0.20 ms |
+
+The first view that uses a series' pyramid builds it: about 16 ms in wasm (11 ms natively) for 1.8M points, against 9.8 ms for one scan. It takes about 1.1 MB per million points, beside the 16 MB the series' times and values take. Views averaging under 32 points a bucket scan the points, which is quicker there.
 
 ## Known gaps / next steps
 
@@ -99,6 +111,5 @@ The larger ones; every open task is in [TODO.md](TODO.md).
 - **Memory:** the store's columns are plain `Vec`s, and doubling on growth nearly doubles peak memory. Switch to fixed-size chunked columns to hold wasm memory close to the actual data size.
 - **Formats:** candump, Vector ASC, Vector BLF (CAN objects), PEAK TRC, ASAM MF4 (CAN bus logging) and CSV (python-can, SavvyCAN and generic header-named layouts) are supported, all through the `LogParser` interface. MF4 is buffered and read when the file ends, up to 1 GiB, because its blocks link anywhere in the file; its data is then read a block at a time and the frames merged by time, so a 112 MB, 10M-frame MF4 takes about 610 MB of wasm memory (the file plus the frames). Not read: CAN XL, LIN, FlexRay and Ethernet frames, and MF4 files of decoded signals rather than bus frames.
 - **Parallel parsing:** add a pool of workers parsing `Blob.slice` ranges for multi-core throughput.
-- **Plot queries:** add level-of-detail pyramids so a query no longer scales linearly with the points in range.
 - **Reverse engineering:** drag-to-define signals on the heatmap, a scrubbable time window for bit flips, and DBC export are in. Suggested signals guesses counters, checksums, flags, enums, values, 32-bit floats and multiplexed pages from bit activity; next is opendbc fingerprinting.
 - **Live capture:** not yet tried with real adapters. One bus at a time, receive only, classic CAN on gs_usb, host-clock timestamps; see [TODO.md](TODO.md) for the follow-ups.

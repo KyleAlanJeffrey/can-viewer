@@ -87,7 +87,11 @@ function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndo
     const signals = loaded?.db.messages.find((m) => m.id === accepted.messageId)?.signals ?? [];
     const target = signals.find((x) => isAcceptedSignal(x, id, accepted.signal));
     // Without its multiplexor, a page's signals would never decode, and the DBC would be invalid.
-    const pages = target?.isMultiplexor ? signals.filter((x) => x.muxValue !== null || x.muxSwitch?.signal === target.name) : [];
+    // A page value with no switch belongs to the first multiplexor listed, as the core reads it.
+    const first = signals.find((x) => x.isMultiplexor);
+    const pages = target?.isMultiplexor
+      ? signals.filter((x) => x !== target && (x.muxSwitch ? x.muxSwitch.signal === target.name : x.muxValue !== null && first === target))
+      : [];
     if (pages.length > 0) {
       const names = pages.map((x) => x.name);
       const listed = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;

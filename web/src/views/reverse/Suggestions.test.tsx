@@ -396,6 +396,44 @@ describe('Suggested signals', () => {
     expect([added?.muxValue, added?.muxSwitch]).toEqual([3, { signal: 'Outer', ranges: [[3, 3]] }]);
   });
 
+  it('keeps an accepted multiplexor while its own pages need it, not counting the pages of a nested one', async () => {
+    const mux = suggestion('multiplexor', 0, 8, { reason: 'Selects which of 2 pages bytes 1-2 carry' });
+    const paged: LoadedDbc = {
+      ...car,
+      db: {
+        ...car.db,
+        messages: [
+          ...car.db.messages,
+          message(0x200, 'Paged', {
+            signals: [
+              signal('Mux', { isMultiplexor: true }),
+              signal('Inner', { startBit: 8, size: 4, isMultiplexor: true, muxValue: 1 }),
+              signal('Leaf', { startBit: 16, muxValue: 2, muxSwitch: { signal: 'Inner', ranges: [[2, 2]] } }),
+            ],
+          }),
+        ],
+      },
+    };
+    const { core } = discoveryCore();
+    const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [paged], selected: first.key, capturing: false });
+    act(() =>
+      shell.state.viewState.set(
+        're.discovery',
+        {
+          results: { [first.key]: found(first.key, [mux]) },
+          scan: 'done',
+          dismissed: [],
+          accepted: { [`${first.key}:0:8:intel`]: { signal: 'Mux', dbc: 'car', messageId: 0x200, createdMessage: false, createdDbc: false } },
+          hints: {},
+        },
+        'log',
+      ),
+    );
+    await shell.user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    await shell.user.click(await within(await screen.findByRole('region', { name: 'Suggested signals' })).findByRole('button', { name: 'Undo Mux' }));
+    expect((await screen.findByRole('alert')).textContent).toBe("Couldn't undo Mux: Inner is on its pages. Undo or remove it first.");
+  });
+
   it('dismisses a suggestion and brings it back', async () => {
     const { core, scan } = discoveryCore();
     const { user } = await openAdvanced(core);

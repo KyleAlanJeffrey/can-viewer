@@ -57,8 +57,8 @@ function discoveryCore(overrides: Partial<CoreApi> = {}) {
 }
 
 /** Byte Values with 200 selected, its scan run to the end with these suggestions. */
-async function openByteValues(suggestions: Suggestion[], others: Suggestion[] = []) {
-  const { core, scan } = discoveryCore();
+async function openByteValues(suggestions: Suggestion[], others: Suggestion[] = [], overrides: Partial<CoreApi> = {}) {
+  const { core, scan } = discoveryCore(overrides);
   const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [car], selected: first.key });
   await screen.findByRole('complementary', { name: 'Suggested signals' });
   expect(scan.keys).toEqual([first.key, second.key]);
@@ -186,6 +186,19 @@ describe('Suggested signals on Byte Values', () => {
     expect(screen.getByText('200 \u00b7 Bytes 0-1 \u00b7 3|8@0+')).toBeTruthy();
     // No other row is outlined.
     expect(Array.from({ length: 8 }, (_, b) => cell('201', b).getAttribute('aria-label')).some((l) => l!.includes('suggestion'))).toBe(false);
+  });
+
+  it('scrolls a picked suggestion into view, even when its row\'s sparklines fail', async () => {
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    try {
+      const { user } = await openByteValues([flag, speed], [], { byteLanes: async () => Promise.reject(new Error('no lanes')) });
+      await user.click(card(2));
+      await waitFor(() => expect(scrolled).toHaveBeenCalledTimes(1), { timeout: 3000 });
+      expect(scrolled.mock.contexts[0]).toBe(cell('200', 2));
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
   });
 
   it('moves between the cards with the arrow keys and selects with Enter', async () => {

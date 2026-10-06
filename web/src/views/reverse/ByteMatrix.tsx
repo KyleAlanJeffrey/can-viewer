@@ -16,6 +16,8 @@ const LANES = 8;
 const MAX_ROWS = 200;
 /** Rows fetched per round trip, so a long list fills in progressively. */
 const FETCH_BATCH = 12;
+/** How long a pick waits for its row's sparklines before scrolling to it anyway. */
+const MARK_SCROLL_WAIT_MS = 1500;
 
 export interface SelectedByte {
   key: number;
@@ -94,9 +96,18 @@ export function ByteMatrix(props: Props) {
   // A suggestion picked across all messages can be for a row out of view, or a byte the table
   // has scrolled sideways past. Only a new pick scrolls, so coming back keeps the position.
   useEffect(() => {
-    if (markId === lastMark.current || !markReady) return;
-    lastMark.current = markId;
-    markedCell.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    if (markId === null || markId === lastMark.current) return;
+    const scroll = () => {
+      lastMark.current = markId;
+      markedCell.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    };
+    if (markReady) {
+      scroll();
+      return;
+    }
+    // Sparklines that fail, or are slow, still let the pick scroll.
+    const fallback = setTimeout(scroll, MARK_SCROLL_WAIT_MS);
+    return () => clearTimeout(fallback);
   }, [markId, markReady]);
   const frame = useFrameAt(core, selected === -1 ? null : selected, cursor, logVersion);
   const pinnedBytes = useMemo(() => new Set(pins.filter((p) => p.kind === 'byte').map(pinId)), [pins]);

@@ -7,6 +7,72 @@
   padding: 16px 20px 24px;
 }
 
+/* The message heading and Pinned references stay on top, outside the scroller, while the content below them scrolls. */
+.re-docked {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding-top: 16px;
+  container: re-dock / size;
+}
+
+.re-docked > .re-message-head,
+.re-docked > .re-refs {
+  margin: 0 20px 12px;
+}
+
+.re-docked > .re-message-head {
+  flex: none;
+}
+
+/* The content keeps a floor. Past it the card gives way down to its head and scrolls inside itself,
+   as a last resort, rather than leave the content no room. */
+.re-docked > .re-refs {
+  flex: 0 1 auto;
+  min-height: 56px;
+  overflow-y: auto;
+}
+
+.re-docked > .re-scroll {
+  padding-top: 0;
+  /* Never more than the dock has left under the message heading, the card's head (56px) and the gaps. */
+  min-height: min(max(150px, 28cqh), 100cqh - 130px);
+}
+
+/* Room for a few rows and the selection footer; there is no message heading here. */
+.re-docked > .re-bytes {
+  min-height: min(max(230px, 35cqh), 100cqh - 68px);
+}
+
+/* The pinned rows scroll on their own, so the candidate, time axis and analysis window stay under
+   them. The cap shows the first row (its 18px cursor time over a REF_PLOT_H plot) and the top of
+   the next, so the rest are seen to scroll. */
+.re-docked .re-ref-rows {
+  max-height: max(98px, 20cqh);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* A classic scrollbar on the rows narrows their plots; the same gutter keeps the rest aligned. */
+.re-docked .re-ref-rows,
+.re-docked .re-ref-row.candidate,
+.re-docked .re-ref-axis-row {
+  scrollbar-gutter: stable;
+}
+
+.re-docked .re-ref-row.candidate,
+.re-docked .re-ref-axis-row {
+  overflow: hidden;
+}
+
+/* Room for a cursor dot at the bottom of the last plot, which these rows would otherwise clip. */
+.re-docked .re-ref-rows,
+.re-docked .re-ref-row.candidate {
+  padding-bottom: 4px;
+}
+
 .re-card {
   flex: none;
   min-width: 0;
@@ -850,7 +916,7 @@
 }
 
 /* Room for the cursor time above the first plot. */
-.re-ref-row:first-child .re-ref-plot {
+.re-ref-row.first .re-ref-plot {
   margin-top: 18px;
 }
 
@@ -899,10 +965,6 @@
   min-height: 0;
 }
 
-.re-split-body > .re-bytes {
-  min-width: 0;
-}
-
 .re-sugpanel {
   position: relative;
   flex: none;
@@ -932,6 +994,21 @@
     min-height: 280px;
     border-left: 0;
     border-top: 1px solid var(--hairline);
+  }
+
+  /* In a short window the matrix and the pinned references above it need the height more. */
+  @media (max-height: 900px) {
+    .re-sugpanel {
+      height: 30%;
+      min-height: 160px;
+    }
+  }
+
+  @media (max-height: 600px) {
+    .re-sugpanel {
+      height: 25%;
+      min-height: 56px;
+    }
   }
 }
 

@@ -7,6 +7,7 @@ import { bitFlips, fakeCore, lane, logInfo, makeRowBatch, message, seriesInfo, s
 import { ViewStateContext, ViewStateStore } from '../shared/viewState';
 import { SlotContext } from '../slots';
 import type { LoadedDbc, ViewContext } from '../types';
+import { REF_AXIS_H, REF_PLOT_H } from './ReferencePlot';
 import { ReverseView } from './ReverseView';
 
 const engine = summary({ id: 0x100, name: 'Engine' });
@@ -180,7 +181,7 @@ describe('Byte Values', () => {
     expect(screen.getByRole('button', { name: /^100 byte 2, .*pinned$/ })).toBeTruthy();
     expect(await screen.findByRole('button', { name: 'Unpin 100 \u00b7 Byte 2' })).toBeTruthy();
 
-    expect(screen.getByRole('heading', { name: 'Pinned references' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Pinned references \u00b7 1' })).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Unpin byte' }));
     expect(screen.getByRole('button', { name: 'Pin byte' })).toBeTruthy();
@@ -216,6 +217,45 @@ describe('Byte Values', () => {
 
     await user.click(screen.getByRole('button', { name: 'Clear selection' }));
     expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Byte values' }));
+  });
+});
+
+describe('Pinned references', () => {
+  it('stay on top, outside the scroller, in Byte Values and in Advanced', async () => {
+    const user = renderView([engine]);
+    const onTop = () => {
+      const refs = screen.getByRole('region', { name: 'Pinned references' });
+      expect(refs.closest('.content-scroll')).toBeNull();
+      return refs.parentElement;
+    };
+    expect(onTop()).toBe(screen.getByRole('tabpanel', { name: 'Byte Values' }));
+    expect(onTop()).toBe(screen.getByRole('table').closest('.content-scroll')?.parentElement);
+
+    await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(onTop()).toBe(screen.getByRole('tabpanel', { name: 'Advanced' }));
+    expect(onTop()).toBe(screen.getByRole('heading', { name: 'Bit History' }).closest('.content-scroll')?.parentElement);
+  });
+
+  it('scroll only the pinned rows, keeping the candidate in view under them', async () => {
+    const user = renderView([engine]);
+    await user.click(screen.getByRole('button', { name: /^100 byte 2/ }));
+    await user.click(screen.getByRole('button', { name: 'Pin byte' }));
+    await user.click(screen.getByRole('button', { name: /^Open in Advanced/ }));
+
+    const pinned = await screen.findByRole('img', { name: /^100 \u00b7 Byte 2 from/ });
+    const candidate = screen.getByRole('img', { name: /the candidate, across the window$/ });
+    expect(pinned.closest('.re-ref-rows')).toBeTruthy();
+    expect(candidate.closest('.re-ref-rows')).toBeNull();
+    const card = screen.getByRole('region', { name: 'Pinned references' });
+    expect(candidate.closest('section')).toBe(card);
+
+    // One time axis for them all, under the rows, and no plot tall enough to draw its own.
+    expect(card.querySelectorAll('.re-ref-axis-row')).toHaveLength(1);
+    expect(card.querySelector('.re-ref-axis-row canvas')?.getAttribute('height')).toBe(String(REF_AXIS_H));
+    const plots = [...card.querySelectorAll('.re-ref-plot canvas')];
+    expect(plots).toHaveLength(2);
+    for (const plot of plots) expect(plot.getAttribute('height')).toBe(String(REF_PLOT_H));
   });
 });
 

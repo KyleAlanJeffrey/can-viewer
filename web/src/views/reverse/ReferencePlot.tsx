@@ -51,6 +51,8 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
   const [generation, setGeneration] = useState(0);
   // Cursor marks are placed in pixels, so they move when the plot is resized.
   const [plotWidth, setPlotWidth] = useState(0);
+  // uPlot rescales a tick after new data, so marks placed before then would use the old scales.
+  const [rescaled, setRescaled] = useState(0);
   const fontsReady = useFontsReady();
   const hasOverlay = !!overlay;
   // uPlot callbacks and DOM listeners outlive renders; they read the current props from here.
@@ -107,6 +109,7 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
           },
         ],
         cursor: { show: false },
+        hooks: { setScale: [() => setRescaled((n) => n + 1)] },
       },
       [new Float64Array(0), new Float64Array(0)],
       host,
@@ -194,7 +197,66 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
       dot.hidden = false;
       dot.style.transform = `translate(${x}px, ${y}px)`;
     });
-  }, [cursor, win, trace, overlay, data, generation, plotWidth]);
+  }, [cursor, win, trace, overlay, data, generation, plotWidth, rescaled]);
 
   return <div className="re-ref-plot" ref={hostRef} role="img" aria-label={label} />;
+}
+
+/**
+ * The shared time axis, apart from the plots so it stays in view while they scroll. Laid out
+ * like a plot, so its ticks line up with their grid lines.
+ */
+export function TimeAxis({ window: win }: { window: TimeWindow }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const plotRef = useRef<uPlot | null>(null);
+  const fontsReady = useFontsReady();
+  const latest = useRef(win);
+  latest.current = win;
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const u = new uPlot(
+      {
+        width: Math.max(1, host.clientWidth),
+        height: REF_AXIS_H,
+        legend: { show: false },
+        padding: [0, 0, 0, PAD_LEFT],
+        // An empty value scale still needs a range, or uPlot drops the value axis the plots line up with.
+        scales: { x: { time: false, range: () => latest.current }, y: { range: () => [0, 1] } },
+        series: [{}, {}],
+        axes: [
+          {
+            stroke: cssVar('--slate'),
+            font: `400 11px ${cssVar('--font-ui')}`,
+            grid: { show: false },
+            ticks: { show: false },
+            size: REF_AXIS_H,
+            values: (_u, ticks, _axis, _space, step) => ticks.map((t) => formatTick(t, step)),
+          },
+          { side: 1, grid: { show: false }, ticks: { show: false }, size: Y_AXIS_W, values: (_u, ticks) => ticks.map(() => '') },
+        ],
+        cursor: { show: false },
+      },
+      [new Float64Array(0), new Float64Array(0)],
+      host,
+    );
+    plotRef.current = u;
+    const ro = new ResizeObserver(([entry]) => {
+      const w = Math.floor(entry.contentRect.width);
+      if (w > 0 && w !== u.width) u.setSize({ width: w, height: u.height });
+    });
+    ro.observe(host);
+    return () => {
+      ro.disconnect();
+      u.destroy();
+      plotRef.current = null;
+    };
+  }, [fontsReady]);
+
+  useEffect(() => {
+    plotRef.current?.setScale('x', { min: win[0], max: win[1] });
+  }, [win, fontsReady]);
+
+  return <div className="re-ref-axis" ref={hostRef} />;
 }

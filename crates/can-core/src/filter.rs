@@ -183,7 +183,8 @@ impl FilterPass {
     }
 
     /// Visits about `budget` more frames of `store`, which must be the store the pass began on,
-    /// with frames only added since. Returns whether the pass is done.
+    /// with frames only added since; the frames a "changes" rule walks back over to find the
+    /// frame it compares with count too. Returns whether the pass is done.
     pub fn step(&mut self, store: &FrameStore, budget: usize) -> bool {
         let wants_previous = self.filter.rules.contains(&DataRule::Changes);
         let mut budget = budget.max(1);
@@ -196,27 +197,36 @@ impl FilterPass {
                 let covered = stats
                     .frames
                     .partition_point(|&f| (f as usize) < self.frames);
-                let start = window.start.max(self.next_pos);
                 let end = window.end.min(covered);
-                let stop = end.min(start.saturating_add(budget));
-                for pos in start..stop {
+                let mut pos = window.start.max(self.next_pos);
+                let mut last_of_kind = [None; 4];
+                while pos < end && budget > 0 {
                     let index = stats.frames[pos] as usize;
                     let frame = store.frame(index);
+                    pos += 1;
+                    budget -= 1;
                     if !self.filter.keeps_kind(frame.flags) {
                         continue;
                     }
-                    let previous = wants_previous
-                        .then(|| store.previous_of_same_kind_at(stats, pos))
-                        .flatten()
-                        .map(|p| store.frame(p).data);
+                    let kind = FrameKind::of(frame.flags) as usize;
+                    let previous = if wants_previous {
+                        let previous = last_of_kind[kind].or_else(|| {
+                            let (previous, walked) = previous_of_kind(store, stats, pos - 1);
+                            budget = budget.saturating_sub(walked);
+                            previous
+                        });
+                        last_of_kind[kind] = Some(index);
+                        previous.map(|p| store.frame(p).data)
+                    } else {
+                        None
+                    };
                     if self.filter.keeps_payload(frame.data, previous) {
                         self.matched[index / 64] |= 1 << (index % 64);
                         self.count += 1;
                     }
                 }
-                budget -= stop.saturating_sub(start);
-                if stop < end {
-                    self.next_pos = stop;
+                if pos < end {
+                    self.next_pos = pos;
                     return false;
                 }
             }
@@ -240,6 +250,19 @@ impl FilterPass {
         }
         Ok(out)
     }
+}
+
+/// The frame before position `pos` of `stats` of the same [`FrameKind`], as
+/// [`FrameStore::previous_of_same_kind_at`] finds it, and how many frames were walked back.
+fn previous_of_kind(store: &FrameStore, stats: &IdStats, pos: usize) -> (Option<usize>, usize) {
+    let kind = FrameKind::of(store.frame(stats.frames[pos] as usize).flags);
+    let found = stats.frames[..pos]
+        .iter()
+        .rposition(|&f| FrameKind::of(store.frame(f as usize).flags) == kind);
+    (
+        found.map(|p| stats.frames[p] as usize),
+        pos - found.map_or(0, |p| p + 1),
+    )
 }
 
 impl FrameStore {
@@ -591,5 +614,28 @@ mod tests {
         while !pass.step(&s, 3) {}
         assert_eq!(pass.frames(), 8);
         assert_eq!(pass.rows().unwrap(), [0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn a_step_counts_the_frames_walked_back_for_a_change() {
+        let mut s = FrameStore::new();
+        push(&mut s, 0, 0, 0x100, flags::RTR, &[]);
+        for t in 1..=10 {
+            push(&mut s, t, 0, 0x100, 0, &[t as u8]);
+        }
+        push(&mut s, 11, 0, 0x100, flags::RTR, &[]);
+        push(&mut s, 12, 0, 0x200, flags::RTR, &[]);
+        let late = FrameFilter {
+            rules: vec![DataRule::Changes],
+            kinds: Some(vec![FrameKind::Remote]),
+            t0_ns: 11,
+            ..FrameFilter::default()
+        };
+        let mut pass = FilterPass::new(&s, late).unwrap();
+        // The remote frame at 11 walks back over the ten data frames to the one at 0, which
+        // leaves no budget for ID 200.
+        assert!(!pass.step(&s, 5));
+        assert!(pass.step(&s, 5));
+        assert_eq!(pass.count(), 0);
     }
 }

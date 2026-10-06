@@ -74,6 +74,8 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
   /** The video's span, for working out what the log covers; open-ended while unknown. */
   const span = end ?? Infinity;
   const syncButton = useRef<HTMLButtonElement>(null);
+  /** Whether the current mouse press started on the video, for telling a click on it from a stray one. */
+  const pressedOnVideo = useRef(false);
   /** Set when the sync step closes, so focus goes back to the button that opened it. */
   const refocusSync = useRef(false);
 
@@ -234,6 +236,13 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
     seek(targets[e.key], true);
   };
 
+  // Firefox's "Pop out this video" button swallows the press on it, but the first time it shows
+  // (with its text label) it lets the click through, which would also start the video.
+  const onVideoClick = () => {
+    if (pressedOnVideo.current) togglePlay();
+    pressedOnVideo.current = false;
+  };
+
   const startSync = () => {
     mediaRef.current?.pause();
     setSyncing(true);
@@ -287,7 +296,10 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
           preload="auto"
           playsInline
           aria-label={`Video ${video.name}`}
-          onClick={togglePlay}
+          onPointerDown={(e) => {
+            pressedOnVideo.current = e.button === 0;
+          }}
+          onClick={onVideoClick}
           onLoadedMetadata={onLoadedMetadata}
           onDurationChange={onRangeChange}
           onProgress={onRangeChange}

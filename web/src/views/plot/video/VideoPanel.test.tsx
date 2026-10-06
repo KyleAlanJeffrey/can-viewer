@@ -316,6 +316,21 @@ describe('Video sync', () => {
     expect(spaceIsTaken(document.body)).toBe(false);
   });
 
+  it('plays and pauses on a click on the video, but not on a click whose press it never saw', async () => {
+    const { user } = await renderWorkspace({ cursor: 20 });
+    loadMetadata(60);
+    await user.click(videoEl());
+    expect(mediaState().paused).toBe(false);
+    await user.click(videoEl());
+    expect(mediaState().paused).toBe(true);
+
+    // Firefox's "Pop out this video" button keeps the press from the page but can let the click through.
+    act(() => {
+      videoEl().dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    });
+    expect(mediaState().paused).toBe(true);
+  });
+
   it('steps and scrubs with the keyboard', async () => {
     const { user } = await renderWorkspace({ cursor: 20 });
     loadMetadata(60);

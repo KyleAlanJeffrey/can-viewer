@@ -159,8 +159,10 @@ export function SuggestionsPanel(props: Props) {
               value={scope}
               onChange={onScope}
             />
-            <p className="re-sug-caution">Suggestions are guesses. Check them against the log before accepting.</p>
-            <ScanOverview ctx={ctx} discovery={discovery} unknown={unknown} current={key} onPick={onPick} />
+            <div className="re-sugpanel-about">
+              <p className="re-sug-caution">Suggestions are guesses. Check them against the log before accepting.</p>
+              <ScanOverview ctx={ctx} discovery={discovery} unknown={unknown} current={key} onPick={onPick} />
+            </div>
             {scope === 'all' ? (
               <AllMessages ctx={ctx} discovery={discovery} listFor={listFor} cards={cards} onPick={onPick} />
             ) : summary ? (

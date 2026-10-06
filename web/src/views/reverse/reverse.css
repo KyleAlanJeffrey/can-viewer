@@ -916,8 +916,8 @@
   .re-sugpanel {
     width: auto;
     max-width: none;
-    height: 30%;
-    min-height: 160px;
+    height: 40%;
+    min-height: 280px;
     border-left: 0;
     border-top: 1px solid var(--hairline);
   }

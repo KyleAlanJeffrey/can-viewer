@@ -421,10 +421,69 @@
   outline-offset: 0;
 }
 
-/* Stacked under the matrix, the panel's few lines go to the cards. */
+/* Stacked under the matrix, the panel's few lines go to the cards: the title, message, scope and
+   hide button share a row, and the caution sits beside the scan overview. */
 @container re-split (max-width: 1100px) {
   .re-sugpanel-grip,
   .re-sugpanel-foot {
     display: none;
+  }
+
+  .re-sugpanel-scroll {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-content: start;
+    gap: 10px 16px;
+    padding-top: 12px;
+  }
+
+  .re-sugpanel-scroll > * {
+    grid-column: 1 / -1;
+  }
+
+  .re-sugpanel-head {
+    display: contents;
+  }
+
+  .re-sugpanel-head > h2,
+  .re-sugpanel-head > button,
+  .re-sugpanel-scroll > .re-sugpanel-msg,
+  .re-sugpanel-scroll > .re-sugpanel-scope {
+    grid-row: 1;
+    align-self: center;
+    margin: 0;
+  }
+
+  .re-sugpanel-head > h2 {
+    grid-column: 1;
+  }
+
+  .re-sugpanel-scroll > .re-sugpanel-msg {
+    grid-column: 2;
+  }
+
+  .re-sugpanel-scroll > .re-sugpanel-scope {
+    grid-column: 3;
+  }
+
+  .re-sugpanel-head > button {
+    grid-column: 4;
+  }
+
+  .re-sugpanel-about {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+  }
+
+  .re-sugpanel .re-sug-caution {
+    flex: 1 1 260px;
+    margin: 0;
+  }
+
+  .re-sugpanel .re-sug-overview {
+    flex: 0 1 auto;
+    margin: 0;
   }
 }

@@ -14,9 +14,19 @@ pub(crate) struct LineSplitter {
     carry: Vec<u8>,
     /// The carried line grew past [`MAX_LINE`] and was rejected, so the rest of it is skipped.
     skipping_line: bool,
+    /// The input starts at a line other than the file's first, so has no byte order mark.
+    mid_file: bool,
 }
 
 impl LineSplitter {
+    /// A splitter for input that starts at a line other than the first of the file.
+    pub(crate) fn mid_file() -> Self {
+        Self {
+            mid_file: true,
+            ..Self::default()
+        }
+    }
+
     /// Counts `chunk` and every line it completes in `stats`, rejects over-long lines, and
     /// calls `on_line` with each remaining line, trimmed, if it is not blank.
     pub(crate) fn push(
@@ -26,6 +36,7 @@ impl LineSplitter {
         mut on_line: impl FnMut(&[u8], &mut ParseStats),
     ) {
         stats.bytes += chunk.len() as u64;
+        let bom = !self.mid_file;
         let mut rest = chunk;
         if !self.carry.is_empty() || self.skipping_line {
             let nl = memchr::memchr(b'\n', rest);
@@ -40,7 +51,7 @@ impl LineSplitter {
         let (body, tail) = rest.split_at(complete);
         let mut start = 0;
         for nl in memchr::memchr_iter(b'\n', body) {
-            line(&body[start..nl], stats, &mut on_line);
+            line(&body[start..nl], bom, stats, &mut on_line);
             start = nl + 1;
         }
         self.carry_over(tail, stats);
@@ -87,19 +98,25 @@ impl LineSplitter {
             return;
         }
         let mut carried = std::mem::take(&mut self.carry);
-        line(&carried, stats, on_line);
+        line(&carried, !self.mid_file, stats, on_line);
         carried.clear();
         self.carry = carried;
     }
 }
 
-fn line(line: &[u8], stats: &mut ParseStats, on_line: &mut impl FnMut(&[u8], &mut ParseStats)) {
+/// `bom`: the input starts at the start of the file, where a byte order mark may come first.
+fn line(
+    line: &[u8],
+    bom: bool,
+    stats: &mut ParseStats,
+    on_line: &mut impl FnMut(&[u8], &mut ParseStats),
+) {
     stats.lines += 1;
     if line.len() > MAX_LINE {
         stats.reject(LINE_TOO_LONG);
         return;
     }
-    let line = if stats.lines == 1 {
+    let line = if bom && stats.lines == 1 {
         line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line)
     } else {
         line

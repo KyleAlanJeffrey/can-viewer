@@ -26,6 +26,13 @@ impl CandumpParser {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Forgets the lines read so far, keeping what they set, to go on with a part of the file
+    /// that starts at a line boundary further on; see [`crate::AnyParser::prime`].
+    pub(crate) fn start_part(&mut self) {
+        self.stats = ParseStats::default();
+        self.lines = LineSplitter::mid_file();
+    }
 }
 
 impl LogParser for CandumpParser {

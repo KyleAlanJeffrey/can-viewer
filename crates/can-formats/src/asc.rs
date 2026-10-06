@@ -67,6 +67,30 @@ impl AscParser {
     pub fn set_local_time(&mut self, local_time: LocalTime) {
         self.header.local_time = local_time;
     }
+
+    /// Forgets the lines read so far, keeping what they set, to go on with a part of the file
+    /// that starts at a line boundary further on; see [`crate::AnyParser::prime`].
+    pub(crate) fn start_part(&mut self) {
+        self.stats = ParseStats::default();
+        self.lines = LineSplitter::mid_file();
+    }
+
+    /// Relative timestamps add up from line to line, so each line depends on all before it.
+    pub(crate) fn relative(&self) -> bool {
+        self.header.relative
+    }
+
+    /// What the header lines read so far set, but the time zone, which the host sets.
+    pub(crate) fn state(&self) -> String {
+        let Header {
+            hex,
+            relative,
+            start_ns,
+            last_ns,
+            local_time: _,
+        } = &self.header;
+        format!("{hex} {relative} {start_ns} {last_ns}")
+    }
 }
 
 impl LogParser for AscParser {

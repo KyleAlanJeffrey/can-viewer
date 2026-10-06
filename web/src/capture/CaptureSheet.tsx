@@ -1,10 +1,11 @@
 import { useId, useState } from 'react';
 import { Segmented } from '../components/Segmented';
 import { Sheet } from '../components/Sheet';
-import { BITRATES, errorText, formatBitrate, isListenOnlyUnconfirmed, type CaptureAdapter, type CaptureSettings } from './adapter';
+import { BITRATES, busNameProblem, errorText, formatBitrate, isListenOnlyUnconfirmed, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { ADAPTER_KINDS, availableKinds, requestAdapter, type AdapterKind } from './devices';
 
 const DEFAULT_BITRATE = 500_000;
+const DEFAULT_BUS = 'can0';
 
 interface Props {
   open: boolean;
@@ -15,15 +16,18 @@ interface Props {
   kinds?: AdapterKind[];
   /** Shows the browser's device prompt; tests pass a stand-in. */
   request?: (kind: AdapterKind) => Promise<CaptureAdapter | null>;
+  /** The buses the loaded DBCs are set to, offered as bus names. */
+  buses?: string[];
 }
 
 /** Choose an adapter, a bitrate and listen-only, then start a live capture. */
-export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(), request = requestAdapter }: Props) {
+export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(), request = requestAdapter, buses = [] }: Props) {
   const ids = useId();
   const [kind, setKind] = useState<AdapterKind>(kinds[0] ?? 'slcan');
   const [adapter, setAdapter] = useState<CaptureAdapter | null>(null);
   const [bitrate, setBitrate] = useState(DEFAULT_BITRATE);
   const [listenOnly, setListenOnly] = useState(true);
+  const [bus, setBus] = useState(DEFAULT_BUS);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Why listen-only can't be confirmed, while the user decides whether to start anyway.
@@ -68,12 +72,14 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
     }
   };
 
+  const busProblem = busNameProblem(bus.trim());
+
   const start = async () => {
-    if (!adapter) return;
+    if (!adapter || busProblem) return;
     setStarting(true);
     setError(null);
     try {
-      await onStart(adapter, { bitrate, listenOnly, allowUnconfirmedListenOnly: unconfirmed !== null });
+      await onStart(adapter, { bitrate, bus: bus.trim(), listenOnly, allowUnconfirmedListenOnly: unconfirmed !== null });
       setUnconfirmed(null);
       onClose();
     } catch (e) {
@@ -98,7 +104,7 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
           <button type="button" className="button" onClick={onClose} disabled={starting}>
             Cancel
           </button>
-          <button type="button" className="primary" onClick={start} disabled={!adapter || starting}>
+          <button type="button" className="primary" onClick={start} disabled={!adapter || !!busProblem || starting}>
             {starting ? 'Starting\u2026' : unconfirmed ? 'Start Anyway' : 'Start Capture'}
           </button>
         </>
@@ -139,6 +145,33 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
               </option>
             ))}
           </select>
+        </div>
+        <div className="field">
+          <label htmlFor={`${ids}bus`} className="field-label">
+            Bus name
+          </label>
+          <input
+            id={`${ids}bus`}
+            className="input mono cap-bus"
+            value={bus}
+            onChange={(e) => setBus(e.target.value)}
+            list={buses.length > 0 ? `${ids}buses` : undefined}
+            spellCheck={false}
+            autoComplete="off"
+            disabled={starting}
+            aria-invalid={busProblem !== null}
+            aria-describedby={`${ids}bushint`}
+          />
+          {buses.length > 0 && (
+            <datalist id={`${ids}buses`}>
+              {buses.map((b) => (
+                <option key={b} value={b} />
+              ))}
+            </datalist>
+          )}
+          <p id={`${ids}bushint`} className={busProblem ? 'field-error' : 'cap-hint'}>
+            {busProblem ?? 'The frames are stored under this name, so a DBC set to this bus decodes them.'}
+          </p>
         </div>
         <div className="field">
           <label className="cap-switch-row">

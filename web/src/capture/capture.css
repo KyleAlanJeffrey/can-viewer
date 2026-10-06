@@ -35,7 +35,8 @@
   white-space: nowrap;
 }
 
-.cap-bitrate {
+.cap-bitrate,
+.cap-bus {
   width: 160px;
 }
 

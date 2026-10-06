@@ -1264,7 +1264,12 @@ export function App({ core }: { core: CoreApi }) {
       {captureSheetUsed && (
         <ChunkBoundary message="Couldn't load capture." frame={captureFrame}>
           <Suspense fallback={captureFrame(<p className="hint">Loading&hellip;</p>)}>
-            <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
+            <CaptureSheet
+              open={captureOpen}
+              onClose={() => setCaptureOpen(false)}
+              onStart={startCapture}
+              buses={[...new Set(dbcs.flatMap((d) => (d.channel === null ? [] : [d.channel])))]}
+            />
           </Suspense>
         </ChunkBoundary>
       )}

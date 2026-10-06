@@ -3,7 +3,7 @@ import { formatCount, formatCountOf, formatDuration } from '../format';
 import { errorText, formatBitrate, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { FrameBatcher, type BatcherOptions } from './batcher';
 
-/** The bus name a capture's frames are stored under. */
+/** The bus name a capture's frames are stored under when the settings name none. */
 export const CAPTURE_CHANNEL = 'can0';
 /** The frame rate is averaged over about this long. */
 const RATE_WINDOW_MS = 2000;
@@ -90,7 +90,7 @@ export class CaptureRecorder {
     title: (status: CaptureStatus): string => {
       const rate = status.rate === null ? '' : ` at ${formatCount(Math.round(status.rate))} frames/s`;
       const lines = [
-        `Recording from ${this.adapter.label} at ${formatBitrate(this.bitrate)}, ${this.listenOnly ? 'listen only' : 'not listen only'}.`,
+        `Recording ${this.bus} from ${this.adapter.label} at ${formatBitrate(this.bitrate)}, ${this.listenOnly ? 'listen only' : 'not listen only'}.`,
         `${formatCountOf(status.frames, 'frame', 'frames')}${rate} in ${formatDuration(status.elapsedS)}.`,
       ];
       if (status.problems > 0) lines.push(`${formatCountOf(status.problems, 'error', 'errors')}. The last: ${status.lastProblem}`);
@@ -114,6 +114,7 @@ export class CaptureRecorder {
   private lastProblem: string | null = null;
   private origin = 0;
   private bitrate = 0;
+  private bus = CAPTURE_CHANNEL;
   /** Whether the adapter confirmed listen-only mode. */
   private listenOnly = false;
   private samples: [number, number][] = [];
@@ -174,9 +175,10 @@ export class CaptureRecorder {
     );
     const started = await this.withinStartTimeout(starting);
     this.bitrate = settings.bitrate;
+    this.bus = settings.bus || CAPTURE_CHANNEL;
     this.listenOnly = started.listenOnly;
     try {
-      this.info = await this.core.startCapture(this.name, CAPTURE_CHANNEL, startedAtMs);
+      this.info = await this.core.startCapture(this.name, this.bus, startedAtMs);
     } catch (e) {
       await this.adapter.stop();
       throw e;

@@ -42,7 +42,7 @@ describe('CaptureSheet', () => {
     await userEvent.click(listenOnly);
 
     await userEvent.click(start);
-    expect(onStart).toHaveBeenCalledWith(adapter, { bitrate: 250_000, listenOnly: false, allowUnconfirmedListenOnly: false });
+    expect(onStart).toHaveBeenCalledWith(adapter, { bitrate: 250_000, bus: 'can0', listenOnly: false, allowUnconfirmedListenOnly: false });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -81,7 +81,7 @@ describe('CaptureSheet', () => {
     expect(onClose).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole('button', { name: 'Start Anyway' }));
-    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), { bitrate: 500_000, listenOnly: true, allowUnconfirmedListenOnly: true });
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), { bitrate: 500_000, bus: 'can0', listenOnly: true, allowUnconfirmedListenOnly: true });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -113,6 +113,31 @@ describe('CaptureSheet', () => {
     finish();
     await screen.findByRole('button', { name: 'Start Capture' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('names the bus, offering the buses the DBCs are set to, and keeps the name for the next start', async () => {
+    const onStart = vi.fn(async () => {});
+    const { rerender } = render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} buses={['body', 'chassis']} />);
+    const name = screen.getByLabelText('Bus name') as HTMLInputElement;
+    expect(name.value).toBe('can0');
+    const options = [...document.getElementById(name.getAttribute('list')!)!.querySelectorAll('option')].map((o) => o.value);
+    expect(options).toEqual(['body', 'chassis']);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+
+    await userEvent.clear(name);
+    expect(screen.getByText('Enter a bus name, such as can0.')).toBeTruthy();
+    expect(name.getAttribute('aria-invalid')).toBe('true');
+    expect((screen.getByRole('button', { name: 'Start Capture' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.type(name, 'body two');
+    expect(screen.getByText('A bus name has no spaces.')).toBeTruthy();
+    await userEvent.clear(name);
+    await userEvent.type(name, ' body ');
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ bus: 'body' }));
+
+    rerender(<CaptureSheet open={false} onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} buses={['body', 'chassis']} />);
+    rerender(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} buses={['body', 'chassis']} />);
+    expect((screen.getByLabelText('Bus name') as HTMLInputElement).value).toBe(' body ');
   });
 
   it('stays without an adapter when the device prompt is dismissed', async () => {

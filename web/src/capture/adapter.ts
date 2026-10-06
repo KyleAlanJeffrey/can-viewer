@@ -6,6 +6,8 @@ export const BITRATES = [10_000, 20_000, 50_000, 100_000, 125_000, 250_000, 500_
 export interface CaptureSettings {
   /** One of `BITRATES`. */
   bitrate: number;
+  /** The bus name the frames are stored under, `can0` when not given. Adapters ignore it. */
+  bus?: string;
   /** Ask the adapter to only listen: it then never acknowledges, sends or disturbs a frame. */
   listenOnly: boolean;
   /**
@@ -86,6 +88,14 @@ export function settleWithin(promise: Promise<unknown>, ms: number): Promise<voi
 export function errorText(e: unknown): string {
   const message = (e as { message?: unknown } | null)?.message;
   return typeof message === 'string' ? message : String(e);
+}
+
+/** Why `name` can't name a bus, or null if it can: log formats split lines on spaces. */
+export function busNameProblem(name: string): string | null {
+  if (name === '') return 'Enter a bus name, such as can0.';
+  if (/\s/.test(name)) return 'A bus name has no spaces.';
+  if (name.length > 32) return 'A bus name has at most 32 characters.';
+  return null;
 }
 
 export function formatBitrate(bitrate: number): string {

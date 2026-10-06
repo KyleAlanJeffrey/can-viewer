@@ -141,7 +141,7 @@ describe('CaptureRecorder status text', () => {
     const status = recorder.status();
     expect(recorder.text.summary(status)).toBe('1 error \u00b7 Listen only \u00b7 1,500 frames \u00b7 1:23 \u00b7 0/s');
     expect(recorder.text.title(status)).toBe(
-      'Recording from Test adapter at 500 kbit/s, listen only.\n1,500 frames at 0 frames/s in 1 min 23 s.\n1 error. The last: bad line',
+      'Recording can0 from Test adapter at 500 kbit/s, listen only.\n1,500 frames at 0 frames/s in 1 min 23 s.\n1 error. The last: bad line',
     );
   });
 
@@ -153,6 +153,15 @@ describe('CaptureRecorder status text', () => {
     const status = recorder.status();
     expect(recorder.text.summary(status)).toBe('1 frame \u00b7 0:00');
     expect(recorder.text.title(status)).toMatch(/, not listen only\./);
+  });
+
+  it('stores the frames under the bus name chosen', async () => {
+    const { adapter } = fakeAdapter();
+    const core = fakeCore({ startCapture: vi.fn(() => Promise.resolve(logInfo())) });
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock());
+    await recorder.start({ ...settings, bus: 'vehicle' });
+    expect(core.startCapture).toHaveBeenCalledWith('c.log', 'vehicle', expect.any(Number));
+    expect(recorder.text.title(recorder.status())).toMatch(/^Recording vehicle from Test adapter/);
   });
 });
 

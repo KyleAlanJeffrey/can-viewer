@@ -1270,3 +1270,17 @@
 .re-ref-plot .u-over {
   cursor: crosshair;
 }
+
+/* Suggested signals, beside the bit grid when there is room */
+.re-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.re-pair > .re-card,
+.re-pair > .re-sug-loading,
+.re-pair > .empty {
+  flex: 1 1 380px;
+}

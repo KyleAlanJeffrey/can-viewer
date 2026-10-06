@@ -1,7 +1,7 @@
 /// Core worker: owns the wasm Session. Requests arrive as `{ id, method, args }` and are
 /// answered with `{ id, result }` or `{ id, error }`; parse progress is pushed as events.
 
-import type { CompareOptions, Database, ExportFormat, FindRule, FrameFilter, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
+import type { CompareOptions, Database, DiscoveryHints, ExportFormat, FindRule, FrameFilter, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 
 const CHUNK_BYTES = 8 << 20;
@@ -124,6 +124,7 @@ const handlers = {
   decodeRaw: (key: number, spec: RawSignalSpec) => JSON.parse(session.decode_raw(key, JSON.stringify(spec))),
   findSignal: (rules: FindRule[], keys: number[], limit: number) =>
     JSON.parse(session.find_signal(JSON.stringify(rules), Float64Array.from(keys), limit)),
+  suggestSignals: (key: number, hints: DiscoveryHints) => JSON.parse(session.suggest_signals(key, JSON.stringify(hints ?? {}))),
   setDatabases(dbs: ScopedDatabase[]) {
     const json = JSON.stringify(dbs);
     session.set_databases(json);

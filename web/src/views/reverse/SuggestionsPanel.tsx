@@ -43,6 +43,7 @@ export function SuggestionsPanel(props: Props) {
   const [refocus, setRefocus] = useState<string | null>(null);
   const drag = useRef<{ x: number; width: number; widest: number } | null>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const [shownMax, setShownMax] = useState(PANEL_WIDTH.max);
   const key = summary?.key ?? null;
   const { ensure } = discovery;
   const { capturing } = ctx;
@@ -126,9 +127,9 @@ export function SuggestionsPanel(props: Props) {
         aria-label="Resize Suggested signals"
         aria-valuemin={PANEL_WIDTH.min}
         aria-valuemax={PANEL_WIDTH.max}
-        aria-valuenow={width}
+        aria-valuenow={Math.min(width, shownMax)}
         tabIndex={0}
-        onFocus={() => width > widest() && resize(width, widest())}
+        onFocus={() => setShownMax(widest())}
         onPointerDown={startDrag}
         onPointerMove={(e) => drag.current && resize(drag.current.width - (e.clientX - drag.current.x), drag.current.widest)}
         onPointerUp={() => (drag.current = null)}
@@ -137,6 +138,7 @@ export function SuggestionsPanel(props: Props) {
           if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
           e.preventDefault();
           const max = widest();
+          setShownMax(max);
           const from = Math.min(width, max);
           const to = e.key === 'ArrowLeft' ? from + 16 : e.key === 'ArrowRight' ? from - 16 : e.key === 'Home' ? PANEL_WIDTH.min : max;
           resize(to, max);

@@ -431,7 +431,7 @@
 
   .re-sugpanel-scroll {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
     align-content: start;
     gap: 10px 16px;
     padding-top: 12px;
@@ -458,15 +458,17 @@
     grid-column: 1;
   }
 
-  .re-sugpanel-scroll > .re-sugpanel-msg {
+  /* Hide sits beside the title so the focus order matches the DOM. */
+  .re-sugpanel-head > button {
     grid-column: 2;
+    margin-left: -12px;
   }
 
-  .re-sugpanel-scroll > .re-sugpanel-scope {
+  .re-sugpanel-scroll > .re-sugpanel-msg {
     grid-column: 3;
   }
 
-  .re-sugpanel-head > button {
+  .re-sugpanel-scroll > .re-sugpanel-scope {
     grid-column: 4;
   }
 

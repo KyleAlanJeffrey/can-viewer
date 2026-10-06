@@ -21,7 +21,6 @@ interface Props {
   onExport: () => void;
 }
 
-const BIT_SIGNIFICANT = SIGNIFICANT / 100;
 const NO_SIGNALS: never[] = [];
 
 /**
@@ -75,7 +74,7 @@ export function ByteCompare({ ctx, comparison: c, logA, logB, options, onOpenInR
   const marked = useMemo(() => {
     const bits = new Set<number>();
     detail?.bitScores.forEach((score, bit) => {
-      if (score >= BIT_SIGNIFICANT && detail.byteScores[bit >> 3] >= SIGNIFICANT) bits.add(bit);
+      if (Math.round(score * 100) >= SIGNIFICANT && detail.byteScores[bit >> 3] >= SIGNIFICANT) bits.add(bit);
     });
     return bits;
   }, [detail]);

@@ -215,7 +215,7 @@ function CompareLogs({ ctx }: ViewProps) {
       return;
     }
     // Log A only has a frame to go to when it shows a value log B never does.
-    const detail = await core.compareBytes(c.keyA, c.keyB, options).catch(() => null);
+    const detail = await onLogB(core, core.compareBytes(c.keyA, c.keyB, options)).catch(() => null);
     const at = detail?.firstOnlyInA[byte] ?? null;
     if (at !== null) {
       setReverseWindow(windowAround(at, log.durationS));

@@ -270,11 +270,23 @@ impl<'a> Frames<'a> {
         self.list.len().saturating_sub(1)
     }
 
-    fn into_owned(self) -> Frames<'static> {
+    /// The frames, unless they are just the stats' own, which a [`Job`] reads afresh each step.
+    fn owned(self) -> Option<Frames<'static>> {
+        match (self.list, self.flips) {
+            (Cow::Owned(list), Cow::Owned(flips)) => Some(Frames {
+                list: Cow::Owned(list),
+                len: self.len,
+                flips: Cow::Owned(flips),
+            }),
+            _ => None,
+        }
+    }
+
+    fn borrowed(&self) -> Frames<'_> {
         Frames {
-            list: Cow::Owned(self.list.into_owned()),
+            list: Cow::Borrowed(&self.list),
             len: self.len,
-            flips: Cow::Owned(self.flips.into_owned()),
+            flips: Cow::Borrowed(&self.flips),
         }
     }
 
@@ -1748,8 +1760,8 @@ fn whole_log_value_reasons(log: &Log, ranges: &[Range]) -> Vec<String> {
 #[must_use]
 pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
     let mut job = Job::new(store, stats, hints.clone());
-    while !job.step(store, usize::MAX) {}
-    job.finish(store)
+    while !job.step(store, stats, usize::MAX) {}
+    job.finish(store, stats)
 }
 
 /// About this many sampled frames are read in one [`Job::step`]: a few milliseconds' work.
@@ -1757,10 +1769,14 @@ pub const STEP_WORK: usize = 200_000;
 
 /// [`suggest`] in parts, so a caller can do other work, or give up, between them: [`Job::new`]
 /// samples the frames, each [`Job::step`] scores some of the candidates, and [`Job::finish`]
-/// picks the suggestions. It reads the frames of the store it was made from, which must not
-/// lose frames meanwhile; see [`Job::still_fits`].
+/// picks the suggestions. Each call takes the store and the ID's stats it was made from, which
+/// must not have changed meanwhile: the caller keeps track of that.
 pub struct Job {
-    frames: Frames<'static>,
+    /// The ID's frames when they are a selection of its stats' frames; when they are all of
+    /// them, they are read from the stats each step rather than copied.
+    own_frames: Option<Frames<'static>>,
+    /// Payload bytes looked at.
+    len: usize,
     sample: SampleBuf,
     rates: Vec<f64>,
     rereads: Rereads,
@@ -1769,14 +1785,12 @@ pub struct Job {
     /// Checksum bytes, then candidates, scored so far.
     done: usize,
     scored: Vec<Scored>,
-    frame_count: usize,
-    store_len: usize,
 }
 
 impl Job {
     #[must_use]
     pub fn new(store: &FrameStore, stats: &IdStats, mut hints: Hints) -> Self {
-        let frames = Frames::new(store, stats).into_owned();
+        let frames = Frames::new(store, stats);
         hints.markers.truncate(MAX_MARKERS);
         let around: Vec<usize> = hints
             .markers
@@ -1785,19 +1799,19 @@ impl Job {
             .filter(|&at| at < frames.list.len())
             .collect();
         let budget = sample_budget(frames.len);
-        let mut job = Self::of(store, frames, hints, &around, budget);
-        job.frame_count = stats.frames.len();
+        let mut job = Self::of(store, &frames, hints, &around, budget);
+        job.own_frames = frames.owned();
         job
     }
 
     fn of(
         store: &FrameStore,
-        frames: Frames<'static>,
+        frames: &Frames,
         hints: Hints,
         around: &[usize],
         budget: usize,
     ) -> Self {
-        let sample = SampleBuf::new(store, &frames, around, budget);
+        let sample = SampleBuf::new(store, frames, around, budget);
         let steps = frames.steps();
         let bits = frames.len * 8;
         let rates: Vec<f64> = (0..bits)
@@ -1807,7 +1821,7 @@ impl Job {
         let rereads = if empty {
             Rereads::none()
         } else {
-            Rereads::new(store, &frames, &sample.view(), &rates)
+            Rereads::new(store, frames, &sample.view(), &rates)
         };
         let candidates = if empty {
             Vec::new()
@@ -1815,9 +1829,8 @@ impl Job {
             candidates(&rates, bits)
         };
         Self {
-            frame_count: 0,
-            store_len: store.len(),
-            frames,
+            own_frames: None,
+            len: frames.len,
             sample,
             rates,
             rereads,
@@ -1828,15 +1841,23 @@ impl Job {
         }
     }
 
-    /// Whether the job can go on with `store`, given the stats of its ID there now: frames
-    /// added or taken away since it began mean another log, or a capture that went on.
-    #[must_use]
-    pub fn still_fits(&self, store: &FrameStore, stats: &IdStats) -> bool {
-        store.len() == self.store_len && stats.frames.len() == self.frame_count
+    fn frames<'s>(
+        own_frames: &'s Option<Frames<'static>>,
+        len: usize,
+        stats: &'s IdStats,
+    ) -> Frames<'s> {
+        own_frames.as_ref().map_or(
+            Frames {
+                list: Cow::Borrowed(&stats.frames),
+                len,
+                flips: Cow::Borrowed(&stats.bit_flips),
+            },
+            Frames::borrowed,
+        )
     }
 
     fn total(&self) -> usize {
-        self.frames.len + self.candidates.len()
+        self.len + self.candidates.len()
     }
 
     /// Whether every candidate is scored, so [`Job::finish`] is next.
@@ -1847,19 +1868,20 @@ impl Job {
 
     /// Scores candidates until about `work` sampled frames are read, or none are left; true once
     /// none are.
-    pub fn step(&mut self, store: &FrameStore, work: usize) -> bool {
+    pub fn step(&mut self, store: &FrameStore, stats: &IdStats, work: usize) -> bool {
         if self.scored_all() {
             return true;
         }
         let sample = self.sample.view();
+        let frames = Self::frames(&self.own_frames, self.len, stats);
         let log = Log {
             store,
-            frames: &self.frames,
+            frames: &frames,
             sample: &sample,
             rates: &self.rates,
             rereads: &self.rereads,
         };
-        let len = self.frames.len;
+        let len = self.len;
         // A candidate reads each sampled frame once or so; a checksum byte, trying its rules,
         // costs about eight times as much.
         let frames = sample.len().max(1);
@@ -1881,9 +1903,10 @@ impl Job {
 
     /// The suggestions, once every [`Job::step`] is done.
     #[must_use]
-    pub fn finish(self, store: &FrameStore) -> Findings {
+    pub fn finish(self, store: &FrameStore, stats: &IdStats) -> Findings {
         let Self {
-            frames,
+            own_frames,
+            len,
             sample,
             rates,
             rereads,
@@ -1899,7 +1922,7 @@ impl Job {
                 sampled_frames: sample.len(),
             };
         }
-        let len = frames.len;
+        let frames = Self::frames(&own_frames, len, stats);
         let log = Log {
             store,
             frames: &frames,
@@ -2015,7 +2038,7 @@ impl Job {
         ));
         let mut suggestions = suggestions_from(&log, &mut scored, chosen, &mut fits);
         if let Some((selector, pages, cells)) = paging {
-            multiplex(&log, &mut suggestions, selector, pages, &cells, cap);
+            multiplex(&log, stats, &mut suggestions, selector, pages, &cells, cap);
         }
         Findings {
             suggestions,
@@ -2024,9 +2047,16 @@ impl Job {
     }
 
     /// The suggestions within one page of a multiplexed message, none of them over `taken`.
-    fn finish_page(self, store: &FrameStore, mut taken: Mask, cap: usize) -> Vec<Suggestion> {
+    fn finish_page(
+        self,
+        store: &FrameStore,
+        stats: &IdStats,
+        mut taken: Mask,
+        cap: usize,
+    ) -> Vec<Suggestion> {
         let Self {
-            frames,
+            own_frames,
+            len,
             sample,
             rates,
             rereads,
@@ -2034,6 +2064,7 @@ impl Job {
             ..
         } = self;
         let sample = sample.view();
+        let frames = Self::frames(&own_frames, len, stats);
         let log = Log {
             store,
             frames: &frames,
@@ -2202,6 +2233,7 @@ const PAGE_SCORE: f64 = 0.6;
 /// have a good one: a counter beside bytes that merely change with it is left a counter.
 fn multiplex(
     log: &Log,
+    stats: &IdStats,
     suggestions: &mut Vec<Suggestion>,
     selector: Range,
     pages: usize,
@@ -2220,14 +2252,15 @@ fn multiplex(
             *t |= m;
         }
     }
-    let found: Vec<Vec<Suggestion>> = page_suggestions(log, selector, pages, cells, taken, cap)
-        .into_iter()
-        .map(|page| {
-            page.into_iter()
-                .filter(|s| s.score >= PAGE_SCORE && covers_its_bytes(s.range, cells))
-                .collect()
-        })
-        .collect();
+    let found: Vec<Vec<Suggestion>> =
+        page_suggestions(log, stats, selector, pages, cells, taken, cap)
+            .into_iter()
+            .map(|page| {
+                page.into_iter()
+                    .filter(|s| s.score >= PAGE_SCORE && covers_its_bytes(s.range, cells))
+                    .collect()
+            })
+            .collect();
     if found.iter().filter(|page| !page.is_empty()).count() * 2 < pages {
         return;
     }
@@ -2277,6 +2310,7 @@ fn covers_its_bytes(range: Range, cells: &Mask) -> bool {
 /// within the `cells` bytes and the bits that page never changes, and not over `taken`.
 fn page_suggestions(
     log: &Log,
+    stats: &IdStats,
     selector: Range,
     pages: usize,
     cells: &Mask,
@@ -2300,10 +2334,11 @@ fn page_suggestions(
                 list: Cow::Owned(list),
                 len,
             };
-            let mut job = Job::of(store, page, Hints::default(), &[], budget);
+            let mut job = Job::of(store, &page, Hints::default(), &[], budget);
             if job.done == usize::MAX {
                 return Vec::new();
             }
+            job.own_frames = page.owned();
             let rates = &job.rates;
             job.candidates.retain(|r| {
                 let mask = r.mask();
@@ -2315,8 +2350,8 @@ fn page_suggestions(
             });
             // No checksum is looked for within a page.
             job.done = len;
-            while !job.step(store, usize::MAX) {}
-            job.finish_page(store, taken, cap)
+            while !job.step(store, stats, usize::MAX) {}
+            job.finish_page(store, stats, taken, cap)
         })
         .collect()
 }

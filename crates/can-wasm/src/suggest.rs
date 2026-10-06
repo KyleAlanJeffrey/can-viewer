@@ -85,6 +85,17 @@ fn level(score: f64) -> Level {
 pub(crate) struct PendingSuggestions {
     next_id: u32,
     jobs: Vec<Pending>,
+    /// Ids below this were begun before the store last changed.
+    stale_below: u32,
+}
+
+impl PendingSuggestions {
+    /// Lets every job go: they read frames by their place in the store, which any change to it
+    /// (frames added, sorted or trimmed, or another log) can move. Their next step says so.
+    pub(crate) fn store_changed(&mut self) {
+        self.jobs.clear();
+        self.stale_below = self.next_id;
+    }
 }
 
 struct Pending {
@@ -96,9 +107,6 @@ struct Pending {
     unit: String,
 }
 
-/// Jobs begun and never finished or dropped are let go, oldest first, past this many.
-const MAX_PENDING: usize = 8;
-
 #[wasm_bindgen]
 impl Session {
     /// Suggested signals for ID `key`, given hints as a JSON `DiscoveryHints`; see
@@ -108,7 +116,8 @@ impl Session {
     }
 
     /// Starts [`Session::suggest_signals`] as a job to run with `suggest_step`, so other calls
-    /// can run between its steps. Returns the job's id.
+    /// can run between its steps. Returns the job's id. A job keeps its sampled frames until it
+    /// is stepped to the end, dropped, or the log changes, so callers see each one through.
     pub fn suggest_begin(&mut self, key: f64, hints: &str) -> Result<u32, JsError> {
         self.begin_suggestions(key, hints).map_err(js_err)
     }
@@ -148,32 +157,30 @@ impl Session {
             reference,
             unit,
         });
-        if pending.jobs.len() > MAX_PENDING {
-            pending.jobs.remove(0);
-        }
         Ok(id)
     }
 
     fn step_suggestions(&mut self, id: u32) -> Result<Option<String>, String> {
-        let at = self
-            .discovery
-            .jobs
-            .iter()
-            .position(|p| p.id == id)
-            .ok_or("unknown suggestion job")?;
+        let Some(at) = self.discovery.jobs.iter().position(|p| p.id == id) else {
+            return Err(if id < self.discovery.stale_below {
+                "the log changed"
+            } else {
+                "unknown suggestion job"
+            }
+            .into());
+        };
         let mut pending = self.discovery.jobs.remove(at);
         let stats = self
             .filter(pending.key)
             .ok()
             .flatten()
-            .filter(|stats| pending.job.still_fits(&self.store, stats))
             .ok_or("the log changed")?;
         if !pending.job.scored_all() {
-            pending.job.step(&self.store, STEP_WORK);
+            pending.job.step(&self.store, stats, STEP_WORK);
             self.discovery.jobs.insert(at, pending);
             return Ok(None);
         }
-        let findings = pending.job.finish(&self.store);
+        let findings = pending.job.finish(&self.store, stats);
         Ok(Some(self.suggestions_json(
             stats,
             findings,
@@ -374,6 +381,70 @@ mod tests {
             s.step_suggestions(other).unwrap_err(),
             "unknown suggestion job"
         );
+    }
+
+    /// A batch of `push_frames` records for ID 0x100: a counter and a slow value, from frame
+    /// `from`, 10 ms apart, with every other pair of frames swapped as an adapter might.
+    fn capture_batch(from: u32, count: u32) -> Vec<u8> {
+        let mut batch = Vec::new();
+        for i in from..from + count {
+            let at = if i % 2 == 0 { i + 1 } else { i - 1 };
+            let data = [i as u8, (i / 50) as u8, 0, 0];
+            batch.extend_from_slice(&(f64::from(at) * 1e7).to_le_bytes());
+            batch.extend_from_slice(&0x100u32.to_le_bytes());
+            batch.extend_from_slice(&[0, data.len() as u8]);
+            batch.extend_from_slice(&data);
+        }
+        batch
+    }
+
+    #[test]
+    fn a_job_ends_when_the_store_changes_under_it() {
+        let key = id_key(0, 0x100) as f64;
+        let mut s = Session::new();
+        s.start_capture("can0", 1_700_000_000_000.0);
+        s.push_frames(&capture_batch(0, 2000)).unwrap();
+        let changes: [fn(&mut Session); 5] = [
+            |s| drop(s.push_frames(&capture_batch(2000, 10))),
+            |s| drop(s.trim_capture(5e9)),
+            |s| drop(s.finish_capture()),
+            |s| s.start_capture("can0", 1_700_000_000_000.0),
+            |s| s.push_chunk(b"(0.000000) can0 100#00\n"),
+        ];
+        for change in changes {
+            if s.filter(key).ok().flatten().is_none() {
+                s.start_capture("can0", 1_700_000_000_000.0);
+                s.push_frames(&capture_batch(0, 2000)).unwrap();
+            }
+            let job = s.begin_suggestions(key, "").unwrap();
+            assert_eq!(s.step_suggestions(job).unwrap(), None);
+            change(&mut s);
+            assert_eq!(s.step_suggestions(job).unwrap_err(), "the log changed");
+            assert_eq!(s.step_suggestions(job).unwrap_err(), "the log changed");
+        }
+        // A job begun after the change runs to the end.
+        s.start_capture("can0", 1_700_000_000_000.0);
+        s.push_frames(&capture_batch(0, 2000)).unwrap();
+        s.finish_capture().unwrap();
+        let job = s.begin_suggestions(key, "").unwrap();
+        let stepped = loop {
+            if let Some(json) = s.step_suggestions(job).unwrap() {
+                break json;
+            }
+        };
+        assert_eq!(stepped, s.suggestions(key, "").unwrap());
+    }
+
+    #[test]
+    fn many_jobs_can_be_under_way_at_once() {
+        let mut s = session();
+        let key = id_key(0, 0x100) as f64;
+        let jobs: Vec<u32> = (0..40)
+            .map(|_| s.begin_suggestions(key, "").unwrap())
+            .collect();
+        for job in jobs {
+            while s.step_suggestions(job).unwrap().is_none() {}
+        }
     }
 
     #[test]

@@ -1292,7 +1292,7 @@ How it works (see `suggest` in `crates/can-wasm/src/discover.rs`):
 
 **Returns** a [`MessageSuggestions`](#the-messagesuggestions-object). An ID whose bits never change, or with a single frame, has no suggestions.
 
-**Errors** Rejects with `unknown ID` for an unknown key, `unknown reference ID` or `unknown reference signal` for a reference the log doesn't have, `no loaded DBC defines the reference's message` for a reference no DBC decodes, `the log changed` when frames were added or another log opened between steps, and a `DOMException` named `AbortError` when aborted.
+**Errors** Rejects with `unknown ID` for an unknown key, `unknown reference ID` or `unknown reference signal` for a reference the log doesn't have, `no loaded DBC defines the reference's message` for a reference no DBC decodes, `the log changed` when the frames changed between steps (a capture took more frames, was trimmed or ended, or another log opened or was swapped in), and a `DOMException` named `AbortError` when aborted.
 
 ```ts
 const { suggestions } = await core.suggestSignals(summary.key, { markers: [{ t: 12 }] });

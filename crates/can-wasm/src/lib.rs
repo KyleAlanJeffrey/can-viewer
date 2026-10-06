@@ -605,11 +605,13 @@ impl Session {
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) {
+        self.discovery.store_changed();
         self.input.push(chunk, &mut self.store);
     }
 
     /// Flush the parser and return a JSON `LogInfo`.
     pub fn finish(&mut self) -> String {
+        self.discovery.store_changed();
         self.input.finish(&mut self.store);
         self.log_info()
     }
@@ -617,6 +619,7 @@ impl Session {
     /// Start a live capture on one bus named `channel` in place of the log. `started_at_ms` is
     /// the wall-clock start in milliseconds since the Unix epoch; frames are timed from it.
     pub fn start_capture(&mut self, channel: &str, started_at_ms: f64) {
+        self.discovery.store_changed();
         self.store = FrameStore::new();
         self.input = LogInput::default();
         self.series.clear();
@@ -639,6 +642,7 @@ impl Session {
     /// and those that match the trace filter to its rows. Without the memory for those, the
     /// filter is dropped and the capture goes on. Returns a JSON `LogInfo` of the capture so far.
     pub fn push_frames(&mut self, packed: &[u8]) -> Result<String, JsError> {
+        self.discovery.store_changed();
         self.push_capture_records(packed).map_err(js_err)?;
         if let Some(filtered) = &mut self.filtered {
             if filtered.follow(&self.store).is_err() {
@@ -651,6 +655,7 @@ impl Session {
     /// Drop the running capture's frames timed before `before_ns` nanoseconds since it started,
     /// for a rolling capture; see [`FrameStore::drop_before`]. Returns a JSON `LogInfo`.
     pub fn trim_capture(&mut self, before_ns: f64) -> Result<String, JsError> {
+        self.discovery.store_changed();
         self.drop_captured_before(before_ns).map_err(js_err)?;
         Ok(self.log_info())
     }
@@ -663,6 +668,7 @@ impl Session {
             .as_mut()
             .ok_or_else(|| js_err("no capture is running"))?;
         capture.finished = true;
+        self.discovery.store_changed();
         self.store.sort_by_time();
         self.count = None;
         self.preview = None;

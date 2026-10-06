@@ -299,14 +299,17 @@ describe('App unsaved capture across a reload', () => {
     const { core, frames } = captureCore();
     const { unmount } = render(<App core={core} />);
     await startCapture();
+    // Full once the keeper has begun, but before the frame comes: whichever write takes the frame
+    // (when the keeper begins, every second, or when the page asks to leave) is then refused.
+    const session = await storage();
+    await waitFor(async () => expect(await session.keptCaptures()).toHaveLength(1));
+    fillStorage();
     port.send('t1232DEAD\r');
     await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
-    fillStorage();
     window.dispatchEvent(new Event('beforeunload', { cancelable: true }));
     const banner = await screen.findByText(/couldn\u2019t keep a copy of capture-\d{8}-\d{6}\.log, so it won\u2019t reopen after a reload/);
     expect(banner.textContent).toMatch(/Its storage is full\. Save Capture\u2026 keeps it in a file\.$/);
     expect(document.querySelector('.toolbar [role=status]')?.textContent).toMatch(/couldn't keep a copy/);
-    const session = await storage();
     expect(await session.keptCaptures()).toEqual([]);
 
     // The page didn't go after all: the capture goes on, only not kept.

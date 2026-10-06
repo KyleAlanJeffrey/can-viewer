@@ -1,0 +1,597 @@
+//! Reading a log in parts in several workers. The core worker reads the start of a text log
+//! itself, then each part after it, from a line boundary, is read by [`parse_segment`] in a
+//! worker of its own and joined onto the open log, in file order, by `Session::push_segment`.
+//! The result is the log read whole: the frame store joins the parts' frames and statistics
+//! (see `FrameStore::append_segment`), line numbers carry on from part to part, and a part read
+//! in another header state than the parts before it left is refused, so the log is read again
+//! in one worker.
+
+use can_core::FrameStore;
+use can_formats::{AnyParser, Format, LogParser, ParseStats};
+use wasm_bindgen::prelude::*;
+
+use crate::{clock, js_err};
+
+const MAGIC: &[u8; 4] = b"FCP1";
+
+/// What reading a log counted, as `LogInfo` reports it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReadStats {
+    pub(crate) bytes: u64,
+    pub(crate) lines: u64,
+    pub(crate) rejected: u64,
+    /// Line (or record) number and reason of the first rejected line.
+    pub(crate) first_rejection: Option<(u64, String)>,
+}
+
+impl From<&ParseStats> for ReadStats {
+    fn from(stats: &ParseStats) -> Self {
+        Self {
+            bytes: stats.bytes,
+            lines: stats.lines,
+            rejected: stats.rejected,
+            first_rejection: stats
+                .first_rejection
+                .map(|(line, reason)| (line, reason.to_owned())),
+        }
+    }
+}
+
+impl ReadStats {
+    /// Adds the counts of the part of the file that comes after the one these count.
+    pub(crate) fn append(&mut self, later: &ReadStats) {
+        if self.first_rejection.is_none() {
+            self.first_rejection = later
+                .first_rejection
+                .as_ref()
+                .map(|(line, reason)| (self.lines + line, reason.clone()));
+        }
+        self.bytes += later.bytes;
+        self.lines += later.lines;
+        self.rejected += later.rejected;
+    }
+}
+
+/// Reads `part`, the lines of a log in `format` (a `LogInfo.format` name) from a line
+/// boundary after the first, with `head`, the start of the file, for its header. Returns the
+/// part for `Session::push_segment`: its counts, the header state it was read in and the one
+/// it left, and its frames.
+///
+/// # Errors
+/// For a format that can't be read in parts.
+#[wasm_bindgen]
+pub fn parse_segment(format: &str, head: &[u8], part: &[u8]) -> Result<Vec<u8>, JsError> {
+    Format::from_name(format)
+        .and_then(|format| read_part(format, head, part))
+        .ok_or_else(|| js_err("this log can't be read in parts"))
+}
+
+fn read_part(format: Format, head: &[u8], part: &[u8]) -> Option<Vec<u8>> {
+    let mut parser = AnyParser::new(format);
+    parser.set_local_time(clock::local_time());
+    parser.prime(head);
+    if !parser.splittable() {
+        return None;
+    }
+    let entry = parser.state();
+    let mut store = FrameStore::for_segment();
+    parser.push(part, &mut store);
+    parser.finish(&mut store);
+    let frames = store.encode_segment();
+
+    let stats = ReadStats::from(parser.stats());
+    let mut out = Vec::with_capacity(frames.len() + 256);
+    out.extend_from_slice(MAGIC);
+    for count in [stats.bytes, stats.lines, stats.rejected] {
+        out.extend_from_slice(&count.to_le_bytes());
+    }
+    match &stats.first_rejection {
+        Some((line, reason)) => {
+            out.push(1);
+            out.extend_from_slice(&line.to_le_bytes());
+            put_text(&mut out, reason);
+        }
+        None => out.push(0),
+    }
+    put_text(&mut out, &entry);
+    put_text(&mut out, &parser.state());
+    out.extend_from_slice(&frames);
+    Some(out)
+}
+
+fn put_text(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+}
+
+/// A part from [`parse_segment`], read in place.
+pub(crate) struct Part<'a> {
+    pub(crate) stats: ReadStats,
+    /// The header state the part was read in, and the one it left.
+    pub(crate) entry: &'a str,
+    pub(crate) exit: &'a str,
+    /// For `FrameStore::append_segment`.
+    pub(crate) frames: &'a [u8],
+}
+
+impl<'a> Part<'a> {
+    pub(crate) fn read(bytes: &'a [u8]) -> Option<Self> {
+        let mut r = Reader(bytes);
+        if r.take(MAGIC.len())? != MAGIC {
+            return None;
+        }
+        let mut stats = ReadStats {
+            bytes: r.u64()?,
+            lines: r.u64()?,
+            rejected: r.u64()?,
+            first_rejection: None,
+        };
+        match r.take(1)? {
+            [0] => {}
+            [1] => stats.first_rejection = Some((r.u64()?, r.text()?.to_owned())),
+            _ => return None,
+        }
+        Some(Self {
+            stats,
+            entry: r.text()?,
+            exit: r.text()?,
+            frames: r.0,
+        })
+    }
+}
+
+struct Reader<'a>(&'a [u8]);
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let (head, rest) = self.0.split_at_checked(n)?;
+        self.0 = rest;
+        Some(head)
+    }
+
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+
+    fn text(&mut self) -> Option<&'a str> {
+        let len = u32::from_le_bytes(self.take(4)?.try_into().ok()?);
+        std::str::from_utf8(self.take(len as usize)?).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write;
+
+    use super::*;
+    use crate::Session;
+
+    /// Where the web app's worker starts reading a part that owns the lines starting in
+    /// `[start, ..)`: at the first line start at or after `start`.
+    fn line_start_at_or_after(log: &[u8], start: usize) -> usize {
+        if start == 0 {
+            return 0;
+        }
+        log[start - 1..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(log.len(), |nl| start + nl)
+    }
+
+    fn read_whole(name: &str, log: &[u8]) -> Session {
+        let mut s = Session::new();
+        s.set_file_name(name);
+        s.push_chunk(log);
+        s
+    }
+
+    /// How a log read in parts went.
+    #[derive(Debug, PartialEq)]
+    enum Read {
+        /// The start of the log showed it can't be read in parts.
+        Whole,
+        InParts,
+        /// A part was refused, so the log would be read again whole.
+        Refused,
+    }
+
+    /// Reads `log` as the web app's workers do: the core reads its first `first` bytes up to the
+    /// last line break, then each part starting at a byte of `starts` (anywhere, its lines
+    /// running to the next) is read with the start of the file as its head and joined on.
+    fn read_in_parts(name: &str, log: &[u8], first: usize, starts: &[usize]) -> (Session, Read) {
+        let first = &log[..first.min(log.len())];
+        let cut = first
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |nl| nl + 1);
+        let mut s = read_whole(name, &log[..cut]);
+        let Some(format) = s.segment_format() else {
+            s.push_chunk(&log[cut..]);
+            return (s, Read::Whole);
+        };
+        let mut bounds = vec![cut];
+        bounds.extend(starts.iter().copied().filter(|&at| at > cut));
+        bounds.push(log.len());
+        for pair in bounds.windows(2) {
+            let start = line_start_at_or_after(log, pair[0]);
+            let end = line_start_at_or_after(log, pair[1]).max(start);
+            let part = parse_segment(&format, &log[..cut], &log[start..end]).unwrap();
+            if !s.push_segment(&part) {
+                return (s, Read::Refused);
+            }
+        }
+        (s, Read::InParts)
+    }
+
+    /// Reads `log` whole and in parts from every start in `starts`, and checks that the parts
+    /// give the same log, with the same `LogInfo`. Returns how each read went.
+    fn assert_parts_read_as_whole(
+        name: &str,
+        log: &[u8],
+        first: usize,
+        starts: &[Vec<usize>],
+    ) -> Vec<Read> {
+        let mut whole = read_whole(name, log);
+        let info = whole.finish();
+        let mut reads = Vec::new();
+        for starts in starts {
+            let (mut joined, read) = read_in_parts(name, log, first, starts);
+            if read == Read::Refused {
+                reads.push(read);
+                continue;
+            }
+            let what = format!("{name} from {first} in parts at {starts:?}");
+            assert_eq!(joined.finish(), info, "{what}");
+            assert_eq!(joined.store.len(), whole.store.len(), "{what}");
+            for i in 0..whole.store.len() {
+                assert_eq!(
+                    joined.store.frame(i),
+                    whole.store.frame(i),
+                    "{what}: frame {i}"
+                );
+                assert_eq!(
+                    joined.store.remote_dlc(i),
+                    whole.store.remote_dlc(i),
+                    "{what}: frame {i}"
+                );
+            }
+            assert_eq!(
+                format!("{:?}", joined.store.ids()),
+                format!("{:?}", whole.store.ids()),
+                "{what}"
+            );
+            assert_eq!(joined.id_summary(), whole.id_summary(), "{what}");
+            reads.push(read);
+        }
+        reads
+    }
+
+    /// Part starts every `step` bytes from `from`, offset by `phase`.
+    fn every(step: usize, phase: usize, len: usize) -> Vec<usize> {
+        (phase..len).step_by(step).collect()
+    }
+
+    /// Starts that land on each byte of `at` and its neighbours: mid-line, on the CR of a CRLF,
+    /// just after the LF.
+    fn around(at: &[usize]) -> Vec<Vec<usize>> {
+        at.iter()
+            .flat_map(|&at| (at.saturating_sub(2)..at + 3).map(|start| vec![start]))
+            .collect()
+    }
+
+    fn candump_log() -> Vec<u8> {
+        let mut log = String::from("\u{feff}");
+        let mut ts = 0;
+        let mut line = |log: &mut String, text: &str| {
+            ts += 1;
+            write!(log, "(1.{ts:06}) {text}\r\n").unwrap();
+        };
+        for i in 0..120 {
+            line(
+                &mut log,
+                &format!("can0 123#{:02X}00{:02X}", i % 7, i * 3 % 256),
+            );
+            line(&mut log, &format!("can0 18FEF100#{:02X}FF", i % 3));
+            if i == 100 {
+                log.push_str("not a frame\r\n");
+            }
+        }
+        for i in 0..60 {
+            line(&mut log, &format!("can1 123#{:02X}", i % 5));
+            line(&mut log, "can0 456#R");
+            line(
+                &mut log,
+                &format!("can2 7FF##1{:02X}{}", i, "AB".repeat(31)),
+            );
+            line(&mut log, "can0 18ECFF21#200A0002FFCAFE00");
+            line(&mut log, &format!("can0 18EBFF21#01{:02X}020304050607", i));
+            if i == 30 {
+                log.push_str(&"x".repeat(5000));
+                log.push_str("\r\n\u{feff}(9.0) can0 123#00\r\n");
+                log.push_str("(0.5) can0 123#FF\r\n");
+            }
+            line(&mut log, "can0 18EBFF21#0208090AFFFFFFFF");
+            line(&mut log, "can0 20000004#0004000000000000");
+        }
+        log.push_str("(3.0) can3 123#01");
+        log.into_bytes()
+    }
+
+    #[test]
+    fn a_candump_log_reads_the_same_in_parts_wherever_they_start() {
+        let log = candump_log();
+        let len = log.len();
+        let crlf: Vec<usize> = log
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| pair == b"\r\n")
+            .map(|(at, _)| at)
+            .step_by(37)
+            .collect();
+        let mut starts = around(&crlf);
+        for step in [41, 300, 997, 4096] {
+            for phase in [0, 7, 19] {
+                starts.push(every(step, 4500 + phase, len));
+            }
+        }
+        for first in [4200, 4500, 9000] {
+            let reads = assert_parts_read_as_whole("drive.log", &log, first, &starts);
+            assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+        }
+    }
+
+    #[test]
+    fn bad_lines_and_transfers_in_later_parts_count_as_in_the_whole_log() {
+        let log = candump_log();
+        let mut whole = read_whole("drive.log", &log);
+        let info: serde_json::Value = serde_json::from_str(&whole.finish()).unwrap();
+        // The first bad line is past the first part, and transfers span parts.
+        assert_eq!(
+            info["firstRejection"],
+            serde_json::json!([203, "expected '(' before timestamp"])
+        );
+        assert_eq!(info["rejected"], 3);
+        assert_eq!(info["reassembledFrames"], 60);
+        assert_eq!(
+            info["channels"],
+            serde_json::json!(["can0", "can1", "can2", "can3"])
+        );
+        let (mut joined, read) =
+            read_in_parts("drive.log", &log, 4200, &every(1000, 4500, log.len()));
+        assert_eq!(read, Read::InParts);
+        assert_eq!(joined.finish(), whole.finish());
+    }
+
+    fn asc_log(timestamps: &str) -> Vec<u8> {
+        let mut log = format!(
+            "date Tue Sep 30 10:00:00.000 am 2025\n\
+             base hex  timestamps {timestamps}\n\
+             internal events logged\n\
+             // version 9.0.0\n\
+             Begin TriggerBlock Tue Sep 30 10:00:00.000 am 2025\n   \
+             0.000000 Start of measurement\n"
+        );
+        for i in 0..400 {
+            let t = f64::from(i) * 0.001;
+            writeln!(
+                log,
+                "   {t:.6} 1  123             Rx   d 8 {:02X} 11 22 33 44 55 66 77",
+                i % 9
+            )
+            .unwrap();
+            writeln!(log, "   {t:.6} 2  18FEF100x       Tx   r").unwrap();
+            if i % 50 == 7 {
+                writeln!(log, "   {t:.6} CANFD 1 Rx  300  EngineData  1 0 d 32 {}  200000  400 3000 1234abcd 460800 2000000 460800 2000000", "0F ".repeat(32).trim_end()).unwrap();
+                writeln!(log, "   {t:.6} 1  ErrorFrame").unwrap();
+            }
+            if i == 300 {
+                log.push_str(
+                    "End TriggerBlock\nBegin TriggerBlock Tue Sep 30 10:00:00.000 am 2025\n",
+                );
+                log.push_str("   0.3 1  XYZ             Rx   d 8 00\n");
+            }
+        }
+        log.push_str("End TriggerBlock\n");
+        log.into_bytes()
+    }
+
+    #[test]
+    fn an_asc_log_reads_the_same_in_parts_unless_its_times_are_relative() {
+        let log = asc_log("absolute");
+        let header_end = log.windows(6).position(|w| w == b"0.0000").unwrap();
+        let mut starts = around(&[header_end, 4200, 9000]);
+        for step in [53, 777, 5000] {
+            starts.push(every(step, 4300, log.len()));
+        }
+        let reads = assert_parts_read_as_whole("drive.asc", &log, 4200, &starts);
+        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+
+        let relative = asc_log("relative");
+        let reads = assert_parts_read_as_whole(
+            "drive.asc",
+            &relative,
+            4200,
+            &[every(500, 4300, relative.len())],
+        );
+        assert_eq!(reads, [Read::Whole]);
+    }
+
+    #[test]
+    fn a_trc_log_reads_the_same_in_parts() {
+        let mut log = String::from(
+            ";$FILEVERSION=2.1\r\n\
+             ;$STARTTIME=45930.5\r\n\
+             ;$COLUMNS=N,O,T,B,I,d,R,L,D\r\n\
+             ;\r\n\
+             ;---+-- ------+------ +- +- --+----- +- +- +--- +- -- -- -- -- -- -- --\r\n",
+        );
+        for i in 0..300 {
+            let bus = 1 + i / 100;
+            writeln!(
+                log,
+                "{:>7} {:>13.3} DT {bus}  0123 Rx -  8  {:02X} 11 22 33 44 55 66 77\r",
+                i + 1,
+                f64::from(i) * 1.5,
+                i % 11
+            )
+            .unwrap();
+            if i == 200 {
+                log.push_str("    999      9999.000 DT 1  0123 Rx -  8  00 11 ZZ\r\n");
+            }
+        }
+        let log = log.into_bytes();
+        let starts = vec![every(61, 4200, log.len()), every(2000, 4321, log.len())];
+        let reads = assert_parts_read_as_whole("drive.trc", &log, 4200, &starts);
+        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+    }
+
+    #[test]
+    fn a_csv_part_read_before_its_time_unit_was_known_is_refused() {
+        let header = "Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\r\n";
+        let mut log = String::from(header);
+        for i in 0..400 {
+            // Whole zeros don't tell the unit; the first other time does, in microseconds.
+            let t = if i < 150 { 0 } else { 1_000_000 + i * 500 };
+            writeln!(
+                log,
+                "{t},{:08X},false,Rx,{},8,00,11,22,33,44,55,66,{:02X}\r",
+                0x100 + i % 4,
+                i / 200,
+                i % 256
+            )
+            .unwrap();
+        }
+        let log = log.into_bytes();
+        let reads =
+            assert_parts_read_as_whole("drive.csv", &log, 4200, &[every(3000, 4300, log.len())]);
+        assert_eq!(reads, [Read::Refused]);
+        // Once the first part has decided the unit, the parts read as the whole.
+        let reads = assert_parts_read_as_whole(
+            "drive.csv",
+            &log,
+            9000,
+            &[every(3000, 9100, log.len()), every(97, 9100, log.len())],
+        );
+        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+    }
+
+    #[test]
+    fn binary_logs_and_logs_read_beside_another_are_read_whole() {
+        let mut s = Session::new();
+        s.set_file_name("drive.blf");
+        s.push_chunk(b"LOGG");
+        s.push_chunk(&[0; 5000]);
+        assert_eq!(s.segment_format(), None);
+        let part = read_part(Format::Candump, b"", b"(1.0) can0 123#00\n").unwrap();
+        assert!(!s.push_segment(&part));
+
+        let log = candump_log();
+        let mut s = Session::new();
+        s.set_file_name("drive.log");
+        assert_eq!(s.segment_format(), None, "the format is not known yet");
+        s.push_chunk(&log[..5000]);
+        assert_eq!(s.segment_format().as_deref(), Some("candump"));
+        assert!(!s.push_segment(b"FCP1"));
+        assert!(read_part(Format::Blf, b"", b"").is_none());
+    }
+}
+
+#[cfg(test)]
+mod demo {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    use super::*;
+    use crate::Session;
+
+    const CHUNK: usize = 8 << 20;
+
+    /// The demo log, or the log `DEMO_LOG` names, read whole and then in parts on threads as
+    /// the web app's workers read it, natively. Needs the demo log: `pnpm --dir web demo`, then
+    /// `cargo test -p can-wasm --release -- --ignored --nocapture demo_in_parts`.
+    #[test]
+    #[ignore = "needs the generated demo log"]
+    fn demo_in_parts() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let path =
+            std::env::var("DEMO_LOG").unwrap_or_else(|_| format!("{root}/target/demo/demo.log"));
+        let log = std::fs::read(&path).expect("demo log");
+        let name = path.rsplit('/').next().unwrap();
+
+        let started = Instant::now();
+        let mut whole = Session::new();
+        whole.set_file_name(name);
+        log.chunks(CHUNK).for_each(|chunk| whole.push_chunk(chunk));
+        let info = whole.finish();
+        let whole_s = started.elapsed().as_secs_f64();
+        println!("{name}: whole in {whole_s:.3} s");
+
+        for workers in [2, 4, 8] {
+            let started = Instant::now();
+            let mut s = read_on_threads(name, &log, workers);
+            let joined = s.finish();
+            let secs = started.elapsed().as_secs_f64();
+            println!("{workers} workers: {secs:.3} s, {:.2}x", whole_s / secs);
+            assert_eq!(joined, info);
+            assert_eq!(
+                format!("{:?}", s.store.ids()),
+                format!("{:?}", whole.store.ids())
+            );
+        }
+    }
+
+    fn read_on_threads(name: &str, log: &[u8], workers: usize) -> Session {
+        let first = &log[..CHUNK.min(log.len())];
+        let cut = first
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |nl| nl + 1);
+        let mut s = Session::new();
+        s.set_file_name(name);
+        s.push_chunk(&log[..cut]);
+        let format = s.segment_format().expect("the log can be read in parts");
+        let format = Format::from_name(&format).unwrap();
+        let head = &log[..cut.min(64 << 10)];
+        let parts: Vec<(usize, usize)> = (cut..log.len())
+            .step_by(CHUNK)
+            .map(|start| (start, (start + CHUNK).min(log.len())))
+            .collect();
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let (sender, results) = mpsc::channel();
+            for _ in 0..workers {
+                let (sender, next, parts) = (sender.clone(), &next, &parts);
+                scope.spawn(move || loop {
+                    let k = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(start, end)) = parts.get(k) else {
+                        return;
+                    };
+                    let start = line_start(log, start);
+                    let end = line_start(log, end).max(start);
+                    let part = read_part(format, head, &log[start..end]).unwrap();
+                    sender.send((k, part)).unwrap();
+                });
+            }
+            drop(sender);
+            let mut waiting = BTreeMap::new();
+            let mut merged = 0;
+            for (k, part) in results {
+                waiting.insert(k, part);
+                while let Some(part) = waiting.remove(&merged) {
+                    assert!(s.push_segment(&part));
+                    merged += 1;
+                }
+            }
+        });
+        s
+    }
+
+    fn line_start(log: &[u8], at: usize) -> usize {
+        log[at - 1..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(log.len(), |nl| at + nl)
+    }
+}

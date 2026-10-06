@@ -9,6 +9,7 @@ mod compare;
 mod discover;
 mod export;
 mod find;
+mod parts;
 mod series;
 mod suggest;
 
@@ -25,6 +26,8 @@ use wasm_bindgen::prelude::*;
 
 use export::ChunkedFile;
 use find::Behaviour;
+pub use parts::parse_segment;
+use parts::{Part, ReadStats};
 use series::Series;
 
 /// Bytes per row returned by [`Session::rows`]; see `web/src/core/rows.ts` for the layout.
@@ -230,6 +233,14 @@ struct LogInput {
     limit: Option<usize>,
     /// The log would not fit in `limit`, so it is not read.
     refused: bool,
+    /// The parts of the log read by other workers and joined on after what `parser` read.
+    parts: Option<Parts>,
+}
+
+/// What the parts joined on so far counted, and the header state the last one left.
+struct Parts {
+    stats: ReadStats,
+    state: String,
 }
 
 impl LogInput {
@@ -334,10 +345,41 @@ impl LogInput {
         }
     }
 
-    fn stats(&self) -> ParseStats {
-        self.parser
+    fn stats(&self) -> ReadStats {
+        let mut stats = self
+            .parser
             .as_ref()
-            .map_or_else(ParseStats::default, |parser| parser.stats().clone())
+            .map_or_else(ReadStats::default, |parser| parser.stats().into());
+        if let Some(parts) = &self.parts {
+            stats.append(&parts.stats);
+        }
+        stats
+    }
+
+    /// The parser, if the rest of the log can be read in parts: see `AnyParser::splittable`.
+    /// A log read beside another is read whole, as the reads in parts don't count towards its
+    /// memory limit.
+    fn splittable_parser(&self) -> Option<&AnyParser> {
+        let parser = self.parser.as_ref()?;
+        (self.limit.is_none() && !self.refused && parser.splittable()).then_some(parser)
+    }
+
+    /// Joins a part read by `parse_segment` onto the log, or refuses it, perhaps after storing
+    /// some of its frames.
+    fn push_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
+        let state = self.splittable_parser().ok_or(())?.state();
+        let part = Part::read(bytes).ok_or(())?;
+        let parts = self.parts.get_or_insert_with(|| Parts {
+            stats: ReadStats::default(),
+            state,
+        });
+        if part.entry != parts.state {
+            return Err(());
+        }
+        store.append_segment(part.frames).map_err(|_| ())?;
+        parts.stats.append(&part.stats);
+        parts.state = part.exit.to_owned();
+        Ok(())
     }
 }
 
@@ -507,7 +549,7 @@ fn log_info_json(store: &FrameStore, input: &LogInput) -> String {
 fn info_json(
     store: &FrameStore,
     format: &'static str,
-    stats: ParseStats,
+    stats: ReadStats,
     dropped_frames: Option<usize>,
 ) -> String {
     let duration_s = match (store.first_ts_ns(), store.last_ts_ns()) {
@@ -520,7 +562,10 @@ fn info_json(
         bytes: stats.bytes,
         lines: stats.lines,
         rejected: stats.rejected,
-        first_rejection: stats.first_rejection,
+        first_rejection: stats
+            .first_rejection
+            .as_ref()
+            .map(|(line, reason)| (*line, reason.as_str())),
         duration_s,
         channels: store.channels(),
         heap_bytes: store.heap_bytes(),
@@ -615,6 +660,28 @@ impl Session {
         self.input.push(chunk, &mut self.store);
     }
 
+    /// The format to read the rest of the log in, in parts, with [`parse_segment`], once the
+    /// chunks pushed so far show it can be; see `AnyParser::splittable`. The chunks pushed so
+    /// far must end at a line break.
+    #[must_use]
+    pub fn segment_format(&self) -> Option<String> {
+        if self.capture.is_some() {
+            return None;
+        }
+        self.input
+            .splittable_parser()
+            .map(|parser| parser.format().name().to_owned())
+    }
+
+    /// Joins a part of the log read by [`parse_segment`] onto it, the parts in file order after
+    /// the chunks pushed; then `finish`. False when the part can't be joined (it was read in
+    /// another header state than the part before it left, say), and the log must be read
+    /// again from the start in a new session.
+    pub fn push_segment(&mut self, segment: &[u8]) -> bool {
+        self.discovery.store_changed();
+        self.input.push_part(segment, &mut self.store).is_ok()
+    }
+
     /// Flush the parser and return a JSON `LogInfo`.
     pub fn finish(&mut self) -> String {
         self.discovery.store_changed();
@@ -701,7 +768,12 @@ impl Session {
                     frames: received,
                     ..ParseStats::default()
                 };
-                info_json(&self.store, "capture", stats, Some(capture.dropped))
+                info_json(
+                    &self.store,
+                    "capture",
+                    (&stats).into(),
+                    Some(capture.dropped),
+                )
             }
             None => log_info_json(&self.store, &self.input),
         }

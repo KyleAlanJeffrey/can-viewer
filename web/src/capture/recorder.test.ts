@@ -128,6 +128,86 @@ describe('CaptureRecorder', () => {
   });
 });
 
+describe('CaptureRecorder rolling capture', () => {
+  it('drops frames older than the window in the core, now and then, and frees their memory', async () => {
+    const { adapter, state } = fakeAdapter();
+    const core = fakeCore({
+      startCapture: () => Promise.resolve(logInfo()),
+      appendFrames: () => Promise.resolve(logInfo()),
+      trimCapture: vi.fn(() => Promise.resolve(logInfo({ frames: 3 }))),
+      endCapture: () => Promise.resolve(logInfo()),
+    });
+    const cost = captureFrameBytes(frame(0));
+    const time = clock();
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', time, { intervalMs: 5 }, { warnBytes: 3 * cost, maxBytes: 4 * cost });
+    const ended = vi.fn();
+    recorder.onEnd = ended;
+    await recorder.start({ ...settings, keepMinutes: 1 });
+    const started = time.ms;
+    const send = async (seconds: number) => {
+      time.ms = started + seconds * 1000;
+      state.events!.onFrames([frame(seconds * 1e9)]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+
+    await send(0);
+    await send(30);
+    // 65 s: the frame at 0 is past the minute, but not by the 10 s of slack.
+    await send(65);
+    expect(core.trimCapture).not.toHaveBeenCalled();
+    expect(recorder.status().nearLimit).toBe(true);
+    await send(75);
+    expect(core.trimCapture).toHaveBeenCalledWith(15e9);
+    expect(recorder.status().nearLimit).toBe(true);
+    // Without the frame at 0 counted, a fifth fits.
+    await send(80);
+    expect(ended).not.toHaveBeenCalled();
+    expect(recorder.status().frames).toBe(5);
+    expect(recorder.text.title(recorder.status())).toMatch(/\nKeeping only about the last 1 min\./);
+    await recorder.stop();
+  });
+
+  it('does not let a frame timed far ahead of the computer drop the frames in the window', async () => {
+    const { adapter, state } = fakeAdapter();
+    const core = fakeCore({
+      startCapture: () => Promise.resolve(logInfo()),
+      appendFrames: () => Promise.resolve(logInfo()),
+      trimCapture: vi.fn(() => Promise.resolve(logInfo())),
+      endCapture: () => Promise.resolve(logInfo()),
+    });
+    const time = clock();
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', time, { intervalMs: 5 });
+    await recorder.start({ ...settings, keepMinutes: 1 });
+    const started = time.ms;
+    const send = async (seconds: number, timeS = seconds) => {
+      time.ms = started + seconds * 1000;
+      state.events!.onFrames([frame(timeS * 1e9)]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+
+    await send(0);
+    await send(30, 1e6);
+    await send(31);
+    expect(core.trimCapture).not.toHaveBeenCalled();
+    await send(75);
+    expect(core.trimCapture).toHaveBeenCalledWith(15e9);
+    await recorder.stop();
+  });
+
+  it('keeps every frame unless asked to roll', async () => {
+    const { adapter, state } = fakeAdapter();
+    const core = fakeCore({ startCapture: () => Promise.resolve(logInfo()), appendFrames: () => Promise.resolve(logInfo()), endCapture: () => Promise.resolve(logInfo()) });
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock(), { intervalMs: 5 });
+    // The fake core's trimCapture fails, which would end the capture.
+    recorder.onEnd = vi.fn();
+    await recorder.start(settings);
+    state.events!.onFrames([frame(0), frame(3600e9)]);
+    await recorder.stop();
+    expect(recorder.onEnd).not.toHaveBeenCalled();
+    expect(recorder.text.title(recorder.status())).not.toMatch(/Keeping/);
+  });
+});
+
 describe('CaptureRecorder status text', () => {
   it('leads with errors and listen-only, and keeps the whole status for the tooltip', async () => {
     const { adapter, state } = fakeAdapter(true);
@@ -141,7 +221,7 @@ describe('CaptureRecorder status text', () => {
     const status = recorder.status();
     expect(recorder.text.summary(status)).toBe('1 error \u00b7 Listen only \u00b7 1,500 frames \u00b7 1:23 \u00b7 0/s');
     expect(recorder.text.title(status)).toBe(
-      'Recording from Test adapter at 500 kbit/s, listen only.\n1,500 frames at 0 frames/s in 1 min 23 s.\n1 error. The last: bad line',
+      'Recording can0 from Test adapter at 500 kbit/s, listen only.\n1,500 frames at 0 frames/s in 1 min 23 s.\n1 error. The last: bad line',
     );
   });
 
@@ -153,6 +233,22 @@ describe('CaptureRecorder status text', () => {
     const status = recorder.status();
     expect(recorder.text.summary(status)).toBe('1 frame \u00b7 0:00');
     expect(recorder.text.title(status)).toMatch(/, not listen only\./);
+  });
+
+  it('stores the frames under the bus name chosen', async () => {
+    const { adapter } = fakeAdapter();
+    const core = fakeCore({ startCapture: vi.fn(() => Promise.resolve(logInfo())) });
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', clock());
+    await recorder.start({ ...settings, bus: 'vehicle' });
+    expect(core.startCapture).toHaveBeenCalledWith('c.log', 'vehicle', expect.any(Number));
+    expect(recorder.text.title(recorder.status())).toMatch(/^Recording vehicle from Test adapter at 500 kbit\/s, listen only\./);
+  });
+
+  it('names the channel and CAN FD data bitrate in the tooltip', async () => {
+    const { adapter } = fakeAdapter();
+    const recorder = new CaptureRecorder(fakeCore({ startCapture: () => Promise.resolve(logInfo()) }), adapter, 'c.log', clock());
+    await recorder.start({ ...settings, dataBitrate: 2_000_000, channel: 1 });
+    expect(recorder.text.title(recorder.status())).toMatch(/^Recording can0 from Test adapter channel 2 at 500 kbit\/s, CAN FD data 2 Mbit\/s, listen only\./);
   });
 });
 

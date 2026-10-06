@@ -8,6 +8,7 @@
 
 import { FLAG_BRS, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
 import {
+  DeviceClock,
   errorText,
   ListenOnlyUnconfirmedError,
   settleWithin,
@@ -28,7 +29,23 @@ const MAX_LINE = 160;
 /** CAN FD payload length of each DLC code. */
 const FD_LENGTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64];
 /** USB adapters ignore it; adapters behind a UART bridge mostly default to it. */
-const SERIAL_BAUD_RATE = 115_200;
+export const SERIAL_BAUD_RATE = 115_200;
+/** Serial speeds offered for adapters behind a UART. */
+export const SERIAL_BAUD_RATES = [9600, 19_200, 38_400, 57_600, 115_200, 230_400, 460_800, 921_600, 1_000_000, 2_000_000, 3_000_000];
+/** The crystal of the Lawicel CANUSB and most SJA1000 adapters; the CAN clock is half of it. */
+const SJA1000_CRYSTAL_HZ = 16_000_000;
+
+/** The `Y<n>` code of each CAN FD data bitrate (CANable 2 firmware). */
+const DATA_BITRATE_CODES = new Map([
+  [1_000_000, 1],
+  [2_000_000, 2],
+  [4_000_000, 4],
+  [5_000_000, 5],
+  [8_000_000, 8],
+]);
+
+/** `Z1` timestamps count milliseconds from 0 to 59999. */
+const TIMESTAMP_WRAP_NS = 60_000 * 1e6;
 
 /** The `S<n>` code of each bitrate. */
 const BITRATE_CODES = new Map([
@@ -43,7 +60,28 @@ const BITRATE_CODES = new Map([
   [1_000_000, 8],
 ]);
 
-export type SlcanFrame = Omit<CaptureFrame, 'timeNs'>;
+/** BTR0 and BTR1 from four hex digits, as the `s` command takes them, or null. */
+export function parseBtr(text: string): [number, number] | null {
+  if (!/^[0-9A-Fa-f]{4}$/.test(text)) return null;
+  return [parseInt(text.slice(0, 2), 16), parseInt(text.slice(2), 16)];
+}
+
+/**
+ * The bitrate SJA1000 registers BTR0 and BTR1 give with a 16 MHz crystal: a time quantum is
+ * 2 * (BRP + 1) crystal periods, and a bit is 1 + (TSEG1 + 1) + (TSEG2 + 1) quanta.
+ */
+export function sja1000Bitrate(btr0: number, btr1: number): number {
+  const brp = btr0 & 0x3f;
+  const tseg1 = btr1 & 0x0f;
+  const tseg2 = (btr1 >> 4) & 0x07;
+  const quanta = 3 + tseg1 + tseg2;
+  return SJA1000_CRYSTAL_HZ / (2 * (brp + 1) * quanta);
+}
+
+export type SlcanFrame = Omit<CaptureFrame, 'timeNs'> & {
+  /** The adapter's own time (`Z1`) in milliseconds, wrapping every minute, if the line has one. */
+  timestampMs?: number;
+};
 
 export type SlcanEvent =
   | { kind: 'frame'; frame: SlcanFrame }
@@ -83,7 +121,7 @@ function hex(text: string): number | null {
  * One received frame line: `tIIIL<data>` (11-bit), `TIIIIIIIIL<data>` (29-bit), `rIIIL` and
  * `RIIIIIIIIL` (remote), and the CAN FD lines `d`/`D` and, with bit rate switching, `b`/`B`,
  * whose DLC codes 9 to F mean 12 to 64 bytes. Four hex digits after the data are the adapter's
- * own timestamp (`Z1`), which is not used. Returns the frame, or why the line isn't one.
+ * own timestamp (`Z1`). Returns the frame, or why the line isn't one.
  */
 export function parseSlcanFrame(line: string): SlcanFrame | string {
   const type = FRAME_TYPES[line[0]];
@@ -108,7 +146,10 @@ export function parseSlcanFrame(line: string): SlcanFrame | string {
     data[i] = byte;
   }
   const flags = (type.fd ? FLAG_FD : 0) | (type.brs ? FLAG_BRS : 0) | (type.remote ? FLAG_RTR : 0);
-  return { id, extended: type.idDigits === 8, flags, data };
+  const frame: SlcanFrame = { id, extended: type.idDigits === 8, flags, data };
+  if (type.remote) frame.dlc = dlc;
+  if (extra === 4) frame.timestampMs = parseInt(line.slice(dataEnd), 16);
+  return frame;
 }
 
 /** Splits what an adapter sends into events, whatever chunks it arrives in. */
@@ -167,12 +208,14 @@ const CLOSE_WAIT_MS = 1000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Opens the CAN channel with `C` (in case it was left open), `S<n>`, then `O`, or for listen
- * only `L`, else `M1` (CANable's silent mode, which it takes only while off the bus) and `O`.
- * Whether the adapter answers commands at all is learnt from `S<n>`, which every Lawicel adapter
- * answers. Listen-only counts as confirmed only when an adapter answers `L` with CR.
- * Frames are stamped with the host clock when their bytes arrive, not with the adapter's `Z1`
- * timestamps, and are read only once `O` or `L` has been sent.
+ * Opens the CAN channel with `C` (in case it was left open), `S<n>` (or `s` with custom bit
+ * timing), `Y<n>` for a CAN FD data bitrate, then `O`, or for listen only `L`, else `M1` (CANable's silent mode, which it takes
+ * only while off the bus) and `O`.
+ * Whether the adapter answers commands at all is learnt from `S<n>` or `s`, which every Lawicel
+ * adapter answers. Listen-only counts as confirmed only when an adapter answers `L` with CR.
+ * `Z1` asks for the adapter's own timestamps before the bus opens; frames that carry one are
+ * timed by it (see `DeviceClock`), others by the host clock when their bytes arrive. Frames are
+ * read only once `O` or `L` has been sent.
  */
 export class SlcanAdapter implements CaptureAdapter {
   readonly label: string;
@@ -194,6 +237,9 @@ export class SlcanAdapter implements CaptureAdapter {
   private clock: () => number = () => 0;
   /** Set as `O` or `L` is sent. Until then a line that looks like a frame is a reply or stale. */
   private busOpen = false;
+  private deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
+  /** `Z1` was sent and not refused, so a stop sends `Z0`: Lawicel adapters keep the setting. */
+  private timestampsAsked = false;
 
   constructor(
     private readonly port: SerialPortLike,
@@ -215,8 +261,13 @@ export class SlcanAdapter implements CaptureAdapter {
   }
 
   private async open(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
+    const btr = settings.btr === undefined ? null : parseBtr(settings.btr);
+    if (settings.btr !== undefined && !btr) throw new Error('The bit timing must be four hex digits: BTR0 then BTR1.');
     const code = BITRATE_CODES.get(settings.bitrate);
-    if (code === undefined) throw new Error(`slcan adapters can't run at ${settings.bitrate} bit/s.`);
+    if (!btr && code === undefined) throw new Error(`slcan adapters can't run at ${settings.bitrate} bit/s.`);
+    const bitrateCommand = btr ? `s${settings.btr!.toUpperCase()}` : `S${code}`;
+    const dataCode = settings.dataBitrate === undefined ? null : DATA_BITRATE_CODES.get(settings.dataBitrate);
+    if (dataCode === undefined) throw new Error(`slcan adapters can't run a CAN FD data phase at ${settings.dataBitrate} bit/s.`);
     // The sheet keeps the chosen adapter, so it can be started again after a stop.
     this.parser = new SlcanParser();
     this.waiters = [];
@@ -227,10 +278,12 @@ export class SlcanAdapter implements CaptureAdapter {
     this.reading = null;
     this.writer = null;
     this.busOpen = false;
+    this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
+    this.timestampsAsked = false;
     this.events = events;
     this.clock = clock;
     try {
-      await this.port.open({ baudRate: SERIAL_BAUD_RATE });
+      await this.port.open({ baudRate: settings.serialBaudRate ?? SERIAL_BAUD_RATE });
     } catch (e) {
       if (this.cancelled) throw new Error(START_CANCELLED);
       // As when an earlier try's open never finished.
@@ -245,9 +298,23 @@ export class SlcanAdapter implements CaptureAdapter {
       await this.expect('C', this.timing.settleMs, null);
       await sleep(this.timing.settleMs);
       this.answerAll('no answer');
-      const bitrate = await this.expect(`S${code}`, this.timing.commandMs, 'The adapter refused the bitrate. Check that it runs slcan firmware.');
+      const bitrate = await this.expect(
+        bitrateCommand,
+        this.timing.commandMs,
+        btr
+          ? 'The adapter refused the bit timing. Check the BTR values; only SJA1000-based adapters such as the Lawicel CANUSB take them.'
+          : 'The adapter refused the bitrate. Check that it runs slcan firmware.',
+      );
       const answers = bitrate !== 'no answer';
       const wait = answers ? this.timing.commandMs : this.timing.settleMs;
+      if (dataCode !== null) {
+        const dataBitrate = await this.expect(`Y${dataCode}`, wait, 'The adapter refused the CAN FD data bitrate. Only CAN FD adapters, such as a CANable 2, take it.');
+        await this.settleUnanswered(dataBitrate, answers);
+      }
+      // Taken only while the channel is closed. An adapter that refuses it sends no timestamps.
+      const timestamps = await this.expect('Z1', wait, null);
+      this.timestampsAsked = timestamps !== 'refused';
+      await this.settleUnanswered(timestamps, answers);
       // Frames can follow the answer to O or L in the same chunk, so read them once the command is out.
       const busOpened = () => {
         this.busOpen = true;
@@ -308,7 +375,7 @@ export class SlcanAdapter implements CaptureAdapter {
         // So the adapter stops sending; closing the port could drop a C not yet written. A lost
         // device has no stream left, and nothing to tell.
         const writer = this.port.writable.getWriter();
-        await settleWithin(writer.write(new TextEncoder().encode('C\r')), this.timing.commandMs);
+        await settleWithin(writer.write(new TextEncoder().encode(this.closeCommands())), this.timing.commandMs);
         writer.releaseLock();
         await sleep(this.timing.settleMs);
       }
@@ -327,8 +394,12 @@ export class SlcanAdapter implements CaptureAdapter {
   release() {
     const writer = this.port.writable?.getWriter();
     if (!writer) return;
-    void writer.write(new TextEncoder().encode('C\r')).catch(() => undefined);
+    void writer.write(new TextEncoder().encode(this.closeCommands())).catch(() => undefined);
     writer.releaseLock();
+  }
+
+  private closeCommands(): string {
+    return this.timestampsAsked ? 'C\rZ0\r' : 'C\r';
   }
 
   /**
@@ -377,6 +448,15 @@ export class SlcanAdapter implements CaptureAdapter {
     return answered;
   }
 
+  /**
+   * Waits a little after an adapter that answers commands gave none, as one writing a setting to
+   * its EEPROM may answer late: an answer that comes while no command waits is dropped, rather
+   * than taken for the next command's, which for L would confirm listen-only falsely.
+   */
+  private async settleUnanswered(answer: Answer, answers: boolean) {
+    if (answers && answer === 'no answer') await sleep(this.timing.settleMs);
+  }
+
   /** Hands `answer` to the oldest command waiting for one. False when none is waiting. */
   private answer(answer: Answer): boolean {
     const waiter = this.waiters.shift();
@@ -417,13 +497,17 @@ export class SlcanAdapter implements CaptureAdapter {
   }
 
   private receive(chunk: Uint8Array) {
-    const timeNs = this.clock();
+    const hostNs = this.clock();
     const frames: CaptureFrame[] = [];
     for (const event of this.parser.push(chunk)) {
       switch (event.kind) {
-        case 'frame':
-          if (this.busOpen) frames.push({ ...event.frame, timeNs });
+        case 'frame': {
+          if (!this.busOpen) break;
+          const { timestampMs, ...frame } = event.frame;
+          const timeNs = timestampMs === undefined ? hostNs : this.deviceClock.time(timestampMs * 1e6, hostNs);
+          frames.push({ ...frame, timeNs });
           break;
+        }
         case 'ok':
           this.answer('ok');
           break;

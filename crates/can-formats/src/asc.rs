@@ -19,7 +19,7 @@ use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::lines::LineSplitter;
 use crate::text::{fields, parse_decimal, parse_decimal_ns, parse_hex_u32, unix_ns, ChannelName};
-use crate::{LocalTime, LogParser, ParseStats};
+use crate::{push_frame, LocalTime, LogParser, ParseStats};
 
 /// Bits of the `Flags` field that follows the data of a CAN FD line.
 const FD_FLAG_RTR: u32 = 0x10;
@@ -246,6 +246,7 @@ fn event<S: FrameSink>(
     let id = parse_id(third, header.hex).ok_or("bad CAN ID")?;
     let mut frame_flags = direction;
     let mut data = [0u8; MAX_PAYLOAD];
+    let mut remote_dlc = None;
     let len = match words
         .next()
         .ok_or("missing frame type after the direction")?
@@ -258,18 +259,21 @@ fn event<S: FrameSink>(
         }
         b"r" | b"R" => {
             frame_flags |= flags::RTR;
+            // The DLC is optional, and other text may follow the `r`.
+            remote_dlc = words.next().and_then(|w| parse_dlc(w, header.hex).ok());
             0
         }
         _ => return Err("expected 'd' or 'r' after the direction"),
     };
     let channel = sink.channel_index(ChannelName::new(channel as u64).as_bytes());
-    sink.push(FrameRef {
+    let frame = FrameRef {
         ts_ns,
         channel,
         id,
         flags: frame_flags,
         data: &data[..len],
-    });
+    };
+    push_frame(sink, frame, remote_dlc);
     Ok(true)
 }
 
@@ -300,7 +304,7 @@ fn fd_frame<'a, S: FrameSink>(
         brs = words.next().ok_or("missing BRS")?;
     }
     let esi = words.next().ok_or("missing ESI")?;
-    parse_dlc(words.next().ok_or("missing DLC")?, header.hex)?;
+    let dlc = parse_dlc(words.next().ok_or("missing DLC")?, header.hex)?;
     let len = words
         .next()
         .and_then(parse_decimal)
@@ -329,13 +333,14 @@ fn fd_frame<'a, S: FrameSink>(
         }
     }
     let channel = sink.channel_index(ChannelName::new(channel as u64).as_bytes());
-    sink.push(FrameRef {
+    let frame = FrameRef {
         ts_ns,
         channel,
         id,
         flags: frame_flags,
         data: &data[..len],
-    });
+    };
+    push_frame(sink, frame, (frame_flags & flags::RTR != 0).then_some(dlc));
     Ok(())
 }
 
@@ -468,6 +473,7 @@ mod tests {
         );
         assert_eq!(sink.frames[4].3, flags::RTR);
         assert_eq!(sink.frames[5].3, flags::RTR);
+        assert_eq!(sink.remote_dlcs[4..6], [None, Some(8)]);
         assert_eq!(
             (sink.frames[6].3, sink.frames[6].4.len()),
             (0, 8),
@@ -543,6 +549,7 @@ mod tests {
             "remote frame via the flags field"
         );
         assert_eq!(sink.frames[3].4, vec![]);
+        assert_eq!(sink.remote_dlcs[3], Some(8));
         assert_eq!(
             (sink.frames[4].2, sink.frames[4].3),
             (ERR_FLAG, flags::ERROR)

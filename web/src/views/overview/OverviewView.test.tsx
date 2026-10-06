@@ -1,7 +1,7 @@
-import { screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { FLAG_ERROR, type IdSummary } from '../../core/api';
-import { fakeCore, message, signal, summary } from '../../test/fixtures';
+import { fakeCore, logInfo, message, signal, summary } from '../../test/fixtures';
 import { renderInShell } from '../../test/shell';
 import type { LoadedDbc } from '../types';
 import { OverviewView } from './OverviewView';
@@ -144,5 +144,20 @@ describe('Overview DBC coverage', () => {
     const coverage = screen.getByRole('region', { name: 'DBC coverage' });
     expect(within(coverage).getByText('2 of 2')).toBeTruthy();
     expect(within(coverage).queryByRole('button')).toBeNull();
+  });
+});
+
+describe('Overview bus load', () => {
+  it('estimates each bus at 500 kbit/s until its bitrate is set, and keeps the setting with the log', async () => {
+    const busLoad = vi.fn(async () => [Float64Array.of(0.5), Float64Array.of(0.2)] as [Float64Array, Float64Array]);
+    const { user } = renderInShell(OverviewView, { core: fakeCore({ busLoad }), ids, dbcs: [], log: logInfo({ channels: ['can0', 'body'] }) });
+    const bitrate = await screen.findByRole('combobox', { name: 'Bitrate of body' });
+    expect(busLoad.mock.calls.map((call) => call.at(-1))).toEqual([500_000, 500_000]);
+    expect((bitrate as HTMLSelectElement).value).toBe('500000');
+
+    await user.selectOptions(bitrate, '125 kbit/s');
+    await waitFor(() => expect(busLoad).toHaveBeenCalledWith(1, 0, 100, expect.any(Number), 125_000));
+    expect(busLoad).toHaveBeenLastCalledWith(1, 0, 100, expect.any(Number), 125_000);
+    expect((screen.getByRole('combobox', { name: 'Bitrate of can0' }) as HTMLSelectElement).value).toBe('500000');
   });
 });

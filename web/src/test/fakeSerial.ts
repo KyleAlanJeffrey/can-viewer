@@ -11,6 +11,8 @@ export class FakeSerialPort implements SerialPortLike {
   readonly commands: string[] = [];
   opened = false;
   closed = false;
+  /** The baud rate of the last open. */
+  baudRate: number | null = null;
   /** Set by `canable()`'s firmware when it took M1. */
   silentMode = false;
   /** What the adapter answers to a command, or null for no answer. */
@@ -40,7 +42,8 @@ export class FakeSerialPort implements SerialPortLike {
     return release;
   }
 
-  async open() {
+  async open(options: { baudRate: number }) {
+    this.baudRate = options.baudRate;
     if (this.opening) {
       const opening = this.opening;
       this.opening = null;

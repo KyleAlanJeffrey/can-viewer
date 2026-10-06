@@ -5,7 +5,7 @@ use std::io::{self, Seek, SeekFrom, Write};
 use can_core::{flags, FrameRef, FrameStore, EXT_FLAG};
 
 use super::{
-    buffer, bus_numbers, is_fd, len_to_dlc, log_frames, out_of_memory, start_ns, Deflater,
+    buffer, bus_numbers, is_fd, len_to_dlc, log_frames_with_dlcs, out_of_memory, start_ns, Deflater,
 };
 
 /// Bytes per record: t f64, BusChannel u8, ID u32 (bit 31 for 29-bit IDs), DLC u8, DataLength
@@ -60,7 +60,7 @@ pub(super) fn write_mf4<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
     ];
     let mut next_group = 0;
     for (name, mask, wanted) in kinds.into_iter().rev() {
-        let frames = log_frames(store).filter(|frame| frame.flags & mask == wanted);
+        let frames = log_frames_with_dlcs(store).filter(|(frame, _)| frame.flags & mask == wanted);
         let (data, records) = match file.records(&mut scratch, frames, &buses, start_s)? {
             Some(found) => found,
             None if name == "CAN_DataFrame" && next_group == 0 => (0, 0),
@@ -81,7 +81,7 @@ pub(super) fn write_mf4<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
     file.set_link(header_at, 0, next_group)
 }
 
-fn record(out: &mut Vec<u8>, frame: &FrameRef<'_>, bus: u8, start_s: i64) {
+fn record(out: &mut Vec<u8>, frame: &FrameRef<'_>, remote_dlc: Option<u8>, bus: u8, start_s: i64) {
     let seconds = (frame.ts_ns - start_s * 1_000_000_000) as f64 / 1e9;
     let id = if frame.flags & flags::ERROR != 0 {
         0
@@ -95,8 +95,11 @@ fn record(out: &mut Vec<u8>, frame: &FrameRef<'_>, bus: u8, start_s: i64) {
     out.extend_from_slice(&seconds.to_le_bytes());
     out.push(bus);
     out.extend_from_slice(&id.to_le_bytes());
-    out.push(len_to_dlc(len));
-    out.push(len as u8);
+    match remote_dlc {
+        // DataLength is the length the remote frame asks for.
+        Some(dlc) => out.extend_from_slice(&[dlc, dlc.min(8)]),
+        None => out.extend_from_slice(&[len_to_dlc(len), len as u8]),
+    }
     let mut data = [0u8; 64];
     data[..len].copy_from_slice(&frame.data[..len]);
     out.extend_from_slice(&data);
@@ -244,17 +247,18 @@ impl<W: Write + Seek> Mf4Out<'_, W> {
     fn records<'s>(
         &mut self,
         scratch: &mut Scratch,
-        frames: impl Iterator<Item = FrameRef<'s>>,
+        frames: impl Iterator<Item = (FrameRef<'s>, Option<u8>)>,
         buses: &[u8],
         start_s: i64,
     ) -> io::Result<Option<(u64, u64)>> {
         let mut blocks = Vec::new();
         let mut count = 0u64;
         scratch.records.clear();
-        for frame in frames {
+        for (frame, remote_dlc) in frames {
             record(
                 &mut scratch.records,
                 &frame,
+                remote_dlc,
                 buses[usize::from(frame.channel)],
                 start_s,
             );

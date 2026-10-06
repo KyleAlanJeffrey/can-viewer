@@ -125,10 +125,12 @@ describe('App live capture', () => {
   function captureCore() {
     const frames: CaptureFrame[] = [];
     let name = '';
-    const info = () => logInfo({ name, format: 'capture', frames: frames.length, durationS: 0.5, channels: ['can0'] });
+    let bus = 'can0';
+    const info = () => logInfo({ name, format: 'capture', frames: frames.length, durationS: 0.5, channels: [bus] });
     const core = fakeCore({
-      startCapture: vi.fn((captureName: string) => {
+      startCapture: vi.fn((captureName: string, channel: string) => {
         name = captureName;
+        bus = channel;
         return Promise.resolve(info());
       }),
       appendFrames: vi.fn((batch: CaptureFrame[]) => {
@@ -149,7 +151,7 @@ describe('App live capture', () => {
     const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
     await screen.findByRole('button', { name: 'Stop Capture' });
-    expect(port.commands).toEqual(['C', 'S6', 'L']);
+    expect(port.commands).toEqual(['C', 'S6', 'Z1', 'L']);
   }
 
   it('records from an slcan adapter, shows the frames as they come, and saves them as a candump log', async () => {
@@ -181,7 +183,7 @@ describe('App live capture', () => {
     expect(await screen.findByText(/Not saved \u00b7 2 frames/)).toBeTruthy();
     expect(core.endCapture).toHaveBeenCalledTimes(1);
     expect((screen.getByRole('button', { name: 'Filters\u2026' }) as HTMLButtonElement).disabled).toBe(false);
-    expect(port.commands.at(-1)).toBe('C');
+    expect(port.commands.at(-1)).toBe('Z0');
     expect(port.closed).toBe(true);
 
     const written: unknown[] = [];
@@ -197,6 +199,33 @@ describe('App live capture', () => {
     await waitFor(() => expect(screen.queryByText(/Not saved/)).toBeNull());
     // Once stopped, the capture exports like any log.
     expect((screen.getByRole('button', { name: 'Export Log\u2026' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("estimates the capture's bus load at its bitrate, under the bus name chosen", async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    const busLoad = vi.fn(async () => [Float64Array.of(0.25), Float64Array.of(0.1)] as [Float64Array, Float64Array]);
+    core.busLoad = busLoad;
+    render(<App core={core} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
+    await userEvent.selectOptions(screen.getByLabelText('Bitrate'), '250 kbit/s');
+    await userEvent.clear(screen.getByLabelText('Bus name'));
+    await userEvent.type(screen.getByLabelText('Bus name'), 'body');
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    await screen.findByRole('button', { name: 'Stop Capture' });
+    expect(core.startCapture).toHaveBeenCalledWith(expect.any(String), 'body', expect.any(Number));
+    port.send('t1232DEAD\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await screen.findByText(/Not saved/);
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Overview' }));
+    await waitFor(() => expect(busLoad).toHaveBeenCalledWith(0, 0, 0.5, expect.any(Number), 250_000));
+    expect(busLoad).not.toHaveBeenCalledWith(0, 0, 0.5, expect.any(Number), 500_000);
+    expect((screen.getByRole('combobox', { name: 'Bitrate of body' }) as HTMLSelectElement).value).toBe('250000');
   });
 
   it('reopens a saved capture after a reload, as the candump file it was saved as', async () => {

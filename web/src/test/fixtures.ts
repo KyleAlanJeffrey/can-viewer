@@ -117,6 +117,7 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     openLog: notInFake('openLog'),
     startCapture: notInFake('startCapture'),
     appendFrames: notInFake('appendFrames'),
+    trimCapture: notInFake('trimCapture'),
     endCapture: notInFake('endCapture'),
     idSummary: notInFake('idSummary'),
     rowCount: notInFake('rowCount'),

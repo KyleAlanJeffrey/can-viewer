@@ -129,6 +129,8 @@ export class WebCore implements CoreApi {
     return this.callTransferring<LogInfo>('appendFrames', [packed], [packed.buffer]);
   }
 
+  trimCapture = (beforeNs: number) => this.call<LogInfo>('trimCapture', beforeNs);
+
   endCapture = () => this.call<LogInfo>('endCapture');
 
   idSummary = () => this.call<IdSummary[]>('idSummary');

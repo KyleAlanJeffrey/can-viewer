@@ -170,6 +170,9 @@ pub struct FrameStore {
     reassembled_frames: usize,
     /// A frame came earlier than one before it, so [`FrameStore::sort_by_time`] has work.
     out_of_order: bool,
+    /// [`FrameStore::drop_before`] dropped frames, perhaps the first packets of transfers
+    /// already reassembled.
+    trimmed: bool,
 }
 
 /// The [`IdStats`] of every ID, in order of first appearance.
@@ -293,13 +296,28 @@ impl FrameStore {
     /// If `index` is out of bounds.
     #[must_use]
     pub fn frame(&self, index: usize) -> FrameRef<'_> {
+        let flags = self.flags[index];
         FrameRef {
             ts_ns: self.ts_ns[index],
             channel: self.channel[index],
             id: self.id[index],
-            flags: self.flags[index],
-            data: &self.data[self.data_range(index)],
+            flags,
+            data: if flags & flags::RTR == 0 {
+                &self.data[self.data_range(index)]
+            } else {
+                &[]
+            },
         }
+    }
+
+    /// The DLC a remote frame asked for, when its log gave one. None for other frames.
+    #[must_use]
+    pub fn remote_dlc(&self, index: usize) -> Option<u8> {
+        if self.flags[index] & flags::RTR == 0 {
+            return None;
+        }
+        let range = self.data_range(index);
+        (range.len() == 1).then(|| self.data[range.start])
     }
 
     fn data_range(&self, index: usize) -> Range<usize> {
@@ -521,9 +539,54 @@ impl FrameStore {
                 .sum::<usize>()
     }
 
+    /// Drops the frames before the first one timestamped at or after `ts_ns`, in store order
+    /// rather than time order, so a frame that came late stays with its neighbours. Returns how
+    /// many were dropped. For a rolling live capture: the per-ID statistics are rebuilt from the
+    /// frames kept, so this costs time in proportion to them, not to the frames dropped.
+    pub fn drop_before(&mut self, ts_ns: i64) -> usize {
+        let count = self.ts_ns.iter().take_while(|&&t| t < ts_ns).count();
+        if count == 0 {
+            return 0;
+        }
+        let dropped_flags = &self.flags[..count];
+        self.error_frames -= dropped_flags
+            .iter()
+            .filter(|&&f| f & flags::ERROR != 0)
+            .count();
+        self.reassembled_frames -= dropped_flags
+            .iter()
+            .filter(|&&f| f & flags::REASSEMBLED != 0)
+            .count();
+        let data_dropped = self
+            .data_start
+            .get(count)
+            .copied()
+            .unwrap_or(self.data.len());
+        self.data.drain(..data_dropped);
+        self.data_start.drain(..count);
+        for start in &mut self.data_start {
+            *start -= data_dropped;
+        }
+        self.ts_ns.drain(..count);
+        self.id.drain(..count);
+        self.channel.drain(..count);
+        self.flags.drain(..count);
+        self.trimmed = true;
+        // Freed first to make room.
+        self.index = IdIndex::default();
+        let mut index = IdIndex::default();
+        for i in 0..self.len() {
+            index.observe(i as u32, &self.frame(i));
+        }
+        self.index = index;
+        count
+    }
+
     /// Puts the frames in time order if any came earlier than a frame before them, keeping
     /// the order of frames with the same time, and redoes what was worked out in the order
     /// they came: the per-ID statistics and the J1939 transfers. Call it once the log is read.
+    /// A store that dropped its oldest frames keeps the transfers it reassembled instead, sorted
+    /// with the frames, since the packets that began some of them may be gone.
     ///
     /// The columns are rebuilt in turn, so beyond the store this needs 4 bytes per frame, the
     /// J1939 transfers, and the data with its offsets or one other column at a time. A store
@@ -549,15 +612,18 @@ impl FrameStore {
         let mut order: Vec<u32> = Vec::new();
         order.try_reserve_exact(self.len())?;
         order.extend(
-            (0..self.len() as u32).filter(|&i| self.flags[i as usize] & flags::REASSEMBLED == 0),
+            (0..self.len() as u32)
+                .filter(|&i| self.trimmed || self.flags[i as usize] & flags::REASSEMBLED == 0),
         );
         order.sort_unstable_by_key(|&i| (self.ts_ns[i as usize], i));
 
         let mut reassembler = tp::Reassembler::default();
         let mut transfers = Vec::new();
-        for (position, &i) in order.iter().enumerate() {
-            if let Some(transfer) = reassembler.push(&self.frame(i as usize)) {
-                transfers.push((position, transfer));
+        if !self.trimmed {
+            for (position, &i) in order.iter().enumerate() {
+                if let Some(transfer) = reassembler.push(&self.frame(i as usize)) {
+                    transfers.push((position, transfer));
+                }
             }
         }
         let rows = order.len() + transfers.len();
@@ -575,7 +641,9 @@ impl FrameStore {
         data_start.try_reserve_exact(rows)?;
         self.out_of_order = false;
         self.reassembler = reassembler;
-        self.reassembled_frames = transfers.len();
+        if !self.trimmed {
+            self.reassembled_frames = transfers.len();
+        }
         for_each_row(&order, &transfers, |row| {
             data_start.push(data.len());
             match row {
@@ -610,26 +678,48 @@ impl FrameSink for FrameStore {
     }
 
     fn push(&mut self, frame: FrameRef<'_>) {
-        self.store(&frame);
-        if let Some(transfer) = self.reassembler.push(&frame) {
-            self.reassembled_frames += 1;
-            self.store(&FrameRef {
-                ts_ns: transfer.ts_ns,
-                channel: frame.channel,
-                id: transfer.id,
-                flags: flags::REASSEMBLED,
-                data: &transfer.data,
-            });
-        }
+        self.store(&frame, None);
+        self.reassemble(&frame);
+    }
+
+    fn push_remote(&mut self, frame: FrameRef<'_>, dlc: u8) {
+        self.store(&frame, Some(dlc));
+        self.reassemble(&frame);
     }
 }
 
 impl FrameStore {
-    fn store(&mut self, frame: &FrameRef<'_>) {
+    fn reassemble(&mut self, frame: &FrameRef<'_>) {
+        if let Some(transfer) = self.reassembler.push(frame) {
+            self.reassembled_frames += 1;
+            self.store(
+                &FrameRef {
+                    ts_ns: transfer.ts_ns,
+                    channel: frame.channel,
+                    id: transfer.id,
+                    flags: flags::REASSEMBLED,
+                    data: &transfer.data,
+                },
+                None,
+            );
+        }
+    }
+
+    /// A remote frame keeps no payload; its data column holds the DLC it asked for, if known,
+    /// as one byte, which [`FrameStore::frame`] leaves out.
+    fn store(&mut self, frame: &FrameRef<'_>, remote_dlc: Option<u8>) {
         if self.ts_ns.last().is_some_and(|&last| frame.ts_ns < last) {
             self.out_of_order = true;
         }
-        self.index.observe(self.ts_ns.len() as u32, frame);
+        let remote = frame.flags & flags::RTR != 0;
+        let payload = if remote { &[][..] } else { frame.data };
+        self.index.observe(
+            self.ts_ns.len() as u32,
+            &FrameRef {
+                data: payload,
+                ..*frame
+            },
+        );
         if frame.flags & flags::ERROR != 0 {
             self.error_frames += 1;
         }
@@ -639,7 +729,10 @@ impl FrameStore {
         self.channel.push(frame.channel);
         self.flags.push(frame.flags);
         self.data_start.push(self.data.len());
-        self.data.extend_from_slice(frame.data);
+        match remote_dlc.filter(|_| remote) {
+            Some(dlc) => self.data.push(dlc),
+            None => self.data.extend_from_slice(payload),
+        }
     }
 }
 
@@ -982,6 +1075,120 @@ mod tests {
             .map(|i| s.frame(i))
             .map(|f| (f.ts_ns, f.id, f.data.to_vec()))
             .collect()
+    }
+
+    #[test]
+    fn keeps_a_remote_frames_dlc_apart_from_its_payload() {
+        let mut s = FrameStore::new();
+        let remote = |ts_ns| FrameRef {
+            ts_ns,
+            channel: 0,
+            id: 0x123,
+            flags: flags::RTR,
+            data: &[],
+        };
+        s.push_remote(remote(30), 8);
+        s.push(remote(10));
+        push(&mut s, 20, 0x123, &[1, 2]);
+        s.push_remote(remote(40), 0);
+        assert_eq!(s.frame(0).data, &[] as &[u8]);
+        assert_eq!(s.frame(2).data, &[1, 2]);
+        assert_eq!(
+            (0..4).map(|i| s.remote_dlc(i)).collect::<Vec<_>>(),
+            [Some(8), None, None, Some(0)]
+        );
+        let stats = s.id_stats(id_key(0, 0x123)).unwrap();
+        assert_eq!((stats.min_len, stats.max_len), (0, 2));
+
+        s.sort_by_time();
+        assert_eq!(
+            (0..4).map(|i| s.remote_dlc(i)).collect::<Vec<_>>(),
+            [None, None, Some(8), Some(0)]
+        );
+        assert_eq!(s.frame(1).data, &[1, 2]);
+        s.drop_before(35);
+        assert_eq!(s.remote_dlc(0), Some(0));
+        assert_eq!(s.frame(0).data, &[] as &[u8]);
+    }
+
+    #[test]
+    fn dropping_old_frames_keeps_the_rest_and_redoes_the_statistics() {
+        let mut s = FrameStore::new();
+        push(&mut s, 10, 0x100, &[0x00, 1]);
+        push_on(&mut s, 20, 0, ERR_FLAG | 4, flags::ERROR, &[0, 0, 8]);
+        push(&mut s, 30, 0x100, &[0xff, 2]);
+        push(&mut s, 25, 0x200, &[7]);
+        push(&mut s, 40, 0x100, &[0x0f, 3]);
+        assert_eq!(s.drop_before(5), 0);
+        assert_eq!(s.len(), 5);
+
+        // The late frame at 25 goes only with the frames before it in the store.
+        assert_eq!(s.drop_before(26), 2);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.error_frames(), 0);
+        assert_eq!(s.frame(0).ts_ns, 30);
+        assert_eq!(s.frame(0).data, &[0xff, 2]);
+        assert_eq!(s.frame(1).data, &[7]);
+        assert_eq!(s.frame(2).data, &[0x0f, 3]);
+        assert_eq!(s.first_ts_ns(), Some(30));
+        let ids: Vec<u32> = s.ids().iter().map(|i| i.id).collect();
+        assert_eq!(ids, [0x100, 0x200]);
+        let stats = s.id_stats(id_key(0, 0x100)).unwrap();
+        assert_eq!(stats.frames, [0, 2]);
+        assert_eq!(stats.first_ts_ns, 30);
+        // Only the change from [0xff, 2] to [0x0f, 3] is left: four bits, then one.
+        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 4 + 1);
+        assert!(s.id_stats(id_key(0, ERR_FLAG | 4)).is_none());
+
+        assert_eq!(s.drop_before(i64::MAX), 3);
+        assert!(s.is_empty());
+        assert!(s.ids().is_empty());
+        push(&mut s, 50, 0x300, &[1]);
+        assert_eq!(s.frame(0).data, &[1]);
+    }
+
+    #[test]
+    fn dropping_old_frames_keeps_the_count_of_reassembled_transfers() {
+        let mut s = FrameStore::new();
+        // A BAM announcing 9 bytes of PGN 0xFECA from 0x00, then its two packets.
+        let bam = [0x20, 9, 0, 2, 0xff, 0xca, 0xfe, 0];
+        push(&mut s, 0, EXT_FLAG | 0x1CEC_FF00, &bam);
+        push(
+            &mut s,
+            10,
+            EXT_FLAG | 0x1CEB_FF00,
+            &[1, 1, 2, 3, 4, 5, 6, 7],
+        );
+        push(
+            &mut s,
+            20,
+            EXT_FLAG | 0x1CEB_FF00,
+            &[2, 8, 9, 0xff, 0xff, 0xff, 0xff, 0xff],
+        );
+        assert_eq!(s.reassembled_frames(), 1);
+        s.drop_before(15);
+        assert_eq!(s.reassembled_frames(), 1);
+        s.drop_before(21);
+        assert_eq!(s.reassembled_frames(), 0);
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn sorting_after_a_drop_keeps_transfers_whose_first_packets_are_gone() {
+        let mut s = FrameStore::new();
+        push(&mut s, 0, 0x100, &[0]);
+        push_bam(&mut s, 0, 10, 0x00, &[7; 9]);
+        assert_eq!(s.reassembled_frames(), 1);
+        // The announcement at 10 goes; the packets at 11 and 12 and the transfer stay.
+        s.drop_before(11);
+        push(&mut s, 5, 0x100, &[1]);
+        s.sort_by_time();
+        assert_eq!(s.reassembled_frames(), 1);
+        let kinds: Vec<(i64, u8)> = (0..s.len())
+            .map(|i| (s.frame(i).ts_ns, s.frame(i).flags))
+            .collect();
+        assert_eq!(kinds, [(5, 0), (11, 0), (12, 0), (12, flags::REASSEMBLED)]);
+        assert_eq!(s.frame(3).data, &[7; 9]);
     }
 
     #[test]

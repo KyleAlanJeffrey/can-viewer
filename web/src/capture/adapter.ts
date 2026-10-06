@@ -38,7 +38,7 @@ export function isListenOnlyUnconfirmed(e: unknown): e is ListenOnlyUnconfirmedE
 
 /** What an adapter reports while it runs. */
 export interface CaptureEvents {
-  /** Frames as received, timed with the clock given to `start`. */
+  /** Frames as received, timed with the clock given to `start` or the adapter's own, anchored to it. */
   onFrames(frames: CaptureFrame[]): void;
   /** Something went wrong but frames keep coming, such as a line that didn't parse. */
   onProblem(message: string): void;
@@ -79,6 +79,32 @@ export interface CaptureAdapter {
  * recorder has already rejected with its own message.
  */
 export const START_CANCELLED = 'The capture was stopped while the adapter started.';
+
+/**
+ * An adapter's own timestamps, from a counter that wraps every `wrapNs`, as capture times:
+ * anchored to the host clock once, and unwrapped by taking the number of wraps that brings the
+ * time counted nearest to what the host clock says has passed. Times stay absolute, and the
+ * host's USB and scheduling jitter is left out.
+ */
+export class DeviceClock {
+  private anchor: { deviceNs: number; hostNs: number } | null = null;
+
+  constructor(private readonly wrapNs: number) {}
+
+  /** The device read `deviceNs` at host time `hostNs`. Without it, the first frame anchors. */
+  sync(deviceNs: number, hostNs: number) {
+    this.anchor = { deviceNs, hostNs };
+  }
+
+  /** The capture time of a frame the device stamped `deviceNs`, which arrived at host time `hostNs`. */
+  time(deviceNs: number, hostNs: number): number {
+    if (!this.anchor) this.sync(deviceNs, hostNs);
+    const { deviceNs: deviceAnchor, hostNs: hostAnchor } = this.anchor!;
+    const counted = deviceNs - deviceAnchor;
+    const wraps = Math.round((hostNs - hostAnchor - counted) / this.wrapNs);
+    return hostAnchor + counted + wraps * this.wrapNs;
+  }
+}
 
 /** Waits for `promise` to settle, but no longer than `ms`, as a hung device may never answer. Never rejects. */
 export function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {

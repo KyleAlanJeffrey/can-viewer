@@ -151,7 +151,7 @@ describe('App live capture', () => {
     const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
     await screen.findByRole('button', { name: 'Stop Capture' });
-    expect(port.commands).toEqual(['C', 'S6', 'L']);
+    expect(port.commands).toEqual(['C', 'S6', 'Z1', 'L']);
   }
 
   it('records from an slcan adapter, shows the frames as they come, and saves them as a candump log', async () => {
@@ -184,7 +184,7 @@ describe('App live capture', () => {
     expect(await screen.findByText(/Not saved \u00b7 2 frames/)).toBeTruthy();
     expect(core.endCapture).toHaveBeenCalledTimes(1);
     expect((screen.getByRole('button', { name: 'Filters\u2026' }) as HTMLButtonElement).disabled).toBe(false);
-    expect(port.commands.at(-1)).toBe('C');
+    expect(port.commands.at(-1)).toBe('Z0');
     expect(port.closed).toBe(true);
 
     const written: unknown[] = [];

@@ -67,7 +67,7 @@ export function captureName(date: Date): string {
 }
 
 /**
- * Runs one capture: starts the adapter, times its frames with the host clock and feeds them to
+ * Runs one capture: starts the adapter with the host clock to time its frames by, feeds them to
  * the core in batches, then ends the capture in the core when stopped.
  */
 export class CaptureRecorder {

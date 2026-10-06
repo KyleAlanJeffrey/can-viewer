@@ -2,10 +2,12 @@
  * candleLight and other gs_usb adapters over WebUSB: the protocol of the Linux `gs_usb` driver.
  * The host sets up the device with vendor control requests, then reads one 20-byte host frame
  * per bulk IN transfer. Only the first channel is used, and only classic CAN is asked for.
+ * Frames are timed by the device's microsecond counter when it has one (see `DeviceClock`).
  */
 
 import { FLAG_BRS, FLAG_ERROR, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
 import {
+  DeviceClock,
   errorText,
   ListenOnlyUnconfirmedError,
   settleWithin,
@@ -30,11 +32,14 @@ const BREQ_HOST_FORMAT = 0;
 const BREQ_BITTIMING = 1;
 const BREQ_MODE = 2;
 const BREQ_BT_CONST = 4;
+const BREQ_TIMESTAMP = 6;
 
 const MODE_RESET = 0;
 const MODE_START = 1;
 const MODE_FLAG_LISTEN_ONLY = 1 << 0;
+const MODE_FLAG_HW_TIMESTAMP = 1 << 4;
 const FEATURE_LISTEN_ONLY = 1 << 0;
+const FEATURE_HW_TIMESTAMP = 1 << 4;
 
 const FRAME_FLAG_OVERFLOW = 1 << 0;
 const FRAME_FLAG_FD = 1 << 1;
@@ -49,6 +54,10 @@ const CAN_EFF_MASK = 0x1fff_ffff;
 /** What the device sends back for a frame it transmitted; received frames have this echo ID. */
 const RX_ECHO_ID = 0xffff_ffff;
 const HOST_FRAME_HEADER = 12;
+/** With hardware timestamps, a u32 of microseconds follows the whole data field: 8 bytes, or 64 for CAN FD. */
+const CLASSIC_DATA_FIELD = 8;
+const FD_DATA_FIELD = 64;
+const TIMESTAMP_WRAP_NS = 2 ** 32 * 1000;
 const FD_LENGTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64];
 /** Bulk reads kept waiting at once, so frames don't queue up in the device between reads. */
 const READS_IN_FLIGHT = 8;
@@ -126,13 +135,19 @@ export function bitTiming(limits: BitTimingLimits, bitrate: number, samplePoint 
   return best;
 }
 
-export type HostFrame = { frame: Omit<CaptureFrame, 'timeNs'>; overflow: boolean } | null;
+export type HostFrame = {
+  frame: Omit<CaptureFrame, 'timeNs'>;
+  overflow: boolean;
+  /** The device's microsecond counter when it received the frame, with `timestamps`. */
+  timestampUs?: number;
+} | null;
 
 /**
  * A received `gs_host_frame` of channel 0, or null for an echo of a sent frame, another
- * channel's frame or a transfer too short.
+ * channel's frame or a transfer too short. With `timestamps`, the device was started with
+ * hardware timestamps, and a transfer that carries one gives it.
  */
-export function parseHostFrame(view: DataView): HostFrame {
+export function parseHostFrame(view: DataView, timestamps = false): HostFrame {
   if (view.byteLength < HOST_FRAME_HEADER || view.getUint32(0, true) !== RX_ECHO_ID) return null;
   if (view.getUint8(9) !== 0) return null;
   const canId = view.getUint32(4, true);
@@ -148,7 +163,10 @@ export function parseHostFrame(view: DataView): HostFrame {
   const extended = !error && (canId & CAN_EFF_FLAG) !== 0;
   const flags = (fd ? FLAG_FD : 0) | (fd && frameFlags & FRAME_FLAG_BRS ? FLAG_BRS : 0) | (remote ? FLAG_RTR : 0) | (error ? FLAG_ERROR : 0);
   const id = error || extended ? canId & CAN_EFF_MASK : canId & 0x7ff;
-  return { frame: { id, extended, flags, data }, overflow: (frameFlags & FRAME_FLAG_OVERFLOW) !== 0 };
+  const parsed: NonNullable<HostFrame> = { frame: { id, extended, flags, data }, overflow: (frameFlags & FRAME_FLAG_OVERFLOW) !== 0 };
+  const timestampAt = HOST_FRAME_HEADER + (fd ? FD_DATA_FIELD : CLASSIC_DATA_FIELD);
+  if (timestamps && view.byteLength >= timestampAt + 4) parsed.timestampUs = view.getUint32(timestampAt, true);
+  return parsed;
 }
 
 function u32s(...values: number[]): ArrayBuffer {
@@ -175,6 +193,9 @@ export class GsUsbAdapter implements CaptureAdapter {
   private cancelled = false;
   /** Set once the device has been opened, and its interface claimed, for this start. */
   private claimed = false;
+  /** The device was started with hardware timestamps. */
+  private timestamps = false;
+  private deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
 
   constructor(private readonly device: UsbDeviceLike) {
     const ids = usbIds({ usbVendorId: device.vendorId, usbProductId: device.productId });
@@ -197,6 +218,8 @@ export class GsUsbAdapter implements CaptureAdapter {
     this.stopping = null;
     this.cancelled = false;
     this.claimed = false;
+    this.timestamps = false;
+    this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
     this.reads = [];
     this.events = events;
     this.clock = clock;
@@ -231,8 +254,13 @@ export class GsUsbAdapter implements CaptureAdapter {
       this.checkCancelled();
       await this.controlOut(BREQ_BITTIMING, 0, u32s(timing.propSeg, timing.phaseSeg1, timing.phaseSeg2, timing.sjw, timing.brp));
       this.checkCancelled();
-      await this.controlOut(BREQ_MODE, 0, u32s(MODE_START, listenOnly ? MODE_FLAG_LISTEN_ONLY : 0));
+      const timestamps = (limits.feature & FEATURE_HW_TIMESTAMP) !== 0;
+      const modeFlags = (listenOnly ? MODE_FLAG_LISTEN_ONLY : 0) | (timestamps ? MODE_FLAG_HW_TIMESTAMP : 0);
+      await this.controlOut(BREQ_MODE, 0, u32s(MODE_START, modeFlags));
       this.running = true;
+      this.timestamps = timestamps;
+      this.checkCancelled();
+      if (timestamps) await this.syncClock();
       this.checkCancelled();
       this.reads = Array.from({ length: READS_IN_FLIGHT }, () => this.readLoop());
       return { listenOnly };
@@ -267,6 +295,20 @@ export class GsUsbAdapter implements CaptureAdapter {
       await Promise.all(this.reads);
     } catch {
       // Stopping never fails; what is left of the device goes with the page.
+    }
+  }
+
+  /**
+   * Anchors the device's counter to the host clock halfway through a read of it, so the first
+   * frame's USB delay isn't in every time. Without an answer, the first frame anchors instead.
+   */
+  private async syncClock() {
+    const before = this.clock();
+    try {
+      const counter = (await this.controlIn(BREQ_TIMESTAMP, 0, 4)).getUint32(0, true);
+      this.deviceClock.sync(counter * 1000, (before + this.clock()) / 2);
+    } catch {
+      // Not every firmware answers it.
     }
   }
 
@@ -328,9 +370,11 @@ export class GsUsbAdapter implements CaptureAdapter {
   }
 
   private receive(view: DataView) {
-    const parsed = parseHostFrame(view);
+    const parsed = parseHostFrame(view, this.timestamps);
     if (!parsed) return;
     if (parsed.overflow) this.events?.onProblem("The adapter's receive buffer overflowed, so frames were lost.");
-    this.events?.onFrames([{ ...parsed.frame, timeNs: this.clock() }]);
+    const hostNs = this.clock();
+    const timeNs = parsed.timestampUs === undefined ? hostNs : this.deviceClock.time(parsed.timestampUs * 1000, hostNs);
+    this.events?.onFrames([{ ...parsed.frame, timeNs }]);
   }
 }

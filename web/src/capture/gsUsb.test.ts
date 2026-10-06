@@ -18,8 +18,10 @@ const CANDLELIGHT: BitTimingLimits = {
   brpInc: 1,
 };
 
-function hostFrame(canId: number, dlc: number, data: number[], { echoId = 0xffff_ffff, flags = 0, channel = 0 } = {}): DataView {
-  const view = new DataView(new ArrayBuffer(Math.max(20, 12 + data.length)));
+function hostFrame(canId: number, dlc: number, data: number[], { echoId = 0xffff_ffff, flags = 0, channel = 0, timestampUs = null as number | null } = {}): DataView {
+  const dataField = Math.max(8, data.length);
+  const view = new DataView(new ArrayBuffer(12 + dataField + (timestampUs === null ? 0 : 4)));
+  if (timestampUs !== null) view.setUint32(12 + dataField, timestampUs, true);
   view.setUint32(0, echoId, true);
   view.setUint32(4, canId, true);
   view.setUint8(8, dlc);
@@ -81,6 +83,15 @@ describe('parseHostFrame', () => {
     expect(parseHostFrame(hostFrame(0x321, 0xf, [], { flags: 0b10 }))).toBeNull();
   });
 
+  it('reads the hardware timestamp after the whole data field, when the device was asked for them', () => {
+    expect(parseHostFrame(hostFrame(0x123, 1, [9], { timestampUs: 0xfedc_ba98 }), true)?.timestampUs).toBe(0xfedc_ba98);
+    expect(parseHostFrame(hostFrame(0x123, 1, [9], { timestampUs: 5 }))?.timestampUs).toBeUndefined();
+    expect(parseHostFrame(hostFrame(0x123, 1, [9]), true)?.timestampUs).toBeUndefined();
+    const fd = parseHostFrame(hostFrame(0x321, 0x9, Array(64).fill(1), { flags: 0b10, timestampUs: 77 }), true);
+    expect(fd?.frame.data).toHaveLength(12);
+    expect(fd?.timestampUs).toBe(77);
+  });
+
   it("skips another channel's frames", () => {
     expect(parseHostFrame(hostFrame(0x123, 1, [1], { channel: 1 }))).toBeNull();
   });
@@ -97,6 +108,8 @@ class FakeUsbDevice implements UsbDeviceLike {
   closed = false;
   claimError: Error | null = null;
   limits = CANDLELIGHT;
+  /** What `BREQ_TIMESTAMP` reads, in microseconds; null makes the device stall it. */
+  counterUs: number | null = 0;
   /** Set to make control transfers never finish until the device is closed, as on a hung device. */
   hangControl = false;
   /** Set to make `open` wait for it. */
@@ -130,6 +143,12 @@ class FakeUsbDevice implements UsbDeviceLike {
   async controlTransferIn(setup: UsbSetup, length: number): Promise<UsbInResult> {
     if (this.hangControl) return this.hang();
     this.requests.push({ request: setup.request, value: setup.value, data: [] });
+    if (setup.request === 6) {
+      if (this.counterUs === null) return { status: 'stall' };
+      const counter = new DataView(new ArrayBuffer(4));
+      counter.setUint32(0, this.counterUs, true);
+      return { status: 'ok', data: counter };
+    }
     const l = this.limits;
     const values = [l.feature, l.fclk, l.tseg1Min, l.tseg1Max, l.tseg2Min, l.tseg2Max, l.sjwMax, l.brpMin, l.brpMax, l.brpInc];
     const view = new DataView(new ArrayBuffer(length));
@@ -199,6 +218,44 @@ describe('GsUsbAdapter', () => {
     await adapter.stop();
     expect(device.requests.at(-1)).toEqual({ request: 2, value: 0, data: [0, 0] });
     expect(device.closed).toBe(true);
+  });
+
+  it("times frames by the device's microsecond counter, anchored to the host clock and unwrapped", async () => {
+    const device = new FakeUsbDevice();
+    device.limits = { ...CANDLELIGHT, feature: 1 | (1 << 4) };
+    device.counterUs = 2 ** 32 - 1000;
+    const adapter = new GsUsbAdapter(device);
+    const { frames, events } = recordingEvents();
+    let now = 3_000_000;
+    await adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => now);
+    expect(device.requests.slice(-2)).toEqual([
+      { request: 2, value: 0, data: [1, 1 | (1 << 4)] },
+      { request: 6, value: 0, data: [] },
+    ]);
+
+    now += 5_000_000;
+    device.receive(hostFrame(0x123, 1, [1], { timestampUs: 2 ** 32 - 900 }));
+    // Past the counter's wrap at 2^32 microseconds.
+    device.receive(hostFrame(0x123, 1, [2], { timestampUs: 400 }));
+    await tick();
+    expect(frames.map((f) => f.timeNs)).toEqual([3_100_000, 4_400_000]);
+    await adapter.stop();
+  });
+
+  it('anchors to the first frame when the device does not answer the counter read', async () => {
+    const device = new FakeUsbDevice();
+    device.limits = { ...CANDLELIGHT, feature: 1 | (1 << 4) };
+    device.counterUs = null;
+    const adapter = new GsUsbAdapter(device);
+    const { frames, events } = recordingEvents();
+    let now = 0;
+    await adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => now);
+    now = 9_000_000;
+    device.receive(hostFrame(0x123, 1, [1], { timestampUs: 1000 }));
+    device.receive(hostFrame(0x123, 1, [2], { timestampUs: 1250 }));
+    await tick();
+    expect(frames.map((f) => f.timeNs)).toEqual([9_000_000, 9_250_000]);
+    await adapter.stop();
   });
 
   it('starts a device with no listen-only mode only when the user agrees', async () => {

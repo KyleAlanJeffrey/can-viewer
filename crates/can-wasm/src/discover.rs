@@ -395,14 +395,17 @@ impl Rereads {
         let mut changes: Vec<Option<Vec<u32>>> = vec![None; len];
         let n = frames.list.len();
         if sample.partial {
-            let most = SEEN_ENOUGH * n / sample.len().max(1);
+            let most = most_changes_to_list(n, sample.len());
+            // Each change of a byte's rare bits flips at least one of them, so the flips bound
+            // the list, and all the lists stay within the budget.
+            let mut listed = 0;
             for (byte, list) in changes.iter_mut().enumerate() {
-                // Each change of the byte's rare bits flips at least one of them.
                 let flips: usize = (0..8)
                     .filter(|b| rare[byte] >> b & 1 == 1)
                     .map(|b| frames.flips[byte * 8 + b] as usize)
                     .sum();
-                if rare[byte] != 0 && flips <= most {
+                if rare[byte] != 0 && flips <= most && listed + flips <= REREAD_BUDGET {
+                    listed += flips;
                     *list = Some(Vec::with_capacity(flips));
                 }
             }
@@ -491,6 +494,14 @@ impl Rereads {
         p.steps = frames.steps();
         Some(p)
     }
+}
+
+/// The most changes a byte may have for its changes to be listed: about as many as would show
+/// [`SEEN_ENOUGH`] of them in a sample of `sampled` of the `n` frames. In 64-bit arithmetic, as
+/// a long log overflows a 32-bit `usize`.
+fn most_changes_to_list(n: usize, sampled: usize) -> usize {
+    let most = SEEN_ENOUGH as u64 * n as u64 / sampled.max(1) as u64;
+    usize::try_from(most).unwrap_or(usize::MAX)
 }
 
 /// The sorted union of two sorted lists.
@@ -2287,6 +2298,13 @@ mod tests {
             blinker.reason,
             "Toggles on 10% of frames; set 25% of the time"
         );
+    }
+
+    #[test]
+    fn long_logs_do_not_overflow_the_listing_limit() {
+        // 5M frames, past what SEEN_ENOUGH * n fits in a 32-bit usize.
+        assert_eq!(most_changes_to_list(5_000_000, 20_000), 250_000);
+        assert_eq!(most_changes_to_list(10, 0), 10_000);
     }
 
     #[test]

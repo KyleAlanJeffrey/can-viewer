@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react';
 import { Cable, Check, ChevronLeft, File as FileIcon, FileText, Lock } from 'lucide-react';
 import type { AdapterKind } from '../capture/support';
 import type { ExportFormat } from '../core/api';
@@ -8,10 +8,16 @@ import './welcome.css';
 export type WelcomeStep = 'source' | 'setup';
 export type WelcomeSource = 'file' | 'live';
 
+/** Lets the app give focus back to the welcome, at its heading. */
+export interface WelcomeHandle {
+  focus: () => void;
+}
+
 /** The log formats the core reads, as the status line names them. */
 const LOG_FORMATS: ExportFormat[] = ['candump', 'asc', 'blf', 'trc', 'mf4', 'csv'];
 
 interface Props {
+  ref?: Ref<WelcomeHandle>;
   step: WelcomeStep;
   source: WelcomeSource;
   onChange: (step: WelcomeStep, source: WelcomeSource) => void;
@@ -28,8 +34,8 @@ interface Props {
   onDemo: () => void;
   /** The adapter kinds this browser can reach; none means no live capture here. */
   liveKinds: AdapterKind[];
-  /** The live settings and Start Capture, loaded with the capture code. */
-  liveSetup: ReactNode;
+  /** The live settings and Start Capture, loaded with the capture code. They report a start under way, which Back would cut short. */
+  liveSetup: (onStartingChange: (starting: boolean) => void) => ReactNode;
 }
 
 const STEPS = ['Source', 'Setup', 'Explore'];
@@ -62,13 +68,16 @@ function Stepper({ current }: { current: number }) {
  * What the app shows while nothing is open: choose a source, then set it up. Opening the log or
  * starting the capture is the third step, Explore, which is the workspace itself.
  */
-export function Welcome({ step, source, onChange, busy, dbcNames, onExplore, onAddDbcs, onOpenDbcs, onEditDbcs, onDemo, liveKinds, liveSetup }: Props) {
+export function Welcome({ ref, step, source, onChange, busy, dbcNames, onExplore, onAddDbcs, onOpenDbcs, onEditDbcs, onDemo, liveKinds, liveSetup }: Props) {
   const ids = useId();
   const [file, setFile] = useState<File | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const logInput = useRef<HTMLInputElement>(null);
   const addDbcInput = useRef<HTMLInputElement>(null);
   const openDbcInput = useRef<HTMLInputElement>(null);
+  const [liveStarting, setLiveStarting] = useState(false);
+
+  useImperativeHandle(ref, () => ({ focus: () => heading.current?.focus() }), []);
 
   // A new step replaces the content under focus, so focus moves to its heading. Not when the
   // welcome first shows: it is what the app opens with.
@@ -88,7 +97,7 @@ export function Welcome({ step, source, onChange, busy, dbcNames, onExplore, onA
   };
 
   const back = (
-    <button type="button" className="wel-back" onClick={() => onChange('source', source)}>
+    <button type="button" className="wel-back" onClick={() => onChange('source', source)} disabled={liveStarting}>
       <ChevronLeft size={16} strokeWidth={1.5} aria-hidden="true" />
       Back
     </button>
@@ -128,9 +137,9 @@ export function Welcome({ step, source, onChange, busy, dbcNames, onExplore, onA
     const live = source === 'live';
     body = (
       <>
-        <h2 ref={heading} id={`${ids}title`} className="wel-title" tabIndex={-1}>
+        <h1 ref={heading} id={`${ids}title`} className="wel-title" tabIndex={-1}>
           How would you like to start?
-        </h2>
+        </h1>
         <p className="wel-lede">Open a recording or watch a CAN bus live.</p>
         <div className="wel-choices" role="radiogroup" aria-labelledby={`${ids}title`}>
           {choice('file', 'Open a log', 'Explore a recording from your device.', <FileIcon size={32} strokeWidth={1.25} aria-hidden="true" />)}
@@ -181,9 +190,9 @@ export function Welcome({ step, source, onChange, busy, dbcNames, onExplore, onA
   } else if (source === 'file') {
     body = (
       <>
-        <h2 ref={heading} className="wel-title" tabIndex={-1}>
+        <h1 ref={heading} className="wel-title" tabIndex={-1}>
           Choose your log
-        </h2>
+        </h1>
         <p className="wel-lede">Select a CAN log file from this device.</p>
         <p className="wel-formats">{LOG_FORMATS.map(logFormatName).join(' \u00b7 ')}</p>
         <input
@@ -206,13 +215,13 @@ export function Welcome({ step, source, onChange, busy, dbcNames, onExplore, onA
             <p className="wel-file-name wel-hint">No file chosen</p>
           )}
           <button type="button" className="button" onClick={() => logInput.current?.click()}>
-            {file ? 'Choose another\u2026' : 'Choose a file\u2026'}
+            {file ? 'Choose Another\u2026' : 'Choose File\u2026'}
           </button>
         </div>
         <section className="wel-section" aria-labelledby={`${ids}decode`}>
-          <h3 id={`${ids}decode`} className="wel-section-title">
+          <h2 id={`${ids}decode`} className="wel-section-title">
             Decode signals <span className="wel-quiet">(optional)</span>
-          </h3>
+          </h2>
           <p className="wel-hint">Add a DBC for signal names and values.</p>
           <input ref={addDbcInput} type="file" accept=".dbc" multiple hidden onChange={(e) => onAddDbcs(filesOf(e.target))} />
           {dbcNames.length > 0 && (
@@ -244,27 +253,37 @@ export function Welcome({ step, source, onChange, busy, dbcNames, onExplore, onA
   } else if (liveKinds.length > 0) {
     body = (
       <>
-        <h2 ref={heading} className="wel-title" tabIndex={-1}>
+        <h1 ref={heading} className="wel-title" tabIndex={-1}>
           Connect to a CAN bus
-        </h2>
+        </h1>
         <p className="wel-lede">
           Experimental live capture. <span className="wel-quiet">Record frames from a CAN adapter on this computer.</span>
         </p>
-        {liveSetup}
+        {liveSetup(setLiveStarting)}
       </>
     );
   } else {
     body = (
       <div className="wel-unsupported">
         <Cable size={32} strokeWidth={1.25} aria-hidden="true" />
-        <h2 ref={heading} className="wel-title" tabIndex={-1}>
-          Live capture needs a compatible computer
-        </h2>
-        <p className="wel-lede">This browser can&rsquo;t reach serial or USB devices, so it can&rsquo;t connect to a CAN adapter.</p>
-        <p className="wel-hint">
-          Live capture works in Chrome or Edge on a desktop computer.
-          {!window.isSecureContext && ' The app also has to be opened over HTTPS.'} You can still open a log recorded with another tool.
-        </p>
+        {window.isSecureContext ? (
+          <>
+            <h1 ref={heading} className="wel-title" tabIndex={-1}>
+              Live capture needs a compatible computer
+            </h1>
+            <p className="wel-lede">This browser can&rsquo;t reach serial or USB devices, so it can&rsquo;t connect to a CAN adapter.</p>
+            <p className="wel-hint">Live capture works in Chrome or Edge on a desktop computer. You can still open a log recorded with another tool.</p>
+          </>
+        ) : (
+          // Browsers offer serial and USB devices only to secure pages, so HTTPS comes first.
+          <>
+            <h1 ref={heading} className="wel-title" tabIndex={-1}>
+              Live capture needs HTTPS
+            </h1>
+            <p className="wel-lede">Browsers only reach serial and USB devices from pages opened over HTTPS.</p>
+            <p className="wel-hint">Open the app over HTTPS in Chrome or Edge on a desktop computer. You can still open a log recorded with another tool.</p>
+          </>
+        )}
         <div className="wel-actions">
           <button type="button" className="primary" onClick={() => onChange('setup', 'file')}>
             Open a log instead

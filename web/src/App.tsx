@@ -39,7 +39,7 @@ import { BUS_BITRATES_KEY, type BusBitrates } from './views/shared/busBitrates';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
 import type { LoadedDbc, ViewContext, ViewId } from './views/types';
-import { Welcome, type WelcomeSource, type WelcomeStep } from './welcome/Welcome';
+import type { WelcomeHandle, WelcomeSource, WelcomeStep } from './welcome/Welcome';
 
 const SERIES_SLOTS = 6;
 const seriesColor = (slot: number) => cssVar(`--series-${(slot % SERIES_SLOTS) + 1}`);
@@ -130,6 +130,9 @@ const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 /** Loaded apart from the app, with the adapters behind it, as most visits never capture. */
 const CaptureSheet = lazy(() => import('./capture/CaptureSheet').then((m) => ({ default: m.CaptureSheet })));
 const LiveSetup = lazy(() => import('./capture/LiveSetup').then((m) => ({ default: m.LiveSetup })));
+// Fetched as the app starts, not when first shown, as most visits begin with it.
+const loadWelcome = import('./welcome/Welcome');
+const Welcome = lazy(() => loadWelcome.then((m) => ({ default: m.Welcome })));
 
 // Keep these in step with the media queries in styles.css.
 /** The sidebar floats over the content. */
@@ -257,7 +260,8 @@ export function App({ core }: { core: CoreApi }) {
   const openLogButton = useRef<HTMLButtonElement>(null);
   const moreButton = useRef<HTMLButtonElement>(null);
   const toolbar = useRef<HTMLElement>(null);
-  /** Set when Cancel is pressed or goes away with focus, to give focus somewhere once there is a place for it. */
+  const welcomeView = useRef<WelcomeHandle>(null);
+  /** Set when Cancel is pressed or goes away with focus, or a log picked fails, to give focus somewhere once there is a place for it. */
   const [focusAfterCancel, setFocusAfterCancel] = useState(false);
   const cancelElement = useRef<HTMLButtonElement | null>(null);
   // Stable, so its cleanup runs only when Cancel goes away, not on every render.
@@ -365,7 +369,7 @@ export function App({ core }: { core: CoreApi }) {
     setFocusAfterCancel(false);
     const focused = document.activeElement;
     // With no log left, the welcome has no Open Log, so its heading takes focus.
-    if (!focused || focused === document.body) (cancelElement.current ?? openLogButton.current ?? document.querySelector<HTMLElement>('.wel-title'))?.focus();
+    if (!focused || focused === document.body) (cancelElement.current ?? openLogButton.current ?? welcomeView.current)?.focus();
   }, [focusAfterCancel, busy, stopping]);
 
   const setView = useCallback((next: ViewId) => {
@@ -374,6 +378,17 @@ export function App({ core }: { core: CoreApi }) {
     setInspectorHidden(false);
     setViewPrimary(null);
   }, []);
+
+  // The welcome starts over each time the workspace gives way to it, with no view left to jump
+  // back to as soon as a DBC is added. Set while rendering, so it never shows the old step.
+  const [viewWasShown, setViewWasShown] = useState(showView);
+  if (showView !== viewWasShown) {
+    setViewWasShown(showView);
+    if (!showView) {
+      setView('overview');
+      setWelcomeStep('source');
+    }
+  }
 
   const decodePlot = useCallback(
     async (key: number, signal: string, color: string, hit: Resolved): Promise<PlotSpec | null> => {
@@ -780,11 +795,14 @@ export function App({ core }: { core: CoreApi }) {
     [openDbc, openLog, stopReading, setView],
   );
 
-  /** Shows no log once the core has none, and forgets the copies a reload would reopen. */
-  const showClosedLog = async () => {
+  /**
+   * Shows no log once the core has none, and forgets the copies a reload would reopen. The DBCs
+   * left open go to Database, unless `toDatabase` is false.
+   */
+  const showClosedLog = async (toDatabase = true) => {
     showNoLog();
     await Promise.all([forget('log'), forget('compare')]);
-    if (dbcsRef.current.length > 0) setView('database');
+    if (toDatabase && dbcsRef.current.length > 0) setView('database');
   };
 
   const closeLog = () =>
@@ -805,6 +823,8 @@ export function App({ core }: { core: CoreApi }) {
     // The read has just ended, and the next render shows how.
     if (!read) return;
     const shown = read.reopens ? null : logRef.current;
+    // A first log read from the welcome or Database goes back there as it was.
+    const fromEmpty = !read.reopens && !logRef.current;
     const ui = currentUi.current();
     setFocusAfterCancel(true);
     stopReading();
@@ -815,7 +835,7 @@ export function App({ core }: { core: CoreApi }) {
           // As Close does: whatever the stopped read reached, the core then holds no log.
           await core.openLog(new Blob([]), '', () => {});
           previous = await savedCopyOf(shown);
-          if (!previous) await showClosedLog();
+          if (!previous) await showClosedLog(!fromEmpty);
         }),
       );
       if (previous) await openLog(previous.blob, previous.name, { restore: ui, reopening: true });
@@ -1388,8 +1408,8 @@ export function App({ core }: { core: CoreApi }) {
 
   const skipped = log && log.rejected > 0 && !skippedDismissed;
   const readingLog = busy?.readingLog !== undefined;
-  // With nothing open, nor a log being read, the welcome takes the window in place of the workspace.
-  const welcome = !showView && !readingLog;
+  // With nothing open, nor a log being read or restored, the welcome takes the window in place of the workspace.
+  const welcome = !showView && !readingLog && !restoring;
   const dbcSummary = dbcs.length === 1 ? dbcs[0].db.name : `${dbcs.length} DBCs`;
 
   // On narrow windows the panes float over the content; a tap outside or Escape puts them away.
@@ -1461,7 +1481,13 @@ export function App({ core }: { core: CoreApi }) {
     if (busyRef.current && busyRef.current.readingLog === undefined) setError(`Wait for "${busyRef.current.label}" to finish, then open the log again.`);
     else if (liveRef.current) setError('Stop the capture before opening a log.');
     else if (stoppingRef.current) setError('Wait for the capture to stop, then open the log again.');
-    else unlessUnsavedCapture(() => void openLog(file, file.name));
+    else
+      unlessUnsavedCapture(() =>
+        void openLog(file, file.name).then((outcome) => {
+          // Explore log went with the welcome while the log was read, so focus fell to the page.
+          if (outcome === 'failed') setFocusAfterCancel(true);
+        }),
+      );
   };
 
   const addDbcs = async (files: File[]) => {
@@ -1555,7 +1581,7 @@ export function App({ core }: { core: CoreApi }) {
               )}
               {/* Always mounted, so screen readers hear each change, recording or not. The welcome shows only a task's. */}
               <p
-                className={live || (welcome && !busy && !restoring) ? 'sr-only' : 'doc-sub'}
+                className={live || (welcome && !busy) ? 'sr-only' : 'doc-sub'}
                 role="status"
                 title={live || welcome ? undefined : dbcs.map((d) => d.db.name).join(', ') || undefined}
               >
@@ -1746,35 +1772,40 @@ export function App({ core }: { core: CoreApi }) {
                   <meta.Component key={view} ctx={ctx} />
                 </ViewStateContext.Provider>
               </SlotContext.Provider>
-            ) : welcome && !restoring ? (
-              <Welcome
-                step={welcomeStep}
-                source={welcomeSource}
-                onChange={(step, source) => {
-                  setWelcomeStep(step);
-                  setWelcomeSource(source);
-                }}
-                busy={!!busy}
-                dbcNames={dbcs.map((d) => d.db.name)}
-                onExplore={openPickedLog}
-                onAddDbcs={(files) => void addDbcs(files)}
-                onOpenDbcs={(files) =>
-                  void addDbcs(files).then(() => {
-                    // A DBC that failed to load leaves nothing to edit.
-                    if (!logRef.current && dbcsRef.current.length > 0) setView('database');
-                  })
-                }
-                onEditDbcs={dbcs.length > 0 ? () => setView('database') : null}
-                onDemo={() => void loadDemo()}
-                liveKinds={liveKinds}
-                liveSetup={
-                  <ChunkBoundary message="Couldn't load capture." frame={(fallback) => <div className="wel-panel">{fallback}</div>}>
-                    <Suspense fallback={<p className="wel-hint">Loading&hellip;</p>}>
-                      <LiveSetup onStart={startCapture} kinds={liveKinds} buses={buses} busy={!!busy} />
-                    </Suspense>
-                  </ChunkBoundary>
-                }
-              />
+            ) : welcome ? (
+              <ChunkBoundary message="Couldn't load the start page.">
+                <Suspense fallback={null}>
+                  <Welcome
+                    ref={welcomeView}
+                    step={welcomeStep}
+                    source={welcomeSource}
+                    onChange={(step, source) => {
+                      setWelcomeStep(step);
+                      setWelcomeSource(source);
+                    }}
+                    busy={!!busy}
+                    dbcNames={dbcs.map((d) => d.db.name)}
+                    onExplore={openPickedLog}
+                    onAddDbcs={(files) => void addDbcs(files)}
+                    onOpenDbcs={(files) =>
+                      void addDbcs(files).then(() => {
+                        // A DBC that failed to load leaves nothing to edit.
+                        if (!logRef.current && dbcsRef.current.length > 0) setView('database');
+                      })
+                    }
+                    onEditDbcs={dbcs.length > 0 ? () => setView('database') : null}
+                    onDemo={() => void loadDemo()}
+                    liveKinds={liveKinds}
+                    liveSetup={(onStartingChange) => (
+                      <ChunkBoundary message="Couldn't load capture." frame={(fallback) => <div className="wel-panel">{fallback}</div>}>
+                        <Suspense fallback={<p className="wel-hint">Loading&hellip;</p>}>
+                          <LiveSetup onStart={startCapture} kinds={liveKinds} buses={buses} busy={!!busy} onStartingChange={onStartingChange} />
+                        </Suspense>
+                      </ChunkBoundary>
+                    )}
+                  />
+                </Suspense>
+              </ChunkBoundary>
             ) : null}
           </section>
 

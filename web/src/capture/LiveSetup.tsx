@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useEffect, useId } from 'react';
 import type { CaptureAdapter, CaptureSettings } from './adapter';
 import { useCaptureForm } from './CaptureSheet';
 import type { AdapterKind } from './support';
@@ -14,26 +14,30 @@ interface Props {
   buses: string[];
   /** The app is busy with another task, which a capture would cut short. */
   busy: boolean;
+  /** Told when a start begins and ends, so nothing takes the form away while it runs. */
+  onStartingChange?: (starting: boolean) => void;
 }
 
 /** The welcome's live setup: the Capture sheet's settings in the page, then an explicit start. */
-export function LiveSetup({ onStart, kinds, request, buses, busy }: Props) {
+export function LiveSetup({ onStart, kinds, request, buses, busy, onStartingChange }: Props) {
   const ids = useId();
   const form = useCaptureForm({ onStart, kinds, request, buses, layout: 'inline' });
+
+  useEffect(() => onStartingChange?.(form.starting), [form.starting, onStartingChange]);
 
   return (
     <>
       <section className="wel-panel" aria-labelledby={`${ids}connection`}>
-        <h3 id={`${ids}connection`} className="wel-panel-title">
+        <h2 id={`${ids}connection`} className="wel-panel-title">
           Connection settings
-        </h3>
+        </h2>
         {form.fields}
       </section>
       <section className="wel-panel wel-start" aria-labelledby={`${ids}start`}>
         <div className="wel-start-text">
-          <h3 id={`${ids}start`} className="wel-panel-title">
+          <h2 id={`${ids}start`} className="wel-panel-title">
             Next: start the capture
-          </h3>
+          </h2>
           <p className="wel-hint">
             {form.adapter ? 'Nothing is recorded until you start.' : 'Choose an adapter to continue. Choosing one doesn\u2019t start recording.'}
           </p>

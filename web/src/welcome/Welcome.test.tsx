@@ -1,8 +1,8 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useState, type ComponentProps } from 'react';
-import { describe, expect, it, vi } from 'vitest';
-import { Welcome, type WelcomeSource, type WelcomeStep } from './Welcome';
+import { createRef, useState, type ComponentProps } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Welcome, type WelcomeHandle, type WelcomeSource, type WelcomeStep } from './Welcome';
 
 type Props = ComponentProps<typeof Welcome>;
 
@@ -26,7 +26,7 @@ function Harness(overrides: Partial<Props>) {
       onEditDbcs={null}
       onDemo={() => {}}
       liveKinds={[]}
-      liveSetup={null}
+      liveSetup={() => null}
       {...overrides}
     />
   );
@@ -42,10 +42,14 @@ const heading = (name: string) => screen.getByRole('heading', { name });
 const currentStep = () => document.querySelector('[aria-current="step"]')?.textContent;
 const nextHint = () => document.querySelector('.wel-next')?.textContent;
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('Welcome', () => {
   it('starts at Source, with Open a log chosen', () => {
     renderWelcome();
-    expect(heading('How would you like to start?')).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('How would you like to start?');
     expect(currentStep()).toBe('1Source');
     expect((screen.getByRole('radio', { name: 'Open a log' }) as HTMLInputElement).checked).toBe(true);
     expect(screen.getByRole('radio', { name: 'Connect live' }).getAttribute('aria-describedby')).toBeTruthy();
@@ -97,7 +101,7 @@ describe('Welcome', () => {
     await user.upload(container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!, file);
     expect(screen.getByText('drive.blf')).toBeTruthy();
     expect(screen.getByText('3 kB')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Choose another\u2026' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Choose Another\u2026' })).toBeTruthy();
     expect(explore.disabled).toBe(false);
     await user.click(explore);
     expect(onExplore).toHaveBeenCalledWith(file);
@@ -115,7 +119,7 @@ describe('Welcome', () => {
     expect(onAddDbcs).toHaveBeenCalledWith([dbc]);
   });
 
-  it('opens a DBC on its own from Source, or edits the DBCs already loaded', async () => {
+  it('opens a DBC on its own from Source', async () => {
     const onOpenDbcs = vi.fn();
     const { user, container } = renderWelcome({ onOpenDbcs });
     expect(screen.getByRole('button', { name: 'Open a DBC\u2026' })).toBeTruthy();
@@ -133,8 +137,9 @@ describe('Welcome', () => {
   });
 
   it('explains when this browser cannot capture, and offers a log or the demo instead', async () => {
+    vi.stubGlobal('isSecureContext', true);
     const onDemo = vi.fn();
-    const { user } = renderWelcome({ onDemo, liveSetup: <p>Live settings</p> });
+    const { user } = renderWelcome({ onDemo, liveSetup: () => <p>Live settings</p> });
     await user.click(screen.getByRole('radio', { name: 'Connect live' }));
     await user.click(screen.getByRole('button', { name: 'Continue with live capture' }));
     expect(document.activeElement).toBe(heading('Live capture needs a compatible computer'));
@@ -147,8 +152,17 @@ describe('Welcome', () => {
     expect(currentStep()).toBe('2Setup');
   });
 
+  it('leads with HTTPS when the page is not secure, which is all that keeps devices out of reach', async () => {
+    vi.stubGlobal('isSecureContext', false);
+    const { user } = renderWelcome();
+    await user.click(screen.getByRole('radio', { name: 'Connect live' }));
+    await user.click(screen.getByRole('button', { name: 'Continue with live capture' }));
+    expect(document.activeElement).toBe(heading('Live capture needs HTTPS'));
+    expect(screen.getByText('Browsers only reach serial and USB devices from pages opened over HTTPS.')).toBeTruthy();
+  });
+
   it('shows the live setup it is given when this browser can capture', async () => {
-    const { user } = renderWelcome({ liveKinds: ['slcan'], liveSetup: <p>Live settings</p> });
+    const { user } = renderWelcome({ liveKinds: ['slcan'], liveSetup: () => <p>Live settings</p> });
     await user.click(screen.getByRole('radio', { name: 'Connect live' }));
     await user.click(screen.getByRole('button', { name: 'Continue with live capture' }));
     expect(document.activeElement).toBe(heading('Connect to a CAN bus'));
@@ -157,12 +171,38 @@ describe('Welcome', () => {
     expect((screen.getByRole('radio', { name: 'Connect live' }) as HTMLInputElement).checked).toBe(true);
   });
 
+  it('keeps Back from taking the live setup away while a capture is starting', async () => {
+    let setStarting: (starting: boolean) => void = () => {};
+    const { user } = renderWelcome({
+      liveKinds: ['slcan'],
+      liveSetup: (onStartingChange) => {
+        setStarting = onStartingChange;
+        return <p>Live settings</p>;
+      },
+    });
+    await user.click(screen.getByRole('radio', { name: 'Connect live' }));
+    await user.click(screen.getByRole('button', { name: 'Continue with live capture' }));
+    act(() => setStarting(true));
+    expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(true);
+    act(() => setStarting(false));
+    expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('gives focus to the heading of the step shown when asked', async () => {
+    const ref = createRef<WelcomeHandle>();
+    const { user } = renderWelcome({ ref });
+    await user.click(screen.getByRole('button', { name: 'Continue with a log' }));
+    (document.activeElement as HTMLElement).blur();
+    act(() => ref.current?.focus());
+    expect(document.activeElement).toBe(heading('Choose your log'));
+  });
+
   it('holds back what would start a task while another runs', async () => {
     const { user } = renderWelcome({ busy: true });
     expect((screen.getByRole('button', { name: 'Try the Demo' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Open a DBC\u2026' }) as HTMLButtonElement).disabled).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Continue with a log' }));
     expect((screen.getByRole('button', { name: /Add DBC/ }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Choose a file\u2026' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Choose File\u2026' }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

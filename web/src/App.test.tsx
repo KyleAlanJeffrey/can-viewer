@@ -171,8 +171,10 @@ describe('App welcome', () => {
     await userEvent.upload(inWelcome('input[type="file"]:not([accept])'), new File(['?'], 'drive.log'));
     await userEvent.click(screen.getByRole('button', { name: 'Explore log' }));
     expect((await screen.findByRole('alert')).textContent).toContain('drive.log is not a CAN log.');
-    expect(await screen.findByRole('heading', { name: 'Choose your log' })).toBeTruthy();
+    const heading = await screen.findByRole('heading', { name: 'Choose your log' });
     expect(screen.getByText('No file chosen')).toBeTruthy();
+    // Explore log went while the log was read, so focus comes back to the step.
+    await waitFor(() => expect(document.activeElement).toBe(heading));
   });
 
   it('adds a DBC in Setup without leaving it, then decodes the log with it', async () => {
@@ -211,6 +213,42 @@ describe('App welcome', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Back' }));
     await userEvent.click(screen.getByRole('button', { name: 'Edit your DBCs' }));
     expect(screen.getByRole('radio', { name: 'Database' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('starts over at Source once a log closes, with no view left behind for a DBC added later to open', async () => {
+    const App = await freshApp();
+    render(<App core={welcomeCore()} />);
+    await start();
+    await userEvent.click(screen.getByRole('button', { name: 'Continue with a log' }));
+    await userEvent.upload(inWelcome('input[type="file"]:not([accept])'), new File(['(1.0) can0 123#00\n'], 'drive.log'));
+    await userEvent.click(screen.getByRole('button', { name: 'Explore log' }));
+    await screen.findByText('candump \u00b7 1,000 frames \u00b7 1 min 40 s');
+    await userEvent.click(screen.getByRole('radio', { name: 'Database' }));
+    await userEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Close drive.log' }));
+    await start();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Continue with a log' }));
+    await userEvent.upload(inWelcome('input[accept=".dbc"]'), new File(['VERSION ""'], 'body.dbc'));
+    await screen.findByRole('list', { name: 'DBCs loaded' });
+    expect(screen.getByRole('heading', { name: 'Choose your log' })).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: 'Database' })).toBeNull();
+  });
+
+  it('starts over at Source once the last DBC, dropped at Setup, is removed', async () => {
+    const App = await freshApp();
+    render(<App core={welcomeCore()} />);
+    await start();
+    await userEvent.click(screen.getByRole('button', { name: 'Continue with a log' }));
+    drop([new File(['VERSION ""'], 'body.dbc')]);
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Database' }).getAttribute('aria-checked')).toBe('true'));
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove body.dbc' }));
+    expect(await start()).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Continue with a log' }));
+    await userEvent.upload(inWelcome('input[accept=".dbc"]'), new File(['VERSION ""'], 'chassis.dbc'));
+    await screen.findByRole('list', { name: 'DBCs loaded' });
+    expect(screen.getByRole('heading', { name: 'Choose your log' })).toBeTruthy();
   });
 
   it('opens a dropped log at once, whatever step the welcome is at', async () => {
@@ -679,6 +717,9 @@ describe('App while a log is read', () => {
     await session.save('compare', { name: 'q.log', blob: { size: 10 } as Blob });
     const { core, read, abortSuperseded } = readingCore();
     render(<App core={core} />);
+    // A returning user sees the workspace restoring, never the welcome before it.
+    expect(document.querySelector('.welcome-mode')).toBeNull();
+    expect(toolbarStatus()).toBe('Restoring your last session\u2026');
     await read('p.log');
     await userEvent.click(await screen.findByRole('button', { name: 'Cancel reading p.log' }));
     await abortSuperseded();
@@ -765,8 +806,30 @@ describe('App while a log is read', () => {
     expect(toolbarStatus()).toBe('Parsing a.log\u2026 30%');
     expect(document.querySelector('.progress')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Cancel reading a.log' })).toBeTruthy();
+    // Nor can the demo replace it: loadDemo's own stop of a read is a safeguard no button reaches now.
+    expect(screen.queryByRole('button', { name: 'Try the Demo' })).toBeNull();
     await a.resolve();
     await waitFor(() => expect(title()).toBe('a.log'));
+  });
+
+  it('brings the welcome back at Setup, not Database, when a first log is cancelled with a DBC added there', async () => {
+    const App = await freshApp();
+    const { core, read, abortSuperseded } = readingCore();
+    render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'How would you like to start?' });
+    await userEvent.click(screen.getByRole('button', { name: 'Continue with a log' }));
+    await userEvent.upload(welcomeRegion().querySelector<HTMLInputElement>('input[accept=".dbc"]')!, new File(['VERSION ""'], 'body.dbc'));
+    await screen.findByRole('list', { name: 'DBCs loaded' });
+    await userEvent.upload(welcomeRegion().querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!, new File(['(1.0) can0 123#00\n'], 'a.log'));
+    await userEvent.click(screen.getByRole('button', { name: 'Explore log' }));
+    await read('a.log');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel reading a.log' }));
+    await abortSuperseded();
+    const heading = await screen.findByRole('heading', { name: 'Choose your log' });
+    expect(screen.getByRole('list', { name: 'DBCs loaded' }).textContent).toBe('body.dbc');
+    expect(screen.queryByRole('radio', { name: 'Database' })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(heading));
   });
 });
 
@@ -1249,6 +1312,7 @@ describe('App live capture', () => {
   });
 
   it('explains on the welcome when the browser has no Web Serial or WebUSB, and offers a log instead', async () => {
+    vi.stubGlobal('isSecureContext', true);
     const App = await freshApp();
     render(<App core={fakeCore()} />);
     await openLiveSetup();

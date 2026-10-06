@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FreeCAN Studio - The CAN log viewer that lives in your browser</title>
-  <meta name="description" content="Open candump, ASC, BLF, TRC, MF4 and CSV CAN bus logs in your browser. Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
+  <meta name="description" content="Open candump, ASC, BLF, TRC, MF4 and CSV CAN bus logs in your browser, or record a bus live from a USB CAN adapter. Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
   <link rel="canonical" href="https://freecanstudio.com/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="FreeCAN Studio">
   <meta property="og:title" content="FreeCAN Studio - The CAN log viewer that lives in your browser">
-  <meta property="og:description" content="Open candump, ASC, BLF, TRC, MF4 and CSV CAN bus logs in your browser. Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
+  <meta property="og:description" content="Open candump, ASC, BLF, TRC, MF4 and CSV CAN bus logs in your browser, or record a bus live from a USB CAN adapter. Decode with DBC files, plot signals and reverse-engineer unknown messages. Free, no account, and files never leave your computer.">
   <meta property="og:url" content="https://freecanstudio.com/">
   <meta property="og:image" content="https://freecanstudio.com/og-image.png">
   <meta property="og:image:width" content="1200">
@@ -26,6 +26,7 @@
     <a class="brand" href="/"><img src="/logo.svg" alt="" width="30" height="32"><span><strong>FreeCAN</strong> Studio</span></a>
     <nav class="site-nav" aria-label="Main">
       <a href="/#features">Features</a>
+      <a href="/#capture">Live Capture</a>
       <a href="/#privacy">Privacy</a>
       <a href="/#formats">Formats</a>
     </nav>
@@ -37,13 +38,16 @@
     <div class="wrap hero-grid">
       <div class="hero-copy">
         <h1 class="display">The CAN log viewer that lives in your browser.</h1>
-        <p class="lead">Open CAN bus logs, decode them with a DBC, plot signals and work out unknown messages bit by bit. It all runs in a browser tab, with nothing to install.</p>
+        <p class="lead">Open a CAN bus log, or record one live from a USB CAN adapter. Decode it with a DBC, plot signals and work out unknown messages bit by bit. It all runs in a browser tab, with nothing to install.</p>
         <p class="trust">Free. No account.</p>
         <div class="hero-actions">
           <a class="button primary large" href="https://app.freecanstudio.com/">Open FreeCAN Studio</a>
           <a class="text-link" href="https://app.freecanstudio.com/?demo=1">Try the Demo <span aria-hidden="true">&rarr;</span></a>
         </div>
-        <p class="privacy-line"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Files are processed on your computer and never uploaded.</p>
+        <div class="hero-notes">
+          <p class="privacy-line"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="7" r="1"/><circle cx="4" cy="20" r="1"/><path d="M4.7 19.3 19 5"/><path d="m21 3-3 1 2 2Z"/><path d="M9.26 7.68 5 12l2 5"/><path d="m10 14 5 2 3.5-3.5"/><path d="m18 12 1-1 1 1-1 1Z"/></svg><span>Live capture in Chrome and Edge from slcan and candleLight USB adapters, such as CANable and USBtin. <a href="#capture">How it works</a></span></p>
+          <p class="privacy-line"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Files are processed on your computer and never uploaded.</p>
+        </div>
       </div>
       <figure class="product">
         <div class="pw" aria-hidden="true">
@@ -121,6 +125,47 @@
     </div>
   </section>
 
+  <section class="section" id="capture" aria-labelledby="capture-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="capture-title">Record a bus live <span class="tag">Experimental</span></h2>
+        <p class="lead">Plug a USB CAN adapter into your computer, choose it under Capture&hellip; in the app, and watch the bus as frames arrive. They go from the adapter to your browser tab and are never uploaded.</p>
+      </div>
+      <article class="card feature capture-feature">
+        <div class="feature-copy">
+          <h3>Plug in an adapter</h3>
+          <ul>
+            <li><strong>slcan over Web Serial:</strong> CANable with slcan firmware, USBtin, Lawicel CANUSB and other slcan adapters</li>
+            <li><strong>candleLight over WebUSB:</strong> candleLight, CANable with candleLight firmware and other gs_usb adapters</li>
+            <li>Bitrates from 10 kbit/s to 1 Mbit/s, and CAN FD on adapters that support it</li>
+          </ul>
+          <h3>Watch it as it records</h3>
+          <ul>
+            <li>Overview, Trace and Plot follow the bus, decoded with your DBC files</li>
+            <li>Trace filters and bit activity update as the capture grows; suggested signals come once you stop</li>
+            <li>Listen only, so the adapter doesn&rsquo;t acknowledge frames or disturb the bus, on adapters that support it</li>
+            <li>Keep every frame, or only the last 1 to 60 minutes, so a capture can run for hours</li>
+          </ul>
+          <h3>Save it</h3>
+          <p>Stop, then Save Capture&hellip; writes a candump log. Export Log&hellip; turns it into ASC, BLF, TRC, MF4 or CSV.</p>
+        </div>
+        <figure class="feature-visual capture-visual">
+          <img src="/capture-sheet.webp" width="560" height="607" alt="The Live Capture sheet: adapter type Serial (slcan) or USB (candleLight), Choose Adapter&hellip;, bitrate, CAN FD data bitrate, bus name, how much to keep, and a Listen only switch.">
+          <figcaption>The Live Capture sheet, opened from Capture&hellip; in the app&rsquo;s toolbar.</figcaption>
+        </figure>
+      </article>
+      <div class="card capture-needs">
+        <h3>What it needs</h3>
+        <ul>
+          <li><strong>Chrome or Edge on a desktop computer</strong>, on Windows, macOS, Linux or ChromeOS. Firefox and Safari can&rsquo;t reach serial or USB devices, but still open logs.</li>
+          <li><strong>Receive only.</strong> The app never sends a frame, so there is no transmit or replay. One adapter and one bus at a time.</li>
+          <li><strong>On Linux,</strong> a candleLight adapter has to be unbound from the kernel&rsquo;s gs_usb driver first, and your user needs access to the USB or serial device.</li>
+          <li><strong>Still experimental.</strong> Live capture is tested against simulated adapters, not yet with real hardware.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
   <section class="section" id="formats" aria-labelledby="formats-title">
     <div class="wrap">
       <div class="section-head">
@@ -139,14 +184,14 @@
             <li><strong>CSV</strong><span>python-can, SavvyCAN and other frame exports</span></li>
           </ul>
           <p class="small">Classic CAN and CAN FD, 11-bit and 29-bit IDs, and J1939.</p>
-          <p class="small">Experimental: in Chrome and Edge, you can also record a bus live from slcan adapters such as CANable or USBtin, or candleLight (gs_usb) adapters, and save it as a candump log. Live capture is not yet tested with real hardware.</p>
+          <p class="small">A <a href="#capture">live capture</a> is saved as a candump log, and can be exported to any of these formats.</p>
         </div>
         <div class="card format-card">
           <h3>Signal database</h3>
           <ul class="format-list">
             <li><strong>DBC</strong><span>Several at once, for every bus or one bus</span></li>
           </ul>
-          <p class="small">Runs in current desktop versions of Chrome, Edge, Firefox and Safari.</p>
+          <p class="small">Runs in current desktop versions of Chrome, Edge, Firefox and Safari. Live capture needs Chrome or Edge.</p>
         </div>
       </div>
     </div>

@@ -54,6 +54,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Later: downloads, pricing and Pro license pages on the main site. Paid features are hidden for now: the `pro/` page and every Pro link were taken off the site (restore them from git history, `site/public/pro/index.html`, when Pro is back on the table) (owner)
 - [x] Recheck the site's format claims (ASC, BLF, TRC, MF4, CSV) against the app once those importers land
 - [x] Recheck the CSP quoted on the home page if `web/public/_headers` changes (CI now runs `scripts/check-csp-quote.sh`)
+- [x] Make live capture clear on the site: the home page lead and a hero line mention it, a Live capture section (adapters, what updates while recording, saving, what it needs, still experimental) with a screenshot of the Capture sheet, a Live Capture link in every page's nav, and a live capture question on the CANalyzer alternative page
 
 ## Live capture
 

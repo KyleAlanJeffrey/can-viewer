@@ -255,7 +255,7 @@ Optional help for [`suggestSignals`](#suggestsignals) and [`scanSignals`](#scans
 
 **Attributes**
 
-- **`markers`** `{ t: number }[]`, optional - Times, in seconds, when something happened, such as a press of the brake pedal. A candidate that changes unusually often within 1 s of a marker scores higher, and its `reason` says so. In a sampled log, the frames around each marker are added to the sample. Other fields on a marker are ignored.
+- **`markers`** `{ t: number }[]`, optional - Times, in seconds, when something happened, such as a press of the brake pedal. A candidate that changes unusually often within 1 s of a marker scores higher, and its `reason` says so. In a sampled log, the frames around each marker are added to the sample. Only the first 20 markers are used. Other fields on a marker are ignored.
 - **`reference`** `{ key: number; signal: string } | null`, optional - A decoded signal, named as for [`decodeSignal`](#decodesignal), to compare value candidates with. A candidate whose raw value correlates with it (|r| at least 0.8) scores higher and gets a fitted scale in `fit`.
 
 ### The Suggestion object
@@ -293,7 +293,7 @@ The suggested signals for one message. Returned by [`suggestSignals`](#suggestsi
 
 - **`key`** `number` - ID key of the message.
 - **`frames`** `number` - Frames of the ID in the log.
-- **`sampledFrames`** `number` - Frames read to judge the candidates: all of them up to 20,000, or 20 blocks of 1,000 consecutive frames spread across the log, plus a block around each event marker. Payloads longer than 8 bytes get proportionally fewer: 2,500 for 64 bytes. Fields that rarely change are also read over every frame.
+- **`sampledFrames`** `number` - Frames read to judge the candidates: all of them up to 20,000, or 20 blocks of 1,000 consecutive frames spread across the log, plus a block around each event marker. Payloads longer than 8 bytes get proportionally fewer: 2,500 for 64 bytes. Fields that rarely change are also read wherever they change across the whole log, within a fixed budget of frames per ID.
 - **`suggestions`** [`Suggestion[]`](#the-suggestion-object) - At most 16, or one per payload byte when that is more, best first. Their bit ranges never overlap.
 
 ### The FrameFilter object
@@ -1241,7 +1241,7 @@ const info = await core.decodeRaw(summary.key, suggestions[0].spec);
 scanSignals(
   keys: number[],
   hints: DiscoveryHints,
-  onProgress: (done: number, total: number, latest: MessageSuggestions) => void,
+  onProgress: (done: number, total: number, latest: MessageSuggestions | null) => void,
   signal?: AbortSignal,
   skip?: (key: number) => boolean,
 ): Promise<MessageSuggestions[]>
@@ -1253,9 +1253,9 @@ Runs [`suggestSignals`](#suggestsignals) for each ID in turn, so a scan of many 
 
 - **`keys`** `number[]` - The ID keys to scan, in order. The UI passes the IDs no DBC describes.
 - **`hints`** [`DiscoveryHints`](#the-discoveryhints-object) - Applied to every message.
-- **`onProgress`** `(done: number, total: number, latest: MessageSuggestions) => void` - Called after each message with its suggestions, so a cancelled scan keeps what it found.
+- **`onProgress`** `(done: number, total: number, latest: MessageSuggestions | null) => void` - Called after each message with its suggestions, so a cancelled scan keeps what it found, and with `null` for a key passed over.
 - **`signal`** `AbortSignal`, optional - Aborting it stops the scan once the message in hand is done.
-- **`skip`** `(key: number) => boolean`, optional - Asked as each key's turn comes; a key it returns true for is passed over but counts towards `done`. The UI skips a message it suggested for meanwhile, such as one opened during the scan.
+- **`skip`** `(key: number) => boolean`, optional - Asked as each key's turn comes; a key it returns true for is passed over but counts towards `done`, and `onProgress` is called for it with `null`. The UI skips a message it suggested for meanwhile, such as one opened during the scan.
 
 **Returns** one [`MessageSuggestions`](#the-messagesuggestions-object) per key scanned, in the order given.
 

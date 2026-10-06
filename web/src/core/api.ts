@@ -227,7 +227,7 @@ export type SuggestionKind = 'counter' | 'checksum' | 'flag' | 'enum' | 'continu
 
 /** Optional help for `suggestSignals` and `scanSignals`. */
 export interface DiscoveryHints {
-  /** Times, in seconds, when something happened, such as a press of the brake pedal. */
+  /** Times, in seconds, when something happened, such as a press of the brake pedal. The first 20 are used. */
   markers?: { t: number }[];
   /** A decoded signal (a `decodeSignal` pair) to compare value candidates with and fit a scale to. */
   reference?: { key: number; signal: string } | null;

@@ -5,7 +5,8 @@ use std::io::{self, Seek, SeekFrom, Write};
 use can_core::{flags, FrameRef, FrameStore, EXT_FLAG};
 
 use super::{
-    buffer, bus_numbers, civil_from_days, is_fd, len_to_dlc, log_frames, start_ns, Deflater,
+    buffer, bus_numbers, civil_from_days, is_fd, len_to_dlc, log_frames, log_frames_with_dlcs,
+    start_ns, Deflater,
 };
 
 /// Objects are gathered up to this size, then compressed into a log container.
@@ -32,11 +33,12 @@ pub(super) fn write_blf<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io:
     out.write_all(&blf_file_header(start_s, end_s, 0, 0, 0))?;
     let mut uncompressed_bytes = 0u64;
     let mut object_count = 0u32;
-    for frame in log_frames(store) {
+    for (frame, remote_dlc) in log_frames_with_dlcs(store) {
         let timestamp = (frame.ts_ns - start_s * 1_000_000_000) as u64;
         frame_object(
             &mut objects,
             &frame,
+            remote_dlc,
             channels[usize::from(frame.channel)],
             timestamp,
         );
@@ -105,7 +107,13 @@ fn system_time(epoch_s: i64) -> [u8; 16] {
 }
 
 /// Appends the object for `frame`, padded, to `out`. It adds at most [`MAX_FRAME_OBJECT`] bytes.
-fn frame_object(out: &mut Vec<u8>, frame: &FrameRef<'_>, channel: u8, timestamp: u64) {
+fn frame_object(
+    out: &mut Vec<u8>,
+    frame: &FrameRef<'_>,
+    remote_dlc: Option<u8>,
+    channel: u8,
+    timestamp: u64,
+) {
     const CAN_MESSAGE: u32 = 1;
     const CAN_ERROR_EXT: u32 = 73;
     const CAN_FD_MESSAGE_64: u32 = 101;
@@ -171,7 +179,7 @@ fn frame_object(out: &mut Vec<u8>, frame: &FrameRef<'_>, channel: u8, timestamp:
         }
         out.extend_from_slice(&u16::from(channel).to_le_bytes());
         out.push(message_flags);
-        out.push(frame.data.len() as u8);
+        out.push(remote_dlc.unwrap_or(frame.data.len() as u8));
         out.extend_from_slice(&id.to_le_bytes());
         out.extend_from_slice(frame.data);
     }

@@ -66,7 +66,7 @@ describe('parseHostFrame', () => {
   it('reads standard, extended, remote and error frames', () => {
     expect(parseHostFrame(hostFrame(0x123, 2, [0xde, 0xad]))).toEqual({ frame: { id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xde, 0xad) }, overflow: false });
     expect(parseHostFrame(hostFrame(0x9234_5678, 1, [7]))?.frame).toEqual({ id: 0x1234_5678, extended: true, flags: 0, data: Uint8Array.of(7) });
-    expect(parseHostFrame(hostFrame(0x4000_0123, 8, []))?.frame).toEqual({ id: 0x123, extended: false, flags: FLAG_RTR, data: new Uint8Array(0) });
+    expect(parseHostFrame(hostFrame(0x4000_0123, 8, []))?.frame).toEqual({ id: 0x123, extended: false, flags: FLAG_RTR, data: new Uint8Array(0), dlc: 8 });
     expect(parseHostFrame(hostFrame(0x2000_0004, 8, [0, 0, 8, 0, 0, 0, 0, 0]))?.frame).toMatchObject({ id: 4, extended: false, flags: FLAG_ERROR });
   });
 

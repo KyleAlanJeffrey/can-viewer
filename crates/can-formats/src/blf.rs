@@ -10,7 +10,7 @@
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::text::{dlc_to_len, unix_ns, ChannelName};
-use crate::{LogParser, ParseStats};
+use crate::{push_frame, LogParser, ParseStats};
 
 const FILE_SIGNATURE: &[u8; 4] = b"LOGG";
 const OBJECT_SIGNATURE: &[u8; 4] = b"LOBJ";
@@ -90,6 +90,7 @@ struct Frame {
     flags: u8,
     len: usize,
     data: [u8; MAX_PAYLOAD],
+    remote_dlc: Option<u8>,
 }
 
 impl BlfParser {
@@ -355,13 +356,14 @@ fn frame_object<S: FrameSink>(
         (Ok(frame), Some(ts_ns)) => {
             stats.frames += 1;
             let channel = sink.channel_index(ChannelName::new(u64::from(frame.channel)).as_bytes());
-            sink.push(FrameRef {
+            let pushed = FrameRef {
                 ts_ns,
                 channel,
                 id: frame.id,
                 flags: frame.flags,
                 data: &frame.data[..frame.len],
-            });
+            };
+            push_frame(sink, pushed, frame.remote_dlc);
         }
     }
 }
@@ -374,6 +376,7 @@ impl Frame {
             flags,
             len: 0,
             data: [0; MAX_PAYLOAD],
+            remote_dlc: None,
         }
     }
 
@@ -415,12 +418,13 @@ fn can_message(body: &[u8]) -> Result<Frame, &'static str> {
     if body.len() < 16 {
         return Err("CAN message object too short");
     }
-    let frame = Frame::new(
+    let mut frame = Frame::new(
         u16_at(body, 0),
         frame_id(u32_at(body, 4)),
         message_flags(body[2]),
     );
     let len = if frame.flags & flags::RTR != 0 {
+        frame.remote_dlc = Some(body[3] & 0x0F);
         0
     } else {
         usize::from(body[3]).min(8)
@@ -484,6 +488,7 @@ fn can_fd_message(body: &[u8]) -> Result<Frame, &'static str> {
     let fd_flags = body[13];
     let dlc = body[3];
     let len = if frame.flags & flags::RTR != 0 {
+        frame.remote_dlc = Some(dlc & 0x0F);
         0
     } else if fd_flags & 0x01 != 0 {
         frame.flags |= flags::FD;
@@ -518,6 +523,7 @@ fn can_fd_message_64(body: &[u8]) -> Result<Frame, &'static str> {
     let valid_bytes = usize::from(body[2]);
     let len = if raw_flags & 0x10 != 0 {
         frame.flags |= flags::RTR;
+        frame.remote_dlc = Some(dlc & 0x0F);
         0
     } else if raw_flags & 0x1000 != 0 {
         frame.flags |= flags::FD;
@@ -728,6 +734,7 @@ mod tests {
             sink.frames[2],
             (start_ns + 3_000_000, 0, 0x7FF, flags::RTR, vec![])
         );
+        assert_eq!(sink.remote_dlcs, [None, None, Some(2)]);
     }
 
     #[test]
@@ -808,6 +815,7 @@ mod tests {
             sink.frames[3],
             (40, 1, 0x18FE_F100 | EXT_FLAG, flags::RTR, vec![])
         );
+        assert_eq!(sink.remote_dlcs[3], Some(0));
         assert_eq!(sink.frames[4], (50, 2, ERR_FLAG, flags::ERROR, vec![]));
         assert_eq!(sink.frames[5], (55, 1, ERR_FLAG, flags::ERROR, vec![]));
         assert_eq!(

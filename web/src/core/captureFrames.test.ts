@@ -6,7 +6,7 @@ describe('packFrames', () => {
   it('packs each frame as a header and its payload', () => {
     const packed = packFrames([
       { timeNs: 1_500_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(1, 2) },
-      { timeNs: 2_000_000, id: 0x1234_5678, extended: true, flags: FLAG_RTR, data: new Uint8Array(0) },
+      { timeNs: 2_000_000, id: 0x1234_5678, extended: true, flags: FLAG_RTR, data: new Uint8Array(0), dlc: 8 },
       { timeNs: 3_000_000, id: 0x80, extended: false, flags: FLAG_ERROR, data: new Uint8Array(8) },
       { timeNs: 4_000_000, id: 0x321, extended: false, flags: FLAG_FD, data: new Uint8Array(64).fill(7) },
     ]);
@@ -19,7 +19,7 @@ describe('packFrames', () => {
 
     let at = CAPTURE_RECORD_HEADER + 2;
     expect(view.getUint32(at + 8, true)).toBe(0x9234_5678);
-    expect([packed[at + 12], packed[at + 13]]).toEqual([FLAG_RTR, 0]);
+    expect([packed[at + 12], packed[at + 13]]).toEqual([FLAG_RTR, 8]);
 
     at += CAPTURE_RECORD_HEADER;
     expect(view.getUint32(at + 8, true)).toBe(0x2000_0080);
@@ -29,6 +29,12 @@ describe('packFrames', () => {
     expect(view.getFloat64(at, true)).toBe(4_000_000);
     expect(packed[at + 13]).toBe(64);
     expect(packed[packed.length - 1]).toBe(7);
+  });
+
+  it('packs no payload for a remote frame, whatever its data holds', () => {
+    const packed = packFrames([{ timeNs: 0, id: 0x123, extended: false, flags: FLAG_RTR, data: Uint8Array.of(1, 2), dlc: 2 }]);
+    expect(packed.length).toBe(CAPTURE_RECORD_HEADER);
+    expect(packed[13]).toBe(2);
   });
 
   it('packs nothing for no frames', () => {

@@ -85,6 +85,7 @@ One frame received by a live capture adapter. Passed to [`appendFrames`](#append
 - **`extended`** `boolean` - Whether the ID is a 29-bit extended ID.
 - **`flags`** `number` - `FLAG_FD`, `FLAG_BRS`, `FLAG_ESI`, `FLAG_RTR` and `FLAG_ERROR`, as received. `FLAG_REASSEMBLED` is ignored: the engine reassembles J1939 transfers itself.
 - **`data`** `Uint8Array` - The payload, at most 64 bytes; empty for a remote frame.
+- **`dlc`** `number`, optional - For a remote frame, the DLC it asks for (0 to 15), kept for export. Without it the frame's DLC is 0.
 
 ### The Progress object
 

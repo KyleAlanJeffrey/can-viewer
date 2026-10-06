@@ -16,7 +16,7 @@ use std::collections::{BinaryHeap, HashSet};
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::text::{dlc_to_len, ChannelName};
-use crate::{LogParser, ParseStats};
+use crate::{push_frame, LogParser, ParseStats};
 
 /// The largest file read; a larger one rejects a record and gives no frames.
 pub const MAX_FILE: usize = 1 << 30;
@@ -426,13 +426,14 @@ fn merge<S: FrameSink>(
         let source = &mut sources[index];
         if let Some(frame) = source.take() {
             let channel = sink.channel_index(ChannelName::new(u64::from(frame.bus)).as_bytes());
-            sink.push(FrameRef {
+            let frame_ref = FrameRef {
                 ts_ns: frame.ts_ns,
                 channel,
                 id: frame.id,
                 flags: frame.flags,
                 data: &frame.data[..usize::from(frame.len)],
-            });
+            };
+            push_frame(sink, frame_ref, frame.remote_dlc);
         }
         if let Some(ts_ns) = source.next_time(start_ns, walk, stats) {
             next.push(Reverse((ts_ns, index)));
@@ -554,6 +555,7 @@ struct Frame {
     flags: u8,
     len: u8,
     data: [u8; MAX_PAYLOAD],
+    remote_dlc: Option<u8>,
 }
 
 fn read_data_group<'a>(
@@ -733,7 +735,7 @@ impl Source<'_> {
             offsets_unwritten,
             start_ns,
         ) {
-            Ok((ts_ns, bus, id, frame_flags, data)) => {
+            Ok((ts_ns, bus, id, frame_flags, data, remote_dlc)) => {
                 stats.frames += 1;
                 let mut frame = Frame {
                     ts_ns,
@@ -742,6 +744,7 @@ impl Source<'_> {
                     flags: frame_flags,
                     len: data.len() as u8,
                     data: [0; MAX_PAYLOAD],
+                    remote_dlc,
                 };
                 frame.data[..data.len()].copy_from_slice(data);
                 let slot = match self.free.pop() {
@@ -1173,6 +1176,9 @@ fn linear_conversion(file: &[u8], at: u64) -> (f64, f64) {
     }
 }
 
+/// A frame record's time, bus, ID, flags, payload and, for a remote frame, its DLC.
+type RecordFrame<'r> = (i64, u32, u32, u8, &'r [u8], Option<u8>);
+
 fn frame_of<'r>(
     bus: &'r BusGroup<'_>,
     record: &'r [u8],
@@ -1180,7 +1186,7 @@ fn frame_of<'r>(
     variable_groups: &'r [VariableGroup],
     offsets_unwritten: bool,
     start_ns: i64,
-) -> Result<(i64, u32, u32, u8, &'r [u8]), &'static str> {
+) -> Result<RecordFrame<'r>, &'static str> {
     let seconds = match &bus.time {
         Time::None => 0.0,
         Time::Virtual { offset, factor } => offset + factor * index as f64,
@@ -1267,6 +1273,7 @@ fn frame_of<'r>(
     if len > 8 {
         frame_flags |= flags::FD;
     }
+    let mut remote_dlc = None;
     let id = match bus.kind {
         FrameKind::Error => {
             frame_flags |= flags::ERROR;
@@ -1274,11 +1281,12 @@ fn frame_of<'r>(
         }
         FrameKind::Remote => {
             frame_flags |= flags::RTR;
+            remote_dlc = dlc.map(|dlc| dlc.min(15) as u8);
             can_id(raw_id, extended)
         }
         FrameKind::Data => can_id(raw_id, extended),
     };
-    Ok((ts_ns, channel, id, frame_flags, &data[..len]))
+    Ok((ts_ns, channel, id, frame_flags, &data[..len], remote_dlc))
 }
 
 fn can_id(raw: u64, extended: bool) -> u32 {
@@ -1973,6 +1981,7 @@ mod tests {
                 (5_000_000, 0, 0x100, flags::TX, vec![9, 8, 7, 6, 5, 4, 3, 2]),
             ]
         );
+        assert_eq!(sink.remote_dlcs[..2], [Some(4), Some(0)]);
     }
 
     #[test]

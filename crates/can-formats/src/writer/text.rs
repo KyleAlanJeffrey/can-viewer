@@ -8,8 +8,8 @@ use crate::text::dlc_to_len;
 use crate::LocalTime;
 
 use super::{
-    bus_numbers, civil_from_days, is_fd, len_to_dlc, log_frames, plain_name, start_ns,
-    write_hex_bytes, write_seconds,
+    bus_numbers, civil_from_days, is_fd, len_to_dlc, log_frames, log_frames_with_dlcs, plain_name,
+    start_ns, write_hex_bytes, write_seconds,
 };
 
 /// candump log lines (`candump -l`), as the candump parser and can-utils' `canplayer` read
@@ -21,7 +21,7 @@ pub(super) fn write_candump(store: &FrameStore, out: &mut impl Write) -> io::Res
     let names: Vec<_> = store.channels().iter().map(|n| plain_name(n)).collect();
     let marks_direction = log_frames(store).any(|frame| frame.flags & flags::TX != 0);
     let mut line = Vec::with_capacity(256);
-    for frame in log_frames(store) {
+    for (frame, remote_dlc) in log_frames_with_dlcs(store) {
         line.clear();
         line.push(b'(');
         write_seconds(&mut line, frame.ts_ns)?;
@@ -44,6 +44,12 @@ pub(super) fn write_candump(store: &FrameStore, out: &mut impl Write) -> io::Res
             write_packed_hex(&mut line, frame.data)?;
         } else if frame.flags & flags::RTR != 0 {
             line.extend_from_slice(b"#R");
+            // As candump writes it: no length for DLC 0, and DLCs over 8 after a length of 8.
+            match remote_dlc.unwrap_or(0) {
+                0 => {}
+                dlc @ 1..=8 => write!(line, "{dlc}")?,
+                dlc => write!(line, "8_{dlc:X}")?,
+            }
         } else {
             line.push(b'#');
             write_packed_hex(&mut line, frame.data)?;
@@ -77,7 +83,7 @@ pub(super) fn write_asc(
     writeln!(out, "internal events logged")?;
     writeln!(out, "Begin Triggerblock {date}")?;
     writeln!(out, "   0.000000 Start of measurement")?;
-    for frame in log_frames(store) {
+    for (frame, remote_dlc) in log_frames_with_dlcs(store) {
         let offset_ns = frame.ts_ns - start_s * 1_000_000_000;
         let channel = channels[usize::from(frame.channel)];
         write!(
@@ -107,7 +113,11 @@ pub(super) fn write_asc(
             write_hex_bytes(out, frame.data)?;
             writeln!(out, " 0 0 {fd_flags:X} 0 0 0 0 0")?;
         } else if frame.flags & flags::RTR != 0 {
-            writeln!(out, "{channel}  {:<15} {direction:<4} r", asc_id(&frame))?;
+            write!(out, "{channel}  {:<15} {direction:<4} r", asc_id(&frame))?;
+            if let Some(dlc) = remote_dlc {
+                write!(out, " {dlc:x}")?;
+            }
+            writeln!(out)?;
         } else {
             write!(
                 out,
@@ -138,7 +148,7 @@ pub(super) fn write_trc(store: &FrameStore, out: &mut impl Write) -> io::Result<
         out,
         ";---+-- ------+------ +- +- --+----- +- +- +--- +- -- -- -- -- -- -- --"
     )?;
-    for (number, frame) in log_frames(store).enumerate() {
+    for (number, (frame, remote_dlc)) in log_frames_with_dlcs(store).enumerate() {
         let offset_ns = frame.ts_ns - start_day * NS_PER_DAY;
         let direction = if frame.flags & flags::TX != 0 {
             "Tx"
@@ -146,10 +156,14 @@ pub(super) fn write_trc(store: &FrameStore, out: &mut impl Write) -> io::Result<
             "Rx"
         };
         let fd = is_fd(&frame);
-        let dlc = len_to_dlc(frame.data.len());
+        let remote = frame.flags & flags::RTR != 0 && !fd;
+        let dlc = match remote_dlc {
+            Some(dlc) if remote => dlc,
+            _ => len_to_dlc(frame.data.len()),
+        };
         let kind = match frame.flags & (flags::BRS | flags::ESI | flags::RTR | flags::ERROR) {
             f if f & flags::ERROR != 0 => "ER",
-            f if f & flags::RTR != 0 && !fd => "RR",
+            _ if remote => "RR",
             _ if !fd => "DT",
             f if f & (flags::BRS | flags::ESI) == flags::BRS | flags::ESI => "BI",
             f if f & flags::BRS != 0 => "FB",
@@ -173,7 +187,8 @@ pub(super) fn write_trc(store: &FrameStore, out: &mut impl Write) -> io::Result<
             dlc
         )?;
         write_hex_bytes(out, frame.data)?;
-        for _ in frame.data.len()..dlc_to_len(dlc) {
+        let padded_len = if remote { 0 } else { dlc_to_len(dlc) };
+        for _ in frame.data.len()..padded_len {
             write!(out, " 00")?;
         }
         writeln!(out)?;
@@ -190,8 +205,12 @@ pub(super) fn write_csv(store: &FrameStore, out: &mut impl Write) -> io::Result<
         out,
         "timestamp,channel,arbitration_id,extended,remote,error,fd,brs,esi,dlc,dir,data"
     )?;
-    for frame in log_frames(store) {
+    for (frame, remote_dlc) in log_frames_with_dlcs(store) {
         let bit = |flag: u8| u8::from(frame.flags & flag != 0);
+        let dlc = match remote_dlc {
+            Some(dlc) => usize::from(dlc),
+            None => frame.data.len(),
+        };
         write_seconds(out, frame.ts_ns)?;
         write!(
             out,
@@ -204,7 +223,7 @@ pub(super) fn write_csv(store: &FrameStore, out: &mut impl Write) -> io::Result<
             bit(flags::FD),
             bit(flags::BRS),
             bit(flags::ESI),
-            frame.data.len(),
+            dlc,
             if frame.flags & flags::TX != 0 {
                 "Tx"
             } else {

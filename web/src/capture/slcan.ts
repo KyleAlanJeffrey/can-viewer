@@ -147,6 +147,7 @@ export function parseSlcanFrame(line: string): SlcanFrame | string {
   }
   const flags = (type.fd ? FLAG_FD : 0) | (type.brs ? FLAG_BRS : 0) | (type.remote ? FLAG_RTR : 0);
   const frame: SlcanFrame = { id, extended: type.idDigits === 8, flags, data };
+  if (type.remote) frame.dlc = dlc;
   if (extra === 4) frame.timestampMs = parseInt(line.slice(dataEnd), 16);
   return frame;
 }

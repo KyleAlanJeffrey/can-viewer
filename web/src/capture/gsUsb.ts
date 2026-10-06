@@ -202,6 +202,7 @@ export function parseHostFrame(view: DataView, timestamps = false, channel = 0):
     (error ? FLAG_ERROR : 0);
   const id = error || extended ? canId & CAN_EFF_MASK : canId & 0x7ff;
   const parsed: NonNullable<HostFrame> = { frame: { id, extended, flags, data }, overflow: (frameFlags & FRAME_FLAG_OVERFLOW) !== 0 };
+  if (remote) parsed.frame.dlc = dlc;
   const timestampAt = HOST_FRAME_HEADER + (fd ? FD_DATA_FIELD : CLASSIC_DATA_FIELD);
   if (timestamps && view.byteLength >= timestampAt + 4) parsed.timestampUs = view.getUint32(timestampAt, true);
   return parsed;

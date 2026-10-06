@@ -95,9 +95,15 @@ impl Deflater {
 
 /// The frames that came from the log.
 fn log_frames(store: &FrameStore) -> impl Iterator<Item = FrameRef<'_>> {
+    log_frames_with_dlcs(store).map(|(frame, _)| frame)
+}
+
+/// The frames that came from the log, each with the DLC it asked for if it is a remote frame
+/// whose log gave one.
+fn log_frames_with_dlcs(store: &FrameStore) -> impl Iterator<Item = (FrameRef<'_>, Option<u8>)> {
     (0..store.len())
-        .map(|index| store.frame(index))
-        .filter(|frame| frame.flags & flags::REASSEMBLED == 0)
+        .map(|index| (store.frame(index), store.remote_dlc(index)))
+        .filter(|(frame, _)| frame.flags & flags::REASSEMBLED == 0)
 }
 
 /// 1900-01-01T00:00:00Z. Every format with a start time reads back a log from then on: TRC's
@@ -568,6 +574,42 @@ mod tests {
         assert_eq!(text.lines().count(), store.len() - 1);
         assert!(!text.contains("1CFECA00"), "{text}");
         assert!(text.contains("1CEBFF00#0F0F0F0F0F0F0F0F"));
+    }
+
+    #[test]
+    fn every_format_keeps_the_dlc_a_remote_frame_asks_for() {
+        let dlcs = [None, Some(0), Some(3), Some(8), Some(12)];
+        let mut original = FrameStore::new();
+        let channel = original.channel_index(b"can1");
+        for (us, dlc) in dlcs.iter().enumerate() {
+            let frame = FrameRef {
+                ts_ns: T0 + us as i64 * 1000,
+                channel,
+                id: 0x123,
+                flags: flags::RTR,
+                data: &[],
+            };
+            match dlc {
+                Some(dlc) => original.push_remote(frame, *dlc),
+                None => original.push(frame),
+            }
+        }
+        for format in [
+            Format::Candump,
+            Format::Asc,
+            Format::Trc,
+            Format::Csv,
+            Format::Blf,
+            Format::Mf4,
+        ] {
+            let copy = read(format, &write(format, &original));
+            assert_eq!(frames(&copy), frames(&original), "{format:?}");
+            // A DLC of 0 is how some formats write a remote frame whose DLC is unknown.
+            let read_back: Vec<u8> = (0..copy.len())
+                .map(|i| copy.remote_dlc(i).unwrap_or(0))
+                .collect();
+            assert_eq!(read_back, [0, 0, 3, 8, 12], "{format:?}");
+        }
     }
 
     #[test]

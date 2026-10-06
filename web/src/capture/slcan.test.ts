@@ -22,8 +22,8 @@ describe('parseSlcanFrame', () => {
   });
 
   it('reads remote frames, which carry a length but no data', () => {
-    expect(frame('r1238')).toEqual({ id: 0x123, extended: false, flags: FLAG_RTR, data: [] });
-    expect(frame('R12345678' + '2')).toEqual({ id: 0x1234_5678, extended: true, flags: FLAG_RTR, data: [] });
+    expect(frame('r1238')).toEqual({ id: 0x123, extended: false, flags: FLAG_RTR, data: [], dlc: 8 });
+    expect(frame('R12345678' + '2')).toEqual({ id: 0x1234_5678, extended: true, flags: FLAG_RTR, data: [], dlc: 2 });
   });
 
   it('reads CAN FD frames, with and without bit rate switching', () => {

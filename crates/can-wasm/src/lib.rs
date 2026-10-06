@@ -1018,7 +1018,16 @@ impl Session {
             let offset_ns = f64::from_le_bytes(header[0..8].try_into().unwrap());
             let id = u32::from_le_bytes(header[8..12].try_into().unwrap());
             let frame_flags = header[12] & CAPTURE_FLAGS;
-            let len = usize::from(header[13]);
+            // A remote frame has no payload, and its length byte is the DLC it asks for.
+            let remote = frame_flags & flags::RTR != 0;
+            let (len, remote_dlc) = if remote {
+                if header[13] > 15 {
+                    return Err("a captured remote frame has a DLC over 15");
+                }
+                (0, header[13])
+            } else {
+                (usize::from(header[13]), 0)
+            };
             if len > MAX_PAYLOAD {
                 return Err("a captured frame is longer than 64 bytes");
             }
@@ -1029,13 +1038,18 @@ impl Session {
             if !offset_ns.is_finite() {
                 return Err("a captured frame has no time");
             }
-            self.store.push(FrameRef {
+            let frame = FrameRef {
                 ts_ns: started_at_ns.saturating_add(offset_ns.round() as i64),
                 channel,
                 id,
                 flags: frame_flags,
                 data,
-            });
+            };
+            if remote {
+                self.store.push_remote(frame, remote_dlc);
+            } else {
+                self.store.push(frame);
+            }
             packed = &packed[end..];
         }
         Ok(())
@@ -1251,12 +1265,9 @@ mod tests {
         assert!(s.series.is_empty());
 
         let mut batch = capture_record(0.0, 0x123, 0, &[1, 2]);
-        batch.extend(capture_record(
-            1_500_000.0,
-            0x1234_5678 | EXT_FLAG,
-            flags::RTR,
-            &[],
-        ));
+        let mut remote = capture_record(1_500_000.0, 0x1234_5678 | EXT_FLAG, flags::RTR, &[]);
+        remote[13] = 8;
+        batch.extend(remote);
         s.push_capture_records(&batch).unwrap();
         let mut batch = capture_record(
             2_000_000.0,
@@ -1285,6 +1296,7 @@ mod tests {
         assert_eq!(s.store.frame(1).ts_ns, 1_700_000_000_001_500_000);
         assert_eq!(s.store.frame(1).id, 0x1234_5678 | EXT_FLAG);
         assert_eq!(s.store.frame(1).flags, flags::RTR);
+        assert_eq!(s.store.remote_dlc(1), Some(8));
         assert_eq!(
             s.store.frame(2).flags,
             flags::FD | flags::BRS,
@@ -1302,7 +1314,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(exported(&mut s, "candump")).unwrap(),
             "(1700000000.000000) slcan0 123#0102\n\
-             (1700000000.001500) slcan0 12345678#R\n\
+             (1700000000.001500) slcan0 12345678#R8\n\
              (1700000000.002000) slcan0 321##1070707070707070707070707\n\
              (1700000000.003000) slcan0 20000080#0000000000000000\n"
         );
@@ -1356,6 +1368,12 @@ mod tests {
         assert_eq!(
             s.push_capture_records(&capture_record(f64::NAN, 0x123, 0, &[])),
             Err("a captured frame has no time")
+        );
+        let mut remote = capture_record(0.0, 0x123, flags::RTR, &[]);
+        remote[13] = 16;
+        assert_eq!(
+            s.push_capture_records(&remote),
+            Err("a captured remote frame has a DLC over 15")
         );
     }
 

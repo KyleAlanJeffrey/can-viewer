@@ -56,6 +56,8 @@ export interface CaptureFrame {
   flags: number;
   /** The payload, at most 64 bytes; empty for a remote frame. */
   data: Uint8Array;
+  /** For a remote frame, the DLC it asks for (0 to 15). */
+  dlc?: number;
 }
 
 export interface Progress {

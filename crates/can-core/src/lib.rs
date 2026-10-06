@@ -49,4 +49,10 @@ pub trait FrameSink {
     /// Map an interface name from the log (e.g. `can0`) to a channel index.
     fn channel_index(&mut self, name: &[u8]) -> u8;
     fn push(&mut self, frame: FrameRef<'_>);
+    /// A remote frame ([`flags::RTR`]) with the DLC it asked for, which a [`FrameRef`] has no
+    /// field for. A sink that has no use for the DLC takes the frame alone.
+    fn push_remote(&mut self, frame: FrameRef<'_>, dlc: u8) {
+        let _ = dlc;
+        self.push(frame);
+    }
 }

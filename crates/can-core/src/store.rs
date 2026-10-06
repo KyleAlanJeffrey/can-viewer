@@ -286,13 +286,28 @@ impl FrameStore {
     /// If `index` is out of bounds.
     #[must_use]
     pub fn frame(&self, index: usize) -> FrameRef<'_> {
+        let flags = self.flags[index];
         FrameRef {
             ts_ns: self.ts_ns[index],
             channel: self.channel[index],
             id: self.id[index],
-            flags: self.flags[index],
-            data: &self.data[self.data_range(index)],
+            flags,
+            data: if flags & flags::RTR == 0 {
+                &self.data[self.data_range(index)]
+            } else {
+                &[]
+            },
         }
+    }
+
+    /// The DLC a remote frame asked for, when its log gave one. None for other frames.
+    #[must_use]
+    pub fn remote_dlc(&self, index: usize) -> Option<u8> {
+        if self.flags[index] & flags::RTR == 0 {
+            return None;
+        }
+        let range = self.data_range(index);
+        (range.len() == 1).then(|| self.data[range.start])
     }
 
     fn data_range(&self, index: usize) -> Range<usize> {
@@ -631,26 +646,48 @@ impl FrameSink for FrameStore {
     }
 
     fn push(&mut self, frame: FrameRef<'_>) {
-        self.store(&frame);
-        if let Some(transfer) = self.reassembler.push(&frame) {
-            self.reassembled_frames += 1;
-            self.store(&FrameRef {
-                ts_ns: transfer.ts_ns,
-                channel: frame.channel,
-                id: transfer.id,
-                flags: flags::REASSEMBLED,
-                data: &transfer.data,
-            });
-        }
+        self.store(&frame, None);
+        self.reassemble(&frame);
+    }
+
+    fn push_remote(&mut self, frame: FrameRef<'_>, dlc: u8) {
+        self.store(&frame, Some(dlc));
+        self.reassemble(&frame);
     }
 }
 
 impl FrameStore {
-    fn store(&mut self, frame: &FrameRef<'_>) {
+    fn reassemble(&mut self, frame: &FrameRef<'_>) {
+        if let Some(transfer) = self.reassembler.push(frame) {
+            self.reassembled_frames += 1;
+            self.store(
+                &FrameRef {
+                    ts_ns: transfer.ts_ns,
+                    channel: frame.channel,
+                    id: transfer.id,
+                    flags: flags::REASSEMBLED,
+                    data: &transfer.data,
+                },
+                None,
+            );
+        }
+    }
+
+    /// A remote frame keeps no payload; its data column holds the DLC it asked for, if known,
+    /// as one byte, which [`FrameStore::frame`] leaves out.
+    fn store(&mut self, frame: &FrameRef<'_>, remote_dlc: Option<u8>) {
         if self.ts_ns.last().is_some_and(|&last| frame.ts_ns < last) {
             self.out_of_order = true;
         }
-        self.index.observe(self.ts_ns.len() as u32, frame);
+        let remote = frame.flags & flags::RTR != 0;
+        let payload = if remote { &[][..] } else { frame.data };
+        self.index.observe(
+            self.ts_ns.len() as u32,
+            &FrameRef {
+                data: payload,
+                ..*frame
+            },
+        );
         if frame.flags & flags::ERROR != 0 {
             self.error_frames += 1;
         }
@@ -660,7 +697,10 @@ impl FrameStore {
         self.channel.push(frame.channel);
         self.flags.push(frame.flags);
         self.data_start.push(self.data.len());
-        self.data.extend_from_slice(frame.data);
+        match remote_dlc.filter(|_| remote) {
+            Some(dlc) => self.data.push(dlc),
+            None => self.data.extend_from_slice(payload),
+        }
     }
 }
 
@@ -1003,6 +1043,40 @@ mod tests {
             .map(|i| s.frame(i))
             .map(|f| (f.ts_ns, f.id, f.data.to_vec()))
             .collect()
+    }
+
+    #[test]
+    fn keeps_a_remote_frames_dlc_apart_from_its_payload() {
+        let mut s = FrameStore::new();
+        let remote = |ts_ns| FrameRef {
+            ts_ns,
+            channel: 0,
+            id: 0x123,
+            flags: flags::RTR,
+            data: &[],
+        };
+        s.push_remote(remote(30), 8);
+        s.push(remote(10));
+        push(&mut s, 20, 0x123, &[1, 2]);
+        s.push_remote(remote(40), 0);
+        assert_eq!(s.frame(0).data, &[] as &[u8]);
+        assert_eq!(s.frame(2).data, &[1, 2]);
+        assert_eq!(
+            (0..4).map(|i| s.remote_dlc(i)).collect::<Vec<_>>(),
+            [Some(8), None, None, Some(0)]
+        );
+        let stats = s.id_stats(id_key(0, 0x123)).unwrap();
+        assert_eq!((stats.min_len, stats.max_len), (0, 2));
+
+        s.sort_by_time();
+        assert_eq!(
+            (0..4).map(|i| s.remote_dlc(i)).collect::<Vec<_>>(),
+            [None, None, Some(8), Some(0)]
+        );
+        assert_eq!(s.frame(1).data, &[1, 2]);
+        s.drop_before(35);
+        assert_eq!(s.remote_dlc(0), Some(0));
+        assert_eq!(s.frame(0).data, &[] as &[u8]);
     }
 
     #[test]

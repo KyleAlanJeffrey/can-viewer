@@ -1,9 +1,9 @@
-/// A worker of the pool that reads a large text log in parts: it parses one part at a time into
+/// A worker of the pool that reads a large text or BLF log in parts: it parses one part at a time into
 /// a frame store of its own and hands it, encoded, to the core worker, which joins the parts in
 /// file order (see `readInParts.ts`).
 
 import init, { parse_segment } from './pkg/can_wasm.js';
-import { partBytes, type PartTask } from './readInParts';
+import { taskBytes, type PartTask } from './readInParts';
 
 interface PartPort {
   onmessage: ((e: MessageEvent<PartTask>) => void) | null;
@@ -22,8 +22,7 @@ ready.then(
 port.onmessage = async (e) => {
   try {
     await ready;
-    const { file, format, head, start, end } = e.data;
-    const segment = parse_segment(format, head, await partBytes(file, start, end));
+    const segment = parse_segment(e.data.format, e.data.head, await taskBytes(e.data));
     port.postMessage({ segment }, [segment.buffer]);
   } catch (err) {
     port.postMessage({ error: messageOf(err) });

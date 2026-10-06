@@ -388,6 +388,10 @@ h3 {
   color: var(--graphite);
 }
 
+.hero-note a {
+  white-space: nowrap;
+}
+
 .hero-notes {
   display: grid;
   gap: 8px;

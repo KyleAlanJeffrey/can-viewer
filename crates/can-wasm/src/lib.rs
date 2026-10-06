@@ -160,6 +160,8 @@ struct Capture {
     started_at_ns: i64,
     channel: u8,
     finished: bool,
+    /// Frames a rolling capture dropped from its start so far.
+    dropped: usize,
 }
 
 /// Bytes before the payload of each frame in a [`Session::push_frames`] batch.
@@ -355,6 +357,8 @@ struct LogInfo<'a> {
     heap_bytes: usize,
     error_frames: usize,
     reassembled_frames: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dropped_frames: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -475,10 +479,15 @@ pub fn export_dbc(json_db: &str) -> Result<String, JsError> {
 
 /// The JSON `LogInfo` of a log read into `store` through `input`.
 fn log_info_json(store: &FrameStore, input: &LogInput) -> String {
-    info_json(store, input.format().name(), input.stats())
+    info_json(store, input.format().name(), input.stats(), None)
 }
 
-fn info_json(store: &FrameStore, format: &'static str, stats: ParseStats) -> String {
+fn info_json(
+    store: &FrameStore,
+    format: &'static str,
+    stats: ParseStats,
+    dropped_frames: Option<usize>,
+) -> String {
     let duration_s = match (store.first_ts_ns(), store.last_ts_ns()) {
         (Some(a), Some(b)) => (b - a) as f64 / 1e9,
         _ => 0.0,
@@ -495,6 +504,7 @@ fn info_json(store: &FrameStore, format: &'static str, stats: ParseStats) -> Str
         heap_bytes: store.heap_bytes(),
         error_frames: store.error_frames(),
         reassembled_frames: store.reassembled_frames(),
+        dropped_frames,
     })
 }
 
@@ -604,6 +614,7 @@ impl Session {
             started_at_ns: (started_at_ms * 1e6).round() as i64,
             channel,
             finished: false,
+            dropped: 0,
         });
     }
 
@@ -649,14 +660,14 @@ impl Session {
     pub fn log_info(&self) -> String {
         match &self.capture {
             // Each frame received counts as a line read.
-            Some(_) => {
+            Some(capture) => {
                 let received = (self.store.len() - self.store.reassembled_frames()) as u64;
                 let stats = ParseStats {
                     lines: received,
                     frames: received,
                     ..ParseStats::default()
                 };
-                info_json(&self.store, "capture", stats)
+                info_json(&self.store, "capture", stats, Some(capture.dropped))
             }
             None => log_info_json(&self.store, &self.input),
         }
@@ -1194,16 +1205,16 @@ impl Session {
     }
 
     fn drop_captured_before(&mut self, before_ns: f64) -> Result<(), &'static str> {
-        let started_at_ns = match &self.capture {
-            Some(c) if !c.finished => c.started_at_ns,
+        let capture = match &mut self.capture {
+            Some(c) if !c.finished => c,
             Some(_) => return Err("the capture has ended"),
             None => return Err("no capture is running"),
         };
-        if self
+        let dropped = self
             .store
-            .drop_before(started_at_ns.saturating_add(before_ns.round() as i64))
-            > 0
-        {
+            .drop_before(capture.started_at_ns.saturating_add(before_ns.round() as i64));
+        capture.dropped += dropped;
+        if dropped > 0 {
             // Rows and counts name frames by their old places. The first frame moved, so the
             // rows are found again as for any move of it; the worker begins a dropped count again.
             self.count = None;
@@ -1474,9 +1485,11 @@ mod tests {
         batch.extend(capture_record(1e9, 0x456, 0, &[2]));
         batch.extend(capture_record(2e9, 0x123, 0, &[3]));
         s.push_capture_records(&batch).unwrap();
+        assert_eq!(json(&s.log_info())["droppedFrames"], 0);
         s.drop_captured_before(1.5e9).unwrap();
         let info = json(&s.log_info());
         assert_eq!(info["frames"], 1);
+        assert_eq!(info["droppedFrames"], 2);
         assert_eq!(info["durationS"], 0.0);
         let ids = json(&s.id_summary());
         assert_eq!(ids.as_array().unwrap().len(), 1);

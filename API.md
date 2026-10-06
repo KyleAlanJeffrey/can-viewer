@@ -73,6 +73,7 @@ Describes the current log, or the comparison log. Returned by [`openLog`](#openl
 - **`wasmBytes`** `number` - Size of the wasm memory after parsing, in bytes.
 - **`errorFrames`** `number` - Frames flagged as CAN error frames.
 - **`reassembledFrames`** `number` - J1939 transport protocol transfers that were reassembled into frames of their own (flag `FLAG_REASSEMBLED`). They are counted in `frames` too.
+- **`droppedFrames`** `number`, optional - For a live capture only: the frames [`trimCapture`](#trimcapture) dropped from its start so far. Every frame kept has moved down that many places in the log since the capture started, so a view holding a frame's index shifts it by the change.
 
 ### The CaptureFrame object
 

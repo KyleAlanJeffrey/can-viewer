@@ -753,7 +753,8 @@ export function App({ core }: { core: CoreApi }) {
       refreshing = true;
       const decodePlotsToo = ++refreshes % LIVE_PLOT_REFRESHES === 0;
       serially(async () => {
-        if (liveRef.current !== live || live.recorder.info?.frames === logRef.current?.frames) return;
+        const latest = live.recorder.info;
+        if (liveRef.current !== live || (latest?.frames === logRef.current?.frames && latest?.droppedFrames === logRef.current?.droppedFrames)) return;
         const nextIds = await core.idSummary();
         const info = live.recorder.info;
         if (liveRef.current !== live || !info) return;

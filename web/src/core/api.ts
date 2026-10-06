@@ -43,6 +43,11 @@ export interface LogInfo {
    * counted in `frames` as well.
    */
   reassembledFrames: number;
+  /**
+   * For a live capture, the frames a rolling capture dropped from its start so far: the frames
+   * kept have moved down that many places since it started.
+   */
+  droppedFrames?: number;
 }
 
 /** One frame received by a live capture adapter. See `CoreApi.appendFrames`. */

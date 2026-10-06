@@ -61,6 +61,8 @@ interface Props {
   rowCount: number;
   /** Changes whenever a new log is loaded. */
   logVersion: number;
+  /** `LogInfo.droppedFrames`: frames a rolling capture dropped, which moved the rest down. */
+  droppedFrames?: number;
   /** Keep the newest rows in view as they arrive, unless the table is scrolled away from the end. */
   follow?: boolean;
   channels: string[];
@@ -78,7 +80,7 @@ interface Props {
  * Canvas trace view with a logical scrollbar: only the visible rows are ever fetched, so it
  * scrolls tens of millions of frames without hitting the browser's maximum element height.
  */
-export function TraceTable({ core, filterKey, rowCount, logVersion, follow = false, channels, nameOf, pinnedTime, onPin, matchedBytes }: Props) {
+export function TraceTable({ core, filterKey, rowCount, logVersion, droppedFrames = 0, follow = false, channels, nameOf, pinnedTime, onPin, matchedBytes }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -124,6 +126,13 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, follow = fal
     setSelectedFrame(null);
     matchedPin.current = null;
   }, [logVersion]);
+  // The selection is a frame's index, so it moves down with the frames a trim left.
+  const droppedSeen = useRef(droppedFrames);
+  useEffect(() => {
+    const shift = droppedFrames - droppedSeen.current;
+    droppedSeen.current = droppedFrames;
+    if (shift > 0) setSelectedFrame((frame) => (frame === null || frame < shift ? null : frame - shift));
+  }, [droppedFrames]);
   useEffect(() => setTop((t) => (follow && atEnd.current ? maxTop : Math.min(t, maxTop))), [maxTop, follow]);
   useEffect(() => {
     atEnd.current = top >= maxTop;

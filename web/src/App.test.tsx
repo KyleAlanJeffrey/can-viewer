@@ -378,6 +378,34 @@ describe('App live capture', () => {
     });
   }
 
+  it('keeps Open log B disabled until the capture has stopped', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    const stop = { finish: () => {} };
+    const finished = new Promise<void>((resolve) => (stop.finish = resolve));
+    const idSummary = core.idSummary;
+    render(<App core={core} />);
+    await startCapture(port);
+    port.send('t1230\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('radio', { name: 'Compare' }));
+
+    // The capture has ended but its IDs are still being read.
+    core.idSummary = vi.fn<CoreApi['idSummary']>(async () => {
+      await finished;
+      return idSummary();
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await waitFor(() => expect(core.idSummary).toHaveBeenCalled());
+    const openB = await screen.findByRole('button', { name: 'Open log B\u2026' });
+    expect((openB as HTMLButtonElement).disabled).toBe(true);
+
+    stop.finish();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Open log B\u2026' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
   it('refuses a dropped log while the capture is stopping, then asks about the stopped capture', async () => {
     const App = await freshApp();
     const port = new FakeSerialPort();
@@ -488,34 +516,37 @@ describe('App live capture', () => {
 describe('Compare in the app', () => {
   /** A core that reads logs by name and holds a log B beside the open log, as the real one does. */
   function compareApp(openCompareLog?: CoreApi['openCompareLog']) {
-    const held = { a: null as string | null, b: null as string | null };
+    const held = { a: null as LogInfo | null, b: null as LogInfo | null };
     const core = fakeCore({
-      openLog: async (_file, name) => {
-        held.a = name;
+      openLog: async (file, name) => {
+        held.a = logInfo({ name, bytes: file.size });
         held.b = null;
-        return logInfo({ name });
+        return held.a;
       },
       idSummary: async () => [],
       openCompareLog:
         openCompareLog ??
-        (async (_file, name) => {
-          held.b = name;
-          return logInfo({ name });
+        (async (file, name) => {
+          held.b = logInfo({ name, bytes: file.size });
+          return held.b;
         }),
-      compareLogInfo: async () => (held.b ? logInfo({ name: held.b }) : null),
+      compareLogInfo: async () => held.b,
       compareLogs: async () => [],
       swapCompareLog: async () => {
         [held.a, held.b] = [held.b, held.a];
-        return logInfo({ name: held.a! });
+        return held.a!;
       },
     });
     return core;
   }
 
+  /** fake-indexeddb can't clone jsdom's Blobs, and Swap reads only a saved copy's size. */
+  const blobOf = (size: number) => ({ size }) as Blob;
+
   async function savedSession(log: string, compare: string) {
     const session = await import('./session');
-    await session.save('log', { name: log, blob: new Blob([log]) });
-    await session.save('compare', { name: compare, blob: new Blob([compare]) });
+    await session.save('log', { name: log, blob: blobOf(log.length) });
+    await session.save('compare', { name: compare, blob: blobOf(compare.length) });
     await session.save('ui', { view: 'compare', selected: -1, pinnedTime: null, plots: [] });
     return session;
   }
@@ -544,6 +575,19 @@ describe('Compare in the app', () => {
     await waitFor(async () => expect(await session.loadSaved('log')).toBeUndefined());
     expect(await session.loadSaved('compare')).toBeUndefined();
     expect(await screen.findByText(/couldn.t keep a copy of b\.log/)).toBeTruthy();
+  });
+
+  it('forgets an older saved copy of the same name on Swap', async () => {
+    const App = await freshApp();
+    const session = await savedSession('a.log', 'b.log');
+    render(<App core={compareApp()} />);
+    const swap = await screen.findByRole('button', { name: 'Swap logs A and B' });
+    await waitFor(() => expect((swap as HTMLButtonElement).disabled).toBe(false));
+    // As if saving log B failed, leaving an earlier log B a logger gave the same name.
+    await session.save('compare', { name: 'b.log', blob: blobOf(100) });
+    await userEvent.click(swap);
+    await waitFor(async () => expect(await session.loadSaved('log')).toBeUndefined());
+    expect((await session.loadSaved<{ name: string }>('compare'))?.name).toBe('a.log');
   });
 
   it('stays busy while log B is read after the open log is', async () => {

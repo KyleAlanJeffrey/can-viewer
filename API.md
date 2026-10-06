@@ -383,10 +383,11 @@ One bus/ID pair of the open log (A) or the comparison log (B). Returned by [`com
 - **`framesB`** `number` - Frames in log B; 0 when only in A.
 - **`rateA`** `number | null` - Frames per second of log A's duration, so logs of different lengths compare. Null when log A has no duration (all its frames have one timestamp); the rate then plays no part in the score.
 - **`rateB`** `number | null` - The same for log B.
-- **`score`** `number` - From 0 to 100, how differently the ID behaves. Below 10 is no significant difference. See [`compareLogs`](#comparelogs).
+- **`score`** `number` - From 0 to 100, how differently the ID behaves. Below 10 is no significant difference; the reason and `bytes` follow this rounded score. See [`compareLogs`](#comparelogs).
 - **`reason`** `string` - Why, in a few words: `Appears only in A`, `Appears only in B`, `Byte 3 takes new values`, `Byte 3 has values only in A`, `Byte 3 holds a different value`, `Byte 3 changes more often`, `Byte 3 changes less often`, `Byte 3 values shift`, `Small value changes`, `Length changes from 8 to 6 bytes`, `Changes from classic CAN to CAN FD`, `Changes from CAN FD to classic CAN`, `Rate doubled`, `Rate halved`, `Rate up 3.1x`, `Rate down 3.1x`, `Too few frames to compare`, `Too few frames to compare; payloads differ`, `Also changes within A` or `No significant changes`.
 - **`bytes`** `number[]` - Payload bytes scoring 10 or more, most different first.
 - **`tooFewFrames`** `boolean` - True when either log has fewer than 8 frames of the ID, so it is not scored. The reason then adds `; payloads differ` when the logs' payloads take different values or lengths.
+- **`payloadsDiffer`** `boolean` - True with `tooFewFrames` when the logs' payloads take different values or lengths, as the reason's `; payloads differ` says, so a rarely sent message that changed is not taken for one that did not. Always false for a scored ID.
 - **`changesWithinA`** `boolean` - True when the ID differs between the logs but `ignoreChangesWithinA` left every difference out as a change within log A. Always false without that rule.
 
 ### The ByteComparison object
@@ -404,6 +405,7 @@ One ID compared byte by byte. Returned by [`compareBytes`](#comparebytes). Per-b
 - **`byteScores`** `number[]` - From 0 to 100 per byte, after both ignore rules.
 - **`byteReasons`** `string[]` - Each byte's reason, worded as `IdComparison.reason`; `No significant changes` below 10, `Too few frames to compare` for every byte when either log has fewer than 8 frames of the ID, and empty when either log lacks the byte.
 - **`newValues`** `number[][]` - Per byte, up to 16 values log B shows and log A never does, with ignored bits cleared.
+- **`firstOnlyInA`** `(number | null)[]` - Per byte, seconds from log A's first frame to the ID's first frame in log A showing a value log B never does (counted as for `newValues`, with log A's and log B's roles swapped), or null when there is none, when either log lacks the byte, or when either log has too few frames. It is set even when those values are too few to count as a change. The Compare view opens Reverse Engineer there.
 - **`ignored`** `{ byte: number, mask: number, kind: 'counter' | 'checksum' }[]` - Bits left out by `ignoreCounters`, as a bit mask per byte.
 
 ## Logs

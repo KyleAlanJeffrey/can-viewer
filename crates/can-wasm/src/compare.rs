@@ -1494,6 +1494,7 @@ impl Session {
         self.series.clear();
         self.filtered = None;
         self.count = None;
+        self.preview = None;
         self.export = VecDeque::new();
         Ok(())
     }

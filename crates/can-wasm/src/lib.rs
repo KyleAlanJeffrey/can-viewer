@@ -84,6 +84,9 @@ pub struct Session {
     filtered: Option<Matches>,
     /// A count begun by [`Session::count_begin`] and not finished.
     count: Option<FilterPass>,
+    /// The matches of the last count, kept so applying the filter it counted takes them rather
+    /// than going through the log again.
+    preview: Option<Matches>,
     /// The chunks of the last `export_log` not yet taken by `export_chunk`.
     export: VecDeque<Vec<u8>>,
 }
@@ -103,6 +106,14 @@ impl Matches {
             rows: store.filter(&filter)?,
             filter,
             frames: store.len(),
+        })
+    }
+
+    fn of_pass(pass: &FilterPass) -> Result<Self, TryReserveError> {
+        Ok(Self {
+            rows: pass.rows()?,
+            filter: pass.filter().clone(),
+            frames: pass.frames(),
         })
     }
 
@@ -546,6 +557,7 @@ impl Session {
         self.series.clear();
         self.filtered = None;
         self.count = None;
+        self.preview = None;
         self.export = VecDeque::new();
         // Compared against a capture still growing, log B would show differences that aren't.
         self.log_b = None;
@@ -580,6 +592,7 @@ impl Session {
         capture.finished = true;
         self.store.sort_by_time();
         self.count = None;
+        self.preview = None;
         // Sorting may move frames, so the rows are found again.
         if let Some(filtered) = self.filtered.take() {
             self.filtered = Matches::find(&self.store, filtered.filter).ok();
@@ -639,22 +652,37 @@ impl Session {
     /// Keep the frames that match a JSON `FrameFilter` as the rows of key -2, in time order, and
     /// return how many there are. JSON `null` drops them. Frames a capture adds later join them
     /// as they come.
+    /// The matches of the last count of the same filter are taken rather than found again, and
+    /// so is a count of it still running, finished first.
     pub fn set_trace_filter(&mut self, json: &str) -> Result<u32, JsError> {
         self.filtered = None;
+        let preview = self.preview.take();
+        let running = self.count.take();
         let Some(filter) = self.parse_filter(json).map_err(js_err)? else {
             return Ok(0);
         };
-        let matches = Matches::find(&self.store, filter)
+        let matches = match (preview, running) {
+            (Some(preview), _) if preview.filter == filter => Ok(preview),
+            (_, Some(mut pass)) if *pass.filter() == filter => {
+                pass.step(&self.store, usize::MAX);
+                Matches::of_pass(&pass)
+            }
+            _ => Matches::find(&self.store, filter),
+        };
+        let matches = matches
+            .and_then(|mut m| m.catch_up(&self.store).map(|()| m))
             .map_err(|_| js_err("not enough memory to filter this log"))?;
         let count = matches.rows.len() as u32;
         self.filtered = Some(matches);
         Ok(count)
     }
 
-    /// Begin counting the frames that match a JSON `FrameFilter`, without keeping them, in place
-    /// of any count not finished. [`Session::count_step`] does the work a slice at a time.
+    /// Begin counting the frames that match a JSON `FrameFilter`, in place of any count not
+    /// finished. [`Session::count_step`] does the work a slice at a time. The matches of the last
+    /// count only are kept, for [`Session::set_trace_filter`].
     pub fn count_begin(&mut self, json: &str) -> Result<(), JsError> {
         self.count = None;
+        self.preview = None;
         let filter = self
             .parse_filter(json)
             .map_err(js_err)?
@@ -676,6 +704,8 @@ impl Session {
             return Ok(None);
         }
         let matches = pass.count() as u32;
+        // Without the memory for them, applying this filter finds them again.
+        self.preview = Matches::of_pass(pass).ok();
         self.count = None;
         Ok(Some(matches))
     }
@@ -2044,6 +2074,35 @@ mod tests {
             "the sort moves the frames the count went through"
         );
         assert_eq!(count(&mut s, &every), 5);
+    }
+
+    #[test]
+    fn applying_the_filter_just_counted_takes_the_matches_of_the_count() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let batch: Vec<u8> = (0..4)
+            .flat_map(|i| capture_record(f64::from(i) * 1e6, 0x100 + i, 0, &[1]))
+            .collect();
+        assert!(s.push_frames(&batch).is_ok());
+        let some = filter_json(json!({ "keys": [id_key(0, 0x101), id_key(0, 0x103)] }));
+        assert_eq!(count(&mut s, &some), 2);
+        assert_eq!(s.preview.as_ref().map(|p| p.rows.clone()), Some(vec![1, 3]));
+        // Frames stored after the count are matched when the filter is applied.
+        assert!(s.push_frames(&capture_record(5e6, 0x101, 0, &[2])).is_ok());
+        assert_eq!(s.set_trace_filter(&some).unwrap(), 3);
+        assert!(s.preview.is_none());
+        assert_eq!(row_indices(&s, FILTERED), [1, 3, 4]);
+
+        // Another filter is found afresh, and a count of it still running is finished.
+        assert_eq!(count(&mut s, &some), 3);
+        let other = filter_json(json!({ "keys": [id_key(0, 0x100)] }));
+        assert_eq!(s.set_trace_filter(&other).unwrap(), 1);
+        assert!(s.preview.is_none(), "only the filter counted last is kept");
+        s.count_begin(&some).unwrap();
+        assert_eq!(s.count_step(1).unwrap(), None);
+        assert_eq!(s.set_trace_filter(&some).unwrap(), 3);
+        assert!(!s.count_running());
+        assert_eq!(row_indices(&s, FILTERED), [1, 3, 4]);
     }
 
     #[test]

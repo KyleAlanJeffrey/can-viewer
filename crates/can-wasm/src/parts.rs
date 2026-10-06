@@ -211,8 +211,61 @@ mod tests {
         s
     }
 
+    /// Which of a session's logs a test reads: the open log, or Compare's log B beside it.
+    #[derive(Debug, Clone, Copy)]
+    enum Log {
+        Open,
+        B,
+    }
+
+    impl Log {
+        /// A session reading a log of `total` bytes.
+        fn begin(self, name: &str, total: usize) -> Session {
+            let mut s = Session::new();
+            match self {
+                Log::Open => s.set_file_name(name),
+                Log::B => s.compare_begin(name, total as f64),
+            }
+            s
+        }
+
+        fn push_chunk(self, s: &mut Session, chunk: &[u8]) {
+            match self {
+                Log::Open => s.push_chunk(chunk),
+                Log::B => assert!(s.compare_push_chunk(chunk).is_ok()),
+            }
+        }
+
+        fn segment_format(self, s: &Session) -> Option<String> {
+            match self {
+                Log::Open => s.segment_format(),
+                Log::B => s.compare_segment_format(),
+            }
+        }
+
+        fn push_segment(self, s: &mut Session, part: &[u8]) -> bool {
+            match self {
+                Log::Open => s.push_segment(part),
+                Log::B => s.compare_push_segment(part).unwrap(),
+            }
+        }
+
+        /// Ends the read and returns the log's `LogInfo`, log B swapped in as the open log so
+        /// the two are checked alike.
+        fn finish(self, s: &mut Session) -> String {
+            match self {
+                Log::Open => s.finish(),
+                Log::B => {
+                    let info = s.compare_finish().unwrap();
+                    assert!(s.swap_compare_log().is_ok());
+                    info
+                }
+            }
+        }
+    }
+
     /// How a log read in parts went.
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     enum Read {
         /// The start of the log showed it can't be read in parts.
         Whole,
@@ -229,14 +282,25 @@ mod tests {
     /// running to the next) is read with up to `HEAD_BYTES` of the file's start as its head
     /// and joined on.
     fn read_in_parts(name: &str, log: &[u8], first: usize, starts: &[usize]) -> (Session, Read) {
+        read_in_parts_as(Log::Open, name, log, first, starts)
+    }
+
+    fn read_in_parts_as(
+        which: Log,
+        name: &str,
+        log: &[u8],
+        first: usize,
+        starts: &[usize],
+    ) -> (Session, Read) {
         let first = &log[..first.min(log.len())];
         let cut = first
             .iter()
             .rposition(|&b| b == b'\n')
             .map_or(0, |nl| nl + 1);
-        let mut s = read_whole(name, &log[..cut]);
-        let Some(format) = s.segment_format() else {
-            s.push_chunk(&log[cut..]);
+        let mut s = which.begin(name, log.len());
+        which.push_chunk(&mut s, &log[..cut]);
+        let Some(format) = which.segment_format(&s) else {
+            which.push_chunk(&mut s, &log[cut..]);
             return (s, Read::Whole);
         };
         let mut bounds = vec![cut];
@@ -247,32 +311,56 @@ mod tests {
             let end = line_start_at_or_after(log, pair[1]).max(start);
             let head = &log[..cut.min(HEAD_BYTES)];
             let part = parse_segment(&format, head, &log[start..end]).unwrap();
-            if !s.push_segment(&part) {
+            if !which.push_segment(&mut s, &part) {
                 return (s, Read::Refused);
             }
         }
         (s, Read::InParts)
     }
 
-    /// Reads `log` whole and in parts from every start in `starts`, and checks that the parts
-    /// give the same log, with the same `LogInfo`. Returns how each read went.
+    /// Reads `log` whole and in parts from every start in `starts`, as the open log and as
+    /// log B, and checks that the parts give the same log, with the same `LogInfo`, as each
+    /// read whole. Returns how each read went, which is the same for both logs.
     fn assert_parts_read_as_whole(
         name: &str,
         log: &[u8],
         first: usize,
         starts: &[Vec<usize>],
     ) -> Vec<Read> {
-        let mut whole = read_whole(name, log);
-        let info = whole.finish();
         let mut reads = Vec::new();
         for starts in starts {
-            let (mut joined, read) = read_in_parts(name, log, first, starts);
-            if read == Read::Refused {
-                reads.push(read);
-                continue;
-            }
-            let what = format!("{name} from {first} in parts at {starts:?}");
-            assert_eq!(joined.finish(), info, "{what}");
+            let read_a = assert_parts_read_as_whole_as(Log::Open, name, log, first, starts);
+            let read_b = assert_parts_read_as_whole_as(Log::B, name, log, first, starts);
+            assert_eq!(read_a, read_b, "{name} from {first} in parts at {starts:?}");
+            reads.push(read_a);
+        }
+        reads
+    }
+
+    fn assert_parts_read_as_whole_as(
+        which: Log,
+        name: &str,
+        log: &[u8],
+        first: usize,
+        starts: &[usize],
+    ) -> Read {
+        let mut whole = which.begin(name, log.len());
+        which.push_chunk(&mut whole, log);
+        let info = which.finish(&mut whole);
+        if let Log::B = which {
+            // Only their frame stores' spare room differs: log B's is sized from the file.
+            let without_heap = |info: &str| {
+                let mut info: serde_json::Value = serde_json::from_str(info).unwrap();
+                info.as_object_mut().unwrap().remove("heapBytes");
+                info
+            };
+            let open = read_whole(name, log).finish();
+            assert_eq!(without_heap(&info), without_heap(&open), "{name}: log B");
+        }
+        let (mut joined, read) = read_in_parts_as(which, name, log, first, starts);
+        if read != Read::Refused {
+            let what = format!("{which:?} {name} from {first} in parts at {starts:?}");
+            assert_eq!(which.finish(&mut joined), info, "{what}");
             assert_eq!(joined.store.len(), whole.store.len(), "{what}");
             for i in 0..whole.store.len() {
                 assert_eq!(
@@ -292,9 +380,8 @@ mod tests {
                 "{what}"
             );
             assert_eq!(joined.id_summary(), whole.id_summary(), "{what}");
-            reads.push(read);
         }
-        reads
+        read
     }
 
     /// Part starts every `step` bytes from `from`, offset by `phase`.
@@ -606,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_logs_and_logs_read_beside_another_are_read_whole() {
+    fn only_text_logs_read_up_to_a_line_break_are_read_in_parts() {
         let mut s = Session::new();
         s.set_file_name("drive.blf");
         s.push_chunk(b"LOGG");
@@ -614,6 +701,8 @@ mod tests {
         assert_eq!(s.segment_format(), None);
         let part = read_part(Format::Candump, b"", b"(1.0) can0 123#00\n").unwrap();
         assert!(!s.push_segment(&part));
+        assert_eq!(s.compare_segment_format(), None, "no log B");
+        assert!(!s.compare_push_segment(&part).unwrap());
 
         let log = candump_log();
         let mut s = Session::new();

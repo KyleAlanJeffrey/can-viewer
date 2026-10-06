@@ -560,8 +560,8 @@ export interface CoreApi {
   exportDbc(db: Database): Promise<string>;
 
   /**
-   * Read a second log, B, to compare the open log (A) with, replacing any earlier one. Read like
-   * `openLog`, in chunks with progress. Opening another log with `openLog` drops it, and one sent
+   * Read a second log, B, to compare the open log (A) with, replacing any earlier one. Read as
+   * `openLog` reads a log, with progress. Opening another log with `openLog` drops it, and one sent
    * before log B is read supersedes it as it would an `openLog`.
    */
   openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo>;

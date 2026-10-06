@@ -80,7 +80,7 @@ jobs:
         with:
           name: web-dist
           path: web/dist/
-          retention-days: 1
+          retention-days: 3
           if-no-files-found: error
           overwrite: true
 

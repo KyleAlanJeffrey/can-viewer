@@ -4,6 +4,8 @@
 // Usage: node scripts/serve-static.mjs <root> [--port <n>] [--spa | --404-page]
 //   --spa       unknown page paths get index.html, like the app (wrangler.jsonc)
 //   --404-page  unknown paths get 404.html with a 404, like the landing site (site/wrangler.jsonc)
+//
+// Unlike Cloudflare, it doesn't redirect /page.html to /page, and `_headers` supports only `*` splats.
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
@@ -24,9 +26,15 @@ const CONTENT_TYPES = {
   '.wasm': 'application/wasm',
   '.webmanifest': 'application/manifest+json',
   '.webp': 'image/webp',
+  '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.xml': 'application/xml',
 };
+
+/** Adds a header, joining a repeated one with a comma, as Cloudflare does. */
+function addHeader(headers, name, value) {
+  headers[name] = headers[name] === undefined ? value : `${headers[name]}, ${value}`;
+}
 
 /** Parses `_headers` into rules of a path pattern and its headers. Only `*` splats are supported. */
 function parseHeadersFile(text) {
@@ -39,7 +47,7 @@ function parseHeadersFile(text) {
       continue;
     }
     const colon = line.indexOf(':');
-    if (colon > 0 && rules.length > 0) rules.at(-1).headers[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();
+    if (colon > 0 && rules.length > 0) addHeader(rules.at(-1).headers, line.slice(0, colon).trim(), line.slice(colon + 1).trim());
   }
   return rules;
 }
@@ -60,27 +68,35 @@ export function startStaticServer({ root, port = 0, notFound = '404-page' }) {
   const rules = existsSync(headersFile) ? parseHeadersFile(readFileSync(headersFile, 'utf8')) : [];
 
   const server = createServer((req, res) => {
-    let path;
+    let url, path;
     try {
-      path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+      url = new URL(req.url, 'http://localhost');
+      path = decodeURIComponent(url.pathname);
     } catch {
       return res.writeHead(400).end();
     }
     const send = (status, file, extra = {}) => {
       const headers = { ...extra };
-      for (const rule of rules) if (rule.path.test(path)) Object.assign(headers, rule.headers);
+      for (const rule of rules) {
+        if (!rule.path.test(path)) continue;
+        for (const [name, value] of Object.entries(rule.headers)) addHeader(headers, name, value);
+      }
       if (file) {
         headers['Content-Type'] = CONTENT_TYPES[extname(file)] ?? 'application/octet-stream';
         headers['Content-Length'] = statSync(file).size;
       }
       res.writeHead(status, headers);
-      if (file && req.method !== 'HEAD') createReadStream(file).pipe(res);
+      if (file && req.method !== 'HEAD') createReadStream(file).on('error', () => res.destroy()).pipe(res);
       else res.end();
     };
 
-    // Clean URLs, as Cloudflare's auto-trailing-slash: /page/ serves page/index.html, /page redirects.
+    // Clean URLs, as Cloudflare's auto-trailing-slash: /page/ serves page/index.html, while /page and
+    // /page/index.html redirect to it.
+    if (path.endsWith('/index.html') && fileAt(root, path)) {
+      return send(307, null, { Location: `${url.pathname.slice(0, -'index.html'.length)}${url.search}` });
+    }
     let file = path.endsWith('/') ? fileAt(root, `${path}index.html`) : fileAt(root, path);
-    if (!file && !path.endsWith('/') && fileAt(root, `${path}/index.html`)) return send(307, null, { Location: `${path}/` });
+    if (!file && !path.endsWith('/') && fileAt(root, `${path}/index.html`)) return send(307, null, { Location: `${url.pathname}/${url.search}` });
     if (!file && !path.endsWith('/')) file = fileAt(root, `${path}.html`);
     if (file && path !== '/_headers') return send(200, file);
 

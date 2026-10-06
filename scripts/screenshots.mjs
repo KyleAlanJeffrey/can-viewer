@@ -47,6 +47,7 @@ const APP_VIEWS = [
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const CALL_TIMEOUT_MS = 60_000;
 
 /** One WebSocket to the browser; pages and workers are flattened sessions on it. */
 class Cdp {
@@ -64,7 +65,10 @@ class Cdp {
     });
     cdp.#ws.addEventListener('message', (e) => cdp.#receive(JSON.parse(e.data)));
     cdp.#ws.addEventListener('close', () => {
-      for (const { reject } of cdp.#pending.values()) reject(new Error('Chrome closed the DevTools connection'));
+      for (const { reject, timer } of cdp.#pending.values()) {
+        clearTimeout(timer);
+        reject(new Error('Chrome closed the DevTools connection'));
+      }
       cdp.#pending.clear();
     });
     return cdp;
@@ -77,6 +81,7 @@ class Cdp {
     }
     const call = this.#pending.get(msg.id);
     this.#pending.delete(msg.id);
+    clearTimeout(call?.timer);
     if (msg.error) call?.reject(new Error(`${call.method}: ${msg.error.message}`));
     else call?.resolve(msg.result);
   }
@@ -84,7 +89,16 @@ class Cdp {
   send(method, params = {}, sessionId = undefined) {
     const id = this.#nextId++;
     this.#ws.send(JSON.stringify({ id, method, params, sessionId }));
-    return new Promise((resolveCall, reject) => this.#pending.set(id, { resolve: resolveCall, reject, method }));
+    return new Promise((resolveCall, reject) => {
+      // So one hung call fails the run rather than stalling it until the job times out.
+      const timer = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new Error(`${method} timed out`));
+      }, CALL_TIMEOUT_MS);
+      // Unreferenced, so calls left pending at the end don't hold the process open.
+      timer.unref();
+      this.#pending.set(id, { resolve: resolveCall, reject, method, timer });
+    });
   }
 
   on(listener) {
@@ -150,7 +164,7 @@ class Tab {
   async settle() {
     await this.waitForNetworkIdle();
     const settled = await this.evaluate(`(async () => {
-      await document.fonts.ready;
+      await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 10000))]);
       const quiet = await new Promise((done) => {
         let timer;
         const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(finish, 400, true); });
@@ -196,7 +210,8 @@ class Tab {
       return { x, y };
     })()`);
     if (target.reason) return target.reason;
-    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: target.x, y: target.y, button: 'none' });
+    for (const type of ['mousePressed', 'mouseReleased']) {
       await this.send('Input.dispatchMouseEvent', { type, x: target.x, y: target.y, button: 'left', clickCount: 1 });
     }
     return null;
@@ -360,12 +375,14 @@ async function shootApp(tab, origin, viewport, shots, notes) {
 
   tab.step = `app-demo-${viewport.name}.png`;
   await tab.navigate(`${origin}/?demo=1`);
-  await tab.waitFor(
+  const demoLoaded = await tab.waitFor(
     'the demo did not finish loading',
     `${idle} && document.querySelector('.doc-title')?.textContent === 'demo.log' && /frames/.test(${status})`,
     120_000,
   );
   await shoot(tab.step, 'demo loaded');
+  // The views and the Capture sheet would only show the failed load again.
+  if (!demoLoaded) return;
 
   for (const view of APP_VIEWS) {
     const file = `app-${view.id}-${viewport.name}.png`;
@@ -407,6 +424,8 @@ function writeSummary(shots, problems, notes) {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
 }
 
+const resources = { servers: [], chrome: null, cdp: null, profile: null };
+
 async function main() {
   if (!existsSync(join(appDir, 'index.html'))) throw new Error(`No built app in ${appDir}. Run pnpm --dir web build first.`);
   if (!existsSync(join(appDir, 'demo/demo.log.gz'))) throw new Error(`No demo in ${appDir}. Run pnpm --dir web demo before building.`);
@@ -415,8 +434,9 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
 
   const site = await startStaticServer({ root: siteDir, notFound: '404-page' });
+  resources.servers.push(site.server);
   const app = await startStaticServer({ root: appDir, notFound: 'spa' });
-  resources.servers.push(site.server, app.server);
+  resources.servers.push(app.server);
 
   resources.profile = mkdtempSync(join(tmpdir(), 'freecan-screenshots-'));
   const args = [
@@ -438,10 +458,14 @@ async function main() {
   // Chrome's sandbox can fail on CI runners, which restrict user namespaces; CI loads only these pages.
   if (process.platform === 'linux' && process.env.CI) args.unshift('--no-sandbox');
   resources.chrome = spawn(chromePath, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
-  resources.chrome.stderr.resume();
+  const stderrTail = [];
+  resources.chrome.stderr.setEncoding('utf8').on('data', (chunk) => {
+    stderrTail.push(...chunk.split('\n').filter(Boolean));
+    stderrTail.splice(0, stderrTail.length - 20);
+  });
   let chromeError = null;
   resources.chrome.once('error', (e) => (chromeError = `Could not start Chrome at ${chromePath}: ${e.message}`));
-  resources.chrome.once('exit', (code) => (chromeError ??= `Chrome exited early with code ${code}`));
+  resources.chrome.once('exit', (code) => (chromeError ??= `Chrome exited early with code ${code}. Its last output:\n${stderrTail.join('\n')}`));
 
   const portFile = join(resources.profile, 'DevToolsActivePort');
   for (let i = 0; i < 300 && !existsSync(portFile) && !chromeError; i++) await sleep(100);
@@ -475,8 +499,6 @@ async function main() {
   console.log(`${shots.length} screenshots, ${problems.length} problems. Index: ${join(outDir, 'index.md')}`);
   return problems.length === 0;
 }
-
-const resources = { servers: [], chrome: null, cdp: null, profile: null };
 
 /** Stops Chrome and the servers and deletes the profile; safe to call more than once. */
 function cleanUp() {

@@ -83,7 +83,7 @@ node scripts/screenshots.mjs
 
 - The PNGs and an `index.md` listing them and any problems go to `target/screenshots` (set `SCREENSHOTS_DIR` to change it). Chrome runs with a throwaway profile, deleted on exit.
 - Set `CHROME` to Chrome's path if it is not in `/Applications` (macOS) or `google-chrome` on the `PATH`.
-- In CI, the `screenshots` job in `.github/workflows/ci.yml` runs it on the `web/dist` the `check` job built, writes the list to the run's summary and uploads the PNGs as the `screenshots` artifact, kept 14 days, even when it fails.
+- In CI, the `screenshots` job in `.github/workflows/ci.yml` runs it on the `web/dist` the `check` job built (the `web-dist` artifact, kept 3 days so the job can be re-run on its own), writes the list to the run's summary and uploads the PNGs as the `screenshots` artifact, kept 14 days, even when it fails.
 - `node scripts/serve-static.mjs site/public --404-page` (or `web/dist --spa`) serves either one the same way on port 8000 for a look by hand.
 
 ## Branches and commits

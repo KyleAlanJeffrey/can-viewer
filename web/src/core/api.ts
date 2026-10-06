@@ -464,7 +464,7 @@ export interface CoreApi {
   /** Parse a DBC file. Nothing changes until it is passed to `setDatabases`. */
   parseDbc(file: Blob, name: string): Promise<Database>;
   decodeSignal(key: number, signal: string): Promise<SeriesInfo>;
-  /** Min/max-decimated points between t0 and t1 seconds, about `2 * buckets` of them. */
+  /** Min/max-decimated points between t0 and t1 seconds, about `2 * buckets` of them (up to `3 * buckets` with NaN). */
   seriesView(handle: number, t0: number, t1: number, buckets: number): Promise<[Float64Array, Float64Array]>;
   dropSeries(handle: number): Promise<void>;
   /**

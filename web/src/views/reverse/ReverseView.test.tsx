@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { FLAG_FD, FLAG_REASSEMBLED, type CoreApi, type IdSummary, type MessageDef } from '../../core/api';
 import { fakeCore, lane, logInfo, makeRowBatch, message, seriesInfo, signal, summary } from '../../test/fixtures';
 import { ViewStateContext, ViewStateStore } from '../shared/viewState';
+import { SlotContext } from '../slots';
 import type { LoadedDbc, ViewContext } from '../types';
 import { ReverseView } from './ReverseView';
 
@@ -35,7 +36,7 @@ function testCore(overrides: Partial<CoreApi> = {}): CoreApi {
 }
 
 /** The shell's part of ViewContext, with the selection and pinned time held in state. */
-function Shell({ core, ids }: { core: CoreApi; ids: IdSummary[] }) {
+function Shell({ core, ids, inspector = null }: { core: CoreApi; ids: IdSummary[]; inspector?: HTMLElement | null }) {
   const [selected, select] = useState(-1);
   const [pinnedTime, setPinnedTime] = useState<number | null>(null);
   const [store] = useState(() => new ViewStateStore());
@@ -79,14 +80,16 @@ function Shell({ core, ids }: { core: CoreApi; ids: IdSummary[] }) {
   };
   return (
     <ViewStateContext.Provider value={store}>
-      <ReverseView ctx={ctx} />
+      <SlotContext.Provider value={{ sidebar: null, inspector }}>
+        <ReverseView ctx={ctx} />
+      </SlotContext.Provider>
     </ViewStateContext.Provider>
   );
 }
 
-function renderView(ids = [brakes, unknown, engine], core = testCore()) {
+function renderView(ids = [brakes, unknown, engine], core = testCore(), inspector: HTMLElement | null = null) {
   const user = userEvent.setup();
-  render(<Shell core={core} ids={ids} />);
+  render(<Shell core={core} ids={ids} inspector={inspector} />);
   return user;
 }
 
@@ -166,6 +169,17 @@ describe('Byte Values', () => {
 });
 
 describe('Advanced', () => {
+  it('says the candidate is only NaN in the window when every value is', async () => {
+    const core = testCore({ seriesView: async () => [Float64Array.of(40, 70), Float64Array.of(NaN, NaN)] });
+    const inspector = document.createElement('aside');
+    document.body.appendChild(inspector);
+    const user = renderView([engine], core, inspector);
+    await user.click(screen.getByRole('button', { name: /^100 byte 0/ }));
+    await user.click(screen.getByRole('button', { name: /^Open in Advanced/ }));
+    expect(await within(inspector).findByText('Only NaN')).toBeTruthy();
+    inspector.remove();
+  });
+
   it('rates bit changes against the steps between the frames of the window', async () => {
     // Five frames in the window, so four steps; bit 6 of byte 0 changes at every one of them.
     const flips = new Uint32Array(64);

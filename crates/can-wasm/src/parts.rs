@@ -6,14 +6,19 @@
 //! relative times carry on from the sum the part before left (see `PartTimes`), and a part read
 //! in another header state than the parts before it left is refused, so the log is read again
 //! in one worker.
+//!
+//! A BLF file is cut where its objects end rather than at line breaks ([`ObjectCuts`]); the
+//! objects in its log containers run on from part to part, so each part also carries the bytes
+//! before the first object it read and those it left at its end (see `can_formats::blf`).
 
 use can_core::FrameStore;
+use can_formats::blf::{Early, ObjectEnds, PartEdges};
 use can_formats::{AnyParser, Format, LogParser, ParseStats, PartTimes};
 use wasm_bindgen::prelude::*;
 
 use crate::{clock, js_err};
 
-const MAGIC: &[u8; 4] = b"FCP2";
+const MAGIC: &[u8; 4] = b"FCP3";
 
 /// What reading a log counted, as `LogInfo` reports it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -54,9 +59,10 @@ impl ReadStats {
 }
 
 /// Reads `part`, the lines of a log in `format` (a `LogInfo.format` name) from a line
-/// boundary after the first, with `head`, the start of the file, for its header. Returns the
-/// part for `Session::push_segment`: its counts, the header state it was read in and the one
-/// it left, how its times carry on from the part before, and its frames.
+/// boundary after the first, or the bytes of a BLF file between two places [`ObjectCuts`]
+/// gave, with `head`, the start of the file, for its header. Returns the part for
+/// `Session::push_segment`: its counts, the header state it was read in and the one it left,
+/// how its times carry on from the part before, a BLF part's edges, and its frames.
 ///
 /// # Errors
 /// For a format that can't be read in parts.
@@ -78,6 +84,7 @@ fn read_part(format: Format, head: &[u8], part: &[u8]) -> Option<Vec<u8>> {
     let mut store = FrameStore::for_segment();
     parser.push(part, &mut store);
     parser.finish(&mut store);
+    let edges = parser.part_edges();
     let frames = store.encode_segment();
 
     let stats = ReadStats::from(parser.stats());
@@ -101,13 +108,31 @@ fn read_part(format: Format, head: &[u8], part: &[u8]) -> Option<Vec<u8>> {
     out.extend_from_slice(&times.from_base_ns.to_le_bytes());
     out.extend_from_slice(&times.last_ns.to_le_bytes());
     out.push(u8::from(times.open) | u8::from(times.scattered) << 1);
+    match &edges {
+        Some(edges) => {
+            out.push(
+                1 | u8::from(edges.synced) << 1
+                    | u8::from(edges.early.frames) << 2
+                    | u8::from(edges.early.rejections) << 3,
+            );
+            put_bytes(&mut out, &edges.prefix);
+            put_bytes(&mut out, &edges.start);
+            put_bytes(&mut out, &edges.carry);
+            out.extend_from_slice(&edges.gap.to_le_bytes());
+        }
+        None => out.push(0),
+    }
     out.extend_from_slice(&frames);
     Some(out)
 }
 
 fn put_text(out: &mut Vec<u8>, text: &str) {
-    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
-    out.extend_from_slice(text.as_bytes());
+    put_bytes(out, text.as_bytes());
+}
+
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(bytes);
 }
 
 /// A part from [`parse_segment`], read in place.
@@ -117,6 +142,8 @@ pub(crate) struct Part<'a> {
     pub(crate) entry: &'a str,
     pub(crate) exit: &'a str,
     pub(crate) times: PartTimes,
+    /// A BLF part's edges.
+    pub(crate) edges: Option<PartEdges>,
     /// For `FrameStore::append_shifted_segment`.
     pub(crate) frames: &'a [u8],
 }
@@ -149,6 +176,21 @@ impl<'a> Part<'a> {
         if bits > 0b11 {
             return None;
         }
+        let edges = match r.take(1)? {
+            [0] => None,
+            &[bits] if bits & !0b1111 == 0 && bits & 1 != 0 => Some(PartEdges {
+                synced: bits & 2 != 0,
+                early: Early {
+                    frames: bits & 4 != 0,
+                    rejections: bits & 8 != 0,
+                },
+                prefix: r.bytes()?.to_vec(),
+                start: r.bytes()?.to_vec(),
+                carry: r.bytes()?.to_vec(),
+                gap: r.u64()?,
+            }),
+            _ => return None,
+        };
         Some(Self {
             stats,
             entry,
@@ -160,6 +202,7 @@ impl<'a> Part<'a> {
                 last_ns,
                 scattered: bits & 2 != 0,
             },
+            edges,
             frames: r.0,
         })
     }
@@ -179,8 +222,67 @@ impl<'a> Reader<'a> {
     }
 
     fn text(&mut self) -> Option<&'a str> {
+        std::str::from_utf8(self.bytes()?).ok()
+    }
+
+    fn bytes(&mut self) -> Option<&'a [u8]> {
         let len = u32::from_le_bytes(self.take(4)?.try_into().ok()?);
-        std::str::from_utf8(self.take(len as usize)?).ok()
+        self.take(len as usize)
+    }
+}
+
+/// Finds where a BLF file can be cut into parts: where an object of the file ends, as the
+/// parser reads them, about `part_bytes` apart.
+pub(crate) struct ObjectCuts {
+    ends: ObjectEnds,
+    part_bytes: u64,
+    /// The bytes taken so far, and the last cut.
+    taken: u64,
+    last: u64,
+    /// The last object end within `part_bytes` of the last cut.
+    pending: Option<u64>,
+}
+
+impl ObjectCuts {
+    pub(crate) fn new(part_bytes: u64) -> Self {
+        Self {
+            ends: ObjectEnds::new(),
+            part_bytes: part_bytes.max(1),
+            taken: 0,
+            last: 0,
+            pending: None,
+        }
+    }
+
+    /// Takes the next bytes of the file, from its start, and returns the cuts found: each the
+    /// last object end within `part_bytes` of the cut before, or the first end past it when
+    /// none is. A cut is known once the bytes taken reach `part_bytes` past the last.
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<f64> {
+        let mut cuts = Vec::new();
+        let (part_bytes, last, pending) = (self.part_bytes, &mut self.last, &mut self.pending);
+        let mut cut = |at: u64, last: &mut u64| {
+            cuts.push(at as f64);
+            *last = at;
+        };
+        self.ends.push(chunk, |end| {
+            if end - *last > part_bytes {
+                if let Some(at) = pending.take() {
+                    cut(at, last);
+                }
+            }
+            if end - *last > part_bytes {
+                cut(end, last);
+            } else {
+                *pending = Some(end);
+            }
+        });
+        self.taken += chunk.len() as u64;
+        if self.taken >= self.last + part_bytes {
+            if let Some(at) = self.pending.take() {
+                cut(at, &mut self.last);
+            }
+        }
+        cuts
     }
 }
 
@@ -606,14 +708,30 @@ mod tests {
     }
 
     #[test]
-    fn binary_logs_and_logs_read_beside_another_are_read_whole() {
+    fn mf4_logs_unreadable_blf_logs_and_logs_read_beside_another_are_read_whole() {
+        let mut s = Session::new();
+        s.set_file_name("drive.mf4");
+        assert_eq!(s.object_cuts(b"MDF     4.10", 1000.0), None);
+        s.push_chunk(b"MDF     4.10");
+        s.push_chunk(&[0; 5000]);
+        assert_eq!(s.segment_format(), None);
+
         let mut s = Session::new();
         s.set_file_name("drive.blf");
-        s.push_chunk(b"LOGG");
-        s.push_chunk(&[0; 5000]);
+        let log = [b"LOGG".as_slice(), &[0; 5000]].concat();
+        assert_eq!(s.object_cuts(&log, 1000.0), Some(Vec::new()));
+        s.push_chunk(&log);
         assert_eq!(s.segment_format(), None);
         let part = read_part(Format::Candump, b"", b"(1.0) can0 123#00\n").unwrap();
         assert!(!s.push_segment(&part));
+
+        // A BLF file cut where the web app didn't ask where its objects end.
+        let log = blf::file(&blf::containers(&blf::frames(40), &[300], 0));
+        let mut s = Session::new();
+        s.set_file_name("drive.blf");
+        let end = blf::object_ends(&log)[0] as usize;
+        s.push_chunk(&log[..end]);
+        assert_eq!(s.segment_format(), None);
 
         let log = candump_log();
         let mut s = Session::new();
@@ -632,6 +750,519 @@ mod tests {
         assert!(!s.push_segment(&part[..part.len() - 1]));
         assert!(s.push_segment(&part));
         assert!(read_part(Format::Blf, b"", b"").is_none());
+        // A BLF part joined onto a candump log, and the other way round.
+        let log = blf::file(&blf::containers(&blf::frames(40), &[300], 0));
+        let blf_part = read_part(Format::Blf, &log, &log[144..]).unwrap();
+        assert!(!s.push_segment(&blf_part));
+        let end = blf::object_ends(&log)[1] as usize;
+        let (mut s, read) = read_blf_in_parts("drive.blf", &log, &[end]);
+        assert_eq!(read, Read::InParts);
+        assert!(!s.push_segment(&part));
+    }
+
+    /// BLF files for the tests: objects as CANoe writes them, packed into log containers that
+    /// split objects anywhere.
+    mod blf {
+        use super::Rng;
+
+        pub(super) const ZLIB: u16 = 2;
+        const CAN_MESSAGE: u32 = 1;
+        const CAN_ERROR: u32 = 2;
+        const CAN_ERROR_EXT: u32 = 73;
+        const CAN_MESSAGE2: u32 = 86;
+        const CAN_FD_MESSAGE: u32 = 100;
+        const CAN_FD_MESSAGE_64: u32 = 101;
+        const CAN_FD_ERROR_64: u32 = 104;
+        const LOG_CONTAINER: u32 = 10;
+        const APP_TEXT: u32 = 65;
+        const NS: u32 = 2;
+        const TEN_US: u32 = 1;
+
+        pub(super) fn header() -> Vec<u8> {
+            let mut header = vec![0u8; 144];
+            header[..4].copy_from_slice(b"LOGG");
+            header[4..8].copy_from_slice(&144u32.to_le_bytes());
+            for (i, field) in [2025u16, 9, 2, 30, 12, 0, 0, 500].iter().enumerate() {
+                header[40 + i * 2..42 + i * 2].copy_from_slice(&field.to_le_bytes());
+            }
+            header
+        }
+
+        pub(super) fn file(objects: &[u8]) -> Vec<u8> {
+            [header(), objects.to_vec()].concat()
+        }
+
+        /// An object with a version 1 header, followed by `padding` zero bytes.
+        pub(super) fn object(
+            kind: u32,
+            flags: u32,
+            timestamp: u64,
+            body: &[u8],
+            padding: usize,
+        ) -> Vec<u8> {
+            let size = 32 + body.len();
+            let mut out = Vec::with_capacity(size + padding);
+            out.extend_from_slice(b"LOBJ");
+            out.extend_from_slice(&32u16.to_le_bytes());
+            out.extend_from_slice(&1u16.to_le_bytes());
+            out.extend_from_slice(&(size as u32).to_le_bytes());
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&flags.to_le_bytes());
+            out.extend_from_slice(&[0; 4]);
+            out.extend_from_slice(&timestamp.to_le_bytes());
+            out.extend_from_slice(body);
+            out.resize(out.len() + padding, 0);
+            out
+        }
+
+        /// A log container holding `payload`, zlib-compressed or not, or with an unknown
+        /// compression (which the parser rejects).
+        pub(super) fn container(compression: u16, payload: &[u8]) -> Vec<u8> {
+            let data = match compression {
+                ZLIB => miniz_oxide::deflate::compress_to_vec_zlib(payload, 1),
+                _ => payload.to_vec(),
+            };
+            let mut body = Vec::new();
+            body.extend_from_slice(&compression.to_le_bytes());
+            body.extend_from_slice(&[0; 6]);
+            body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            body.extend_from_slice(&[0; 4]);
+            body.extend_from_slice(&data);
+            let mut out = Vec::new();
+            out.extend_from_slice(b"LOBJ");
+            out.extend_from_slice(&16u16.to_le_bytes());
+            out.extend_from_slice(&1u16.to_le_bytes());
+            out.extend_from_slice(&((16 + body.len()) as u32).to_le_bytes());
+            out.extend_from_slice(&LOG_CONTAINER.to_le_bytes());
+            out.extend_from_slice(&body);
+            let padding = out.len() % 4;
+            out.resize(out.len() + padding, 0);
+            out
+        }
+
+        /// `objects` packed into containers of the sizes in `sizes`, over and over, compressed
+        /// every other container from `phase`.
+        pub(super) fn containers(objects: &[u8], sizes: &[usize], phase: usize) -> Vec<u8> {
+            let mut out = Vec::new();
+            let mut at = 0;
+            for n in phase.. {
+                if at >= objects.len() {
+                    break;
+                }
+                let end = (at + sizes[n % sizes.len()]).min(objects.len());
+                out.extend(container(
+                    if n % 2 == 0 { ZLIB } else { 0 },
+                    &objects[at..end],
+                ));
+                at = end;
+            }
+            out
+        }
+
+        fn message(channel: u16, flags: u8, dlc: u8, id: u32, data: &[u8]) -> Vec<u8> {
+            let mut body = Vec::new();
+            body.extend_from_slice(&channel.to_le_bytes());
+            body.push(flags);
+            body.push(dlc);
+            body.extend_from_slice(&id.to_le_bytes());
+            body.extend_from_slice(data);
+            body.resize(16, 0);
+            body
+        }
+
+        fn fd_message_64(channel: u8, flags: u32, dlc: u8, id: u32, data: &[u8]) -> Vec<u8> {
+            let mut body = vec![channel, dlc, data.len() as u8, 0];
+            body.extend_from_slice(&id.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&flags.to_le_bytes());
+            body.extend_from_slice(&[0; 18]);
+            body.push(u8::from(flags & 1 != 0));
+            body.push(0);
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(data);
+            body
+        }
+
+        /// `count` classic frames on two buses, J1939 transfers among them.
+        pub(super) fn frames(count: u64) -> Vec<u8> {
+            frames_from(0, count)
+        }
+
+        /// [`frames`] numbered, and timed, from `first`.
+        pub(super) fn frames_from(first: u64, count: u64) -> Vec<u8> {
+            let mut out = Vec::new();
+            for i in first..first + count {
+                let body = match i % 10 {
+                    3 => message(1, 0, 8, 0x98EC_FF21, &[0x20, 10, 0, 2, 0xFF, 0xCA, 0xFE, 0]),
+                    4 => message(1, 0, 8, 0x98EB_FF21, &[1, 1, 2, 3, 4, 5, 6, 7]),
+                    5 => message(1, 0, 8, 0x98EB_FF21, &[2, 8, 9, 10, 0xFF, 0xFF, 0xFF, 0xFF]),
+                    _ => message(
+                        1 + (i % 2) as u16,
+                        0,
+                        8,
+                        0x100 + (i % 7) as u32,
+                        &[i as u8; 8],
+                    ),
+                };
+                out.extend(object(CAN_MESSAGE, NS, 1000 * i, &body, 0));
+            }
+            out
+        }
+
+        /// One random frame object, or now and then an object that holds none or is broken.
+        pub(super) fn random_object(rng: &mut Rng, t: u64) -> Vec<u8> {
+            let channel = 1 + rng.below(3);
+            let ext = rng.chance(30);
+            let id = if ext {
+                rng.below(0x2000_0000) as u32 | 0x8000_0000
+            } else {
+                rng.below(0x800) as u32
+            };
+            let data: Vec<u8> = (0..64).map(|_| rng.below(256) as u8).collect();
+            let (units, timestamp) = if rng.chance(10) {
+                (TEN_US, t / 10_000)
+            } else {
+                (NS, t)
+            };
+            let padding = if rng.chance(70) { rng.below(4) } else { 0 };
+            let (kind, body) = match rng.below(100) {
+                0..=49 => {
+                    let flags = if rng.chance(10) { 0x80 } else { 0 } | u8::from(rng.chance(20));
+                    let kind = if rng.chance(20) {
+                        CAN_MESSAGE2
+                    } else {
+                        CAN_MESSAGE
+                    };
+                    (
+                        kind,
+                        message(channel as u16, flags, rng.below(9) as u8, id, &data[..8]),
+                    )
+                }
+                50..=69 => {
+                    let flags = [0x1000, 0x1000 | 0x2000, 0x1000 | 0x4000, 0, 0x10][rng.below(5)];
+                    let dlc = rng.below(16) as u8;
+                    let len = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64][dlc as usize];
+                    let kind = CAN_FD_MESSAGE_64;
+                    (
+                        kind,
+                        fd_message_64(channel as u8, flags, dlc, id, &data[..len]),
+                    )
+                }
+                70..=74 => {
+                    let mut body = message(channel as u16, 0, rng.below(16) as u8, id, &[]);
+                    body.truncate(8);
+                    body.extend_from_slice(&[0; 5]);
+                    body.push([0, 1, 3, 5, 7][rng.below(5)]);
+                    body.extend_from_slice(&[0; 6]);
+                    body.extend_from_slice(&data);
+                    (CAN_FD_MESSAGE, body)
+                }
+                75..=79 => {
+                    let mut body = vec![0u8; 32];
+                    body[..2].copy_from_slice(&(channel as u16).to_le_bytes());
+                    body[10] = rng.below(9) as u8;
+                    body[24..].copy_from_slice(&data[..8]);
+                    (CAN_ERROR_EXT, body)
+                }
+                80..=82 => (CAN_ERROR, vec![channel as u8, 0, 0, 0]),
+                83..=86 => {
+                    let mut body = vec![channel as u8, 15, rng.below(20) as u8, 0];
+                    body.resize(44, 0);
+                    body[8..10].copy_from_slice(&[0x80 | 0x40, 0]);
+                    body.extend_from_slice(&data[..20]);
+                    (CAN_FD_ERROR_64, body)
+                }
+                87..=90 => (APP_TEXT, data[..rng.below(40)].to_vec()),
+                // Too short for its kind.
+                91 => (CAN_MESSAGE, data[..rng.below(16)].to_vec()),
+                92 => {
+                    // Stray bytes, then an object whose header is bad.
+                    let mut out = data[..1 + rng.below(9)].to_vec();
+                    out.extend_from_slice(b"LOBJ\x08\x00\x01\x00");
+                    return out;
+                }
+                _ => {
+                    // A J1939 BAM of 10 bytes in two packets.
+                    let source = 0x21 + rng.below(2) as u32;
+                    let mut out = Vec::new();
+                    let packets: [&[u8]; 3] = [
+                        &[0x20, 10, 0, 2, 0xFF, 0xCA, 0xFE, 0],
+                        &[1, 1, 2, 3, 4, 5, 6, 7],
+                        &[2, 8, 9, 10, 0xFF, 0xFF, 0xFF, 0xFF],
+                    ];
+                    for (n, packet) in packets.iter().enumerate() {
+                        if n > 0 && rng.chance(10) {
+                            continue;
+                        }
+                        let pgn = if n == 0 { 0x98EC_FF00 } else { 0x98EB_FF00 };
+                        let body = message(1, 0, 8, pgn | source, packet);
+                        out.extend(object(CAN_MESSAGE, NS, t + n as u64, &body, 0));
+                    }
+                    return out;
+                }
+            };
+            object(kind, units, timestamp, &body, padding)
+        }
+
+        /// A random file: frame objects in containers of random sizes, compressed or not, now
+        /// and then a container that doesn't inflate, stray bytes between containers and,
+        /// in some files, frame objects between the containers or none in containers at all.
+        pub(super) fn random(rng: &mut Rng) -> Vec<u8> {
+            let mut objects = Vec::new();
+            let mut t = 5_000_000_000u64;
+            for _ in 0..200 + rng.below(3000) {
+                t += 1 + rng.below(3_000_000) as u64;
+                let back = if rng.chance(2) {
+                    rng.below(50_000_000) as u64
+                } else {
+                    0
+                };
+                objects.extend(random_object(rng, t - back));
+            }
+            let loose = rng.chance(10);
+            let mixed = !loose && rng.chance(20);
+            let mut out = header();
+            if loose {
+                out.extend(objects);
+            } else {
+                let big = rng.chance(50);
+                let mut at = 0;
+                while at < objects.len() {
+                    let size = if big {
+                        200 + rng.below(4000)
+                    } else {
+                        1 + rng.below(400)
+                    };
+                    let end = (at + size).min(objects.len());
+                    let compression = match rng.below(100) {
+                        0 => 7,
+                        1..=50 => ZLIB,
+                        _ => 0,
+                    };
+                    out.extend(container(compression, &objects[at..end]));
+                    at = end;
+                    if rng.chance(2) {
+                        out.extend((0..rng.below(8)).map(|_| rng.below(256) as u8));
+                    }
+                    if mixed && rng.chance(10) {
+                        out.extend(random_object(rng, t));
+                    }
+                }
+            }
+            if rng.chance(10) {
+                // The file ends inside an object.
+                out.truncate(out.len() - 1 - rng.below(30.min(out.len() - 145)));
+            }
+            out
+        }
+
+        /// Where each object of the file ends, as the parser reads them.
+        pub(super) fn object_ends(log: &[u8]) -> Vec<f64> {
+            let mut s = crate::Session::new();
+            s.set_file_name("drive.blf");
+            s.object_cuts(log, 1.0).unwrap()
+        }
+    }
+
+    /// Reads a BLF file as the web app's workers do: the core reads it up to the first of
+    /// `cuts` (places where objects end), then each part between two cuts, and the last to the
+    /// end of the file, is read with up to `HEAD_BYTES` of the file's start as its head and
+    /// joined on.
+    fn read_blf_in_parts(name: &str, log: &[u8], cuts: &[usize]) -> (Session, Read) {
+        let mut s = Session::new();
+        s.set_file_name(name);
+        s.object_cuts(log, 1.0).unwrap();
+        let Some(&first) = cuts.first() else {
+            s.push_chunk(log);
+            return (s, Read::Whole);
+        };
+        s.push_chunk(&log[..first]);
+        let format = s.segment_format().expect("cut where an object ends");
+        let head = &log[..first.min(HEAD_BYTES)];
+        let mut bounds = cuts.to_vec();
+        bounds.push(log.len());
+        for pair in bounds.windows(2) {
+            let part = parse_segment(&format, head, &log[pair[0]..pair[1]]).unwrap();
+            if !s.push_segment(&part) {
+                return (s, Read::Refused);
+            }
+        }
+        (s, Read::InParts)
+    }
+
+    /// The cuts the web app reads a file with: from `ObjectCuts`, in chunks of `chunk` bytes.
+    fn cuts_by_size(log: &[u8], part_bytes: usize, chunk: usize) -> Vec<usize> {
+        let mut s = Session::new();
+        s.set_file_name("drive.blf");
+        let mut cuts = Vec::new();
+        for bytes in log.chunks(chunk) {
+            cuts.extend(s.object_cuts(bytes, part_bytes as f64).unwrap());
+        }
+        cuts.into_iter().map(|cut| cut as usize).collect()
+    }
+
+    /// Reads `log` whole and in parts at each of `cuts`, and checks that the parts give the
+    /// same log, with the same `LogInfo`. Returns how each read went.
+    fn assert_blf_parts_read_as_whole(log: &[u8], cuts: &[Vec<usize>]) -> Vec<Read> {
+        let mut whole = read_whole("drive.blf", log);
+        let info = whole.finish();
+        let mut reads = Vec::new();
+        for cuts in cuts {
+            let (mut joined, read) = read_blf_in_parts("drive.blf", log, cuts);
+            if read == Read::Refused {
+                reads.push(read);
+                continue;
+            }
+            assert_same_log(&mut joined, &mut whole, &info, &format!("cut at {cuts:?}"));
+            reads.push(read);
+        }
+        reads
+    }
+
+    fn assert_same_log(joined: &mut Session, whole: &mut Session, info: &str, what: &str) {
+        assert_eq!(joined.finish(), info, "{what}");
+        assert_eq!(joined.store.len(), whole.store.len(), "{what}");
+        for i in 0..whole.store.len() {
+            assert_eq!(
+                joined.store.frame(i),
+                whole.store.frame(i),
+                "{what}: frame {i}"
+            );
+            assert_eq!(
+                joined.store.remote_dlc(i),
+                whole.store.remote_dlc(i),
+                "{what}: frame {i}"
+            );
+        }
+        assert_eq!(
+            format!("{:?}", joined.store.ids()),
+            format!("{:?}", whole.store.ids()),
+            "{what}"
+        );
+        assert_eq!(joined.id_summary(), whole.id_summary(), "{what}");
+    }
+
+    #[test]
+    fn a_blf_file_reads_the_same_in_parts_wherever_its_objects_end() {
+        let objects = blf::frames(400);
+        for sizes in [vec![57, 300, 1000], vec![5000], vec![13]] {
+            let log = blf::file(&blf::containers(&objects, &sizes, 1));
+            let ends = blf::object_ends(&log);
+            let ends: Vec<usize> = ends.iter().map(|&end| end as usize).collect();
+            let mut cuts: Vec<Vec<usize>> = ends.iter().map(|&end| vec![end]).collect();
+            cuts.push(ends.clone());
+            for step in [2, 3, 7] {
+                cuts.push(ends.iter().copied().step_by(step).collect());
+            }
+            for (part_bytes, chunk) in [(200, 100), (1000, 333), (3000, 4096), (1, 7)] {
+                cuts.push(cuts_by_size(&log, part_bytes, chunk));
+            }
+            let reads = assert_blf_parts_read_as_whole(&log, &cuts);
+            assert!(
+                reads.iter().all(|read| *read == Read::InParts),
+                "{sizes:?}: {reads:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn blf_objects_spanning_parts_count_as_in_the_whole_file() {
+        // A container that doesn't inflate, stray bytes between objects in containers, an
+        // object cut short at the end of the file.
+        let mut objects = blf::frames(100);
+        objects.extend_from_slice(b"stray");
+        objects.extend(blf::frames_from(100, 100));
+        let mut log = blf::file(&blf::containers(&objects, &[700], 0));
+        log.extend(blf::container(7, b"whatever"));
+        let mut tail = blf::container(0, &blf::frames(3));
+        tail.truncate(tail.len() - 10);
+        log.extend(tail);
+        let mut whole = read_whole("drive.blf", &log);
+        let info: serde_json::Value = serde_json::from_str(&whole.finish()).unwrap();
+        assert_eq!(info["rejected"], 3, "{info}");
+        assert_eq!(
+            info["firstRejection"],
+            serde_json::json!([101, "stray bytes between objects"])
+        );
+        assert_eq!(info["reassembledFrames"], 20);
+        assert_eq!(info["channels"], serde_json::json!(["can1", "can2"]));
+        let ends: Vec<usize> = blf::object_ends(&log)
+            .iter()
+            .map(|&end| end as usize)
+            .collect();
+        let reads = assert_blf_parts_read_as_whole(
+            &log,
+            &[
+                ends.clone(),
+                ends[1..].to_vec(),
+                vec![ends[3], ends[ends.len() - 1]],
+            ],
+        );
+        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+    }
+
+    #[test]
+    fn a_blf_part_that_takes_bytes_inside_an_object_for_one_is_refused() {
+        // An object whose data looks like two objects, split across containers before them.
+        let mut fake = b"LOBJ\x10\x00\x01\x00\x18\x00\x00\x00\x01\x00\x00\x00".to_vec();
+        fake.resize(24, 0);
+        fake.extend_from_slice(b"LOBJ");
+        let mut data = vec![0u8; 8];
+        data.extend(&fake);
+        data.resize(64, 0);
+        let mut body = vec![1, 15, 64, 0];
+        body.extend_from_slice(&0x123u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&0x1000u32.to_le_bytes());
+        body.resize(40, 0);
+        body.extend(&data);
+        let odd = blf::object(101, 2, 5, &body, 0);
+        let mut objects = blf::frames(50);
+        let split = objects.len() + 40;
+        objects.extend(odd);
+        objects.extend(blf::frames_from(50, 50));
+        let first = blf::container(0, &objects[..split]);
+        let log = blf::file(&[first.clone(), blf::container(0, &objects[split..])].concat());
+        let ends: Vec<usize> = blf::object_ends(&log).iter().map(|&e| e as usize).collect();
+        assert_eq!(ends, [144 + first.len(), log.len()]);
+        let reads = assert_blf_parts_read_as_whole(&log, &[vec![ends[0]]]);
+        assert_eq!(reads, [Read::Refused]);
+        // Read whole, the data is the frame's.
+        let mut whole = read_whole("drive.blf", &log);
+        let info: serde_json::Value = serde_json::from_str(&whole.finish()).unwrap();
+        assert_eq!(
+            (info["frames"].clone(), info["rejected"].clone()),
+            (111.into(), 0.into())
+        );
+    }
+
+    #[test]
+    fn random_blf_files_read_the_same_in_parts_as_whole() {
+        let iterations = if cfg!(debug_assertions) { 6 } else { 150 };
+        let mut in_parts = 0;
+        for seed in 1..=iterations {
+            let mut rng = Rng(0x2545_F491_4F6C_DD1D ^ seed);
+            let log = blf::random(&mut rng);
+            let ends: Vec<usize> = blf::object_ends(&log).iter().map(|&e| e as usize).collect();
+            let mut cuts = Vec::new();
+            for _ in 0..3 {
+                let part_bytes = 1 + rng.below(log.len() / 4);
+                let chunk = 1 + rng.below(log.len());
+                cuts.push(cuts_by_size(&log, part_bytes, chunk));
+            }
+            for _ in 0..3 {
+                let mut at: Vec<usize> = (0..1 + rng.below(30))
+                    .filter_map(|_| (!ends.is_empty()).then(|| ends[rng.below(ends.len())]))
+                    .collect();
+                at.sort_unstable();
+                at.dedup();
+                cuts.push(at);
+            }
+            let reads = assert_blf_parts_read_as_whole(&log, &cuts);
+            in_parts += reads.iter().filter(|read| **read == Read::InParts).count();
+        }
+        // Refusing every part would pass the checks above.
+        assert!(in_parts > iterations as usize * 4, "{in_parts}");
     }
 
     /// A seeded xorshift generator, so a failing case can be read again from its seed.
@@ -878,9 +1509,9 @@ mod demo {
 
     const CHUNK: usize = 8 << 20;
 
-    /// The demo log, or the log `DEMO_LOG` names, read whole and then in parts on threads as
-    /// the web app's workers read it, natively. Needs the demo log: `pnpm --dir web demo`, then
-    /// `cargo test -p can-wasm --release -- --ignored --nocapture demo_in_parts`.
+    /// The demo log, or the log `DEMO_LOG` names (a BLF file too), read whole and then in parts
+    /// on threads as the web app's workers read it, natively. Needs the demo log: `pnpm --dir
+    /// web demo`, then `cargo test -p can-wasm --release -- --ignored --nocapture demo_in_parts`.
     #[test]
     #[ignore = "needs the generated demo log"]
     fn demo_in_parts() {
@@ -912,22 +1543,42 @@ mod demo {
         }
     }
 
+    /// Parts of a BLF file, cut where its objects end, as the web app cuts them.
+    const BLF_PART: usize = 2 << 20;
+
     fn read_on_threads(name: &str, log: &[u8], workers: usize) -> Session {
-        let first = &log[..CHUNK.min(log.len())];
-        let cut = first
-            .iter()
-            .rposition(|&b| b == b'\n')
-            .map_or(0, |nl| nl + 1);
         let mut s = Session::new();
         s.set_file_name(name);
+        let first = &log[..CHUNK.min(log.len())];
+        let cuts = s.object_cuts(first, BLF_PART as f64);
+        let exact = cuts.is_some();
+        let (cut, parts) = match cuts {
+            Some(mut cuts) => {
+                for chunk in log[first.len()..].chunks(CHUNK) {
+                    cuts.extend(s.object_cuts(chunk, BLF_PART as f64).unwrap());
+                }
+                let mut bounds: Vec<usize> = cuts.into_iter().map(|cut| cut as usize).collect();
+                bounds.push(log.len());
+                let parts = bounds.windows(2).map(|pair| (pair[0], pair[1])).collect();
+                (bounds[0], parts)
+            }
+            None => {
+                let cut = first
+                    .iter()
+                    .rposition(|&b| b == b'\n')
+                    .map_or(0, |nl| nl + 1);
+                let parts = (cut..log.len())
+                    .step_by(CHUNK)
+                    .map(|start| (start, (start + CHUNK).min(log.len())))
+                    .collect();
+                (cut, parts)
+            }
+        };
         s.push_chunk(&log[..cut]);
         let format = s.segment_format().expect("the log can be read in parts");
         let format = Format::from_name(&format).unwrap();
         let head = &log[..cut.min(64 << 10)];
-        let parts: Vec<(usize, usize)> = (cut..log.len())
-            .step_by(CHUNK)
-            .map(|start| (start, (start + CHUNK).min(log.len())))
-            .collect();
+        let parts: Vec<(usize, usize)> = parts;
         let next = AtomicUsize::new(0);
         std::thread::scope(|scope| {
             let (sender, results) = mpsc::channel();
@@ -938,8 +1589,12 @@ mod demo {
                     let Some(&(start, end)) = parts.get(k) else {
                         return;
                     };
-                    let start = line_start(log, start);
-                    let end = line_start(log, end).max(start);
+                    let (start, end) = if exact {
+                        (start, end)
+                    } else {
+                        let start = line_start(log, start);
+                        (start, line_start(log, end).max(start))
+                    };
                     let part = read_part(format, head, &log[start..end]).unwrap();
                     sender.send((k, part)).unwrap();
                 });

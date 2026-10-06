@@ -20,14 +20,14 @@ use can_core::{
     FrameRef, FrameSink, FrameStore, IdKey, IdStats, TimeShift, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
 };
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
-use can_formats::{mf4, writer, AnyParser, Format, LogParser, ParseStats};
+use can_formats::{blf, mf4, writer, AnyParser, Format, LogParser, ParseStats};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use export::ChunkedFile;
 use find::Behaviour;
 pub use parts::parse_segment;
-use parts::{Part, ReadStats};
+use parts::{ObjectCuts, Part, ReadStats};
 use series::Series;
 
 /// Bytes per row returned by [`Session::rows`]; see `web/src/core/rows.ts` for the layout.
@@ -235,6 +235,18 @@ struct LogInput {
     refused: bool,
     /// The parts of the log read by other workers and joined on after what `parser` read.
     parts: Option<Parts>,
+    /// Where a log read in parts is cut.
+    cuts: Cuts,
+}
+
+/// Where the parts of a log are cut: at line breaks, found by the web app, or where a BLF
+/// file's objects end.
+#[derive(Default)]
+enum Cuts {
+    #[default]
+    Undecided,
+    Lines,
+    Objects(ObjectCuts),
 }
 
 /// What the parts joined on so far counted, and the header state and sum of relative times
@@ -243,6 +255,8 @@ struct Parts {
     stats: ReadStats,
     state: String,
     carried_ns: i64,
+    /// A BLF file's objects in log containers, which run on from part to part.
+    blf: Option<blf::InnerJoin>,
 }
 
 impl LogInput {
@@ -254,7 +268,8 @@ impl LogInput {
             Some(parser) => parser.push(chunk, store),
             None => {
                 self.head.extend_from_slice(chunk);
-                if self.head.len() >= SNIFF_BYTES {
+                // A log cut where its objects end is known to be BLF.
+                if self.head.len() >= SNIFF_BYTES || matches!(self.cuts, Cuts::Objects(_)) {
                     self.choose_parser(store);
                 }
             }
@@ -299,6 +314,11 @@ impl LogInput {
         }
         if self.format() == Format::Mf4 && self.total_bytes <= mf4::MAX_FILE as f64 {
             self.reserve(Format::Mf4, store);
+        }
+        if let Some(parts) = &mut self.parts {
+            if let Some(join) = parts.blf.take() {
+                parts.stats.append(&ReadStats::from(&join.finish()));
+            }
         }
         if let Some(parser) = &mut self.parser {
             parser.finish(store);
@@ -363,7 +383,30 @@ impl LogInput {
     /// memory limit.
     fn splittable_parser(&self) -> Option<&AnyParser> {
         let parser = self.parser.as_ref()?;
-        (self.limit.is_none() && !self.refused && parser.splittable()).then_some(parser)
+        // A BLF file can be cut only where an object ends, which the web app learns from
+        // `object_cuts`.
+        let cut_right = parser.format() != Format::Blf || matches!(self.cuts, Cuts::Objects(_));
+        (self.limit.is_none() && !self.refused && parser.splittable() && cut_right)
+            .then_some(parser)
+    }
+
+    /// See [`Session::object_cuts`].
+    fn object_cuts(&mut self, chunk: &[u8], part_bytes: f64) -> Option<Vec<f64>> {
+        if matches!(self.cuts, Cuts::Undecided) {
+            let blf = self.limit.is_none()
+                && self.parser.is_none()
+                && self.head.is_empty()
+                && Format::detect(&self.file_name, chunk) == Format::Blf;
+            self.cuts = if blf {
+                Cuts::Objects(ObjectCuts::new(part_bytes as u64))
+            } else {
+                Cuts::Lines
+            };
+        }
+        match &mut self.cuts {
+            Cuts::Objects(cuts) => Some(cuts.push(chunk)),
+            _ => None,
+        }
     }
 
     /// Joins a part read by `parse_segment` onto the log, or refuses it, perhaps after storing
@@ -371,14 +414,28 @@ impl LogInput {
     fn push_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
         let parser = self.splittable_parser().ok_or(())?;
         let (state, carried_ns) = (parser.state(), parser.carried_ns());
+        let rejected_before = self.stats().first_rejection.is_some();
         let part = Part::read(bytes).ok_or(())?;
-        let parts = self.parts.get_or_insert_with(|| Parts {
-            stats: ReadStats::default(),
-            state,
-            carried_ns,
-        });
+        if self.parts.is_none() {
+            let blf = self.parser.as_mut().and_then(AnyParser::take_inner_join);
+            self.parts = Some(Parts {
+                stats: ReadStats::default(),
+                state,
+                carried_ns,
+                blf,
+            });
+        }
+        let parts = self.parts.as_mut().ok_or(())?;
         if part.entry != parts.state {
             return Err(());
+        }
+        match (&mut parts.blf, &part.edges) {
+            (Some(join), Some(edges)) => {
+                let read_here = join.join(edges, rejected_before, store).ok_or(())?;
+                parts.stats.append(&ReadStats::from(&read_here));
+            }
+            (None, None) => {}
+            _ => return Err(()),
         }
         let carried_ns = part.times.join(parts.carried_ns).ok_or(())?;
         let shift = TimeShift {
@@ -691,6 +748,17 @@ impl Session {
         self.input
             .splittable_parser()
             .map(|parser| parser.format().name().to_owned())
+    }
+
+    /// For a log read in parts cut where its objects end (BLF), rather than at line breaks:
+    /// takes the next bytes of the file, from its start and before any chunk is pushed, and
+    /// returns where to cut it in them, each where an object ends, about `part_bytes` apart.
+    /// None for a log cut at line breaks, decided by the first call.
+    pub fn object_cuts(&mut self, chunk: &[u8], part_bytes: f64) -> Option<Vec<f64>> {
+        if self.capture.is_some() {
+            return None;
+        }
+        self.input.object_cuts(chunk, part_bytes)
     }
 
     /// Joins a part of the log read by [`parse_segment`] onto it, the parts in file order after

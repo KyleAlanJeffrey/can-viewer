@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CHUNK_BYTES, READY_MS, lineStart, partBytes, readChunks, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
+import { CHUNK_BYTES, READY_MS, lineStart, partBytes, readChunks, readInParts, taskBytes, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const realSetTimeout = globalThis.setTimeout;
@@ -36,6 +36,52 @@ class RecordingSession implements ReadSession {
     this.bytes += body;
     return true;
   }
+  object_cuts(_chunk: Uint8Array, _partBytes: number): Float64Array | undefined {
+    return undefined;
+  }
+}
+
+/**
+ * A session for a log cut where its objects end, as a BLF file is: here each line is an object,
+ * and the file is cut as `ObjectCuts` cuts it, at the last line end within `partBytes` of the
+ * cut before, or the first past it when none is.
+ */
+class ObjectSession extends RecordingSession {
+  seen = 0;
+  last = 0;
+  cutsAfterRead = false;
+  done = false;
+  constructor(private readonly refuseNth = -1) {
+    super('blf');
+  }
+  push_segment(segment: Uint8Array) {
+    const { index, body } = JSON.parse(text(segment)) as { index: number; body: string };
+    if (this.joined.length === this.refuseNth) return false;
+    expect(index).toBe(new TextEncoder().encode(this.bytes).length);
+    this.joined.push(index);
+    this.bytes += body;
+    return true;
+  }
+  pending: number | undefined;
+  object_cuts(chunk: Uint8Array, partBytes: number) {
+    if (this.done) this.cutsAfterRead = true;
+    const cuts: number[] = [];
+    const cut = (at: number) => {
+      cuts.push(at);
+      this.last = at;
+      this.pending = undefined;
+    };
+    chunk.forEach((byte, i) => {
+      const end = this.seen + i + 1;
+      if (byte !== 10) return;
+      if (end - this.last > partBytes && this.pending !== undefined) cut(this.pending);
+      if (end - this.last > partBytes) cut(end);
+      else this.pending = end;
+    });
+    this.seen += chunk.length;
+    if (this.seen >= this.last + partBytes && this.pending !== undefined) cut(this.pending);
+    return Float64Array.from(cuts);
+  }
 }
 
 /** Reads its part's lines as the real worker does, answering after `delay(task)` ms. */
@@ -50,10 +96,11 @@ class EchoWorker implements PartWorker {
   ) {}
   async read(task: PartTask) {
     EchoWorker.tasks.push(task);
-    const body = text(await partBytes(task.file, task.start, task.end, 7));
+    const body = text(task.exact ? await taskBytes(task) : await partBytes(task.file, task.start, task.end, 7));
     await new Promise((resolve) => setTimeout(resolve, this.delay(task)));
     if (this.closed) throw new Error('closed');
-    const index = Math.round((task.start - EchoWorker.tasks[0].start) / this.partSize);
+    // Parts cut where objects end vary in size, so they go by where they start.
+    const index = task.exact ? task.start : Math.round((task.start - EchoWorker.tasks[0].start) / this.partSize);
     if (index === this.failAt) throw new Error('out of memory');
     return new TextEncoder().encode(JSON.stringify({ index, body }));
   }
@@ -125,6 +172,50 @@ describe('reading a log in parts', () => {
     expect(workers.every((worker) => worker.closed)).toBe(true);
     // Every part gets the start of the file up to the first part, for its header.
     expect(new Set(EchoWorker.tasks.map((task) => text(task.head)))).toEqual(new Set([content.slice(0, EchoWorker.tasks[0].start)]));
+  });
+
+  it('reads a log cut where its objects end in exactly those parts, found as the file is read', async () => {
+    const content = log(400);
+    const file = new Blob([content]);
+    for (const partSize of [97, 300, 2000]) {
+      EchoWorker.tasks = [];
+      const session = new ObjectSession();
+      const progress: number[] = [];
+      const read = await readInParts(file, session, { workers: 3, partSize, startWorker: () => new EchoWorker(partSize, (task) => (task.start * 7) % 5) }, (bytes) => progress.push(bytes));
+      session.done = true;
+      expect(read).toBe(true);
+      expect(session.bytes).toBe(content);
+      expect(session.joined.length).toBeGreaterThan(3);
+      expect(progress).toEqual([...progress].sort((a, b) => a - b));
+      expect(progress.at(-1)).toBe(file.size);
+      const tasks = [...EchoWorker.tasks].sort((a, b) => a.start - b.start);
+      expect(tasks.every((task) => task.exact && task.format === 'blf')).toBe(true);
+      // The parts meet where objects end, and the core read the first up to one.
+      expect(content[tasks[0].start - 1]).toBe('\n');
+      expect(tasks[0].start).toBeLessThanOrEqual(partSize);
+      for (const [i, task] of tasks.entries()) expect(task.end).toBe(tasks[i + 1]?.start ?? file.size);
+      expect(text(tasks[0].head)).toBe(content.slice(0, tasks[0].start));
+    }
+  });
+
+  it('reads a log cut where its objects end in one worker when none ends in the first part', async () => {
+    const content = 'x'.repeat(500) + '\n' + log(40);
+    const startWorker = vi.fn();
+    const session = new ObjectSession();
+    expect(await readInParts(new Blob([content]), session, { workers: 3, partSize: 200, startWorker }, () => undefined)).toBe(true);
+    expect(session.bytes).toBe(content);
+    expect(startWorker).not.toHaveBeenCalled();
+  });
+
+  it('stops looking for where objects end once a part is refused', async () => {
+    const file = new Blob([log(400)]);
+    EchoWorker.tasks = [];
+    const session = new ObjectSession(2);
+    const read = await readInParts(file, session, { workers: 2, partSize: 100, startWorker: () => new EchoWorker(100) }, () => undefined);
+    session.done = true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(read).toBe(false);
+    expect(session.cutsAfterRead).toBe(false);
   });
 
   it('holds at most two parts per worker ahead of the next to join', async () => {

@@ -5,6 +5,7 @@ import type { CaptureAdapter, CaptureSettings } from './capture/adapter';
 import type { CaptureRecorder, CaptureStatus } from './capture/recorder';
 import './capture/capture.css';
 import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
+import { unpackFrames } from './core/captureFrames';
 import { EXPORT_FORMATS, ExportLogSheet } from './components/ExportLogSheet';
 import { Logo } from './components/Logo';
 import type { PlotSpec } from './components/Plots';
@@ -13,11 +14,11 @@ import { ChunkBoundary } from './components/ChunkBoundary';
 import { Sheet } from './components/Sheet';
 import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
-import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbcs } from './session';
+import { claimKeptCapture, forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, readCaptureChunks, save, saveDbcs, type HeldCapture, type KeptCapture } from './session';
 import { VIEWS, viewMeta } from './views';
 import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { chooseBlobFile } from './views/shared/saveFile';
-import { BUS_BITRATES_KEY } from './views/shared/busBitrates';
+import { BUS_BITRATES_KEY, type BusBitrates } from './views/shared/busBitrates';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
 import type { LoadedDbc, ViewContext, ViewId } from './views/types';
@@ -186,9 +187,11 @@ export function App({ core }: { core: CoreApi }) {
   const [stopping, setStopping] = useState(false);
   // Set at once, as the state isn't seen by a drop until the next render.
   const stoppingRef = useRef(false);
-  /** The open log is a capture not yet saved to a file, which a reload would lose. */
+  /** The open log is a capture not yet saved to a file. */
   const [unsavedCapture, setUnsavedCapture] = useState(false);
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
+  /** Why the open capture is no longer kept for a reload, once storage refused it. */
+  const [captureNotKept, setCaptureNotKept] = useState<{ name: string; detail: string } | null>(null);
   /** What screen readers are told while recording: the start, the first problem, the size warning. */
   const [liveAnnouncement, setLiveAnnouncement] = useState('');
   /** What to do once the user agrees to discard an unsaved capture. */
@@ -235,6 +238,8 @@ export function App({ core }: { core: CoreApi }) {
   unsavedRef.current = unsavedCapture;
   // Set by hand rather than each render, so a refresh in flight sees a capture stop at once.
   const liveRef = useRef<LiveCapture | null>(null);
+  /** The unsaved capture this tab keeps in storage for a reload, recording or not. */
+  const keptRef = useRef<HeldCapture | null>(null);
   /** The signal definition each plot was decoded with, to skip decoding again when it hasn't changed. */
   const plotSignals = useRef(new Map<string, SignalDef>());
 
@@ -386,6 +391,13 @@ export function App({ core }: { core: CoreApi }) {
     [serially, applyDbcs],
   );
 
+  /** Deletes the stored copy of this tab's unsaved capture, as it was saved or replaced in the core. */
+  const forgetKeptCapture = useCallback(() => {
+    const held = keptRef.current;
+    keptRef.current = null;
+    return held?.forget();
+  }, []);
+
   /** Show no log. The core has already dropped it, with every decoded series. */
   const showNoLog = useCallback(() => {
     plotSignals.current.clear();
@@ -398,12 +410,14 @@ export function App({ core }: { core: CoreApi }) {
     setNotKept(null);
     setUnsavedCapture(false);
     setCaptureNotice(null);
+    setCaptureNotKept(null);
+    void forgetKeptCapture();
     // A discard prompt left open would name no capture.
     setDiscardThen(null);
     setLogVersion((v) => v + 1);
     viewState.clearScope('log');
     videoSession.close();
-  }, [viewState]);
+  }, [viewState, forgetKeptCapture]);
 
   const restoreUi = useCallback(
     async (ui: SavedUi, nextIds: IdSummary[]) => {
@@ -431,6 +445,7 @@ export function App({ core }: { core: CoreApi }) {
     setNotKept(null);
     setUnsavedCapture(false);
     setCaptureNotice(null);
+    setCaptureNotKept(null);
     setLog(info);
     setLogVersion((v) => v + 1);
     setDbcs(dbcsRef.current);
@@ -471,6 +486,7 @@ export function App({ core }: { core: CoreApi }) {
       // The core drops a capture as soon as it gets this read, so there is none left to save.
       unsavedRef.current = false;
       setUnsavedCapture(false);
+      void forgetKeptCapture();
       // A video added while a log loads would belong to the log being replaced.
       /** The log shown before, to reopen if this read fails. */
       let previous: SavedLog | undefined;
@@ -536,7 +552,47 @@ export function App({ core }: { core: CoreApi }) {
         return opened ? 'opened' : 'failed';
       });
     },
-    [core, run, serially, stopReading, showNoLog, showOpenedLog, setView, restoreUi, viewState],
+    [core, run, serially, stopReading, showNoLog, showOpenedLog, setView, restoreUi, viewState, forgetKeptCapture],
+  );
+
+  /**
+   * Reopens an unsaved capture kept as it ran, after a reload or a crash, as a stopped capture
+   * still to be saved. One that can't be read is forgotten, as a saved log that fails to reopen is.
+   */
+  const restoreKeptCapture = useCallback(
+    (capture: KeptCapture, held: HeldCapture, ui: SavedUi) =>
+      run(`Restoring ${capture.name}\u2026`, (report) =>
+        serially(async () => {
+          let info: LogInfo;
+          try {
+            await core.startCapture(capture.name, capture.bus, capture.startedAtMs);
+            let read = 0;
+            await readCaptureChunks(capture.id, async (chunk) => {
+              await core.appendFrames(unpackFrames(chunk));
+              read += chunk.length;
+              report({ label: `Restoring ${capture.name}\u2026 ${Math.round((100 * read) / capture.bytes)}%`, fraction: read / capture.bytes });
+            });
+            info = await core.endCapture();
+            if (info.frames === 0) throw new Error('none of its frames were found');
+          } catch (e) {
+            // As Close does, so the core holds no half-restored capture.
+            await core.openLog(new Blob([]), '', () => {}).catch(() => undefined);
+            await held.forget();
+            showNoLog();
+            throw new Error(`The unsaved capture ${capture.name} couldn't be restored: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          const nextIds = await core.idSummary();
+          showOpenedLog(info, nextIds);
+          keptRef.current = held;
+          unsavedRef.current = true;
+          setUnsavedCapture(true);
+          const bitrates = (viewState.get(BUS_BITRATES_KEY)?.value ?? {}) as BusBitrates;
+          if (!(capture.bus in bitrates)) viewState.set(BUS_BITRATES_KEY, { ...bitrates, [capture.bus]: capture.bitrate }, 'log');
+          // As for a saved log, the saved copies stay: log B, if any, was opened beside this capture.
+          await restoreUi(ui, nextIds);
+        }),
+      ),
+    [core, run, serially, showNoLog, showOpenedLog, restoreUi, viewState],
   );
 
   const swapCompareLog = useCallback(
@@ -717,15 +773,34 @@ export function App({ core }: { core: CoreApi }) {
     (adapter: CaptureAdapter, settings: CaptureSettings) =>
       serially(async () => {
         // Loaded with the Capture sheet rather than with the app.
-        const { CaptureRecorder, captureName } = await import('./capture/recorder');
+        const [{ CaptureRecorder, captureName }, { CaptureKeeper, notKeptDetail }] = await Promise.all([import('./capture/recorder'), import('./capture/keeper')]);
         const recorder = new CaptureRecorder(core, adapter, captureName(new Date()));
+        const keeper = new CaptureKeeper();
+        // The capture shown is kept until this one replaces it in the core.
+        const previous = keptRef.current;
+        keeper.replaces = previous;
+        keeper.onNotKept = (reason) => {
+          if (keptRef.current !== keeper) return;
+          setCaptureNotKept({ name: recorder.name, detail: notKeptDetail(reason) });
+          if (liveRef.current?.recorder === recorder) setLiveAnnouncement(`This browser couldn't keep a copy of ${recorder.name}, so it won't come back after a reload.`);
+        };
+        recorder.keeper = keeper;
+        keptRef.current = keeper;
+        setCaptureNotKept(null);
         // Set before the start, so an adapter that goes away while starting still ends the capture.
         const endedWhileStarting: { message?: string } = {};
         recorder.onEnd = (message) => {
           if (liveRef.current?.recorder === recorder) void stopCapture(message);
           else endedWhileStarting.message = message;
         };
-        const { info, listenOnly } = await recorder.start(settings);
+        let started: { info: LogInfo; listenOnly: boolean };
+        try {
+          started = await recorder.start(settings);
+        } catch (e) {
+          keptRef.current = previous;
+          throw e;
+        }
+        const { info, listenOnly } = started;
         const capture: LiveCapture = { recorder };
         liveRef.current = capture;
         // The capture replaced the log and its series in the core, as opening a log does.
@@ -749,7 +824,7 @@ export function App({ core }: { core: CoreApi }) {
         viewState.clearScope('log');
         viewState.set(BUS_BITRATES_KEY, { [recorder.bus]: settings.bitrate }, 'log');
         setView('trace');
-        // Only a saved capture comes back after a reload. The core dropped log B with the old log.
+        // A reload brings back the capture, not the log it replaced. The core dropped log B with the old log.
         void forget('log');
         void forget('compare');
         if (endedWhileStarting.message) void stopCapture(endedWhileStarting.message);
@@ -757,9 +832,16 @@ export function App({ core }: { core: CoreApi }) {
     [core, serially, stopCapture, viewState, setView],
   );
 
+  /** The capture is in a file now, so the copy kept for a reload goes. */
+  const markCaptureSaved = () => {
+    setUnsavedCapture(false);
+    setCaptureNotKept(null);
+    void forgetKeptCapture();
+  };
+
   /** Keeps a saved capture like an opened log, so a reload reopens it. */
   const keepSavedCapture = async (name: string, blob: Blob) => {
-    setUnsavedCapture(false);
+    markCaptureSaved();
     if (!(await save('log', { name, blob } satisfies SavedLog))) {
       setNotKept(name);
       void forget('log');
@@ -818,17 +900,21 @@ export function App({ core }: { core: CoreApi }) {
     if (restoreStarted.current) return;
     restoreStarted.current = true;
     void (async () => {
-      const [savedLog, savedDbcs, savedUi, savedViews] = await Promise.all([
+      const [savedLog, savedDbcs, savedUi, savedViews, keptCapture] = await Promise.all([
         loadSaved<SavedLog>('log'),
         loadSavedDbcs<LoadedDbc[]>(),
         loadSaved<SavedUi>('ui'),
         loadSaved<ReturnType<ViewStateStore['snapshot']>>('views'),
+        claimKeptCapture(),
       ]);
       if (savedViews) viewState.restore(savedViews);
       if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => withJ1939Flags(savedDbcs), false));
-      // A saved log other than the demo would only be replaced by it, so it isn't parsed first.
-      if (savedLog && (!demoRequested.current || savedLog.name === 'demo.log')) {
-        const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
+      const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
+      // An unsaved capture exists nowhere else, so it comes back in place of a saved log, whose file the user has.
+      if (keptCapture) {
+        await restoreKeptCapture(keptCapture.capture, keptCapture.held, ui);
+      } else if (savedLog && (!demoRequested.current || savedLog.name === 'demo.log')) {
+        // A saved log other than the demo would only be replaced by it, so it isn't parsed first.
         // A copy that can't be read is forgotten, as is any log that fails to open.
         await openLog(savedLog.blob, savedLog.name, { restore: ui });
       } else if (savedUi && savedDbcs?.length && !viewMeta(savedUi.view).needsLog) {
@@ -836,7 +922,7 @@ export function App({ core }: { core: CoreApi }) {
       }
       setRestoring(false);
     })();
-  }, [viewState, run, mutateDbcs, openLog]);
+  }, [viewState, run, mutateDbcs, openLog, restoreKeptCapture]);
 
   useEffect(() => {
     if (restoring || !demoRequested.current) return;
@@ -844,7 +930,8 @@ export function App({ core }: { core: CoreApi }) {
     const url = new URL(window.location.href);
     url.searchParams.delete('demo');
     window.history.replaceState(null, '', url);
-    if (logRef.current?.name !== 'demo.log') loadDemo();
+    // A restored unsaved capture is asked about first.
+    if (logRef.current?.name !== 'demo.log') unlessUnsavedCapture(loadDemo);
     // loadDemo is recreated each render; this runs once, when the restore is done.
   }, [restoring]);
 
@@ -879,11 +966,18 @@ export function App({ core }: { core: CoreApi }) {
           setLive(null);
           setLiveStatus(null);
         }
+        // Left stored, not forgotten, so a reload brings the capture back.
+        const held = keptRef.current;
+        keptRef.current = null;
+        const kept = held?.kept ?? false;
+        void held?.letGo();
         showNoLog();
         setError(
-          capture || unsavedRef.current
-            ? 'The CAN core stopped and was restarted, so the capture was lost.'
-            : 'The CAN core stopped and was restarted. Open the log again.',
+          kept
+            ? 'The CAN core stopped and was restarted. Reload the page to get the capture back.'
+            : capture || unsavedRef.current
+              ? 'The CAN core stopped and was restarted, so the capture was lost.'
+              : 'The CAN core stopped and was restarted. Open the log again.',
         );
       }),
     [core, showNoLog],
@@ -938,11 +1032,17 @@ export function App({ core }: { core: CoreApi }) {
   useEffect(() => {
     if (!live) return;
     const release = () => live.recorder.release();
+    // Written while the browser asks whether to leave, as Chrome drops a write begun as the page goes.
+    const keep = () => void live.recorder.keeper?.flush();
     window.addEventListener('pagehide', release);
-    return () => window.removeEventListener('pagehide', release);
+    window.addEventListener('beforeunload', keep);
+    return () => {
+      window.removeEventListener('pagehide', release);
+      window.removeEventListener('beforeunload', keep);
+    };
   }, [live]);
 
-  // Leaving the page would end the capture, or lose one that wasn't saved.
+  // Leaving the page would end the capture, and an unsaved one comes back only if storage kept it.
   useEffect(() => {
     if (!live && !unsavedCapture) return;
     const warn = (e: BeforeUnloadEvent) => {
@@ -1379,6 +1479,18 @@ export function App({ core }: { core: CoreApi }) {
                 </button>
               </div>
             )}
+            {captureNotKept && (
+              <div className="banner">
+                <AlertTriangle size={16} strokeWidth={1.75} />
+                <p>
+                  This browser couldn&rsquo;t keep a copy of {captureNotKept.name}, so it won&rsquo;t come back after a reload.
+                  <span className="detail"> {captureNotKept.detail} Save Capture&hellip; keeps it in a file.</span>
+                </p>
+                <button className="icon-button small" onClick={() => setCaptureNotKept(null)} aria-label="Dismiss">
+                  <X size={14} strokeWidth={1.75} />
+                </button>
+              </div>
+            )}
             {notKept && (
               <div className="banner">
                 <AlertTriangle size={16} strokeWidth={1.75} />
@@ -1511,7 +1623,7 @@ export function App({ core }: { core: CoreApi }) {
             if (log.format !== 'capture') return;
             // Only a candump file reopens a capture whole, so only it is kept for a reload.
             if (format === 'candump') void keepSavedCapture(log.name, file);
-            else setUnsavedCapture(false);
+            else markCaptureSaved();
           }}
         />
       )}

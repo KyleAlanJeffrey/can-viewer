@@ -2,6 +2,7 @@ import type { CaptureFrame, CoreApi, LogInfo } from '../core/api';
 import { formatCount, formatCountOf, formatDuration } from '../format';
 import { errorText, formatBitrate, MAX_AHEAD_OF_HOST_NS, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { FrameBatcher, type BatcherOptions } from './batcher';
+import type { CaptureKeeper } from './keeper';
 
 /** The bus name a capture's frames are stored under when the settings name none. */
 export const CAPTURE_CHANNEL = 'can0';
@@ -113,6 +114,8 @@ export class CaptureRecorder {
   startTimeoutMs = 10_000;
   /** Called once if the capture ends without `stop`: the adapter went away or the core failed. */
   onEnd: ((message: string) => void) | null = null;
+  /** Keeps the frames the core takes in the browser's storage, when set before `start`. */
+  keeper: CaptureKeeper | null = null;
   private frames = 0;
   /** What the frames so far cost in the core, as `captureFrameBytes` counts it. */
   private bytes = 0;
@@ -148,6 +151,7 @@ export class CaptureRecorder {
     this.batcher = new FrameBatcher(
       async (frames) => {
         this.info = await this.core.appendFrames(frames);
+        this.keeper?.add(frames);
         if (this.keepNs !== null) await this.dropOld(frames, this.keepNs);
       },
       (e) => this.end(`The capture stopped because the CAN core failed: ${errorText(e)}`),
@@ -202,6 +206,7 @@ export class CaptureRecorder {
       await this.adapter.stop();
       throw e;
     }
+    await this.keeper?.begin({ name: this.name, bus: this.bus, startedAtMs, bitrate: settings.bitrate });
     this.batcher.start();
     return { info: this.info, listenOnly: started.listenOnly };
   }
@@ -228,6 +233,7 @@ export class CaptureRecorder {
     const slack = Math.max(MIN_TRIM_SLACK_NS, keepNs * TRIM_SLACK_SHARE);
     if (this.sent[0].firstNs >= cutoff - slack) return;
     this.info = await this.core.trimCapture(cutoff);
+    this.keeper?.trim(cutoff);
     while (this.sent.length > 0 && this.sent[0].lastNs < cutoff) this.bytes -= this.sent.shift()!.bytes;
   }
 
@@ -274,7 +280,9 @@ export class CaptureRecorder {
     this.stopping ??= (async () => {
       await this.adapter.stop();
       await this.batcher.stop();
+      const kept = this.keeper?.stop();
       this.info = await this.core.endCapture();
+      await kept;
       return this.info;
     })();
     return this.stopping;

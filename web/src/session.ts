@@ -168,3 +168,179 @@ export function onDbcsChangedElsewhere(listener: () => void): () => void {
     dbcListeners.delete(listener);
   };
 }
+
+/*
+ * An unsaved capture is kept as it runs, as chunks of frames packed by `packFrames`, so a reload
+ * or a crash doesn't lose it. The tab keeping one holds a Web Lock named for it until it lets go
+ * or the page goes away; a page load restores only a capture whose lock it can take, so no tab
+ * restores, or deletes, a capture another tab still has open. Without Web Locks nothing is kept.
+ */
+
+/** The frame layout of the chunks: `packFrames`'. A capture kept in another is dropped. */
+export const KEPT_CAPTURE_LAYOUT = 1;
+
+/** What is stored about a kept capture besides its chunks. */
+export interface KeptCapture {
+  id: string;
+  name: string;
+  bus: string;
+  /** As given to `CoreApi.startCapture`. */
+  startedAtMs: number;
+  bitrate: number;
+  layout: number;
+  frames: number;
+  /** Bytes of chunks stored. */
+  bytes: number;
+}
+
+/** An unsaved capture this tab keeps, which no other tab will restore or delete meanwhile. */
+export interface HeldCapture {
+  /** Whether a copy is stored, so a reload would restore it. */
+  readonly kept: boolean;
+  /** Deletes the stored copy, as the capture was saved or replaced, then lets go of it. */
+  forget(): Promise<void>;
+  /** Lets go of it, leaving what is stored for the next page load to restore. */
+  letGo(): Promise<void>;
+}
+
+const capturesRange = () => IDBKeyRange.bound(['capture'], ['capture', []]);
+const chunksRange = (id: string, from = 0, to: number | never[] = []) => IDBKeyRange.bound(['capture-chunk', id, from], ['capture-chunk', id, to], false, true);
+
+function transaction(mode: IDBTransactionMode, run: (store: IDBObjectStore) => void, durability: IDBTransactionDurability = 'default'): Promise<void> {
+  return openDb().then(
+    (db) =>
+      new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, mode, { durability });
+        run(tx.objectStore(STORE));
+        // At once, so a write as the page goes away lands before the page does. Not a read:
+        // Chrome then completes it without the result of a getAll of large values.
+        if (mode === 'readwrite') tx.commit?.();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      }),
+  );
+}
+
+/** Every capture kept, whoever holds it. */
+export async function keptCaptures(): Promise<KeptCapture[]> {
+  try {
+    return await request<KeptCapture[]>('readonly', (s) => s.getAll(capturesRange()));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Stores `capture` with `chunk` as its chunk number `seq` (if any), deleting its chunks before
+ * `dropBefore`, all at once. Rejects with the browser's error, a `QuotaExceededError` when full.
+ */
+export function writeCaptureChunk(capture: KeptCapture, chunk?: { seq: number; bytes: ArrayBuffer }, dropBefore = 0): Promise<void> {
+  // Relaxed: a chunk lost to a power cut is acceptable, and not waiting for the disk keeps writes cheap.
+  return transaction(
+    'readwrite',
+    (store) => {
+      if (dropBefore > 0) store.delete(chunksRange(capture.id, 0, dropBefore));
+      if (chunk) store.put(chunk.bytes, ['capture-chunk', capture.id, chunk.seq]);
+      store.put(capture, ['capture', capture.id]);
+    },
+    'relaxed',
+  );
+}
+
+/** Deletes a kept capture and its chunks. Resolves false if storage refused. */
+export async function forgetCapture(id: string): Promise<boolean> {
+  try {
+    await transaction('readwrite', (store) => {
+      store.delete(chunksRange(id));
+      store.delete(['capture', id]);
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Calls `each` with each chunk of a kept capture in order, reading a few at a time. */
+export async function readCaptureChunks(id: string, each: (bytes: Uint8Array) => Promise<void>): Promise<void> {
+  let from = 0;
+  for (;;) {
+    let keys: IDBValidKey[] = [];
+    let values: ArrayBuffer[] = [];
+    await transaction('readonly', (store) => {
+      const range = chunksRange(id, from);
+      const gotKeys = store.getAllKeys(range, 8);
+      const gotValues = store.getAll(range, 8);
+      gotKeys.onsuccess = () => (keys = gotKeys.result);
+      gotValues.onsuccess = () => (values = gotValues.result);
+    });
+    if (values.length === 0) return;
+    for (const value of values) await each(new Uint8Array(value));
+    from = ((keys[keys.length - 1] as [string, string, number])[2]) + 1;
+  }
+}
+
+const lockName = (id: string) => `freecan-studio-capture-${id}`;
+
+/**
+ * Takes the lock on capture `id` if no tab holds it, resolving with the function that lets it go,
+ * or null when another tab holds it or the browser has no Web Locks.
+ */
+export function lockCapture(id: string): Promise<(() => void) | null> {
+  if (typeof navigator === 'undefined' || !navigator.locks) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    navigator.locks
+      .request(lockName(id), { ifAvailable: true }, (lock) => {
+        if (!lock) {
+          resolve(null);
+          return;
+        }
+        // Held until this promise settles.
+        return new Promise<void>((release) => resolve(() => release()));
+      })
+      .catch(() => resolve(null));
+  });
+}
+
+/** Whether this browser can keep a capture: it needs Web Locks to tell which tab has one. */
+export const canKeepCaptures = () => typeof navigator !== 'undefined' && !!navigator.locks;
+
+/**
+ * The most recent kept capture no tab holds, now held by this one, to restore after a reload or
+ * a crash. Captures held by no tab that can't be restored (no frames, an older layout) are deleted.
+ */
+export async function claimKeptCapture(): Promise<{ capture: KeptCapture; held: HeldCapture } | undefined> {
+  if (!canKeepCaptures()) return undefined;
+  const kept = (await keptCaptures()).sort((a, b) => b.startedAtMs - a.startedAtMs);
+  for (const capture of kept) {
+    const release = await lockCapture(capture.id);
+    if (!release) continue;
+    if (capture.layout === KEPT_CAPTURE_LAYOUT && capture.frames > 0) return { capture, held: heldCapture(capture.id, release) };
+    await forgetCapture(capture.id);
+    release();
+  }
+  return undefined;
+}
+
+function heldCapture(id: string, release: () => void): HeldCapture {
+  let kept = true;
+  let held = true;
+  return {
+    get kept() {
+      return kept;
+    },
+    async forget() {
+      if (!held) return;
+      held = false;
+      kept = false;
+      // Deleted before the lock goes, so no other tab can restore it meanwhile.
+      await forgetCapture(id);
+      release();
+    },
+    async letGo() {
+      if (!held) return;
+      held = false;
+      release();
+    },
+  };
+}

@@ -1,5 +1,6 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installLocks, removeLocks, type FakeLocks } from './test/fakeLocks';
 
 type Session = typeof import('./session');
 
@@ -146,5 +147,102 @@ describe('saved DBCs', () => {
     await tabB.saveDbcs(['from B', 'again']);
     await Promise.resolve();
     expect(changedForA).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('kept captures', () => {
+  let locks: FakeLocks;
+  beforeEach(() => {
+    locks = installLocks();
+  });
+  afterEach(() => removeLocks());
+
+  const capture = (id: string, startedAtMs: number, frames = 1) => ({
+    id,
+    name: `${id}.log`,
+    bus: 'can0',
+    startedAtMs,
+    bitrate: 500_000,
+    layout: 1,
+    frames,
+    bytes: 0,
+  });
+  const chunk = (seq: number) => ({ seq, bytes: Uint8Array.of(seq).buffer });
+
+  async function chunksOf(session: Session, id: string): Promise<number[]> {
+    const read: number[] = [];
+    await session.readCaptureChunks(id, async (bytes) => void read.push(bytes[0]));
+    return read;
+  }
+
+  it('reads the chunks back in order, a few at a time, and drops the ones before a given chunk', async () => {
+    const session = await openTab();
+    const kept = capture('a', 1);
+    for (let seq = 0; seq < 20; seq++) await session.writeCaptureChunk(kept, chunk(seq));
+    expect(await chunksOf(session, 'a')).toEqual([...Array(20).keys()]);
+    await session.writeCaptureChunk(kept, chunk(20), 15);
+    expect(await chunksOf(session, 'a')).toEqual([15, 16, 17, 18, 19, 20]);
+    expect(await session.keptCaptures()).toEqual([kept]);
+  });
+
+  it('forgets one capture, leaving the others and the saved session', async () => {
+    const session = await openTab();
+    await session.save('ui', { view: 'trace' });
+    await session.writeCaptureChunk(capture('a', 1), chunk(1));
+    await session.writeCaptureChunk(capture('b', 2), chunk(2));
+    expect(await session.forgetCapture('a')).toBe(true);
+    expect((await session.keptCaptures()).map((c) => c.id)).toEqual(['b']);
+    expect(await chunksOf(session, 'a')).toEqual([]);
+    expect(await chunksOf(session, 'b')).toEqual([2]);
+    expect(await session.loadSaved('ui')).toEqual({ view: 'trace' });
+  });
+
+  it('claims the newest capture no tab holds, and only once', async () => {
+    const session = await openTab();
+    await session.writeCaptureChunk(capture('old', 1), chunk(1));
+    await session.writeCaptureChunk(capture('new', 3), chunk(3));
+    await session.writeCaptureChunk(capture('live', 5), chunk(5));
+    const liveTab = await session.lockCapture('live');
+    expect(liveTab).not.toBeNull();
+
+    const claimed = await session.claimKeptCapture();
+    expect(claimed?.capture.id).toBe('new');
+    expect(locks.holds('freecan-studio-capture-new')).toBe(true);
+    // Another tab loading now gets the next one.
+    const other = await (await openTab()).claimKeptCapture();
+    expect(other?.capture.id).toBe('old');
+
+    await claimed!.held.letGo();
+    expect(claimed!.held.kept).toBe(true);
+    expect((await session.claimKeptCapture())?.capture.id).toBe('new');
+  });
+
+  it('deletes, rather than offers, a capture no tab holds with no frames or another layout', async () => {
+    const session = await openTab();
+    await session.writeCaptureChunk(capture('empty', 3, 0));
+    await session.writeCaptureChunk({ ...capture('future', 2), layout: 2 }, chunk(2));
+    await session.writeCaptureChunk(capture('good', 1), chunk(1));
+    expect((await session.claimKeptCapture())?.capture.id).toBe('good');
+    expect((await session.keptCaptures()).map((c) => c.id)).toEqual(['good']);
+  });
+
+  it('forgets a claimed capture before letting go of it', async () => {
+    const session = await openTab();
+    await session.writeCaptureChunk(capture('a', 1), chunk(1));
+    const claimed = await session.claimKeptCapture();
+    await claimed!.held.forget();
+    expect(claimed!.held.kept).toBe(false);
+    expect(locks.holds('freecan-studio-capture-a')).toBe(false);
+    expect(await session.keptCaptures()).toEqual([]);
+    expect(await session.claimKeptCapture()).toBeUndefined();
+  });
+
+  it('claims nothing without Web Locks, as it could not tell whether another tab has the capture', async () => {
+    const session = await openTab();
+    await session.writeCaptureChunk(capture('a', 1), chunk(1));
+    removeLocks();
+    expect(session.canKeepCaptures()).toBe(false);
+    expect(await session.claimKeptCapture()).toBeUndefined();
+    expect(await session.keptCaptures()).toHaveLength(1);
   });
 });

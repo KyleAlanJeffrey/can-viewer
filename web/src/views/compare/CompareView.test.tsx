@@ -38,6 +38,7 @@ function comparison(id: number, fields: Partial<IdComparison> = {}): IdCompariso
     reason: 'No significant changes',
     bytes: [],
     tooFewFrames: false,
+    payloadsDiffer: false,
     changesWithinA: false,
     ...fields,
   };
@@ -63,6 +64,7 @@ function bytes(fields: Partial<ByteComparison> = {}): ByteComparison {
     byteScores,
     byteReasons: byteScores.map((s, k) => (s > 0 ? `Byte ${k} takes new values` : 'No significant changes')),
     newValues: byteScores.map((s) => (s > 0 ? [1] : [])),
+    firstOnlyInA: byteScores.map(() => null),
     ignored: [],
     ...fields,
   };
@@ -292,8 +294,21 @@ describe('results', () => {
     const { user, state } = renderInShell(CompareView, { core: compareCore() });
     await screen.findByRole('heading', { name: '450BODY' });
     await user.click(screen.getByRole('button', { name: 'Open in Reverse Engineer' }));
-    expect(state.view).toBe('reverse');
+    await waitFor(() => expect(state.view).toBe('reverse'));
     expect(state.selected).toBe(0x450);
+    expect(state.viewState.get('re.byte')?.value).toEqual({ key: 0x450, byte: 3 });
+    expect(state.viewState.get('re.window')).toBeUndefined();
+    expect(state.pinnedTime).toBeNull();
+  });
+
+  it('moves Reverse Engineer to where log A shows a value log B never does', async () => {
+    const firstOnlyInA = [null, null, null, 62.5, null, null, null, null];
+    const { user, state } = renderInShell(CompareView, { core: compareCore(RESULTS, { compareBytes: async () => bytes({ firstOnlyInA }) }) });
+    await screen.findByRole('heading', { name: '450BODY' });
+    await user.click(screen.getByRole('button', { name: 'Open in Reverse Engineer' }));
+    await waitFor(() => expect(state.view).toBe('reverse'));
+    expect(state.viewState.get('re.window')?.value).toEqual([47.5, 77.5]);
+    expect(state.pinnedTime).toBe(62.5);
   });
 
   it('says why Enter does nothing on an ID only in log B', async () => {
@@ -371,7 +386,7 @@ describe('logs that look the same', () => {
   });
 
   it('leaves IDs with too few frames to their own group', async () => {
-    const few = comparison(0x5a0, { framesA: 3, framesB: 6, tooFewFrames: true, reason: 'Too few frames to compare; payloads differ' });
+    const few = comparison(0x5a0, { framesA: 3, framesB: 6, tooFewFrames: true, payloadsDiffer: true, reason: 'Too few frames to compare; payloads differ' });
     const { user } = renderInShell(CompareView, { core: compareCore([body, few]) });
     expect(await screen.findByRole('button', { name: 'Too few frames to compare(1)' })).toBeTruthy();
     expect(screen.getByRole('row', { name: /^5A0 / })).toBeTruthy();

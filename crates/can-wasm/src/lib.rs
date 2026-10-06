@@ -12,11 +12,11 @@ mod find;
 mod series;
 mod suggest;
 
-use std::collections::VecDeque;
+use std::collections::{TryReserveError, VecDeque};
 
 use can_core::{
-    flags, tp::MAX_TRANSFER, Combine, DataRule, FrameFilter, FrameKind, FrameRef, FrameSink,
-    FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
+    flags, tp::MAX_TRANSFER, Combine, DataRule, FilterPass, FrameFilter, FrameKind, FrameRef,
+    FrameSink, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
 };
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{mf4, writer, AnyParser, Format, LogParser, ParseStats};
@@ -80,11 +80,79 @@ pub struct Session {
     series: Vec<Option<Series>>,
     /// A second log, to compare the open log with.
     log_b: Option<compare::LogB>,
-    /// Store indices of the frames the trace filter matched, in time order.
-    filtered: Option<Vec<u32>>,
+    /// The frames the trace filter matched.
+    filtered: Option<Matches>,
+    /// A count begun by [`Session::count_begin`] and not finished, with the origin its filter's
+    /// times count from (see [`Matches::origin_ns`]).
+    count: Option<(FilterPass, i64)>,
+    /// The matches of the last count, kept so applying the filter it counted takes them rather
+    /// than going through the log again.
+    preview: Option<Matches>,
     /// The chunks of the last `export_log` not yet taken by `export_chunk`.
     export: VecDeque<Vec<u8>>,
     discovery: suggest::PendingSuggestions,
+}
+
+/// The frames a filter matched.
+struct Matches {
+    filter: FrameFilter,
+    /// The first frame's time when the filter was given: its time window is in seconds from
+    /// that frame. It moves when an empty capture gets its first frame, and when ending a
+    /// capture sorts an earlier frame first.
+    origin_ns: i64,
+    /// Store indices, in store (time) order.
+    rows: Vec<u32>,
+    /// How many frames of the store the rows cover; frames stored since are not matched yet.
+    frames: usize,
+}
+
+impl Matches {
+    fn find(
+        store: &FrameStore,
+        filter: FrameFilter,
+        origin_ns: i64,
+    ) -> Result<Self, TryReserveError> {
+        Ok(Self {
+            rows: store.filter(&filter)?,
+            filter,
+            origin_ns,
+            frames: store.len(),
+        })
+    }
+
+    fn of_pass(pass: &FilterPass, origin_ns: i64) -> Result<Self, TryReserveError> {
+        Ok(Self {
+            rows: pass.rows()?,
+            filter: pass.filter().clone(),
+            origin_ns,
+            frames: pass.frames(),
+        })
+    }
+
+    /// Finds the rows again in `store`, the time window moved with its first frame.
+    fn refind(&self, store: &FrameStore) -> Result<Self, TryReserveError> {
+        let origin_ns = origin_in(store);
+        let mut filter = self.filter.clone();
+        let by_ns = origin_ns.saturating_sub(self.origin_ns);
+        for t in [&mut filter.t0_ns, &mut filter.t1_ns] {
+            if *t != i64::MIN && *t != i64::MAX {
+                *t = t.saturating_add(by_ns);
+            }
+        }
+        Self::find(store, filter, origin_ns)
+    }
+
+    /// Brings the rows up to date with `store`: the frames stored since are matched, or, if the
+    /// first frame moved, every frame.
+    fn follow(&mut self, store: &FrameStore) -> Result<(), TryReserveError> {
+        if origin_in(store) != self.origin_ns {
+            *self = self.refind(store)?;
+            return Ok(());
+        }
+        store.extend_matches(&self.filter, self.frames, &mut self.rows)?;
+        self.frames = store.len();
+        Ok(())
+    }
 }
 
 /// A live capture: frames pushed by the page as an adapter receives them.
@@ -176,7 +244,11 @@ impl LogInput {
                 }
             }
         }
-        // A file can hold more frames than its size suggested.
+        self.refuse_if_over_limit(store);
+    }
+
+    /// A file can hold more frames than its size suggested, a compressed MF4 most of all.
+    fn refuse_if_over_limit(&mut self, store: &FrameStore) {
         if self.limit.is_some_and(|limit| store.heap_bytes() > limit) {
             self.refused = true;
             self.parser = None;
@@ -215,6 +287,11 @@ impl LogInput {
         }
         if let Some(parser) = &mut self.parser {
             parser.finish(store);
+        }
+        // An MF4 file reads all its frames here.
+        self.refuse_if_over_limit(store);
+        if self.refused {
+            return;
         }
         store.sort_by_time();
     }
@@ -534,6 +611,8 @@ impl Session {
         self.input = LogInput::default();
         self.series.clear();
         self.filtered = None;
+        self.count = None;
+        self.preview = None;
         self.export = VecDeque::new();
         // Compared against a capture still growing, log B would show differences that aren't.
         self.log_b = None;
@@ -545,10 +624,16 @@ impl Session {
         });
     }
 
-    /// Add captured frames, packed as `CaptureFrame` records by `web/src/core/captureFrames.ts`.
-    /// Returns a JSON `LogInfo` of the capture so far.
+    /// Add captured frames, packed as `CaptureFrame` records by `web/src/core/captureFrames.ts`,
+    /// and those that match the trace filter to its rows. Without the memory for those, the
+    /// filter is dropped and the capture goes on. Returns a JSON `LogInfo` of the capture so far.
     pub fn push_frames(&mut self, packed: &[u8]) -> Result<String, JsError> {
         self.push_capture_records(packed).map_err(js_err)?;
+        if let Some(filtered) = &mut self.filtered {
+            if filtered.follow(&self.store).is_err() {
+                self.filtered = None;
+            }
+        }
         Ok(self.log_info())
     }
 
@@ -561,8 +646,13 @@ impl Session {
             .ok_or_else(|| js_err("no capture is running"))?;
         capture.finished = true;
         self.store.sort_by_time();
-        // Sorting may move frames, so rows filtered before name the wrong ones.
-        self.filtered = None;
+        self.count = None;
+        self.preview = None;
+        // Sorting may move frames, so the rows are found again; without the memory, the filter
+        // is dropped, which `filtered_row_count` tells.
+        if let Some(filtered) = self.filtered.take() {
+            self.filtered = filtered.refind(&self.store).ok();
+        }
         Ok(self.log_info())
     }
 
@@ -615,29 +705,77 @@ impl Session {
         self.trace(key).map_or(0, |t| t.len(&self.store) as u32)
     }
 
+    /// The rows of key -2, or none when no trace filter is held: none was set, or it was dropped
+    /// for want of memory as a capture grew or ended.
+    pub fn filtered_row_count(&self) -> Option<u32> {
+        self.filtered.as_ref().map(|m| m.rows.len() as u32)
+    }
+
     /// Keep the frames that match a JSON `FrameFilter` as the rows of key -2, in time order, and
-    /// return how many there are. JSON `null` drops them.
+    /// return how many there are. JSON `null` drops them. Frames a capture adds later join them
+    /// as they come.
+    /// The matches of the last count of the same filter are taken rather than found again, and
+    /// so is a count of it still running, finished first.
     pub fn set_trace_filter(&mut self, json: &str) -> Result<u32, JsError> {
         self.filtered = None;
+        let preview = self.preview.take();
+        let running = self.count.take();
         let Some(filter) = self.parse_filter(json).map_err(js_err)? else {
             return Ok(0);
         };
-        let rows = self
-            .store
-            .filter(&filter)
+        let matches = match (preview, running) {
+            (Some(preview), _) if preview.filter == filter => Ok(preview),
+            (_, Some((mut pass, origin_ns))) if *pass.filter() == filter => {
+                pass.step(&self.store, usize::MAX);
+                Matches::of_pass(&pass, origin_ns)
+            }
+            _ => Matches::find(&self.store, filter, self.origin_ns()),
+        };
+        let matches = matches
+            .and_then(|mut m| m.follow(&self.store).map(|()| m))
             .map_err(|_| js_err("not enough memory to filter this log"))?;
-        let count = rows.len() as u32;
-        self.filtered = Some(rows);
+        let count = matches.rows.len() as u32;
+        self.filtered = Some(matches);
         Ok(count)
     }
 
-    /// How many frames match a JSON `FrameFilter`, keeping nothing.
-    pub fn count_filter_matches(&self, json: &str) -> Result<u32, JsError> {
+    /// Begin counting the frames that match a JSON `FrameFilter`, in place of any count not
+    /// finished. [`Session::count_step`] does the work a slice at a time. The matches of the last
+    /// count only are kept, for [`Session::set_trace_filter`].
+    pub fn count_begin(&mut self, json: &str) -> Result<(), JsError> {
+        self.count = None;
+        self.preview = None;
         let filter = self
             .parse_filter(json)
             .map_err(js_err)?
             .ok_or_else(|| js_err("no filter to count"))?;
-        Ok(self.store.count_matches(&filter) as u32)
+        let pass = FilterPass::new(&self.store, filter)
+            .map_err(|_| js_err("not enough memory to count the matches"))?;
+        self.count = Some((pass, self.origin_ns()));
+        Ok(())
+    }
+
+    /// Go on with the count through about `frames` more frames: the number of matches once it
+    /// is done, or none while frames remain. The count covers the frames stored when it began.
+    pub fn count_step(&mut self, frames: u32) -> Result<Option<u32>, JsError> {
+        let (pass, origin_ns) = self
+            .count
+            .as_mut()
+            .ok_or_else(|| js_err("no count is running"))?;
+        if !pass.step(&self.store, frames as usize) {
+            return Ok(None);
+        }
+        let matches = pass.count() as u32;
+        // Without the memory for them, applying this filter finds them again.
+        self.preview = Matches::of_pass(pass, *origin_ns).ok();
+        self.count = None;
+        Ok(Some(matches))
+    }
+
+    /// Whether a count is begun and not finished. Opening a log, starting or ending a capture
+    /// and swapping logs drop it.
+    pub fn count_running(&self) -> bool {
+        self.count.is_some()
     }
 
     /// Rows `start..start + count` of the trace, packed [`ROW_STRIDE`] bytes each. A row holds
@@ -910,8 +1048,8 @@ impl Session {
         }
     }
 
-    /// Payload bits of ID `key` that changed from its previous frame, summed in `buckets`
-    /// buckets between `t0` and `t1` seconds.
+    /// Payload bits of ID `key` that changed from its previous frame of the same kind, summed in
+    /// `buckets` buckets between `t0` and `t1` seconds.
     pub fn change_activity(&self, key: f64, t0: f64, t1: f64, buckets: u32) -> Vec<u32> {
         match self.filter(key) {
             Ok(Some(stats)) => {
@@ -1086,7 +1224,9 @@ impl Session {
     /// The rows of a trace key. The filtered rows are empty until a filter is set.
     fn trace(&self, key: f64) -> Result<Trace<'_>, ()> {
         if key == FILTERED {
-            return Ok(Trace::Filtered(self.filtered.as_deref().unwrap_or(&[])));
+            return Ok(Trace::Filtered(
+                self.filtered.as_ref().map_or(&[], |m| m.rows.as_slice()),
+            ));
         }
         if key == ALL_IDS {
             return Ok(Trace::All);
@@ -1906,6 +2046,18 @@ mod tests {
         filter.to_string()
     }
 
+    /// The matches of `filter`, counted a frame per step.
+    fn count(s: &mut Session, filter: &str) -> u32 {
+        s.count_begin(filter).unwrap();
+        loop {
+            if let Some(matches) = s.count_step(1).unwrap() {
+                assert!(!s.count_running());
+                return matches;
+            }
+            assert!(s.count_running());
+        }
+    }
+
     /// Store indices (offset 12) of the rows of `key`.
     fn row_indices(s: &Session, key: f64) -> Vec<u32> {
         s.rows(key, 0, u32::MAX)
@@ -1925,7 +2077,7 @@ mod tests {
             "keys": [id_key(0, 0x123), id_key(1, 0x7FF)],
             "rules": [{ "type": "bit", "byte": 1, "bit": 2, "set": true }],
         }));
-        assert_eq!(s.count_filter_matches(&filter).unwrap(), 2);
+        assert_eq!(count(&mut s, &filter), 2);
         assert_eq!(s.row_count(FILTERED), 0, "counting keeps nothing");
         assert_eq!(s.set_trace_filter(&filter).unwrap(), 2);
         assert_eq!(s.row_count(FILTERED), 2);
@@ -1953,13 +2105,129 @@ mod tests {
         assert_eq!(s.set_trace_filter(&any).unwrap(), 3);
         assert_eq!(row_indices(&s, FILTERED), [2, 4, 5]);
         let errors = filter_json(json!({ "kinds": ["error"] }));
-        assert_eq!(s.count_filter_matches(&errors).unwrap(), 1);
+        assert_eq!(count(&mut s, &errors), 1);
         let remote = filter_json(json!({ "kinds": ["remote", "reassembled"] }));
-        assert_eq!(s.count_filter_matches(&remote).unwrap(), 0);
+        assert_eq!(count(&mut s, &remote), 0);
 
         assert_eq!(s.set_trace_filter("null").unwrap(), 0);
         assert_eq!(s.row_count(FILTERED), 0);
         assert_eq!(s.row_count(ALL_IDS), 6, "the other keys are untouched");
+    }
+
+    #[test]
+    fn a_capture_adds_the_frames_that_match_to_the_filtered_rows() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let mut batch = capture_record(2e6, 0x100, 0, &[1]);
+        batch.extend(capture_record(3e6, 0x200, 0, &[1]));
+        assert!(s.push_frames(&batch).is_ok());
+        let filter =
+            filter_json(json!({ "keys": [id_key(0, 0x100)], "rules": [{ "type": "changes" }] }));
+        assert_eq!(s.set_trace_filter(&filter).unwrap(), 0);
+
+        let mut batch = capture_record(4e6, 0x100, 0, &[2]);
+        batch.extend(capture_record(5e6, 0x200, 0, &[2]));
+        batch.extend(capture_record(6e6, 0x100, 0, &[2]));
+        // Earlier than the first frame, so the end of the capture sorts it first.
+        batch.extend(capture_record(1e6, 0x100, 0, &[0]));
+        assert!(s.push_frames(&batch).is_ok());
+        // Until the capture ends, frames compare in the order they came.
+        assert_eq!(row_indices(&s, FILTERED), [2, 5]);
+
+        s.finish_capture().unwrap();
+        assert_eq!(s.store.frame(0).ts_ns, 1_000_000);
+        assert_eq!(row_indices(&s, FILTERED), [1, 3]);
+    }
+
+    #[test]
+    fn a_time_window_set_before_the_first_frame_counts_from_it() {
+        let mut s = Session::new();
+        s.start_capture("can0", 1_700_000_000_000.0);
+        assert_eq!(s.filtered_row_count(), None);
+        let window = filter_json(json!({ "t0": 0.0, "t1": 0.0015 }));
+        assert_eq!(s.set_trace_filter(&window).unwrap(), 0);
+        let batch: Vec<u8> = (1..=3)
+            .flat_map(|i| capture_record(f64::from(i) * 1e6, 0x100, 0, &[1]))
+            .collect();
+        assert!(s.push_frames(&batch).is_ok());
+        assert_eq!(row_indices(&s, FILTERED), [0, 1]);
+        assert!(s
+            .push_frames(&capture_record(3.2e6, 0x100, 0, &[1]))
+            .is_ok());
+        assert_eq!(s.filtered_row_count(), Some(2));
+        s.finish_capture().unwrap();
+        assert_eq!(row_indices(&s, FILTERED), [0, 1]);
+    }
+
+    #[test]
+    fn a_time_window_moves_with_the_first_frame_when_the_capture_is_sorted() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let mut batch = capture_record(10e6, 0x100, 0, &[1]);
+        batch.extend(capture_record(20e6, 0x200, 0, &[2]));
+        assert!(s.push_frames(&batch).is_ok());
+        // From the frame at 10 ms: 15 to 25 ms.
+        let window = filter_json(json!({ "t0": 0.005, "t1": 0.015 }));
+        assert_eq!(s.set_trace_filter(&window).unwrap(), 1);
+        assert!(s.push_frames(&capture_record(1e6, 0x300, 0, &[3])).is_ok());
+        s.finish_capture().unwrap();
+        // Now from the frame at 1 ms, as the chip reads: 6 to 16 ms, the frame at 10 ms.
+        assert_eq!(row_indices(&s, FILTERED), [1]);
+        assert_eq!(s.set_trace_filter(&window).unwrap(), 1);
+        assert_eq!(row_indices(&s, FILTERED), [1]);
+    }
+
+    #[test]
+    fn a_count_covers_the_frames_stored_when_it_began_and_ends_with_the_capture() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let batch: Vec<u8> = (0..4)
+            .flat_map(|i| capture_record(f64::from(i) * 1e6, 0x100, 0, &[1]))
+            .collect();
+        assert!(s.push_frames(&batch).is_ok());
+        let every = filter_json(json!({}));
+        s.count_begin(&every).unwrap();
+        assert_eq!(s.count_step(2).unwrap(), None);
+        assert!(s.push_frames(&capture_record(5e6, 0x100, 0, &[1])).is_ok());
+        assert_eq!(s.count_step(100).unwrap(), Some(4));
+
+        s.count_begin(&every).unwrap();
+        assert_eq!(s.count_step(2).unwrap(), None);
+        s.finish_capture().unwrap();
+        assert!(
+            !s.count_running(),
+            "the sort moves the frames the count went through"
+        );
+        assert_eq!(count(&mut s, &every), 5);
+    }
+
+    #[test]
+    fn applying_the_filter_just_counted_takes_the_matches_of_the_count() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let batch: Vec<u8> = (0..4)
+            .flat_map(|i| capture_record(f64::from(i) * 1e6, 0x100 + i, 0, &[1]))
+            .collect();
+        assert!(s.push_frames(&batch).is_ok());
+        let some = filter_json(json!({ "keys": [id_key(0, 0x101), id_key(0, 0x103)] }));
+        assert_eq!(count(&mut s, &some), 2);
+        assert_eq!(s.preview.as_ref().map(|p| p.rows.clone()), Some(vec![1, 3]));
+        // Frames stored after the count are matched when the filter is applied.
+        assert!(s.push_frames(&capture_record(5e6, 0x101, 0, &[2])).is_ok());
+        assert_eq!(s.set_trace_filter(&some).unwrap(), 3);
+        assert!(s.preview.is_none());
+        assert_eq!(row_indices(&s, FILTERED), [1, 3, 4]);
+
+        // Another filter is found afresh, and a count of it still running is finished.
+        assert_eq!(count(&mut s, &some), 3);
+        let other = filter_json(json!({ "keys": [id_key(0, 0x100)] }));
+        assert_eq!(s.set_trace_filter(&other).unwrap(), 1);
+        assert!(s.preview.is_none(), "only the filter counted last is kept");
+        s.count_begin(&some).unwrap();
+        assert_eq!(s.count_step(1).unwrap(), None);
+        assert_eq!(s.set_trace_filter(&some).unwrap(), 3);
+        assert!(!s.count_running());
+        assert_eq!(row_indices(&s, FILTERED), [1, 3, 4]);
     }
 
     #[test]

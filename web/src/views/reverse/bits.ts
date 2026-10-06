@@ -96,6 +96,11 @@ export function defaultWindow(duration: number): TimeWindow {
   return clampWindow([DEFAULT_START, DEFAULT_START + DEFAULT_SPAN], duration);
 }
 
+/** A window of the default span centred on `t`, kept inside the log. */
+export function windowAround(t: number, duration: number): TimeWindow {
+  return clampWindow([t - DEFAULT_SPAN / 2, t + DEFAULT_SPAN / 2], duration);
+}
+
 export function windowFits([a, b]: TimeWindow, duration: number): boolean {
   return duration > 0 ? a >= 0 && b <= duration && b - a >= MIN_SPAN - 1e-9 : a === 0 && b === 0;
 }

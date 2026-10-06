@@ -10,7 +10,7 @@ import { useViewState } from '../shared/viewState';
 import { InspectorSlot } from '../slots';
 import type { ViewProps } from '../types';
 import { FilterBar, NoMatches } from './FilterBar';
-import { filterChips, hasFilters, matchedBytes, toFrameFilter, type FilterChip, type TraceFilters } from './filters';
+import { filterChips, hasFilters, lastEditedChip, matchedBytes, toFrameFilter, type FilterChip, type TraceFilters } from './filters';
 import './trace.css';
 
 const FilterSheet = lazy(() => import('./FilterSheet').then((m) => ({ default: m.FilterSheet })));
@@ -34,9 +34,7 @@ let results = 0;
 /** Every frame (or one ID's, or the filtered ones) over the plot card, with the selected ID in the inspector. */
 export function TraceView({ ctx }: ViewProps) {
   const { core, log, ids, selected, plots, pinnedTime, setPinnedTime, setError, logVersion } = ctx;
-  const [storedFilters, setFilters] = useViewState<TraceFilters | null>('trace.filters', null, 'log');
-  // The filtered rows are found once, so a capture's new frames would never join them.
-  const filters = ctx.capturing ? null : storedFilters;
+  const [filters, setFilters] = useViewState<TraceFilters | null>('trace.filters', null, 'log');
   const [sheetOpen, setSheetOpen] = useState(false);
   // A new key per opening, so the sheet's draft starts from the applied filters.
   const [sheetKey, setSheetKey] = useState(0);
@@ -86,6 +84,34 @@ export function TraceView({ ctx }: ViewProps) {
 
   // The rows on screen are those of the last result, which may be for older filters.
   const result = filters && filtered && filtered.query === query && filtered.logVersion === logVersion ? filtered : null;
+
+  // The core adds a capture's new frames that match to the rows, and finds them again in time
+  // order when it ends, so the count follows each refresh of the capture. Without the memory
+  // for that, the core drops the filter and goes on recording.
+  const resultVersion = result?.version;
+  useEffect(() => {
+    if (resultVersion === undefined || log?.format !== 'capture') return;
+    let stale = false;
+    core.filteredRowCount().then((count) => {
+      if (stale) return;
+      if (count === null) {
+        held.delete(core);
+        setFiltered(null);
+        setFilters(null);
+        setError("The filters were turned off: there was no memory left to filter the capture's frames.");
+        return;
+      }
+      setFiltered((f) => {
+        if (!f || f.version !== resultVersion || f.count === count) return f;
+        const next = { ...f, count };
+        if (held.get(core) === f) held.set(core, next);
+        return next;
+      });
+    }, () => undefined);
+    return () => {
+      stale = true;
+    };
+  }, [core, log, resultVersion, setError, setFilters]);
   const shownQuery = result?.query;
   const highlight = useMemo(() => {
     const rules = shownQuery ? (JSON.parse(shownQuery) as FrameFilter).rules : [];
@@ -141,7 +167,6 @@ export function TraceView({ ctx }: ViewProps) {
         onEdit={openSheet}
         onRemove={(chip) => apply(chip.without)}
         onClear={() => apply(null)}
-        disabledReason={ctx.capturing ? 'Filters apply once the capture stops.' : undefined}
       />
       {sheetOpen && (
         <ChunkBoundary key={sheetKey} message="Couldn't load the filters.">
@@ -170,9 +195,9 @@ export function TraceView({ ctx }: ViewProps) {
         </div>
       ) : result && result.count === 0 && chips.length > 0 ? (
         <NoMatches
-          last={chips[chips.length - 1]}
+          last={lastEditedChip(chips, filters?.edited)}
           oneId={summary ? idLabel(summary) : null}
-          onRemoveLast={() => apply(chips[chips.length - 1].without)}
+          onRemoveLast={() => apply(lastEditedChip(chips, filters?.edited).without)}
           onClear={() => apply(null)}
         />
       ) : (

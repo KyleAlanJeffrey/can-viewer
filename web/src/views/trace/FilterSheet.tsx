@@ -4,7 +4,7 @@ import { formatId, idLabel, type CoreApi, type DataRule, type FrameKind, type Id
 import { Segmented } from '../../components/Segmented';
 import { Sheet } from '../../components/Sheet';
 import { formatCount } from '../../format';
-import { KINDS, formatSeconds, hasFilters, hexByte, toFrameFilter, type TraceFilters } from './filters';
+import { KINDS, formatSeconds, hasFilters, hexByte, ruleChipId, toFrameFilter, type TraceFilters } from './filters';
 import { TimeRangeStrip } from './TimeRangeStrip';
 import './filter-sheet.css';
 
@@ -40,6 +40,13 @@ interface Draft {
   combine: 'all' | 'any';
   from: string;
   to: string;
+  /** The parts edited, the last edited at the end: chip ids, with `rulePart` for rules. */
+  edited: string[];
+}
+
+/** A draft rule's entry in `Draft.edited`, which `parseDraft` turns into the rule's chip id. */
+function rulePart(id: number): string {
+  return `draft-rule-${id}`;
 }
 
 interface DraftErrors {
@@ -48,7 +55,13 @@ interface DraftErrors {
   to?: string;
 }
 
-type Preview = { state: 'counting' } | { state: 'counted'; count: number } | { state: 'failed'; message: string } | { state: 'invalid' };
+/** `of` is the total when the count was asked, which a capture grows meanwhile. `all` is no filter. */
+type Preview =
+  | { state: 'counting' }
+  | { state: 'counted'; count: number; of: number }
+  | { state: 'all' }
+  | { state: 'failed'; message: string }
+  | { state: 'invalid' };
 
 interface Props {
   open: boolean;
@@ -85,7 +98,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
       return;
     }
     if (query === null) {
-      setPreview({ state: 'counted', count: total });
+      setPreview({ state: 'all' });
       return;
     }
     let stale = false;
@@ -93,7 +106,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
     const timer = setTimeout(() => {
       core.countFilterMatches(JSON.parse(query)).then(
         (count) => {
-          if (!stale && count !== null) setPreview({ state: 'counted', count });
+          if (!stale && count !== null) setPreview({ state: 'counted', count, of: total });
         },
         (e) => {
           if (!stale) setPreview({ state: 'failed', message: e instanceof Error ? e.message : String(e) });
@@ -104,10 +117,17 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
       stale = true;
       clearTimeout(timer);
     };
-  }, [open, core, query, total, valid]);
+    // Not counted again for each frame a capture adds; `total` is read with the count.
+  }, [open, core, query, valid]);
 
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
-  const updateRule = (id: number, patch: Partial<RuleDraft>) => setDraft((d) => ({ ...d, rules: d.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  /** Like `update`, marking `part` as edited last. */
+  const edit = (part: string, patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch, edited: [...d.edited.filter((p) => p !== part), part] }));
+  const updateRule = (id: number, patch: Partial<RuleDraft>) =>
+    setDraft((d) => {
+      const part = rulePart(id);
+      return { ...d, rules: d.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)), edited: [...d.edited.filter((p) => p !== part), part] };
+    });
   const toggle = <T,>(list: T[], item: T, on: boolean) => (on ? [...list, item] : list.filter((x) => x !== item));
 
   const submit = (e: FormEvent) => {
@@ -160,7 +180,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
                 <input
                   type="checkbox"
                   checked={draft.channels.includes(channel)}
-                  onChange={(e) => update({ channels: toggle(draft.channels, channel, e.target.checked).sort((a, b) => a - b) })}
+                  onChange={(e) => edit('bus', { channels: toggle(draft.channels, channel, e.target.checked).sort((a, b) => a - b) })}
                 />
                 <span className="mono">{name}</span>
               </label>
@@ -170,7 +190,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
 
         <fieldset className="tv-section">
           <legend className="tv-legend">IDs or names</legend>
-          <IdPicker ids={ids} channels={channels} picked={draft.keys} onChange={(keys) => update({ keys })} />
+          <IdPicker ids={ids} channels={channels} picked={draft.keys} onChange={(keys) => edit('ids', { keys })} />
         </fieldset>
 
         <fieldset className="tv-section">
@@ -239,7 +259,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
                     type="button"
                     className="icon-button small"
                     aria-label={`Remove rule ${n}`}
-                    onClick={() => update({ rules: draft.rules.filter((r) => r.id !== rule.id) })}
+                    onClick={() => update({ rules: draft.rules.filter((r) => r.id !== rule.id), edited: draft.edited.filter((p) => p !== rulePart(rule.id)) })}
                   >
                     <X size={14} strokeWidth={1.75} />
                   </button>
@@ -253,13 +273,19 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
             );
           })}
           {draft.rules.some((r) => r.type === 'changes') && (
-            <p className="tv-hint">Any byte changes compares each frame with the previous frame of its ID and kind, over the bytes both have.</p>
+            <p className="tv-hint">
+              Any byte changes compares each frame with the previous frame of its ID and kind, over the bytes both have, so a payload that only gets longer or
+              shorter is not a change.
+            </p>
           )}
           <div className="tv-rules-foot">
             <button
               type="button"
               className="button"
-              onClick={() => update({ rules: [...draft.rules, { id: nextRuleId.current++, type: 'byteEquals', byte: '0', value: '', bit: 0 }] })}
+              onClick={() => {
+                const id = nextRuleId.current++;
+                edit(rulePart(id), { rules: [...draft.rules, { id, type: 'byteEquals', byte: '0', value: '', bit: 0 }] });
+              }}
             >
               <Plus size={16} strokeWidth={1.5} aria-hidden="true" />
               Add rule
@@ -284,7 +310,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
           <div className="tv-checks">
             {KINDS.map(({ kind, label }) => (
               <label key={kind} className="tv-check">
-                <input type="checkbox" checked={draft.kinds.includes(kind)} onChange={(e) => update({ kinds: toggle(draft.kinds, kind, e.target.checked) })} />
+                <input type="checkbox" checked={draft.kinds.includes(kind)} onChange={(e) => edit('kinds', { kinds: toggle(draft.kinds, kind, e.target.checked) })} />
                 {label}
               </label>
             ))}
@@ -294,10 +320,10 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
         <fieldset className="tv-section">
           <legend className="tv-legend">Time range</legend>
           <div className="tv-times">
-            <SecondsField label="From" placeholder="0.000" value={draft.from} error={fromError} onChange={(from) => update({ from })} />
-            <SecondsField label="To" placeholder={formatSeconds(duration)} value={draft.to} error={toError} onChange={(to) => update({ to })} />
+            <SecondsField label="From" placeholder="0.000" value={draft.from} error={fromError} onChange={(from) => edit('time', { from })} />
+            <SecondsField label="To" placeholder={formatSeconds(duration)} value={draft.to} error={toError} onChange={(to) => edit('time', { to })} />
             {(draft.from !== '' || draft.to !== '') && (
-              <button type="button" className="text-button" onClick={() => update({ from: '', to: '' })}>
+              <button type="button" className="text-button" onClick={() => edit('time', { from: '', to: '' })}>
                 Whole log
               </button>
             )}
@@ -306,7 +332,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
             duration={duration}
             t0={Number.isFinite(stripT0) ? stripT0 : null}
             t1={Number.isFinite(stripT1) ? stripT1 : null}
-            onChange={(t0, t1) => update({ from: t0 > 0 ? formatSeconds(t0) : '', to: t1 < duration ? formatSeconds(t1) : '' })}
+            onChange={(t0, t1) => edit('time', { from: t0 > 0 ? formatSeconds(t0) : '', to: t1 < duration ? formatSeconds(t1) : '' })}
           />
         </fieldset>
       </form>
@@ -323,11 +349,14 @@ function PreviewText({ preview, total }: { preview: Preview; total: number }) {
     case 'failed':
       return <>Couldn't count the matches: {preview.message}</>;
     case 'counted':
+    case 'all': {
+      const [count, of] = preview.state === 'all' ? [total, total] : [preview.count, preview.of];
       return (
         <>
-          Preview: <b className="num">{formatCount(preview.count)}</b> of <span className="num">{formatCount(total)}</span> frames match
+          Preview: <b className="num">{formatCount(count)}</b> of <span className="num">{formatCount(of)}</span> frames match
         </>
       );
+    }
   }
 }
 
@@ -498,6 +527,8 @@ function draftOf(filters: TraceFilters | null, channelCount: number): Draft {
     // As typed: String gives back the shortest text for the number, never rounding it.
     from: f?.t0 != null ? String(f.t0) : '',
     to: f?.t1 != null ? String(f.t1) : '',
+    // Rule i of the filters is draft rule i + 1, as numbered above.
+    edited: (f?.edited ?? []).map((id) => (id.startsWith('rule-') ? rulePart(Number(id.slice(5)) + 1) : id)),
   };
 }
 
@@ -554,6 +585,10 @@ function parseDraft(d: Draft, channelCount: number): { filters: TraceFilters | n
       combine: rules.length > 1 ? d.combine : 'all',
       t0: Number.isFinite(t0) ? t0 : null,
       t1: Number.isFinite(t1) ? t1 : null,
+      edited: d.edited.map((part) => {
+        const rule = d.rules.findIndex((r) => rulePart(r.id) === part);
+        return rule >= 0 ? ruleChipId(rule) : part;
+      }),
     },
     errors,
   };

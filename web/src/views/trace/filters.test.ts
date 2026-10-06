@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ALL_IDS, type DataRule } from '../../core/api';
 import { summary } from '../../test/fixtures';
-import { filterChips, matchedBytes, NO_FILTERS, toFrameFilter } from './filters';
+import { filterChips, lastEditedChip, matchedBytes, NO_FILTERS, toFrameFilter } from './filters';
 import { stripDomain } from './TimeRangeStrip';
 
 const engine = summary({ id: 0x100, name: 'Engine' });
@@ -28,6 +28,21 @@ describe('filterChips', () => {
     expect(chips.map((c) => c.label)).toEqual(['can1', '300', 'Error', '1.500 - 4.000 s', 'Byte 0 bit 3 set', 'Any byte changes']);
     expect(chips[4].without.rules).toEqual([{ type: 'changes' }]);
     expect(chips[3].without).toMatchObject({ t0: null, t1: null, channels: [1] });
+  });
+
+  it('finds the filter edited last, and keeps the edit order of what a chip leaves', () => {
+    const rules: DataRule[] = [{ type: 'changes' }, { type: 'bit', byte: 0, bit: 3, set: true }, { type: 'byteEquals', byte: 1, value: 2 }];
+    const filters = { ...NO_FILTERS, channels: [1], rules, t0: 1.5, edited: ['rule-2', 'bus', 'rule-1', 'time'] };
+    const chips = filterChips(filters, ['can0', 'can1'], []);
+    expect(lastEditedChip(chips, filters.edited).id).toBe('time');
+    expect(lastEditedChip(chips).id).toBe('rule-2');
+    const time = chips.find((c) => c.id === 'time')!;
+    expect(time.without.edited).toEqual(['rule-2', 'bus', 'rule-1']);
+    const firstRule = chips.find((c) => c.id === 'rule-0')!;
+    expect(firstRule.without.edited).toEqual(['rule-1', 'bus', 'rule-0', 'time']);
+    const middleRule = chips.find((c) => c.id === 'rule-1')!;
+    expect(middleRule.without.edited).toEqual(['rule-1', 'bus', 'time']);
+    expect(lastEditedChip(filterChips(middleRule.without, ['can0', 'can1'], []), ['rule-1', 'bus']).label).toBe('can1');
   });
 });
 

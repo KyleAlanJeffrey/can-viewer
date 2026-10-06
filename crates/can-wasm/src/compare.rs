@@ -103,6 +103,8 @@ pub struct IdComparison {
     pub bytes: Vec<usize>,
     /// Either log has fewer than `MIN_FRAMES` frames of the ID, so it is not scored.
     pub too_few_frames: bool,
+    /// Not scored for too few frames, but the payloads take different lengths or values.
+    pub payloads_differ: bool,
     /// The ID differs, but no more than it changes within log A, and the within-A rule left
     /// the differences out.
     pub changes_within_a: bool,
@@ -140,6 +142,9 @@ pub struct ByteComparison {
     /// Up to 16 values of each byte that log B shows and log A never does, counted as new
     /// rather than noise or drift, with ignored bits cleared.
     pub new_values: Vec<Vec<u8>>,
+    /// Per byte, seconds from log A's first frame to its first frame of the ID showing a value
+    /// that log B never does, counted as `new_values` are; None when A shows no such value.
+    pub first_only_in_a: Vec<Option<f64>>,
     pub ignored: Vec<Ignored>,
 }
 
@@ -194,6 +199,8 @@ struct Profile {
     /// Seconds the frames were taken from, to turn counts into rates.
     span_s: f64,
     max_len: usize,
+    /// A bit per payload length seen, with lengths past 127 sharing the top bit.
+    lengths: u128,
     /// Frames sent as CAN FD.
     fd_frames: u32,
     bytes: Vec<ByteProfile>,
@@ -221,6 +228,7 @@ fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profi
         frames: 0,
         span_s,
         max_len: 0,
+        lengths: 0,
         fd_frames: 0,
         bytes: vec![ByteProfile::new(); len],
         full_frames: 0,
@@ -236,6 +244,7 @@ fn profile(store: &FrameStore, frames: &[u32], len: usize, span_s: f64) -> Profi
         let data = &frame.data[..frame.data.len().min(len)];
         p.frames += 1;
         p.max_len = p.max_len.max(data.len());
+        p.lengths |= 1 << data.len().min(127);
         if frame.flags & flags::FD != 0 {
             p.fd_frames += 1;
         }
@@ -382,6 +391,8 @@ struct ByteDiff {
     parts: [(f64, ByteReason); 3],
     bits: [f64; 8],
     new_values: Vec<u8>,
+    /// Every value of A that B never shows, counted as `new_values` are.
+    only_in_a: Vec<u8>,
 }
 
 impl ByteDiff {
@@ -827,6 +838,7 @@ fn byte_diff(
         ],
         bits,
         new_values,
+        only_in_a: values_a,
     })
 }
 
@@ -913,6 +925,7 @@ struct Verdict {
     byte_scores: Vec<f64>,
     byte_reasons: Vec<ByteReason>,
     too_few: bool,
+    payloads_differ: bool,
     /// Differences the within-A rule left out.
     within_a: bool,
 }
@@ -944,7 +957,7 @@ fn rate_text(ratio: f64) -> String {
 /// Whether two profiles show different payloads: another length, or a byte value one shows
 /// and the other never does.
 fn payloads_differ(a: &Profile, b: &Profile) -> bool {
-    a.max_len != b.max_len
+    a.lengths != b.lengths
         || a.bytes.iter().zip(&b.bytes).any(|(x, y)| {
             (0..256)
                 .any(|v| (x.values[v] > 0) != (y.values[v] > 0) && x.values[v] + y.values[v] > 0)
@@ -960,9 +973,10 @@ fn judge(
     noise: Option<&Components>,
 ) -> Verdict {
     if a.frames < MIN_FRAMES || b.frames < MIN_FRAMES {
+        let differ = payloads_differ(a, b);
         return Verdict {
             score: 0.0,
-            reason: if payloads_differ(a, b) {
+            reason: if differ {
                 format!("{TOO_FEW_FRAMES}; payloads differ")
             } else {
                 TOO_FEW_FRAMES.to_owned()
@@ -970,6 +984,7 @@ fn judge(
             byte_scores: vec![0.0; ab.bytes.len()],
             byte_reasons: vec![ByteReason::Shift; ab.bytes.len()],
             too_few: true,
+            payloads_differ: differ,
             within_a: false,
         };
     }
@@ -1026,9 +1041,9 @@ fn judge(
     }
 
     let within_a =
-        raw.is_some() && raw_best >= SIGNIFICANT && best.is_none_or(|(s, _)| s < SIGNIFICANT);
+        raw.is_some() && significant(raw_best) && best.is_none_or(|(s, _)| !significant(s));
     let (score, reason) = match best {
-        Some((score, finding)) if score >= SIGNIFICANT => (
+        Some((score, finding)) if significant(score) => (
             score,
             match finding {
                 Finding::Byte(k, reason) => byte_reason_text(k, reason, score),
@@ -1053,12 +1068,19 @@ fn judge(
         byte_scores,
         byte_reasons,
         too_few: false,
+        payloads_differ: false,
         within_a,
     }
 }
 
 fn percent(score: f64) -> u8 {
     (score.clamp(0.0, 1.0) * 100.0).round() as u8
+}
+
+/// Decided on the rounded percent the app shows, so a score shown as 10 is never "No
+/// significant changes".
+fn significant(score: f64) -> bool {
+    percent(score) >= percent(SIGNIFICANT)
 }
 
 fn duration_s(store: &FrameStore) -> f64 {
@@ -1217,14 +1239,14 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                     100,
                     "Appears only in A".to_owned(),
                     vec![],
-                    (false, false),
+                    (false, false, false),
                 ),
                 (None, Some(_)) => (
                     Presence::OnlyB,
                     100,
                     "Appears only in B".to_owned(),
                     vec![],
-                    (false, false),
+                    (false, false, false),
                 ),
                 _ => {
                     let analysis = analyse(side_a, side_b, options);
@@ -1238,7 +1260,7 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                         .iter()
                         .copied()
                         .enumerate()
-                        .filter(|&(_, s)| s >= SIGNIFICANT)
+                        .filter(|&(_, s)| significant(s))
                         .collect();
                     bytes.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
                     (
@@ -1246,7 +1268,7 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                         percent(verdict.score),
                         verdict.reason,
                         bytes.into_iter().map(|(k, _)| k).collect(),
-                        (verdict.too_few, verdict.within_a),
+                        (verdict.too_few, verdict.payloads_differ, verdict.within_a),
                     )
                 }
             };
@@ -1269,7 +1291,8 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                 reason,
                 bytes,
                 too_few_frames: flags.0,
-                changes_within_a: flags.1,
+                payloads_differ: flags.1,
+                changes_within_a: flags.2,
             }
         })
         .collect();
@@ -1296,6 +1319,7 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
     let mut byte_scores = vec![0u8; len];
     let mut byte_reasons = vec![String::new(); len];
     let mut new_values = vec![Vec::new(); len];
+    let mut first_only_in_a = vec![None; len];
     if let (Some(pa), Some(pb), Some(ab)) = (&analysis.a, &analysis.b, &analysis.ab) {
         let verdict = judge(ab, analysis.raw.as_ref(), pa, pb, analysis.noise.as_ref());
         for (k, d) in ab.bytes.iter().enumerate() {
@@ -1307,12 +1331,14 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
                 continue;
             }
             bit_scores[k * 8..k * 8 + 8].copy_from_slice(&d.bits);
-            byte_reasons[k] = if score >= SIGNIFICANT {
+            byte_reasons[k] = if significant(score) {
                 byte_reason_text(k, verdict.byte_reasons[k], score)
             } else {
                 "No significant changes".to_owned()
             };
             new_values[k].clone_from(&d.new_values);
+            first_only_in_a[k] =
+                a.and_then(|a| first_showing(a, k, analysis.keep[k], &d.only_in_a));
         }
     }
     ByteComparison {
@@ -1325,8 +1351,24 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
         byte_scores,
         byte_reasons,
         new_values,
+        first_only_in_a,
         ignored: analysis.ignored,
     }
+}
+
+/// Seconds from the log's first frame to the ID's first frame whose byte `k`, over the bits in
+/// `keep`, is one of `values`.
+fn first_showing(side: Side<'_>, k: usize, keep: u8, values: &[u8]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let origin = side.store.first_ts_ns()?;
+    side.stats
+        .frames
+        .iter()
+        .map(|&i| side.store.frame(i as usize))
+        .find(|f| f.data.get(k).is_some_and(|&v| values.contains(&(v & keep))))
+        .map(|f| (f.ts_ns - origin) as f64 / 1e9)
 }
 
 /// What log A and log B may take between them, well under wasm32's 4 GiB, since a browser may
@@ -1493,6 +1535,8 @@ impl Session {
         std::mem::swap(&mut self.input, &mut log.input);
         self.series.clear();
         self.filtered = None;
+        self.count = None;
+        self.preview = None;
         self.export = VecDeque::new();
         Ok(())
     }
@@ -2040,10 +2084,59 @@ mod tests {
             (0, "Too few frames to compare; payloads differ")
         );
         assert!(found.too_few_frames);
+        assert!(found.payloads_differ);
         assert!(found.bytes.is_empty());
         let detail = compare_bytes(first_id(&a), first_id(&b), NO_RULES);
         assert_eq!(detail.byte_reasons, vec!["Too few frames to compare"]);
         assert_eq!(detail.byte_scores, vec![0]);
+
+        let alike = store(&periodic(0x300, 1.0, 3.0, |i, _| vec![50 + i as u8]));
+        let found = &compare_logs(&alike, &alike, NO_RULES)[0];
+        assert_eq!(found.reason, "Too few frames to compare");
+        assert!(found.too_few_frames);
+        assert!(!found.payloads_differ);
+
+        let mixed = store(&periodic(0x300, 1.0, 3.0, |i, _| {
+            if i == 0 {
+                vec![50, 0]
+            } else {
+                vec![50 + i as u8, 0, 0]
+            }
+        }));
+        let full = store(&periodic(0x300, 1.0, 3.0, |i, _| vec![50 + i as u8, 0, 0]));
+        let found = &compare_logs(&mixed, &full, NO_RULES)[0];
+        assert!(found.payloads_differ, "{found:?}");
+    }
+
+    #[test]
+    fn a_score_shown_as_10_is_significant() {
+        let log = store(&periodic(0x300, 10.0, 10.0, quiet));
+        let profile = whole(first_id(&log).unwrap(), 1);
+        let components = |score: f64| Components {
+            rate: 0.0,
+            ratio: None,
+            length: 0.0,
+            fd: 0.0,
+            bytes: vec![Some(ByteDiff {
+                parts: [
+                    (score, ByteReason::Shift),
+                    (0.0, ByteReason::NewValues),
+                    (0.0, ByteReason::ValuesOnlyInA),
+                ],
+                bits: [0.0; 8],
+                new_values: vec![],
+                only_in_a: vec![],
+            })],
+        };
+        let raw = components(0.3);
+        let verdict = judge(&components(0.0996), Some(&raw), &profile, &profile, None);
+        assert_eq!(percent(verdict.score), 10);
+        assert_eq!(verdict.reason, "Small value changes");
+        assert!(!verdict.within_a);
+
+        let verdict = judge(&components(0.094), Some(&raw), &profile, &profile, None);
+        assert_eq!(percent(verdict.score), 9);
+        assert_eq!(verdict.reason, "Also changes within A");
     }
 
     #[test]
@@ -2249,6 +2342,34 @@ mod tests {
         assert!(session.compare_finish().is_ok());
     }
 
+    #[test]
+    fn a_compressed_mf4_log_b_that_outgrows_its_budget_is_refused() {
+        let frames = store(&periodic(0x123, 1000.0, 20.0, quiet));
+        let mut file = std::io::Cursor::new(Vec::new());
+        can_formats::writer::write_log(
+            can_formats::Format::Mf4,
+            &frames,
+            crate::clock::local_time(),
+            &mut file,
+        )
+        .unwrap();
+        let file = file.into_inner();
+        let limit = 256 << 10;
+        assert!(frames.heap_bytes() > limit);
+
+        let mut input = LogInput {
+            file_name: "drive.mf4".to_owned(),
+            total_bytes: file.len() as f64,
+            limit: Some(limit),
+            ..LogInput::default()
+        };
+        let mut store = FrameStore::new();
+        input.push(&file, &mut store);
+        assert!(!input.refused, "its size suggests it fits");
+        input.finish(&mut store);
+        assert!(input.refused);
+    }
+
     /// A 16-bit little-endian value from `from` to `to` over a minute at 10 Hz.
     fn ramp16(from: u32, to: u32) -> FrameStore {
         store(&periodic(0x10E, 10.0, 60.0, move |_, t| {
@@ -2350,6 +2471,20 @@ mod tests {
         let b = stepping(&[0], 1.0, Some((2, 30.0, 2.0)));
         let found = &compare_logs(&a, &b, DEFAULTS)[0];
         assert!(found.score >= 60, "{found:?}");
+    }
+
+    #[test]
+    fn the_first_frame_of_a_value_only_in_a_is_found() {
+        let clean = stepping(&[0], 1.0, None);
+        let a = stepping(&[0], 1.0, Some((1, 45.0, 2.0)));
+        let detail = compare_bytes(first_id(&a), first_id(&clean), DEFAULTS);
+        let at = detail.first_only_in_a[0].expect("found");
+        assert!((at - 45.0).abs() < 0.01, "{at}");
+        assert_eq!(detail.first_only_in_a[1], None);
+
+        // An event only in B has no frame in A.
+        let detail = compare_bytes(first_id(&clean), first_id(&a), DEFAULTS);
+        assert_eq!(detail.first_only_in_a[0], None);
     }
 
     #[test]

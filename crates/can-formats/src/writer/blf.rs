@@ -19,7 +19,7 @@ const MAX_FRAME_OBJECT: usize = 32 + 40 + 64 + 3;
 /// header is written again at the end with the sizes and object count. The buffers are all
 /// allocated before the first frame is written.
 pub(super) fn write_blf<W: Write + Seek>(store: &FrameStore, out: &mut W) -> io::Result<()> {
-    let start_s = start_ns(store).div_euclid(1_000_000_000);
+    let start_s = start_ns(store)?.div_euclid(1_000_000_000);
     let end_s = log_frames(store)
         .map(|f| f.ts_ns)
         .max()

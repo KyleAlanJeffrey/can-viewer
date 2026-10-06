@@ -150,7 +150,9 @@ impl AnyParser {
     /// of its own that read only the file's start (see [`AnyParser::prime`]), given what the
     /// file has set so far, and only between lines. A text format's lines depend only on its
     /// header, and an ASC file's relative times on the sum the lines before them left, which is
-    /// carried from part to part (see [`PartTimes`]). The binary formats are read whole.
+    /// carried from part to part (see [`PartTimes`]). A BLF file is cut where an object ends
+    /// instead (see [`blf::ObjectEnds`]), and its objects in log containers are joined across
+    /// parts (see [`blf::InnerJoin`]). MF4 is read whole.
     #[must_use]
     pub fn splittable(&self) -> bool {
         match self {
@@ -158,7 +160,8 @@ impl AnyParser {
             AnyParser::Trc(parser) => !parser.mid_line(),
             AnyParser::Csv(parser) => !parser.mid_line(),
             AnyParser::Asc(parser) => !parser.mid_line(),
-            AnyParser::Blf(_) | AnyParser::Mf4(_) => false,
+            AnyParser::Blf(parser) => parser.splittable(),
+            AnyParser::Mf4(_) => false,
         }
     }
 
@@ -169,7 +172,8 @@ impl AnyParser {
     #[must_use]
     pub fn state(&self) -> String {
         match self {
-            AnyParser::Candump(_) | AnyParser::Blf(_) | AnyParser::Mf4(_) => String::new(),
+            AnyParser::Candump(_) | AnyParser::Mf4(_) => String::new(),
+            AnyParser::Blf(parser) => parser.state(),
             AnyParser::Asc(parser) => parser.state(),
             AnyParser::Trc(parser) => parser.state(),
             AnyParser::Csv(parser) => parser.state(),
@@ -199,8 +203,13 @@ impl AnyParser {
     /// Readies a parser of a [`AnyParser::splittable`] format to read a part of the file that
     /// starts at a line boundary further on: reads `head`, the start of the file, up to its
     /// last line break for what its header sets, dropping its frames, then counts lines,
-    /// bytes and rejections from zero.
+    /// bytes and rejections from zero. A BLF part starts where an object ends, and only the
+    /// file header is read from `head` (see [`BlfParser::start_part`]).
     pub fn prime(&mut self, head: &[u8]) {
+        if let AnyParser::Blf(parser) = self {
+            parser.start_part(head);
+            return;
+        }
         let head = &head[..memchr::memrchr(b'\n', head).map_or(0, |nl| nl + 1)];
         self.push(head, &mut Discard);
         match self {
@@ -209,6 +218,24 @@ impl AnyParser {
             AnyParser::Trc(parser) => parser.start_part(),
             AnyParser::Csv(parser) => parser.start_part(),
             AnyParser::Blf(_) | AnyParser::Mf4(_) => {}
+        }
+    }
+
+    /// What a BLF part read since [`AnyParser::prime`] and finished leaves at its edges of the
+    /// objects in log containers; `None` for the other formats.
+    pub fn part_edges(&mut self) -> Option<blf::PartEdges> {
+        match self {
+            AnyParser::Blf(parser) => parser.part_edges(),
+            _ => None,
+        }
+    }
+
+    /// For a BLF file, the objects in log containers left unread, for parts read after this
+    /// parser's bytes to join on to; `None` for the other formats.
+    pub fn take_inner_join(&mut self) -> Option<blf::InnerJoin> {
+        match self {
+            AnyParser::Blf(parser) => Some(parser.take_inner_join()),
+            _ => None,
         }
     }
 }

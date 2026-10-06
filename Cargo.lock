@@ -67,6 +67,7 @@ dependencies = [
  "can-core",
  "can-dbc-model",
  "can-formats",
+ "miniz_oxide",
  "serde",
  "serde_json",
  "wasm-bindgen",

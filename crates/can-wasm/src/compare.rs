@@ -1467,6 +1467,11 @@ impl Session {
         self.log_b.as_ref()?.input.segment_format()
     }
 
+    /// Like [`Session::object_cuts`], for log B.
+    pub fn compare_object_cuts(&mut self, chunk: &[u8], part_bytes: f64) -> Option<Vec<f64>> {
+        self.log_b.as_mut()?.input.object_cuts(chunk, part_bytes)
+    }
+
     /// Like [`Session::push_segment`], for log B: false when the part can't be joined, and log B
     /// must be read again from [`Session::compare_begin`]. Fails as
     /// [`Session::compare_push_chunk`] does once log B outgrows its memory budget.

@@ -60,6 +60,12 @@ class FakeSession {
     this.read += chunk.length;
     FakeSession.onPush?.();
   }
+  object_cuts() {
+    return undefined;
+  }
+  compare_object_cuts() {
+    return undefined;
+  }
   segment_format() {
     return 'candump';
   }

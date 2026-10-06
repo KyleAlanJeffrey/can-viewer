@@ -182,12 +182,14 @@ const openLogInput: ReadSession = {
   push_chunk: (chunk) => session.push_chunk(chunk),
   segment_format: () => session.segment_format(),
   push_segment: (segment) => session.push_segment(segment),
+  object_cuts: (chunk, partBytes) => session.object_cuts(chunk, partBytes),
 };
 
 const logBInput: ReadSession = {
   push_chunk: (chunk) => session.compare_push_chunk(chunk),
   segment_format: () => session.compare_segment_format(),
   push_segment: (segment) => session.compare_push_segment(segment),
+  object_cuts: (chunk, partBytes) => session.compare_object_cuts(chunk, partBytes),
 };
 
 function freshSession(): Session {

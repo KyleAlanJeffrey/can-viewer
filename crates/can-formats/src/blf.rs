@@ -6,6 +6,12 @@
 //! so the objects inside containers form a second stream with its own carry-over. CAN
 //! frames come as the message objects 1 and 86, CAN FD as 100 and 101, and error frames as
 //! 2, 73 and 104; every other object type is skipped.
+//!
+//! A large file can be read in parts, cut where an object of the file ends ([`ObjectEnds`]),
+//! each by a parser of its own ([`BlfParser::start_part`]). The objects inside log containers
+//! run on from part to part, so a part keeps the bytes before the first object it can tell
+//! starts one, and those it leaves at its end, for [`InnerJoin`] to read with the parts on
+//! either side.
 
 use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
@@ -52,6 +58,58 @@ pub struct BlfParser {
     header: FileHeader,
     outer: ObjectStream,
     inner: ObjectStream,
+    /// Set for a parser reading a part of the file, from where an object ends.
+    part: Option<PartStart>,
+}
+
+/// The start of the objects in log containers of a part read by a parser of its own. Its first
+/// bytes may end an object begun in the part before, so they are kept until an object start
+/// is found, from which the part's own objects are read.
+#[derive(Debug, Default)]
+struct PartStart {
+    prefix: Vec<u8>,
+    /// Where in `prefix` to look on for an object start.
+    searched: usize,
+    synced: bool,
+    /// The header of the object the part read on from.
+    start: Vec<u8>,
+    /// What the part read outside log containers before it found an object start in them.
+    early: Early,
+}
+
+/// Frames and rejections a part read outside log containers before it read the objects in
+/// them, which [`InnerJoin::join`] puts after those it reads from the part's [`PartEdges`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Early {
+    pub frames: bool,
+    pub rejections: bool,
+}
+
+impl Early {
+    fn of(stats: &ParseStats) -> Self {
+        Self {
+            frames: stats.frames > 0,
+            rejections: stats.rejected > 0,
+        }
+    }
+}
+
+/// What a part of a file read by a parser of its own leaves of the objects in log containers,
+/// for [`InnerJoin::join`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PartEdges {
+    /// The bytes before the first object the part read, or all of them if it found none.
+    pub prefix: Vec<u8>,
+    /// The part read on from the end of `prefix`, which starts an object.
+    pub synced: bool,
+    /// The header of that object.
+    pub start: Vec<u8>,
+    /// What the part read outside log containers before the objects in them.
+    pub early: Early,
+    /// The bytes at the end that start an object not yet complete, or might start one.
+    pub carry: Vec<u8>,
+    /// Bytes dropped since the last object while looking for the next.
+    pub gap: u64,
 }
 
 #[derive(Debug, Default)]
@@ -75,6 +133,8 @@ struct ObjectStream {
     carry: Vec<u8>,
     /// Bytes dropped since the last object while looking for the next signature.
     gap: usize,
+    /// Bytes pushed so far.
+    pushed: u64,
 }
 
 struct Object<'a> {
@@ -82,6 +142,8 @@ struct Object<'a> {
     flags: u32,
     timestamp: u64,
     body: &'a [u8],
+    /// Where the object ends in the stream.
+    end: u64,
 }
 
 struct Frame {
@@ -98,6 +160,66 @@ impl BlfParser {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Whether the rest of the file can be read in parts from here, each by a parser of its
+    /// own: the header is read and the bytes pushed end where an object ends.
+    #[must_use]
+    pub fn splittable(&self) -> bool {
+        self.header.state == HeaderState::Done && self.outer.carry.is_empty() && self.outer.gap == 0
+    }
+
+    /// What the header set that the objects after it are read by: the start time.
+    #[must_use]
+    pub fn state(&self) -> String {
+        match self.header.state {
+            HeaderState::Done => format!("start {}", self.header.start_ns),
+            _ => String::new(),
+        }
+    }
+
+    /// Readies the parser to read a part of the file from where one of its objects ends:
+    /// reads the header from `head`, the start of the file, then counts records, bytes and
+    /// rejections from zero. The part's objects in log containers are read from the first
+    /// that can be told to start one; the bytes before it, and what the part leaves at its
+    /// end, are given by [`BlfParser::part_edges`] once it is read.
+    pub fn start_part(&mut self, head: &[u8]) {
+        let size = if head.len() >= 8 {
+            u32_at(head, 4) as usize
+        } else {
+            head.len()
+        };
+        let mut stats = ParseStats::default();
+        self.header.take(&head[..size.min(head.len())], &mut stats);
+        self.stats = ParseStats::default();
+        self.part = Some(PartStart::default());
+    }
+
+    /// The edges of a part read since [`BlfParser::start_part`] and finished.
+    pub fn part_edges(&mut self) -> Option<PartEdges> {
+        let part = self.part.as_mut()?;
+        let early = if part.synced {
+            part.early
+        } else {
+            Early::of(&self.stats)
+        };
+        Some(PartEdges {
+            prefix: std::mem::take(&mut part.prefix),
+            synced: part.synced,
+            start: std::mem::take(&mut part.start),
+            early,
+            carry: std::mem::take(&mut self.inner.carry),
+            gap: self.inner.gap as u64,
+        })
+    }
+
+    /// Takes the objects in log containers not yet read, for the parts read after this
+    /// parser's bytes to join on to.
+    pub fn take_inner_join(&mut self) -> InnerJoin {
+        InnerJoin {
+            stream: std::mem::take(&mut self.inner),
+            start_ns: self.header.start_ns,
+        }
+    }
 }
 
 impl LogParser for BlfParser {
@@ -107,21 +229,30 @@ impl LogParser for BlfParser {
         if rest.is_empty() || self.header.state != HeaderState::Done {
             return;
         }
-        let (inner, start_ns) = (&mut self.inner, self.header.start_ns);
+        let (inner, part, start_ns) = (&mut self.inner, &mut self.part, self.header.start_ns);
         self.outer.push(rest, &mut self.stats, |object, stats| {
             if object.kind != LOG_CONTAINER {
                 frame_object(&object, start_ns, stats, sink);
                 return;
             }
-            match container_payload(object.body) {
-                Ok(payload) => inner.push(&payload, stats, |object, stats| {
-                    frame_object(&object, start_ns, stats, sink);
-                }),
+            let payload = match container_payload(object.body) {
+                Ok(payload) => payload,
                 Err(reason) => {
                     stats.lines += 1;
                     stats.reject(reason);
+                    return;
                 }
-            }
+            };
+            let objects = match part {
+                Some(part) if !part.synced => match part.sync(&payload, Early::of(stats)) {
+                    Some(objects) => std::borrow::Cow::Owned(objects),
+                    None => return,
+                },
+                _ => payload,
+            };
+            inner.push(&objects, stats, |object, stats| {
+                frame_object(&object, start_ns, stats, sink);
+            });
         });
     }
 
@@ -136,11 +267,191 @@ impl LogParser for BlfParser {
             });
         }
         self.outer.finish(&mut self.stats);
-        self.inner.finish(&mut self.stats);
+        // A part's last objects may run on into the next part.
+        if self.part.is_none() {
+            self.inner.finish(&mut self.stats);
+        }
     }
 
     fn stats(&self) -> &ParseStats {
         &self.stats
+    }
+}
+
+impl PartStart {
+    /// Adds the payload of the next log container. Once an object start is found, returns the
+    /// bytes from it, for the part to read; `early` is what the part read outside log
+    /// containers before then.
+    fn sync(&mut self, payload: &[u8], early: Early) -> Option<Vec<u8>> {
+        self.prefix.extend_from_slice(payload);
+        match object_start(&self.prefix, self.searched) {
+            Ok(at) => {
+                self.synced = true;
+                self.early = early;
+                let objects = self.prefix.split_off(at);
+                self.start = objects[..BASE_HEADER].to_vec();
+                Some(objects)
+            }
+            Err(from) => {
+                self.searched = from;
+                None
+            }
+        }
+    }
+}
+
+/// The first place in `bytes`, from `from`, that starts an object longer than its header and
+/// followed by another, or where to look on from once there are more bytes. Bytes inside an
+/// object may look like the start of one; [`InnerJoin::join`] refuses a part whose guess was
+/// wrong. A place whose next object isn't in yet is passed over for a later one that shows
+/// its next: a false one, claiming to run far, would otherwise hold the search to the end of
+/// the part.
+fn object_start(bytes: &[u8], mut from: usize) -> Result<usize, usize> {
+    let mut waiting = None;
+    loop {
+        let Some(found) = memchr::memmem::find(&bytes[from..], OBJECT_SIGNATURE) else {
+            let searched = bytes
+                .len()
+                .saturating_sub(OBJECT_SIGNATURE.len() - 1)
+                .max(from);
+            return Err(waiting.unwrap_or(searched));
+        };
+        let at = from + found;
+        let rest = &bytes[at..];
+        if rest.len() < BASE_HEADER {
+            return Err(waiting.unwrap_or(at));
+        }
+        let header_size = usize::from(u16_at(rest, 4));
+        let object_size = u32_at(rest, 8) as usize;
+        if header_size >= BASE_HEADER
+            && (header_size..=MAX_OBJECT).contains(&object_size)
+            && object_size > BASE_HEADER
+        {
+            let next = at + object_size;
+            let seen = next + MAX_PADDING + OBJECT_SIGNATURE.len();
+            if bytes.len() < seen {
+                waiting.get_or_insert(at);
+            } else if memchr::memmem::find(&bytes[next..seen], OBJECT_SIGNATURE).is_some() {
+                return Ok(at);
+            }
+        }
+        from = at + 1;
+    }
+}
+
+/// The objects in log containers of a file read in parts, joined across the parts: each
+/// part's [`PartEdges`] are read with what the parts before it left.
+#[derive(Debug, Default)]
+pub struct InnerJoin {
+    stream: ObjectStream,
+    start_ns: i64,
+}
+
+impl InnerJoin {
+    /// Reads the bytes a part left before its first object, completing an object the parts
+    /// before it began, then carries on from what the part left at its end. Returns what the
+    /// bytes read here counted, which come before the part's own, or `None` when the part was
+    /// not read as it would be in the whole file: it took bytes inside an object for the
+    /// start of one, or read frames outside log containers that would then come out of order.
+    /// `rejected_before` tells whether the log has a rejection before the part, so that the
+    /// order of the rejections read here and the part's early ones changes nothing.
+    pub fn join<S: FrameSink>(
+        &mut self,
+        edges: &PartEdges,
+        rejected_before: bool,
+        sink: &mut S,
+    ) -> Option<ParseStats> {
+        let mut stats = ParseStats::default();
+        let start_ns = self.start_ns;
+        self.stream
+            .push(&edges.prefix, &mut stats, |object, stats| {
+                frame_object(&object, start_ns, stats, sink);
+            });
+        if edges.synced {
+            // The part read on from an object start with nothing carried. So does the whole
+            // file if, given that object's header, what is carried here leaves just the
+            // header carried, having found no object, only stray bytes or bad headers.
+            let frames = stats.frames;
+            self.stream.push(&edges.start, &mut stats, |object, stats| {
+                frame_object(&object, start_ns, stats, sink);
+            });
+            if stats.frames != frames || self.stream.carry != edges.start || self.stream.gap != 0 {
+                return None;
+            }
+            self.stream = ObjectStream {
+                carry: edges.carry.clone(),
+                gap: usize::try_from(edges.gap).ok()?,
+                pushed: edges.carry.len() as u64,
+            };
+        }
+        let early = edges.early;
+        let in_order = stats.lines == 0
+            || early == Early::default()
+            || (rejected_before && !(early.frames && stats.frames > 0));
+        in_order.then_some(stats)
+    }
+
+    /// The end of the file: an object left incomplete is cut short.
+    #[must_use]
+    pub fn finish(mut self) -> ParseStats {
+        let mut stats = ParseStats::default();
+        self.stream.finish(&mut stats);
+        stats
+    }
+}
+
+/// Finds where the objects of a BLF file end, as [`BlfParser`] reads them, without reading
+/// what is in them: the places the file can be cut into parts.
+#[derive(Debug, Default)]
+pub struct ObjectEnds {
+    header: FileHeader,
+    header_bytes: u64,
+    stream: ObjectStream,
+    /// An object run on from an earlier push: where it ends in the stream, and how many of
+    /// its bytes are still to come.
+    passing: Option<(u64, usize)>,
+    stats: ParseStats,
+}
+
+impl ObjectEnds {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Takes the next bytes of the file, from its start, and calls `on_end` with the offset in
+    /// the file where each object ending in them ends.
+    pub fn push(&mut self, chunk: &[u8], mut on_end: impl FnMut(u64)) {
+        let mut rest = self.header.take(chunk, &mut self.stats);
+        if self.header.state != HeaderState::Done {
+            self.header_bytes += chunk.len() as u64;
+            return;
+        }
+        self.header_bytes += (chunk.len() - rest.len()) as u64;
+        let header_bytes = self.header_bytes;
+        if let Some((end, left)) = self.passing {
+            let passed = left.min(rest.len());
+            rest = &rest[passed..];
+            self.stream.pushed += passed as u64;
+            if passed < left {
+                self.passing = Some((end, left - passed));
+                return;
+            }
+            self.passing = None;
+            on_end(header_bytes + end);
+        }
+        self.stream.push(rest, &mut self.stats, |object, _| {
+            on_end(header_bytes + object.end);
+        });
+        // Pass over the rest of an object whose header is in by its size, rather than
+        // carrying it whole as the parser does to read it.
+        let carried = self.stream.carry.len();
+        let size = self.stream.carried_object_size();
+        if carried >= BASE_HEADER && size > carried {
+            let end = self.stream.pushed - carried as u64 + size as u64;
+            self.passing = Some((end, size - carried));
+            self.stream.carry = Vec::new();
+        }
     }
 }
 
@@ -202,6 +513,9 @@ impl ObjectStream {
         stats: &mut ParseStats,
         mut on_object: impl FnMut(Object<'_>, &mut ParseStats),
     ) {
+        let data_at = self.pushed;
+        self.pushed += data.len() as u64;
+        let mut carry_at = data_at - self.carry.len() as u64;
         let mut rest = data;
         // Complete the carried object from the front of `data`, taking no more than it
         // needs, before reading the rest of `data` in place.
@@ -214,11 +528,13 @@ impl ObjectStream {
                 return;
             }
             let mut carried = std::mem::take(&mut self.carry);
-            let used = self.consume(&carried, stats, &mut on_object);
+            let used = self.consume(&carried, carry_at, stats, &mut on_object);
             carried.drain(..used);
+            carry_at += used as u64;
             self.carry = carried;
         }
-        let used = self.consume(rest, stats, &mut on_object);
+        let rest_at = self.pushed - rest.len() as u64;
+        let used = self.consume(rest, rest_at, stats, &mut on_object);
         self.carry.extend_from_slice(&rest[used..]);
     }
 
@@ -249,11 +565,13 @@ impl ObjectStream {
         self.carry = Vec::new();
     }
 
-    /// Delivers every complete object in `data` and returns how much of it was used. What
-    /// is left is a partial object, or a few bytes that might start one.
+    /// Delivers every complete object in `data`, which starts at `data_at` in the stream, and
+    /// returns how much of it was used. What is left is a partial object, or a few bytes that
+    /// might start one.
     fn consume(
         &mut self,
         data: &[u8],
+        data_at: u64,
         stats: &mut ParseStats,
         on_object: &mut impl FnMut(Object<'_>, &mut ParseStats),
     ) -> usize {
@@ -296,6 +614,7 @@ impl ObjectStream {
                     flags,
                     timestamp,
                     body: &rest[header_size..object_size],
+                    end: data_at + (pos + object_size) as u64,
                 },
                 stats,
             );
@@ -950,5 +1269,43 @@ mod tests {
             stats.first_rejection,
             Some((1, "CAN message object too short"))
         );
+    }
+
+    #[test]
+    fn an_object_start_is_found_past_a_false_one_that_claims_to_run_on() {
+        let frame = object(1, NS, 0, &[0; 16]);
+        let mut false_start = object(1, NS, 0, &[0; 16]);
+        false_start[8..12].copy_from_slice(&(1u32 << 20).to_le_bytes());
+        let bytes = [&[7u8; 5][..], &false_start, &frame, &frame].concat();
+        let real = 5 + false_start.len();
+        assert_eq!(object_start(&bytes, 0), Ok(real));
+        // Until a later start shows its next object, the search resumes at the false one.
+        let cut = real + frame.len();
+        assert_eq!(object_start(&bytes[..cut], 0), Err(5));
+        assert_eq!(object_start(&bytes[..3], 0), Err(0));
+    }
+
+    #[test]
+    fn object_ends_are_found_however_the_file_comes_in() {
+        let frame = object(1, NS, 0, &[0; 16]);
+        let big = object(65, NS, 0, &[9; 5000]);
+        let mut objects = Vec::new();
+        let mut ends = Vec::new();
+        for part in [&frame, &big, &[1u8, 2][..], &frame, &big, &big, &frame] {
+            objects.extend_from_slice(part);
+            if part.starts_with(OBJECT_SIGNATURE) {
+                ends.push(144 + objects.len() as u64);
+            }
+        }
+        let file = [file_header(None), objects].concat();
+        for size in [1, 7, 16, 100, 4999, file.len()] {
+            let mut found = Vec::new();
+            let mut object_ends = ObjectEnds::new();
+            for chunk in file.chunks(size) {
+                object_ends.push(chunk, |end| found.push(end));
+                assert!(object_ends.stream.carry.len() < BASE_HEADER);
+            }
+            assert_eq!(found, ends, "{size}");
+        }
     }
 }

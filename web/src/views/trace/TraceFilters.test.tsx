@@ -290,6 +290,11 @@ describe('Trace filters', () => {
     // Every edit above came within the delay of the one before, so each settled draft was counted once.
     expect(countFilterMatches.mock.calls.length).toBeLessThanOrEqual(3);
 
+    await user.selectOptions(within(second).getByRole('combobox', { name: 'Rule 2 type' }), 'Any byte changes');
+    expect(within(sheet()).getByText(/a payload that only gets longer or shorter is not a change/)).toBeTruthy();
+    await user.selectOptions(within(second).getByRole('combobox', { name: 'Rule 2 type' }), 'Bit is clear');
+    await user.selectOptions(within(second).getByRole('combobox', { name: 'Rule 2 bit' }), '3');
+
     await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
     await waitFor(() => expect(chips()).toEqual(['Any ofByte 2 = 1F', 'Byte 0 bit 3 clear']));
   });

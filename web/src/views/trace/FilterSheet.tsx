@@ -266,7 +266,10 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
             );
           })}
           {draft.rules.some((r) => r.type === 'changes') && (
-            <p className="tv-hint">Any byte changes compares each frame with the previous frame of its ID and kind, over the bytes both have.</p>
+            <p className="tv-hint">
+              Any byte changes compares each frame with the previous frame of its ID and kind, over the bytes both have, so a payload that only gets longer or
+              shorter is not a change.
+            </p>
           )}
           <div className="tv-rules-foot">
             <button

@@ -122,7 +122,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Trace filters: a preview count that is already running in the worker is not stopped, only ignored; one queued behind it is skipped. On a 10M-frame log a count with data rules takes about 0.5 s natively (more in wasm), so a running count can delay the next table fetch by that much
 - [ ] Trace filters: data rules match any byte of a reassembled J1939 transfer, but matched bytes are only outlined in the first 64 the row carries
 - [ ] Trace filters: Apply filters the log again even when the preview just counted the same filters; keeping the preview's matches would cost 4 bytes per match for every draft
-- [ ] Trace filters: "Any byte changes" ignores a payload that only grows or shrinks; say so in the sheet's hint if that confuses people
+- [x] Trace filters: "Any byte changes" ignores a payload that only grows or shrinks, matching the changed bytes the trace highlights (a length change has no changed byte to show); the sheet's hint now says so
 - [x] Bit flips (`IdStats::bit_flips`, `bitFlipsBetween`) and change activity compare each frame with the previous frame of its ID and kind, as the trace's changed bytes and the filter do, so a polled ID's remote frames no longer hide the changes between its data frames; the Inspector heatmap, Reverse Engineer's Bit Activity and window strip, and Suggested signals all read these counts
 - [ ] Trace filters: check the sheet, the ID combobox and the range handles with a real screen reader (VoiceOver or NVDA) (owner)
 - [ ] Memory: the store's columns are plain `Vec`s, and doubling on growth nearly doubles peak memory; switch to fixed-size chunked columns

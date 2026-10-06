@@ -38,6 +38,7 @@ Exported from `web/src/core/api.ts`:
 | `FILTERED_ROWS` | `-2` | Pass as a key to mean the frames the last [`setTraceFilter`](#settracefilter) kept |
 | `FLAG_FD` | `1 << 0` | CAN FD frame |
 | `FLAG_BRS` | `1 << 1` | CAN FD bit rate switch |
+| `FLAG_ESI` | `1 << 2` | CAN FD error state indicator (the sender was error passive) |
 | `FLAG_RTR` | `1 << 3` | Remote frame |
 | `FLAG_ERROR` | `1 << 4` | Error frame |
 | `FLAG_REASSEMBLED` | `1 << 6` | Not from the log: a J1939 parameter group reassembled from its transport protocol packets (see "J1939 transport protocol" in COMPATIBILITY.md) |
@@ -48,7 +49,7 @@ Exported from `web/src/core/api.ts`:
 | `formatId(id, extended)` | function | Upper-case hex: 3 digits for standard IDs, 8 for extended |
 | `idLabel(s)` | function | What an ID list shows for an `IdSummary`: `formatId` text, or for error frames their class under the error flag, such as `Error 080` (`Error frames` when the class is 0) |
 
-Frame flags can also carry bits with no constant in `api.ts`: ESI (`1 << 2`) and transmitted (`1 << 5`, from `candump -x`). See `flags` in `crates/can-core/src/lib.rs`.
+Frame flags can also carry a bit with no constant in `api.ts`: transmitted (`1 << 5`, from `candump -x`). See `flags` in `crates/can-core/src/lib.rs`.
 
 ## Types
 
@@ -82,7 +83,7 @@ One frame received by a live capture adapter. Passed to [`appendFrames`](#append
 - **`timeNs`** `number` - Nanoseconds since the capture started (`startedAtMs` of [`startCapture`](#startcapture)).
 - **`id`** `number` - The ID without flags: 11 or 29 bits. For an error frame, its error class.
 - **`extended`** `boolean` - Whether the ID is a 29-bit extended ID.
-- **`flags`** `number` - `FLAG_FD`, `FLAG_BRS`, `FLAG_RTR` and `FLAG_ERROR`, as received. `FLAG_REASSEMBLED` is ignored: the engine reassembles J1939 transfers itself.
+- **`flags`** `number` - `FLAG_FD`, `FLAG_BRS`, `FLAG_ESI`, `FLAG_RTR` and `FLAG_ERROR`, as received. `FLAG_REASSEMBLED` is ignored: the engine reassembles J1939 transfers itself.
 - **`data`** `Uint8Array` - The payload, at most 64 bytes; empty for a remote frame.
 
 ### The Progress object

@@ -7,6 +7,8 @@ import { parseBtr, SERIAL_BAUD_RATE, SERIAL_BAUD_RATES, sja1000Bitrate } from '.
 
 const DEFAULT_BITRATE = 500_000;
 const DEFAULT_BUS = 'can0';
+/** Channels offered for gs_usb adapters; multi-channel ones have two to four. */
+const CHANNELS = 8;
 
 interface Props {
   open: boolean;
@@ -32,6 +34,8 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
   const [listenOnly, setListenOnly] = useState(true);
   const [bus, setBus] = useState(DEFAULT_BUS);
   const [serialBaudRate, setSerialBaudRate] = useState(SERIAL_BAUD_RATE);
+  // From 0, shown from 1.
+  const [channel, setChannel] = useState(0);
   // Empty: the bitrate chosen sets the timing.
   const [btrText, setBtrText] = useState('');
   const [starting, setStarting] = useState(false);
@@ -80,7 +84,6 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
 
   const busProblem = busNameProblem(bus.trim());
   const slcan = kind === 'slcan';
-  const offersFd = slcan;
   const btrTrimmed = btrText.trim();
   const btr = slcan && btrTrimmed !== '' ? parseBtr(btrTrimmed) : null;
   const btrProblem = slcan && btrTrimmed !== '' && !btr ? 'Enter four hex digits, BTR0 then BTR1, such as 031C.' : null;
@@ -94,7 +97,8 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
     try {
       await onStart(adapter, {
         bitrate: btrBitrate ?? bitrate,
-        dataBitrate: offersFd && dataBitrate > 0 ? dataBitrate : undefined,
+        dataBitrate: dataBitrate > 0 ? dataBitrate : undefined,
+        channel: !slcan && channel > 0 ? channel : undefined,
         bus: bus.trim(),
         listenOnly,
         allowUnconfirmedListenOnly: unconfirmed !== null,
@@ -174,27 +178,25 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
               ))}
             </select>
           </div>
-          {offersFd && (
-            <div className="field">
-              <label htmlFor={`${ids}databitrate`} className="field-label">
-                CAN FD data bitrate
-              </label>
-              <select
-                id={`${ids}databitrate`}
-                className="select cap-bitrate"
-                value={dataBitrate}
-                onChange={(e) => setDataBitrate(Number(e.target.value))}
-                disabled={starting}
-              >
-                <option value={0}>Off (classic CAN)</option>
-                {DATA_BITRATES.map((b) => (
-                  <option key={b} value={b}>
-                    {formatBitrate(b)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          <div className="field">
+            <label htmlFor={`${ids}databitrate`} className="field-label">
+              CAN FD data bitrate
+            </label>
+            <select
+              id={`${ids}databitrate`}
+              className="select cap-bitrate"
+              value={dataBitrate}
+              onChange={(e) => setDataBitrate(Number(e.target.value))}
+              disabled={starting}
+            >
+              <option value={0}>Off (classic CAN)</option>
+              {DATA_BITRATES.map((b) => (
+                <option key={b} value={b}>
+                  {formatBitrate(b)}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         <div className="field">
           <label htmlFor={`${ids}bus`} className="field-label">
@@ -242,9 +244,35 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
             The adapter never acknowledges or sends a frame, so it can&rsquo;t disturb the bus. If an adapter can&rsquo;t confirm it, you&rsquo;ll be asked before it starts.
           </p>
         </div>
-        {slcan && (
-          <details className="cap-advanced">
-            <summary>Advanced</summary>
+        <details className="cap-advanced">
+          <summary>Advanced</summary>
+          {!slcan && (
+            <div className="cap-advanced-body">
+              <div className="field">
+                <label htmlFor={`${ids}channel`} className="field-label">
+                  Channel
+                </label>
+                <select
+                  id={`${ids}channel`}
+                  className="select cap-bitrate"
+                  value={channel}
+                  onChange={(e) => setChannel(Number(e.target.value))}
+                  disabled={starting}
+                  aria-describedby={`${ids}channelhint`}
+                >
+                  {Array.from({ length: CHANNELS }, (_, c) => (
+                    <option key={c} value={c}>
+                      {c + 1}
+                    </option>
+                  ))}
+                </select>
+                <p id={`${ids}channelhint`} className="cap-hint">
+                  For an adapter with more than one CAN port. The first is 1.
+                </p>
+              </div>
+            </div>
+          )}
+          {slcan && (
             <div className="cap-advanced-body">
               <div className="field">
                 <label htmlFor={`${ids}baud`} className="field-label">
@@ -293,8 +321,8 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
                 </p>
               </div>
             </div>
-          </details>
-        )}
+          )}
+        </details>
         {unconfirmed && (
           <p className="field-error" role="alert">
             {unconfirmed} Start anyway?

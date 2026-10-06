@@ -188,7 +188,7 @@ Adapters:
 | Kind | Examples | Browser API | Notes |
 |---|---|---|---|
 | slcan (Lawicel) | CANable and CANable 2 with slcan firmware, USBtin, Lawicel CANUSB, other slcan adapters | Web Serial | Classic CAN, plus CAN FD (`d`, `D`, `b`, `B` frames, data bitrate set with `Y`) on adapters that take it |
-| gs_usb | candleLight, CANable with candleLight firmware, other adapters the Linux `gs_usb` driver binds (USB IDs 1D50:606F, 1209:2323, 1CD2:606F, 16D0:10B8) | WebUSB | Classic CAN only; the first channel only |
+| gs_usb | candleLight, CANable with candleLight firmware, other adapters the Linux `gs_usb` driver binds (USB IDs 1D50:606F, 1209:2323, 1CD2:606F, 16D0:10B8) | WebUSB | Classic CAN, or CAN FD on devices with the FD feature; any channel of a multi-channel device |
 
 slcan (`web/src/capture/slcan.ts`):
 
@@ -201,8 +201,9 @@ slcan (`web/src/capture/slcan.ts`):
 
 gs_usb (`web/src/capture/gsUsb.ts`):
 
-- The protocol of the Linux `gs_usb` driver: host format, then the device's bit timing limits (`BT_CONST`), then bit timing for the chosen bitrate at the sample point CiA 301 recommends, as near as the limits allow (87.5% up to 800 kbit/s, 75% above; at most 4,096 prescalers are tried), then `MODE` start, listen only when the device's features include it, and with hardware timestamps when they include those (`GS_CAN_FEATURE_HW_TIMESTAMP`), each received frame then carrying a 32-bit microsecond time after its data field. A device without listen-only mode is not started until the user agrees in the Capture sheet, as for slcan. Stop resets the device, and leaving the page sends the reset without waiting.
-- Only frames of channel 0 are kept; frames another channel reports are skipped.
+- The protocol of the Linux `gs_usb` driver: host format, then the device's bit timing limits (`BT_CONST`), then bit timing for the chosen bitrate at the sample point CiA 301 recommends, as near as the limits allow (87.5% up to 800 kbit/s, 75% above; at most 4,096 prescalers are tried), then `MODE` start, listen only when the device's features include it, and with hardware timestamps when they include those (`GS_CAN_FEATURE_HW_TIMESTAMP`), each received frame then carrying a 32-bit microsecond time after its data field. Every request after the host format names the channel chosen under Advanced in the Capture sheet (1 to 8; the first unless changed); for a channel other than the first, the device's config (`DEVICE_CONFIG`) is read first and a channel it lacks fails the start with a message.
+- CAN FD: with a CAN FD data bitrate chosen (1, 2, 4, 5 or 8 Mbit/s), a device whose features lack FD fails the start with a message. Otherwise the nominal and data phase limits come from `BT_CONST_EXT` (or, without that feature, the data phase is held to the nominal limits), the data phase is timed for a 75% sample point as near as they allow, sent with `DATA_BITTIMING` after the nominal timing, and `MODE` start sets the FD flag. FD frames are read with up to 64 bytes and their BRS and ESI flags. Untested on hardware. A device without listen-only mode is not started until the user agrees in the Capture sheet, as for slcan. Stop resets the device, and leaving the page sends the reset without waiting.
+- Only frames of the channel chosen are kept; frames another channel reports are skipped.
 - An overflow flag from the device is counted as a problem ("frames were lost").
 - Linux: the kernel's `gs_usb` driver claims the adapter, so the browser cannot open it until the driver is unbound from it (for example `echo -n <bus-port>:1.0 | sudo tee /sys/bus/usb/drivers/gs_usb/unbind`), and the user needs write access to the USB device (a udev rule). Web Serial on Linux likewise needs access to the serial device, usually through the `dialout` group.
 - Windows: candleLight firmware asks Windows for the WinUSB driver itself; an adapter given another driver cannot be opened from the browser.

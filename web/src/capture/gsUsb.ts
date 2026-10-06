@@ -1,11 +1,11 @@
 /**
  * candleLight and other gs_usb adapters over WebUSB: the protocol of the Linux `gs_usb` driver.
  * The host sets up the device with vendor control requests, then reads one 20-byte host frame
- * per bulk IN transfer. Only the first channel is used, and only classic CAN is asked for.
+ * per bulk IN transfer, of the channel chosen, in classic CAN or, with a data bitrate, CAN FD.
  * Frames are timed by the device's microsecond counter when it has one (see `DeviceClock`).
  */
 
-import { FLAG_BRS, FLAG_ERROR, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
+import { FLAG_BRS, FLAG_ERROR, FLAG_ESI, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
 import {
   DeviceClock,
   errorText,
@@ -32,18 +32,25 @@ const BREQ_HOST_FORMAT = 0;
 const BREQ_BITTIMING = 1;
 const BREQ_MODE = 2;
 const BREQ_BT_CONST = 4;
+const BREQ_DEVICE_CONFIG = 5;
 const BREQ_TIMESTAMP = 6;
+const BREQ_DATA_BITTIMING = 10;
+const BREQ_BT_CONST_EXT = 11;
 
 const MODE_RESET = 0;
 const MODE_START = 1;
 const MODE_FLAG_LISTEN_ONLY = 1 << 0;
 const MODE_FLAG_HW_TIMESTAMP = 1 << 4;
+const MODE_FLAG_FD = 1 << 8;
 const FEATURE_LISTEN_ONLY = 1 << 0;
 const FEATURE_HW_TIMESTAMP = 1 << 4;
+const FEATURE_FD = 1 << 8;
+const FEATURE_BT_CONST_EXT = 1 << 10;
 
 const FRAME_FLAG_OVERFLOW = 1 << 0;
 const FRAME_FLAG_FD = 1 << 1;
 const FRAME_FLAG_BRS = 1 << 2;
+const FRAME_FLAG_ESI = 1 << 3;
 
 /** SocketCAN `can_id` bits, which gs_usb host frames use. */
 const CAN_EFF_FLAG = 0x8000_0000;
@@ -62,6 +69,8 @@ const FD_LENGTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64];
 /** Bulk reads kept waiting at once, so frames don't queue up in the device between reads. */
 const READS_IN_FLIGHT = 8;
 const READ_LENGTH = 128;
+/** CiA's recommendation for the data phase, which tolerates less propagation delay. */
+const DATA_SAMPLE_POINT = 0.75;
 /** Prescalers tried at most, so odd limits from a device can't make the search run long. */
 const MAX_PRESCALERS = 4096;
 
@@ -77,6 +86,30 @@ export interface BitTimingLimits {
   brpMin: number;
   brpMax: number;
   brpInc: number;
+}
+
+/**
+ * The nominal and data phase limits of a CAN FD device (`gs_device_bt_const_extended`): the
+ * classic fields, then tseg1, tseg2, sjw and prescaler limits for the data phase.
+ */
+export function parseBitTimingLimitsExt(view: DataView): { nominal: BitTimingLimits; data: BitTimingLimits } {
+  const nominal = parseBitTimingLimits(view);
+  const u32 = (i: number) => view.getUint32(4 * i, true);
+  return {
+    nominal,
+    data: {
+      feature: nominal.feature,
+      fclk: nominal.fclk,
+      tseg1Min: u32(10),
+      tseg1Max: u32(11),
+      tseg2Min: u32(12),
+      tseg2Max: u32(13),
+      sjwMax: u32(14),
+      brpMin: u32(15),
+      brpMax: u32(16),
+      brpInc: u32(17),
+    },
+  };
 }
 
 /** A `gs_device_bittiming`: segments in time quanta and the prescaler. */
@@ -143,13 +176,13 @@ export type HostFrame = {
 } | null;
 
 /**
- * A received `gs_host_frame` of channel 0, or null for an echo of a sent frame, another
+ * A received `gs_host_frame` of `channel`, or null for an echo of a sent frame, another
  * channel's frame or a transfer too short. With `timestamps`, the device was started with
  * hardware timestamps, and a transfer that carries one gives it.
  */
-export function parseHostFrame(view: DataView, timestamps = false): HostFrame {
+export function parseHostFrame(view: DataView, timestamps = false, channel = 0): HostFrame {
   if (view.byteLength < HOST_FRAME_HEADER || view.getUint32(0, true) !== RX_ECHO_ID) return null;
-  if (view.getUint8(9) !== 0) return null;
+  if (view.getUint8(9) !== channel) return null;
   const canId = view.getUint32(4, true);
   const dlc = view.getUint8(8) & 0x0f;
   const frameFlags = view.getUint8(10);
@@ -161,12 +194,21 @@ export function parseHostFrame(view: DataView, timestamps = false): HostFrame {
   if (view.byteLength < HOST_FRAME_HEADER + dataLength) return null;
   const data = new Uint8Array(view.buffer, view.byteOffset + HOST_FRAME_HEADER, dataLength).slice();
   const extended = !error && (canId & CAN_EFF_FLAG) !== 0;
-  const flags = (fd ? FLAG_FD : 0) | (fd && frameFlags & FRAME_FLAG_BRS ? FLAG_BRS : 0) | (remote ? FLAG_RTR : 0) | (error ? FLAG_ERROR : 0);
+  const flags =
+    (fd ? FLAG_FD : 0) |
+    (fd && frameFlags & FRAME_FLAG_BRS ? FLAG_BRS : 0) |
+    (fd && frameFlags & FRAME_FLAG_ESI ? FLAG_ESI : 0) |
+    (remote ? FLAG_RTR : 0) |
+    (error ? FLAG_ERROR : 0);
   const id = error || extended ? canId & CAN_EFF_MASK : canId & 0x7ff;
   const parsed: NonNullable<HostFrame> = { frame: { id, extended, flags, data }, overflow: (frameFlags & FRAME_FLAG_OVERFLOW) !== 0 };
   const timestampAt = HOST_FRAME_HEADER + (fd ? FD_DATA_FIELD : CLASSIC_DATA_FIELD);
   if (timestamps && view.byteLength >= timestampAt + 4) parsed.timestampUs = view.getUint32(timestampAt, true);
   return parsed;
+}
+
+function timingWords(t: BitTiming): ArrayBuffer {
+  return u32s(t.propSeg, t.phaseSeg1, t.phaseSeg2, t.sjw, t.brp);
 }
 
 function u32s(...values: number[]): ArrayBuffer {
@@ -193,6 +235,8 @@ export class GsUsbAdapter implements CaptureAdapter {
   private cancelled = false;
   /** Set once the device has been opened, and its interface claimed, for this start. */
   private claimed = false;
+  /** The device channel captured, which every request about it names. */
+  private channel = 0;
   /** The device was started with hardware timestamps. */
   private timestamps = false;
   private deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
@@ -220,6 +264,7 @@ export class GsUsbAdapter implements CaptureAdapter {
     this.claimed = false;
     this.timestamps = false;
     this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
+    this.channel = settings.channel ?? 0;
     this.reads = [];
     this.events = events;
     this.clock = clock;
@@ -242,21 +287,45 @@ export class GsUsbAdapter implements CaptureAdapter {
     try {
       await this.controlOut(BREQ_HOST_FORMAT, 1, u32s(0x0000_beef));
       this.checkCancelled();
-      const limits = parseBitTimingLimits(await this.controlIn(BREQ_BT_CONST, 0, 40));
+      if (this.channel > 0) {
+        // `icount` is the number of channels less one.
+        const channels = (await this.controlIn(BREQ_DEVICE_CONFIG, 1, 12)).getUint8(3) + 1;
+        this.checkCancelled();
+        if (this.channel >= channels) {
+          throw new Error(`This adapter has ${channels === 1 ? 'one channel' : `${channels} channels`}. Choose channel ${channels === 1 ? '1' : `1 to ${channels}`} under Advanced.`);
+        }
+      }
+      let limits = parseBitTimingLimits(await this.controlIn(BREQ_BT_CONST, this.channel, 40));
       this.checkCancelled();
+      const fd = settings.dataBitrate !== undefined;
+      let dataLimits = limits;
+      if (fd) {
+        if ((limits.feature & FEATURE_FD) === 0) throw new Error("This adapter can't do CAN FD. Set CAN FD data bitrate to Off for a classic bus.");
+        // Without the extended limits, the data phase is held to the nominal ones.
+        if (limits.feature & FEATURE_BT_CONST_EXT) {
+          ({ nominal: limits, data: dataLimits } = parseBitTimingLimitsExt(await this.controlIn(BREQ_BT_CONST_EXT, this.channel, 72)));
+          this.checkCancelled();
+        }
+      }
       const timing = bitTiming(limits, settings.bitrate);
       if (!timing) throw new Error(`The adapter can't run at ${settings.bitrate} bit/s.`);
+      const dataTiming = fd ? bitTiming(dataLimits, settings.dataBitrate!, DATA_SAMPLE_POINT) : null;
+      if (fd && !dataTiming) throw new Error(`The adapter can't run a CAN FD data phase at ${settings.dataBitrate} bit/s.`);
       const listenOnly = settings.listenOnly && (limits.feature & FEATURE_LISTEN_ONLY) !== 0;
       if (settings.listenOnly && !listenOnly && !settings.allowUnconfirmedListenOnly) {
         throw new ListenOnlyUnconfirmedError("This adapter can't listen only, so it would acknowledge frames on the bus.");
       }
-      await this.controlOut(BREQ_MODE, 0, u32s(MODE_RESET, 0));
+      await this.controlOut(BREQ_MODE, this.channel, u32s(MODE_RESET, 0));
       this.checkCancelled();
-      await this.controlOut(BREQ_BITTIMING, 0, u32s(timing.propSeg, timing.phaseSeg1, timing.phaseSeg2, timing.sjw, timing.brp));
+      await this.controlOut(BREQ_BITTIMING, this.channel, timingWords(timing));
       this.checkCancelled();
+      if (dataTiming) {
+        await this.controlOut(BREQ_DATA_BITTIMING, this.channel, timingWords(dataTiming));
+        this.checkCancelled();
+      }
       const timestamps = (limits.feature & FEATURE_HW_TIMESTAMP) !== 0;
-      const modeFlags = (listenOnly ? MODE_FLAG_LISTEN_ONLY : 0) | (timestamps ? MODE_FLAG_HW_TIMESTAMP : 0);
-      await this.controlOut(BREQ_MODE, 0, u32s(MODE_START, modeFlags));
+      const modeFlags = (listenOnly ? MODE_FLAG_LISTEN_ONLY : 0) | (timestamps ? MODE_FLAG_HW_TIMESTAMP : 0) | (fd ? MODE_FLAG_FD : 0);
+      await this.controlOut(BREQ_MODE, this.channel, u32s(MODE_START, modeFlags));
       this.running = true;
       this.timestamps = timestamps;
       this.checkCancelled();
@@ -287,7 +356,7 @@ export class GsUsbAdapter implements CaptureAdapter {
     try {
       const wasRunning = this.running;
       this.running = false;
-      if (wasRunning) await settleWithin(this.controlOut(BREQ_MODE, 0, u32s(MODE_RESET, 0)), CLOSE_WAIT_MS);
+      if (wasRunning) await settleWithin(this.controlOut(BREQ_MODE, this.channel, u32s(MODE_RESET, 0)), CLOSE_WAIT_MS);
       if (this.claimed) await settleWithin(this.device.releaseInterface(this.interfaceNumber), CLOSE_WAIT_MS);
       this.claimed = false;
       // Closing the device fails the reads still waiting.
@@ -305,7 +374,7 @@ export class GsUsbAdapter implements CaptureAdapter {
   private async syncClock() {
     const before = this.clock();
     try {
-      const counter = (await this.controlIn(BREQ_TIMESTAMP, 0, 4)).getUint32(0, true);
+      const counter = (await this.controlIn(BREQ_TIMESTAMP, this.channel, 4)).getUint32(0, true);
       this.deviceClock.sync(counter * 1000, (before + this.clock()) / 2);
     } catch {
       // Not every firmware answers it.
@@ -319,7 +388,7 @@ export class GsUsbAdapter implements CaptureAdapter {
   release() {
     if (!this.running) return;
     this.running = false;
-    void this.device.controlTransferOut(this.setup(BREQ_MODE, 0), u32s(MODE_RESET, 0)).catch(() => undefined);
+    void this.device.controlTransferOut(this.setup(BREQ_MODE, this.channel), u32s(MODE_RESET, 0)).catch(() => undefined);
   }
 
   /** The interface with a bulk IN endpoint; candleLight has one, interface 0 endpoint 1. */
@@ -370,7 +439,7 @@ export class GsUsbAdapter implements CaptureAdapter {
   }
 
   private receive(view: DataView) {
-    const parsed = parseHostFrame(view, this.timestamps);
+    const parsed = parseHostFrame(view, this.timestamps, this.channel);
     if (!parsed) return;
     if (parsed.overflow) this.events?.onProblem("The adapter's receive buffer overflowed, so frames were lost.");
     const hostNs = this.clock();

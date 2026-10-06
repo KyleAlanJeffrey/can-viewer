@@ -179,7 +179,21 @@ describe('CaptureSheet', () => {
     });
 
     await userEvent.click(screen.getByRole('radio', { name: 'USB (candleLight)' }));
-    expect(screen.queryByText('Advanced')).toBeNull();
+    expect(screen.queryByLabelText('Serial speed')).toBeNull();
+    expect(screen.getByLabelText('Channel')).toBeTruthy();
+  });
+
+  it('captures a channel other than the first of a gs_usb adapter, chosen under Advanced', async () => {
+    const usbAdapter: CaptureAdapter = { label: 'candleLight FD (1D50:606F)', start: vi.fn(), stop: vi.fn() };
+    const onStart = vi.fn(async () => {});
+    render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['gsusb']} request={async () => usbAdapter} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    await userEvent.click(screen.getByText('Advanced'));
+    expect((screen.getByLabelText('Channel') as HTMLSelectElement).value).toBe('0');
+    await userEvent.selectOptions(screen.getByLabelText('Channel'), '2');
+    await userEvent.selectOptions(screen.getByLabelText('CAN FD data bitrate'), '2 Mbit/s');
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(usbAdapter, expect.objectContaining({ channel: 1, dataBitrate: 2_000_000, serialBaudRate: undefined, btr: undefined }));
   });
 
   it('stays without an adapter when the device prompt is dismissed', async () => {

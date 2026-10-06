@@ -7,6 +7,8 @@ export const FILTERED_ROWS = -2;
 
 export const FLAG_FD = 1 << 0;
 export const FLAG_BRS = 1 << 1;
+/** CAN FD error state indicator: the sender was error passive. */
+export const FLAG_ESI = 1 << 2;
 export const FLAG_RTR = 1 << 3;
 export const FLAG_ERROR = 1 << 4;
 /** Not from the log: a J1939 parameter group reassembled from its transport protocol packets. */
@@ -50,7 +52,7 @@ export interface CaptureFrame {
   /** The ID without flags: 11 or 29 bits. For an error frame, its error class. */
   id: number;
   extended: boolean;
-  /** `FLAG_FD`, `FLAG_BRS`, `FLAG_RTR` and `FLAG_ERROR`, as received. */
+  /** `FLAG_FD`, `FLAG_BRS`, `FLAG_ESI`, `FLAG_RTR` and `FLAG_ERROR`, as received. */
   flags: number;
   /** The payload, at most 64 bytes; empty for a remote frame. */
   data: Uint8Array;

@@ -409,6 +409,33 @@ describe('SlcanAdapter', () => {
     expect(port.commands).toEqual(['C', 'S6', 'Z1', 'O', 'C']);
   });
 
+  it('sets a CAN FD data bitrate with Y before the bus opens, and reads FD frames', async () => {
+    const port = new FakeSerialPort();
+    port.canable();
+    const adapter = new SlcanAdapter(port, timing);
+    const { frames, events } = recordingEvents();
+    await adapter.start({ bitrate: 500_000, dataBitrate: 2_000_000, listenOnly: false }, events, () => 0);
+    expect(port.commands).toEqual(['C', 'S6', 'Y2', 'Z1', 'O']);
+    port.send(`b1239${'11'.repeat(12)}\r`);
+    await tick();
+    expect(frames[0]).toMatchObject({ id: 0x123, flags: FLAG_FD | FLAG_BRS });
+    expect(frames[0].data).toHaveLength(12);
+    await adapter.stop();
+  });
+
+  it('fails with a message when the adapter refuses the data bitrate, or for one it has no code for', async () => {
+    const port = new FakeSerialPort();
+    port.answer = (command) => (command.startsWith('Y') ? '\x07' : '\r');
+    const adapter = new SlcanAdapter(port, timing);
+    await expect(adapter.start({ bitrate: 500_000, dataBitrate: 5_000_000, listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
+      'The adapter refused the CAN FD data bitrate. Only CAN FD adapters, such as a CANable 2, take it.',
+    );
+    expect(port.commands).toEqual(['C', 'S6', 'Y5', 'C']);
+    await expect(adapter.start({ bitrate: 500_000, dataBitrate: 3_000_000, listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
+      "can't run a CAN FD data phase at 3000000 bit/s",
+    );
+  });
+
   it('sets custom bit timing with s in place of S<n>', async () => {
     const port = new FakeSerialPort();
     const adapter = new SlcanAdapter(port, timing);

@@ -3,9 +3,14 @@ import type { CaptureFrame } from '../core/api';
 /** The bitrates adapters are opened at, in bit/s: the nine slcan `S0` to `S8` offers. */
 export const BITRATES = [10_000, 20_000, 50_000, 100_000, 125_000, 250_000, 500_000, 800_000, 1_000_000] as const;
 
+/** CAN FD data phase bitrates offered, in bit/s: the five CANable 2 firmware's `Y` command sets. */
+export const DATA_BITRATES = [1_000_000, 2_000_000, 4_000_000, 5_000_000, 8_000_000] as const;
+
 export interface CaptureSettings {
   /** One of `BITRATES`. */
   bitrate: number;
+  /** The CAN FD data phase bitrate, one of `DATA_BITRATES`; not given for classic CAN. */
+  dataBitrate?: number;
   /** The bus name the frames are stored under, `can0` when not given. Adapters ignore it. */
   bus?: string;
   /** slcan: the serial port's baud rate, 115200 when not given. USB CDC adapters ignore it. */

@@ -90,7 +90,7 @@ export class CaptureRecorder {
     title: (status: CaptureStatus): string => {
       const rate = status.rate === null ? '' : ` at ${formatCount(Math.round(status.rate))} frames/s`;
       const lines = [
-        `Recording ${this.bus} from ${this.adapter.label} at ${formatBitrate(this.bitrate)}, ${this.listenOnly ? 'listen only' : 'not listen only'}.`,
+        `Recording ${this.bus} from ${this.adapter.label} at ${formatBitrate(this.bitrate)}${this.dataBitrate ? `, CAN FD data ${formatBitrate(this.dataBitrate)}` : ''}, ${this.listenOnly ? 'listen only' : 'not listen only'}.`,
         `${formatCountOf(status.frames, 'frame', 'frames')}${rate} in ${formatDuration(status.elapsedS)}.`,
       ];
       if (status.problems > 0) lines.push(`${formatCountOf(status.problems, 'error', 'errors')}. The last: ${status.lastProblem}`);
@@ -114,6 +114,7 @@ export class CaptureRecorder {
   private lastProblem: string | null = null;
   private origin = 0;
   private bitrate = 0;
+  private dataBitrate: number | undefined;
   /** The bus name the frames are stored under, once started. */
   bus = CAPTURE_CHANNEL;
   /** Whether the adapter confirmed listen-only mode. */
@@ -176,6 +177,7 @@ export class CaptureRecorder {
     );
     const started = await this.withinStartTimeout(starting);
     this.bitrate = settings.bitrate;
+    this.dataBitrate = settings.dataBitrate;
     this.bus = settings.bus || CAPTURE_CHANNEL;
     this.listenOnly = started.listenOnly;
     try {

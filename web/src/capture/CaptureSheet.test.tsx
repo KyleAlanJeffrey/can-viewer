@@ -140,6 +140,17 @@ describe('CaptureSheet', () => {
     expect((screen.getByLabelText('Bus name') as HTMLInputElement).value).toBe(' body ');
   });
 
+  it('sets a CAN FD data bitrate, off by default', async () => {
+    const onStart = vi.fn(async () => {});
+    render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan']} request={async () => slcan()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    const data = screen.getByLabelText('CAN FD data bitrate') as HTMLSelectElement;
+    expect(data.value).toBe('0');
+    await userEvent.selectOptions(data, '4 Mbit/s');
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ bitrate: 500_000, dataBitrate: 4_000_000 }));
+  });
+
   it('sets a serial speed and custom bit timing for slcan under Advanced', async () => {
     const onStart = vi.fn(async () => {});
     render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan', 'gsusb']} request={async () => slcan()} />);

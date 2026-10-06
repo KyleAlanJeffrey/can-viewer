@@ -35,6 +35,15 @@ export const SERIAL_BAUD_RATES = [9600, 19_200, 38_400, 57_600, 115_200, 230_400
 /** The crystal of the Lawicel CANUSB and most SJA1000 adapters; the CAN clock is half of it. */
 const SJA1000_CRYSTAL_HZ = 16_000_000;
 
+/** The `Y<n>` code of each CAN FD data bitrate (CANable 2 firmware). */
+const DATA_BITRATE_CODES = new Map([
+  [1_000_000, 1],
+  [2_000_000, 2],
+  [4_000_000, 4],
+  [5_000_000, 5],
+  [8_000_000, 8],
+]);
+
 /** `Z1` timestamps count milliseconds from 0 to 59999. */
 const TIMESTAMP_WRAP_NS = 60_000 * 1e6;
 
@@ -199,7 +208,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Opens the CAN channel with `C` (in case it was left open), `S<n>` (or `s` with custom bit
- * timing), then `O`, or for listen only `L`, else `M1` (CANable's silent mode, which it takes
+ * timing), `Y<n>` for a CAN FD data bitrate, then `O`, or for listen only `L`, else `M1` (CANable's silent mode, which it takes
  * only while off the bus) and `O`.
  * Whether the adapter answers commands at all is learnt from `S<n>` or `s`, which every Lawicel
  * adapter answers. Listen-only counts as confirmed only when an adapter answers `L` with CR.
@@ -256,6 +265,8 @@ export class SlcanAdapter implements CaptureAdapter {
     const code = BITRATE_CODES.get(settings.bitrate);
     if (!btr && code === undefined) throw new Error(`slcan adapters can't run at ${settings.bitrate} bit/s.`);
     const bitrateCommand = btr ? `s${settings.btr!.toUpperCase()}` : `S${code}`;
+    const dataCode = settings.dataBitrate === undefined ? null : DATA_BITRATE_CODES.get(settings.dataBitrate);
+    if (dataCode === undefined) throw new Error(`slcan adapters can't run a CAN FD data phase at ${settings.dataBitrate} bit/s.`);
     // The sheet keeps the chosen adapter, so it can be started again after a stop.
     this.parser = new SlcanParser();
     this.waiters = [];
@@ -295,6 +306,9 @@ export class SlcanAdapter implements CaptureAdapter {
       );
       const answers = bitrate !== 'no answer';
       const wait = answers ? this.timing.commandMs : this.timing.settleMs;
+      if (dataCode !== null) {
+        await this.expect(`Y${dataCode}`, wait, 'The adapter refused the CAN FD data bitrate. Only CAN FD adapters, such as a CANable 2, take it.');
+      }
       // Taken only while the channel is closed. An adapter that refuses it sends no timestamps.
       this.timestampsAsked = (await this.expect('Z1', wait, null)) !== 'refused';
       // Frames can follow the answer to O or L in the same chunk, so read them once the command is out.

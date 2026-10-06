@@ -161,7 +161,14 @@ describe('CaptureRecorder status text', () => {
     const recorder = new CaptureRecorder(core, adapter, 'c.log', clock());
     await recorder.start({ ...settings, bus: 'vehicle' });
     expect(core.startCapture).toHaveBeenCalledWith('c.log', 'vehicle', expect.any(Number));
-    expect(recorder.text.title(recorder.status())).toMatch(/^Recording vehicle from Test adapter/);
+    expect(recorder.text.title(recorder.status())).toMatch(/^Recording vehicle from Test adapter at 500 kbit\/s, listen only\./);
+  });
+
+  it('names the CAN FD data bitrate in the tooltip', async () => {
+    const { adapter } = fakeAdapter();
+    const recorder = new CaptureRecorder(fakeCore({ startCapture: () => Promise.resolve(logInfo()) }), adapter, 'c.log', clock());
+    await recorder.start({ ...settings, dataBitrate: 2_000_000 });
+    expect(recorder.text.title(recorder.status())).toMatch(/^Recording can0 from Test adapter at 500 kbit\/s, CAN FD data 2 Mbit\/s, listen only\./);
   });
 });
 

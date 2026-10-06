@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { Segmented } from '../components/Segmented';
 import { Sheet } from '../components/Sheet';
-import { BITRATES, busNameProblem, errorText, formatBitrate, isListenOnlyUnconfirmed, type CaptureAdapter, type CaptureSettings } from './adapter';
+import { BITRATES, busNameProblem, DATA_BITRATES, errorText, formatBitrate, isListenOnlyUnconfirmed, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { ADAPTER_KINDS, availableKinds, requestAdapter, type AdapterKind } from './devices';
 import { parseBtr, SERIAL_BAUD_RATE, SERIAL_BAUD_RATES, sja1000Bitrate } from './slcan';
 
@@ -27,6 +27,8 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
   const [kind, setKind] = useState<AdapterKind>(kinds[0] ?? 'slcan');
   const [adapter, setAdapter] = useState<CaptureAdapter | null>(null);
   const [bitrate, setBitrate] = useState(DEFAULT_BITRATE);
+  // 0: classic CAN.
+  const [dataBitrate, setDataBitrate] = useState(0);
   const [listenOnly, setListenOnly] = useState(true);
   const [bus, setBus] = useState(DEFAULT_BUS);
   const [serialBaudRate, setSerialBaudRate] = useState(SERIAL_BAUD_RATE);
@@ -78,6 +80,7 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
 
   const busProblem = busNameProblem(bus.trim());
   const slcan = kind === 'slcan';
+  const offersFd = slcan;
   const btrTrimmed = btrText.trim();
   const btr = slcan && btrTrimmed !== '' ? parseBtr(btrTrimmed) : null;
   const btrProblem = slcan && btrTrimmed !== '' && !btr ? 'Enter four hex digits, BTR0 then BTR1, such as 031C.' : null;
@@ -91,6 +94,7 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
     try {
       await onStart(adapter, {
         bitrate: btrBitrate ?? bitrate,
+        dataBitrate: offersFd && dataBitrate > 0 ? dataBitrate : undefined,
         bus: bus.trim(),
         listenOnly,
         allowUnconfirmedListenOnly: unconfirmed !== null,
@@ -151,23 +155,46 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
           </div>
           <p className="cap-hint">{detail}</p>
         </div>
-        <div className="field">
-          <label htmlFor={`${ids}bitrate`} className="field-label">
-            Bitrate
-          </label>
-          <select
-            id={`${ids}bitrate`}
-            className="select cap-bitrate"
-            value={bitrate}
-            onChange={(e) => setBitrate(Number(e.target.value))}
-            disabled={starting || btr !== null}
-          >
-            {BITRATES.map((b) => (
-              <option key={b} value={b}>
-                {formatBitrate(b)}
-              </option>
-            ))}
-          </select>
+        <div className="cap-row">
+          <div className="field">
+            <label htmlFor={`${ids}bitrate`} className="field-label">
+              Bitrate
+            </label>
+            <select
+              id={`${ids}bitrate`}
+              className="select cap-bitrate"
+              value={bitrate}
+              onChange={(e) => setBitrate(Number(e.target.value))}
+              disabled={starting || btr !== null}
+            >
+              {BITRATES.map((b) => (
+                <option key={b} value={b}>
+                  {formatBitrate(b)}
+                </option>
+              ))}
+            </select>
+          </div>
+          {offersFd && (
+            <div className="field">
+              <label htmlFor={`${ids}databitrate`} className="field-label">
+                CAN FD data bitrate
+              </label>
+              <select
+                id={`${ids}databitrate`}
+                className="select cap-bitrate"
+                value={dataBitrate}
+                onChange={(e) => setDataBitrate(Number(e.target.value))}
+                disabled={starting}
+              >
+                <option value={0}>Off (classic CAN)</option>
+                {DATA_BITRATES.map((b) => (
+                  <option key={b} value={b}>
+                    {formatBitrate(b)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         <div className="field">
           <label htmlFor={`${ids}bus`} className="field-label">

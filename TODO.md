@@ -66,7 +66,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] slcan on a CANable: learn whether the adapter answers from `S` rather than `V`, confirm listen-only only through `L`, read frames only once the open command is written, write `C` before closing the port, and give up on an adapter that doesn't start within 10 s (PR #39)
 - [ ] Offer a rolling capture that keeps the last N minutes
 - [ ] Keep a remote frame's DLC (slcan `r1238`, gs_usb `can_dlc`), so candump export writes `123#R8`; the frame store has no field for it, so every format's reader drops it today
-- [ ] slcan CAN FD: set the data bitrate (the `Y` command of CANable 2 firmware) for FD buses
+- [x] slcan CAN FD: set the data bitrate (the `Y` command of CANable 2 firmware) for FD buses: a CAN FD data bitrate select in the Capture sheet sends `Y1` to `Y8` before the bus opens. Untested on hardware
 - [ ] Decide whether an unsaved capture should survive a reload (writing it to IndexedDB in chunks as it runs); today only a saved one comes back
 
 ## Bugs

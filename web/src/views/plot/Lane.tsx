@@ -5,7 +5,7 @@ import { X } from 'lucide-react';
 import type { CoreApi } from '../../core/api';
 import type { PlotSpec } from '../../components/Plots';
 import { cssVar, useFontsReady } from '../../format';
-import { withGaps } from '../../plotGaps';
+import { isolatedDots, withGaps } from '../../plotGaps';
 import { clampRange, formatTick, formatYTick, type LaneSamples, type Marker, type Range } from './model';
 
 export const LANE_HEAD_H = 24;
@@ -85,7 +85,7 @@ export function Lane(props: Props) {
         legend: { show: false },
         padding: [8, 0, showTimeAxis ? 0 : 6, PAD_LEFT],
         scales: { x: { time: false, range: () => latest.current.props.range } },
-        series: [{}, { label: name, stroke: spec.color, width: 1.5, points: { show: false } }],
+        series: [{}, { label: name, stroke: spec.color, width: 1.5, points: isolatedDots(spec.color) }],
         axes: [
           showTimeAxis
             ? {

@@ -4,7 +4,7 @@ import 'uplot/dist/uPlot.min.css';
 import { X } from 'lucide-react';
 import type { CoreApi, SeriesInfo } from '../core/api';
 import { cssVar, formatDuration, useFontsReady } from '../format';
-import { withGaps } from '../plotGaps';
+import { isolatedDots, withGaps } from '../plotGaps';
 
 export interface PlotSpec {
   /** `${idKey}:${signal}` */
@@ -163,7 +163,7 @@ function Plot({
             label: spec.info.name,
             stroke: spec.color,
             width: 1.5,
-            points: { show: false },
+            points: isolatedDots(spec.color),
           },
         ],
         axes: [

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import { cssVar, useFontsReady } from '../../format';
-import { gapIfNotFinite, withGaps } from '../../plotGaps';
+import { aligned, isolatedDots, withGaps } from '../../plotGaps';
 import { formatTick, formatYTick } from '../plot/model';
 import { formatSeconds, pointAt, type TimeWindow, type Trace } from './bits';
 
@@ -63,7 +63,6 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
     const font = `400 11px ${cssVar('--font-ui')}`;
     const grid = { stroke: cssVar('--gridline'), width: 1 };
     const graphite = cssVar('--graphite');
-    const line = { width: 1.5, points: { show: false } };
     const u = new uPlot(
       {
         width: Math.max(1, host.clientWidth),
@@ -82,8 +81,8 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
         },
         series: [
           {},
-          { ...line, stroke: color, dash: dashed ? [4, 3] : undefined },
-          ...(hasOverlay ? [{ ...line, width: 1.25, stroke: graphite, dash: [4, 3] }] : []),
+          { width: 1.5, stroke: color, dash: dashed ? [4, 3] : undefined, points: isolatedDots(color) },
+          ...(hasOverlay ? [{ width: 1.25, stroke: graphite, dash: [4, 3], points: isolatedDots(graphite) }] : []),
         ],
         axes: [
           showTimeAxis
@@ -198,33 +197,4 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
   }, [cursor, win, trace, overlay, data, generation, plotWidth]);
 
   return <div className="re-ref-plot" ref={hostRef} role="img" aria-label={label} />;
-}
-
-/**
- * Two traces on one time axis: the union of their times. Where one has no point it gets
- * undefined, which uPlot bridges, and where a value can't be drawn it gets null, a gap.
- */
-function aligned(a: Trace, b: Trace): uPlot.AlignedData {
-  const xs: number[] = [];
-  const ya: (number | null | undefined)[] = [];
-  const yb: (number | null | undefined)[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.x.length || j < b.x.length) {
-    const ta = i < a.x.length ? a.x[i] : Infinity;
-    const tb = j < b.x.length ? b.x[j] : Infinity;
-    if (ta <= tb) {
-      xs.push(ta);
-      ya.push(gapIfNotFinite(a.y[i]));
-      yb.push(ta === tb ? gapIfNotFinite(b.y[j]) : undefined);
-      i++;
-      if (ta === tb) j++;
-    } else {
-      xs.push(tb);
-      ya.push(undefined);
-      yb.push(gapIfNotFinite(b.y[j]));
-      j++;
-    }
-  }
-  return [xs, ya, yb];
 }

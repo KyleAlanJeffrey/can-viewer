@@ -12,8 +12,15 @@ describe('Sparkline', () => {
     expect(d).toContain('L50.00,2.00');
   });
 
-  it('draws nothing when no two values in a row are finite', () => {
+  it('keeps a lone value between NaNs as a dot, a zero-length segment with round caps', () => {
     const { container } = render(<Sparkline x={[0, 1, 2]} y={[1, NaN, 2]} x0={0} x1={2} />);
+    const path = container.querySelector('path')!;
+    expect(path.getAttribute('d')).toBe('M0.00,28.00h0M100.00,2.00h0');
+    expect(path.getAttribute('stroke-linecap')).toBe('round');
+  });
+
+  it('draws nothing when no value is finite', () => {
+    const { container } = render(<Sparkline x={[0, 1]} y={[NaN, Infinity]} x0={0} x1={1} />);
     expect(container.querySelector('path')).toBeNull();
   });
 });

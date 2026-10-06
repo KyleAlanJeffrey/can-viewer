@@ -90,18 +90,32 @@ export function Minimap({ core, spec, duration, range, cursorA, cursorB, markers
       ctx.strokeStyle = spec.color;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      // NaN and infinite values break the line, as they do in the lanes.
-      let drawing = false;
+      // NaN and infinite values break the line, as they do in the lanes. A run of one value
+      // gets a dot, as a canvas drops zero-length segments.
+      const dots: [number, number][] = [];
+      let runLength = 0;
+      let lastX = 0;
+      let lastY = 0;
+      const endRun = () => {
+        if (runLength === 1) dots.push([lastX, lastY]);
+        runLength = 0;
+      };
       for (let i = 0; i < overview.x.length; i++) {
         const v = overview.y[i];
-        if (!Number.isFinite(v)) drawing = false;
-        else if (drawing) ctx.lineTo(xOf(overview.x[i]), yOf(v));
-        else {
-          ctx.moveTo(xOf(overview.x[i]), yOf(v));
-          drawing = true;
+        if (!Number.isFinite(v)) {
+          endRun();
+          continue;
         }
+        lastX = xOf(overview.x[i]);
+        lastY = yOf(v);
+        if (runLength === 0) ctx.moveTo(lastX, lastY);
+        else ctx.lineTo(lastX, lastY);
+        runLength++;
       }
+      endRun();
       ctx.stroke();
+      ctx.fillStyle = spec.color;
+      for (const [px, py] of dots) ctx.fillRect(px - 1, py - 1, 2, 2);
     }
 
     ctx.strokeStyle = cssVar('--slate');

@@ -37,6 +37,9 @@ pub struct IdStats {
     /// [`FrameKind`], as [`FrameStore::previous_of_same_kind`] pairs them, indexed by
     /// `byte * 8 + bit` where bit 0 is the least significant bit of the byte.
     pub bit_flips: Vec<u32>,
+    /// How many pairs of frames `bit_flips` compared, so a bit's count over it is the share of
+    /// pairs it changed in. Pairs of remote frames are left out, as they have no payload.
+    pub flip_pairs: u32,
     /// The payload of the last frame of each kind, indexed by `FrameKind as usize`.
     last_data: [Option<Vec<u8>>; 4],
     gap_mean_ns: f64,
@@ -56,6 +59,7 @@ impl IdStats {
             min_len: u16::MAX,
             max_len: 0,
             bit_flips: Vec::new(),
+            flip_pairs: 0,
             last_data: Default::default(),
             gap_mean_ns: 0.0,
             gap_m2: 0.0,
@@ -87,8 +91,10 @@ impl IdStats {
         if self.bit_flips.len() < len * 8 {
             self.bit_flips.resize(len * 8, 0);
         }
-        match &mut self.last_data[FrameKind::of(frame.flags) as usize] {
+        let kind = FrameKind::of(frame.flags);
+        match &mut self.last_data[kind as usize] {
             Some(last) => {
+                self.flip_pairs += u32::from(kind != FrameKind::Remote);
                 count_flips(&mut self.bit_flips, last, frame.data);
                 set_last_data(last, frame.data);
             }
@@ -481,6 +487,20 @@ impl FrameStore {
         counts
     }
 
+    /// Like [`IdStats::flip_pairs`], counting only the pairs [`FrameStore::bit_flips_between`]
+    /// compares.
+    #[must_use]
+    pub fn flip_pairs_between(&self, stats: &IdStats, t0_ns: i64, t1_ns: i64) -> u32 {
+        let mut seen = [false; 4];
+        let mut pairs = 0;
+        for &index in &stats.frames[self.id_frames_between(stats, t0_ns, t1_ns)] {
+            let kind = FrameKind::of(self.flags[index as usize]);
+            pairs += u32::from(seen[kind as usize] && kind != FrameKind::Remote);
+            seen[kind as usize] = true;
+        }
+        pairs
+    }
+
     /// Payload bits that changed from the previous frame of the same ID and kind, summed per
     /// bucket for the frames of `stats` within `[t0_ns, t1_ns]`. The previous frame may be
     /// before `t0_ns`.
@@ -848,6 +868,7 @@ mod tests {
         assert_eq!(stats.bit_flips[1], 2);
         assert_eq!(stats.bit_flips[15], 1);
         assert_eq!(stats.bit_flips.iter().sum::<u32>(), 3);
+        assert_eq!(stats.flip_pairs, 2);
         assert_eq!(stats.mean_period_ns(), Some(1.5));
     }
 
@@ -1011,6 +1032,10 @@ mod tests {
             stats.bit_flips
         );
         assert_eq!(s.bit_flips_between(stats, 11, 19), vec![0; 16]);
+        assert_eq!(s.flip_pairs_between(stats, 10, 20), 1);
+        assert_eq!(s.flip_pairs_between(stats, i64::MIN, i64::MAX), 3);
+        assert_eq!(s.flip_pairs_between(stats, 10, 10), 0);
+        assert_eq!(s.flip_pairs_between(stats, 11, 19), 0);
     }
 
     /// A BAM from `source` announcing `data` as PGN 0xFECA (DM1), then its packets, all at
@@ -1413,5 +1438,26 @@ mod tests {
         assert_eq!(s.bit_flips_between(stats, 20, 50).iter().sum::<u32>(), 1);
         // The data frame at 30 is compared with the one at 10, before the window.
         assert_eq!(s.change_activity(stats, 20, 50, 2), vec![4, 1]);
+        // Six frames, but only the data frames make pairs, so a bit changing in each of them
+        // shows as changing every time.
+        assert_eq!(stats.flip_pairs, 2);
+        assert_eq!(s.flip_pairs_between(stats, 0, 50), 2);
+        assert_eq!(s.flip_pairs_between(stats, 20, 50), 1);
+        assert_eq!(s.flip_pairs_between(stats, 15, 35), 0);
+    }
+
+    #[test]
+    fn each_kind_of_frame_pairs_with_its_own() {
+        let mut s = FrameStore::new();
+        push_on(&mut s, 0, 0, 0x100, 0, &[1]);
+        push_on(&mut s, 1, 0, 0x100, flags::RTR, &[]);
+        push_on(&mut s, 2, 0, 0x100, flags::RTR, &[]);
+        push_on(&mut s, 3, 0, 0x100, flags::FD, &[2]);
+        push_on(&mut s, 4, 0, 0x100, 0, &[3]);
+        let stats = s.id_stats(id_key(0, 0x100)).unwrap();
+        // Data with data, FD frames among them: 0 with 3, 3 with 4.
+        assert_eq!(stats.flip_pairs, 2);
+        assert_eq!(s.flip_pairs_between(stats, 0, 4), 2);
+        assert_eq!(s.flip_pairs_between(stats, 1, 3), 0);
     }
 }

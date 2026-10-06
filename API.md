@@ -108,6 +108,7 @@ One arbitration ID on one bus. Returned by [`idSummary`](#idsummary).
 - **`id`** `number` - The ID without the extended flag. An error frame keeps the CAN error flag (`0x20000000`), so its ID never equals a real frame's, and no database decodes it.
 - **`extended`** `boolean` - True for a 29-bit ID.
 - **`count`** `number` - Frames with this ID on this bus.
+- **`flipPairs`** `number` - Pairs of frames [`bitFlips`](#bitflips) compared: each frame paired with the previous frame of the ID and the same kind, leaving out remote frames, which have no payload. A bit's count over this is the share of frames it changed in. It is `count - 1` for an ID whose frames are all data frames, and 0 for an ID of remote frames only.
 - **`periodMs`** `number | null` - Mean interval between frames in milliseconds, or null with fewer than two frames.
 - **`jitterMs`** `number | null` - Population standard deviation of the interval between frames in milliseconds, or null with fewer than three frames.
 - **`minLen`** `number` - Shortest payload in bytes.
@@ -710,7 +711,7 @@ const batch = await core.rows(ALL_IDS, row, 1);
 rowCountBetween(key: number, t0: number, t1: number): Promise<number>
 ```
 
-The number of rows of `key` (or `ALL_IDS`, or `FILTERED_ROWS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares, so a bit changes at most `rowCountBetween - 1` times. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
+The number of rows of `key` (or `ALL_IDS`, or `FILTERED_ROWS`) timestamped inside `[t0, t1]` seconds, both ends included. For an ID key these are the frames [`bitFlipsBetween`](#bitflipsbetween) compares; divide its counts by [`flipPairsBetween`](#flippairsbetween), which leaves out the frames that make no pair. The difference of two `rowAtTime` calls is not a substitute: it leaves out a frame exactly at `t1`, and the last frame when the window reaches past it.
 
 **Parameters**
 
@@ -722,8 +723,7 @@ The number of rows of `key` (or `ALL_IDS`, or `FILTERED_ROWS`) timestamped insid
 
 ```ts
 const frames = await core.rowCountBetween(summary.key, 120, 135);
-const flips = await core.bitFlipsBetween(summary.key, 120, 135);
-const share = flips[0] / Math.max(1, frames - 1);
+console.log(`${frames} frames in the window`);
 ```
 
 ## Trace filters
@@ -802,7 +802,7 @@ if (count !== null) showPreview(`${count} of ${log.frames} frames match`);
 bitFlips(key: number): Promise<Uint32Array>
 ```
 
-How often each payload bit of one ID changed from the previous frame of the ID and the same kind (data, remote, error or reassembled, as `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) compares them), over the whole log, so a polled ID's remote frames don't hide the changes between its data frames. A bit changes at most once per frame after the first of its kind, so for an ID with frames of more than one kind, a share worked out over `count - 1` frames reads low. The counts are kept while parsing, so this is cheap.
+How often each payload bit of one ID changed from the previous frame of the ID and the same kind (data, remote, error or reassembled, as `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) compares them), over the whole log, so a polled ID's remote frames don't hide the changes between its data frames. A bit changes at most once per pair of frames compared, so work out its share over the ID's [`flipPairs`](#the-idsummary-object): over `count - 1` it reads low for an ID with frames of more than one kind. The counts are kept while parsing, so this is cheap.
 
 **Parameters**
 
@@ -813,7 +813,8 @@ How often each payload bit of one ID changed from the previous frame of the ID a
 ```ts
 const flips = await core.bitFlips(summary.key);
 const busiest = flips.indexOf(Math.max(...flips));
-console.log(`byte ${busiest >> 3}, bit ${busiest & 7}`);
+const share = flips[busiest] / Math.max(1, summary.flipPairs);
+console.log(`byte ${busiest >> 3}, bit ${busiest & 7}, ${(100 * share).toFixed(1)}% of frames`);
 ```
 
 ### bitFlipsBetween
@@ -834,6 +835,30 @@ Like [`bitFlips`](#bitflips), counting only changes between frames that are both
 
 ```ts
 const flips = await core.bitFlipsBetween(summary.key, 120, 135);
+```
+
+### flipPairsBetween
+
+```ts
+flipPairsBetween(key: number, t0: number, t1: number): Promise<number>
+```
+
+The number of pairs of frames [`bitFlipsBetween`](#bitflipsbetween) compares for the same window, to divide its counts by: each frame inside `[t0, t1]` seconds paired with the previous frame of the ID and the same kind inside the window, leaving out remote frames, as [`flipPairs`](#the-idsummary-object) counts them over the whole log.
+
+**Parameters**
+
+- **`key`** `number` - An ID key. `ALL_IDS` is not accepted.
+- **`t0`** `number` - Window start, in seconds.
+- **`t1`** `number` - Window end, in seconds.
+
+**Returns** a pair count. It is 0 for `ALL_IDS`, an unknown key or a window with fewer than two frames of a kind.
+
+```ts
+const [flips, pairs] = await Promise.all([
+  core.bitFlipsBetween(summary.key, 120, 135),
+  core.flipPairsBetween(summary.key, 120, 135),
+]);
+const share = flips[0] / Math.max(1, pairs);
 ```
 
 ### changeActivity

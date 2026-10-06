@@ -164,6 +164,7 @@ export class WebCore implements CoreApi {
   rowAtTime = (key: number, t: number) => this.call<number>('rowAtTime', key, t);
   rowCountBetween = (key: number, t0: number, t1: number) => this.call<number>('rowCountBetween', key, t0, t1);
   bitFlipsBetween = (key: number, t0: number, t1: number) => this.call<Uint32Array>('bitFlipsBetween', key, t0, t1);
+  flipPairsBetween = (key: number, t0: number, t1: number) => this.call<number>('flipPairsBetween', key, t0, t1);
   decodeRaw = (key: number, spec: RawSignalSpec) => this.call<SeriesInfo>('decodeRaw', key, spec);
   exportDbc = (db: Database) => this.call<string>('exportDbc', db);
   setTraceFilter = (filter: FrameFilter | null) => this.call<number>('setTraceFilter', filter);

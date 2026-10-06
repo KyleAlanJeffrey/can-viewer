@@ -231,7 +231,7 @@ function Grid({ letter, log, flips, payloads, len, marked, present }: GridProps)
       ) : flips ? (
         <BitHeatmap
           flips={counts}
-          frames={payloads}
+          pairs={payloads - 1}
           bytes={len}
           signals={NO_SIGNALS}
           colors={NO_SIGNALS}

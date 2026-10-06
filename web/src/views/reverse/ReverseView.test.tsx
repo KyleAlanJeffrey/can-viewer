@@ -184,7 +184,7 @@ describe('Advanced', () => {
     // Five frames in the window, so four steps; bit 6 of byte 0 changes at every one of them.
     const flips = new Uint32Array(64);
     flips[6] = 4;
-    const core = testCore({ rowCountBetween: async () => 5, bitFlipsBetween: async () => flips });
+    const core = testCore({ rowCountBetween: async () => 5, flipPairsBetween: async () => 4, bitFlipsBetween: async () => flips });
     const user = renderView([engine], core);
     await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
     await user.click(screen.getByRole('tab', { name: 'Advanced' }));
@@ -199,7 +199,7 @@ describe('Advanced', () => {
   it('says a bit that changed one time changed once', async () => {
     const flips = new Uint32Array(64);
     flips[6] = 1;
-    const core = testCore({ rowCountBetween: async () => 2, bitFlipsBetween: async () => flips });
+    const core = testCore({ rowCountBetween: async () => 2, flipPairsBetween: async () => 1, bitFlipsBetween: async () => flips });
     const user = renderView([engine], core);
     await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
     await user.click(screen.getByRole('tab', { name: 'Advanced' }));
@@ -209,6 +209,22 @@ describe('Advanced', () => {
     grid.focus();
     await user.keyboard('{ArrowRight}');
     expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed once, 100% of frames\./)).toBeTruthy();
+  });
+
+  it('rates bit changes against the pairs of frames compared, not the remote frames of a polled ID', async () => {
+    // Eight frames in the window, every other one a remote frame: the four data frames make three pairs.
+    const flips = new Uint32Array(64);
+    flips[6] = 3;
+    const core = testCore({ rowCountBetween: async () => 8, flipPairsBetween: async () => 3, bitFlipsBetween: async () => flips });
+    const user = renderView([engine], core);
+    await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
+    await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(await screen.findByText('8 frames in the window')).toBeTruthy();
+
+    const grid = screen.getByRole('application', { name: /^Bit activity/ });
+    grid.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(await within(grid).findByText(/^Byte 0, bit 6\. Changed 3 times, 100% of frames\./)).toBeTruthy();
   });
 });
 

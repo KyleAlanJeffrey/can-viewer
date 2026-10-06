@@ -16,7 +16,7 @@ const DIMMED_ALPHA = 0.25;
 interface Props {
   flips: Uint32Array;
   bytes: number;
-  /** Frame-to-frame transitions the counts cover. */
+  /** Pairs of frames the counts were taken over. */
   transitions: number;
   /** Seconds the counts cover. */
   seconds: number;

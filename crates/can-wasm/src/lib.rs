@@ -417,6 +417,8 @@ struct IdSummary<'a> {
     id: u32,
     extended: bool,
     count: usize,
+    /// Pairs of frames `bit_flips` compared; see [`IdStats::flip_pairs`].
+    flip_pairs: u32,
     period_ms: Option<f64>,
     jitter_ms: Option<f64>,
     min_len: u16,
@@ -793,6 +795,7 @@ impl Session {
                     id: s.id & !EXT_FLAG,
                     extended: s.id & EXT_FLAG != 0,
                     count: s.frames.len(),
+                    flip_pairs: s.flip_pairs,
                     period_ms: s.mean_period_ns().map(|ns| ns / 1e6),
                     jitter_ms: s.jitter_ns().map(|ns| ns / 1e6),
                     min_len: s.min_len,
@@ -1150,6 +1153,18 @@ impl Session {
                 .store
                 .bit_flips_between(stats, self.ns_at(t0), self.ns_at(t1)),
             _ => Vec::new(),
+        }
+    }
+
+    /// How many pairs of frames [`Session::bit_flips_between`] compares in the same window, to
+    /// divide its counts by: each frame with the previous one of its kind in the window,
+    /// leaving out remote frames, which have no payload.
+    pub fn flip_pairs_between(&self, key: f64, t0: f64, t1: f64) -> u32 {
+        match self.filter(key) {
+            Ok(Some(stats)) => self
+                .store
+                .flip_pairs_between(stats, self.ns_at(t0), self.ns_at(t1)),
+            _ => 0,
         }
     }
 
@@ -1838,6 +1853,7 @@ mod tests {
         for (t0, t1) in [(0.0, 0.06), (0.0, 0.01), (0.01, 99.0), (0.02, 0.05)] {
             let steps = s.row_count_between(key_123(), t0, t1).saturating_sub(1);
             let flips = s.bit_flips_between(key_123(), t0, t1);
+            assert_eq!(s.flip_pairs_between(key_123(), t0, t1), steps, "{t0}..{t1}");
             assert!(flips.iter().all(|&n| n <= steps), "{t0}..{t1}");
             assert_eq!(
                 flips.iter().max().copied().unwrap_or(0),
@@ -2485,6 +2501,30 @@ mod tests {
         let filter = filter_json(json!({ "rules": [{ "type": "changes" }] }));
         assert_eq!(s.set_trace_filter(&filter).unwrap(), 1);
         assert_eq!(changed(&s, FILTERED, 0), 0b01);
+    }
+
+    #[test]
+    fn flip_pairs_leave_out_the_remote_frames_of_a_polled_id() {
+        let mut s = Session::new();
+        s.push_chunk(
+            b"(0.0) can0 100#R\n(0.1) can0 100#01\n(0.2) can0 100#R\n(0.3) can0 100#00\n\
+              (0.4) can0 100#R\n(0.5) can0 100#01\n",
+        );
+        s.finish();
+        let key = id_key(0, 0x100) as f64;
+        let summary = &json(&s.id_summary())[0];
+        assert_eq!(
+            (summary["count"].as_u64(), summary["flipPairs"].as_u64()),
+            (Some(6), Some(2))
+        );
+        // Bit 0 changes between every pair of data frames: 100% of them.
+        assert_eq!(s.bit_flips(key)[0], 2);
+        assert_eq!(s.flip_pairs_between(key, 0.0, 0.5), 2);
+        assert_eq!(s.bit_flips_between(key, 0.2, 0.5)[0], 1);
+        assert_eq!(s.flip_pairs_between(key, 0.2, 0.5), 1);
+        assert_eq!(s.flip_pairs_between(key, 0.1, 0.1), 0);
+        assert_eq!(s.flip_pairs_between(ALL_IDS, 0.0, 0.5), 0);
+        assert_eq!(s.flip_pairs_between(id_key(0, 0x200) as f64, 0.0, 0.5), 0);
     }
 
     #[test]

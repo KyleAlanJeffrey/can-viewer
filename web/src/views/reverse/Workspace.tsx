@@ -69,6 +69,8 @@ interface Activity {
   flips: Uint32Array;
   /** Frames the counts cover. */
   frames: number;
+  /** Pairs of those frames the counts were taken over. */
+  pairs: number;
   seconds: number;
   /** The counts cover the whole log because the core can't count a window. */
   wholeLog: boolean;
@@ -103,10 +105,14 @@ export function Workspace(props: Props) {
     const [t0, t1] = settled;
     (async (): Promise<Activity> => {
       try {
-        const [flips, frames] = await Promise.all([core.bitFlipsBetween(summary.key, t0, t1), core.rowCountBetween(summary.key, t0, t1)]);
-        return { flips, frames, seconds: t1 - t0, wholeLog: false };
+        const [flips, frames, pairs] = await Promise.all([
+          core.bitFlipsBetween(summary.key, t0, t1),
+          core.rowCountBetween(summary.key, t0, t1),
+          core.flipPairsBetween(summary.key, t0, t1),
+        ]);
+        return { flips, frames, pairs, seconds: t1 - t0, wholeLog: false };
       } catch {
-        return { flips: await core.bitFlips(summary.key), frames: summary.count, seconds: duration, wholeLog: true };
+        return { flips: await core.bitFlips(summary.key), frames: summary.count, pairs: summary.flipPairs, seconds: duration, wholeLog: true };
       }
     })().then(
       (a) => {
@@ -121,14 +127,14 @@ export function Workspace(props: Props) {
     };
   }, [core, summary, settled, duration, logVersion]);
 
-  const [baselineCounts, setBaselineCounts] = useState<{ flips: Uint32Array; frames: number } | null>(null);
+  const [baselineCounts, setBaselineCounts] = useState<{ flips: Uint32Array; pairs: number } | null>(null);
   const [b0, b1] = baseline ?? [0, 0];
   useEffect(() => {
     setBaselineCounts(null);
     if (b1 <= b0) return;
     let stale = false;
-    Promise.all([core.bitFlipsBetween(summary.key, b0, b1), core.rowCountBetween(summary.key, b0, b1)]).then(
-      ([flips, frames]) => !stale && setBaselineCounts({ flips, frames }),
+    Promise.all([core.bitFlipsBetween(summary.key, b0, b1), core.flipPairsBetween(summary.key, b0, b1)]).then(
+      ([flips, pairs]) => !stale && setBaselineCounts({ flips, pairs }),
       // Without window counts there is nothing to dim.
       () => {},
     );
@@ -136,8 +142,8 @@ export function Workspace(props: Props) {
       stale = true;
     };
   }, [core, summary, b0, b1, logVersion]);
-  // With fewer than two frames nothing can change, so nothing would dim.
-  const baselineFlips = baselineCounts && baselineCounts.frames >= 2 ? baselineCounts.flips : null;
+  // Without a pair of frames to compare nothing can change, so nothing would dim.
+  const baselineFlips = baselineCounts && baselineCounts.pairs > 0 ? baselineCounts.flips : null;
 
   const { range, error: rangeError } = useMemo(
     () => parseRange(form.startBit, form.size, form.byteOrder, bytes),
@@ -381,7 +387,7 @@ export function Workspace(props: Props) {
                 <BitGrid
                   flips={activity.flips}
                   bytes={bytes}
-                  transitions={Math.max(1, activity.frames - 1)}
+                  transitions={activity.pairs}
                   seconds={activity.seconds}
                   selected={selected}
                   owners={owners}

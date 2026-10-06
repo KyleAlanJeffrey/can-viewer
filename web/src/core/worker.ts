@@ -228,6 +228,7 @@ const handlers = {
   busLoad: (channel: number, t0: number, t1: number, buckets: number, bitrate: number) =>
     halves(session.bus_load(channel, t0, t1, buckets, bitrate)),
   bitFlipsBetween: (key: number, t0: number, t1: number) => transfer(session.bit_flips_between(key, t0, t1)),
+  flipPairsBetween: (key: number, t0: number, t1: number) => session.flip_pairs_between(key, t0, t1),
   changeActivity: (key: number, t0: number, t1: number, buckets: number) =>
     transfer(session.change_activity(key, t0, t1, buckets)),
   decodeRaw: (key: number, spec: RawSignalSpec) => JSON.parse(session.decode_raw(key, JSON.stringify(spec))),

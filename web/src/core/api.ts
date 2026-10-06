@@ -78,6 +78,8 @@ export interface IdSummary {
   id: number;
   extended: boolean;
   count: number;
+  /** Pairs of frames `bitFlips` compared, to divide its counts by: each frame with the previous one of its kind, remote frames left out. */
+  flipPairs: number;
   periodMs: number | null;
   /** Standard deviation (population) of the gap between frames, or null with fewer than three frames. */
   jitterMs: number | null;
@@ -490,6 +492,8 @@ export interface CoreApi {
   busLoad(channel: number, t0: number, t1: number, buckets: number, bitrate: number): Promise<[Float64Array, Float64Array]>;
   /** Like `bitFlips`, counting only changes between consecutive frames inside [t0, t1] seconds. */
   bitFlipsBetween(key: number, t0: number, t1: number): Promise<Uint32Array>;
+  /** Like `IdSummary.flipPairs`, counting only the pairs `bitFlipsBetween` compares for the same window. */
+  flipPairsBetween(key: number, t0: number, t1: number): Promise<number>;
   /**
    * Payload bits that changed, per bucket, for one ID across [t0, t1] seconds: an activity strip.
    * Each frame is compared with the previous frame of the ID and kind, even if that one is before t0.

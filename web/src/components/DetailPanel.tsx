@@ -66,7 +66,7 @@ export function DetailPanel({ core, summary, channels, message, logVersion, sign
           <>
             <BitHeatmap
               flips={flips}
-              frames={summary.count}
+              pairs={summary.flipPairs}
               bytes={summary.maxLen}
               signals={message?.signals ?? []}
               colors={signalColors}

@@ -362,6 +362,27 @@ mod tests {
         assert_eq!(joined.finish(), whole.finish());
     }
 
+    #[test]
+    fn a_bus_name_that_is_not_utf8_is_one_bus_in_parts_as_in_the_whole_log() {
+        let mut log = Vec::new();
+        for i in 0..600 {
+            let bus: &[u8] = if i % 3 == 0 { b"c\xff0" } else { b"can1" };
+            log.extend_from_slice(format!("(1.{i:06}) ").as_bytes());
+            log.extend_from_slice(bus);
+            log.extend_from_slice(format!(" 123#{:02X}\n", i % 256).as_bytes());
+        }
+        let mut whole = read_whole("drive.log", &log);
+        let info: serde_json::Value = serde_json::from_str(&whole.finish()).unwrap();
+        assert_eq!(info["channels"], serde_json::json!(["c\u{fffd}0", "can1"]));
+        let reads = assert_parts_read_as_whole(
+            "drive.log",
+            &log,
+            4200,
+            &[every(500, 4300, log.len()), every(4096, 4300, log.len())],
+        );
+        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+    }
+
     fn asc_log(timestamps: &str) -> Vec<u8> {
         let mut log = format!(
             "date Tue Sep 30 10:00:00.000 am 2025\n\
@@ -489,10 +510,202 @@ mod tests {
         let mut s = Session::new();
         s.set_file_name("drive.log");
         assert_eq!(s.segment_format(), None, "the format is not known yet");
-        s.push_chunk(&log[..5000]);
+        let line_end = log[..5000].iter().rposition(|&b| b == b'\n').unwrap() + 1;
+        s.push_chunk(&log[..line_end - 3]);
+        assert_eq!(s.segment_format(), None, "mid-line");
+        s.push_chunk(&log[line_end - 3..line_end]);
         assert_eq!(s.segment_format().as_deref(), Some("candump"));
         assert!(!s.push_segment(b"FCP1"));
         assert!(read_part(Format::Blf, b"", b"").is_none());
+    }
+
+    /// A seeded xorshift generator, so a failing case can be read again from its seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+
+        fn chance(&mut self, percent: usize) -> bool {
+            self.below(100) < percent
+        }
+
+        fn hex(&mut self, bytes: usize, sep: &str) -> String {
+            (0..bytes)
+                .map(|_| format!("{:02X}", self.below(256)))
+                .collect::<Vec<_>>()
+                .join(sep)
+        }
+    }
+
+    /// A log in `format` of random frames, buses, J1939 transfers, bad lines, CRLFs and times
+    /// that sometimes go back.
+    fn random_log(rng: &mut Rng, format: &str) -> Vec<u8> {
+        let mut log: Vec<u8> = match format {
+            "asc" => {
+                b"date Tue Sep 30 10:00:00.000 am 2025\nbase hex  timestamps absolute\n\
+                       internal events logged\nBegin TriggerBlock Tue Sep 30 10:00:00.000 am 2025\n"
+                    .to_vec()
+            }
+            "trc" => b";$FILEVERSION=2.1\r\n;$STARTTIME=45930.5\r\n;$COLUMNS=N,O,T,B,I,d,R,L,D\r\n"
+                .to_vec(),
+            "csv" => b"Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\r\n".to_vec(),
+            _ => Vec::new(),
+        };
+        let mut t = 1_000_000u64;
+        let lines = 400 + rng.below(1200);
+        let mut transfer = 0;
+        for n in 0..lines {
+            t += 1 + rng.below(3000) as u64;
+            let back = if rng.chance(2) {
+                rng.below(500_000) as u64
+            } else {
+                0
+            };
+            let us = t - back.min(t - 1);
+            let bus = rng.below(3);
+            let ext = rng.chance(30);
+            let mut id = if ext {
+                rng.below(0x2000_0000) as u32
+            } else {
+                rng.below(0x800) as u32
+            };
+            let len = rng.below(9);
+            let mut data = rng.hex(len, " ");
+            // A J1939 BAM of 10 bytes in two packets, from one of two sources.
+            if format == "candump" && transfer == 0 && rng.chance(5) {
+                transfer = 3;
+            }
+            if transfer > 0 {
+                let source = if n % 2 == 0 { 0x21 } else { 0x22 };
+                id = match transfer {
+                    3 => 0x18EC_FF00 | source,
+                    _ => 0x18EB_FF00 | source,
+                };
+                data = match transfer {
+                    3 => "20 0A 00 02 FF CA FE 00".to_owned(),
+                    2 => format!("01 {}", rng.hex(7, " ")),
+                    _ => format!("02 {}", rng.hex(7, " ")),
+                };
+                transfer -= 1;
+            }
+            let eol: &[u8] = if rng.chance(20) { b"\r\n" } else { b"\n" };
+            if rng.chance(3) {
+                log.extend_from_slice(b"not a frame at all");
+                log.extend_from_slice(eol);
+                continue;
+            }
+            if rng.chance(2) {
+                log.extend_from_slice(eol);
+            }
+            let compact = data.replace(' ', "");
+            let line = match format {
+                "candump" => {
+                    let bus = ["can0", "vcan1", "c\u{fffd}2"][bus];
+                    let frame = if transfer == 0 && rng.chance(5) {
+                        "R".to_owned()
+                    } else {
+                        compact
+                    };
+                    let id = if transfer > 0 || id > 0x7FF || ext {
+                        format!("{id:08X}")
+                    } else {
+                        format!("{id:03X}")
+                    };
+                    format!(
+                        "({}.{:06}) {bus} {id}#{frame}",
+                        us / 1_000_000,
+                        us % 1_000_000
+                    )
+                }
+                "asc" => {
+                    let id = if ext {
+                        format!("{id:X}x")
+                    } else {
+                        format!("{id:X}")
+                    };
+                    let body = if rng.chance(5) {
+                        "Tx   r".to_owned()
+                    } else {
+                        format!("Rx   d {len} {data}")
+                    };
+                    format!("   {:.6} {}  {id:<15} {body}", us as f64 / 1e6, bus + 1)
+                }
+                "trc" => format!(
+                    "{:>7} {:>13.3} DT {}  {} Rx -  {len}  {data}",
+                    n + 1,
+                    us as f64 / 1000.0,
+                    bus + 1,
+                    if ext {
+                        format!("{id:08X}")
+                    } else {
+                        format!("{id:04X}")
+                    }
+                ),
+                _ => {
+                    let mut fields: Vec<String> = data.split(' ').map(str::to_owned).collect();
+                    fields.retain(|f| !f.is_empty());
+                    fields.resize(8, String::new());
+                    format!("{us},{id:08X},{ext},Rx,{bus},{len},{}", fields.join(","))
+                }
+            };
+            // Some candump lines get a bus name that is not UTF-8.
+            let line = line.into_bytes();
+            if let Some(at) = line.windows(3).position(|w| w == "\u{fffd}".as_bytes()) {
+                log.extend_from_slice(&line[..at]);
+                log.push(0xFF);
+                log.extend_from_slice(&line[at + 3..]);
+            } else {
+                log.extend_from_slice(&line);
+            }
+            log.extend_from_slice(eol);
+        }
+        if format == "asc" {
+            log.extend_from_slice(b"End TriggerBlock\n");
+        }
+        if rng.chance(50) {
+            // No line break at the end.
+            log.pop();
+        }
+        log
+    }
+
+    #[test]
+    fn random_logs_read_the_same_in_parts_as_whole() {
+        let iterations = if cfg!(debug_assertions) { 4 } else { 30 };
+        for seed in 1..=iterations {
+            let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed);
+            for (format, name) in [
+                ("candump", "drive.log"),
+                ("asc", "drive.asc"),
+                ("trc", "drive.trc"),
+                ("csv", "drive.csv"),
+            ] {
+                let log = random_log(&mut rng, format);
+                let first = 4200 + rng.below(log.len() / 2);
+                let mut starts = Vec::new();
+                for _ in 0..4 {
+                    let mut at: Vec<usize> = (0..1 + rng.below(40))
+                        .map(|_| rng.below(log.len()))
+                        .collect();
+                    at.sort_unstable();
+                    starts.push(at);
+                }
+                let reads = assert_parts_read_as_whole(name, &log, first, &starts);
+                assert!(
+                    !reads.contains(&Read::Whole) || format == "csv",
+                    "seed {seed} {format}: {reads:?}"
+                );
+            }
+        }
     }
 }
 

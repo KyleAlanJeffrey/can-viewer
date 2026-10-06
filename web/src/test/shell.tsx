@@ -19,6 +19,8 @@ export interface ShellState {
   /** Tasks passed to ctx.run that haven't finished. */
   running: number;
   viewState: ViewStateStore;
+  /** The view asked for the inspector to be shown. */
+  inspectorOpened: boolean;
 }
 
 export interface ShellOptions {
@@ -147,6 +149,9 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
     setError,
     setView,
     setInspectorHidden: () => {},
+    openInspector: () => {
+      state.inspectorOpened = true;
+    },
     openLog: options.openLog ?? (() => Promise.resolve(true)),
     swapCompareLog: options.swapCompareLog ?? (() => Promise.resolve(true)),
     openLogPicker: () => {},
@@ -173,7 +178,7 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
 /** Renders `view` inside the test shell. `state` always holds the shell's latest state. */
 export function renderInShell(view: ComponentType<ViewProps>, options: ShellOptions) {
   const user = userEvent.setup();
-  const state = { running: 0 } as ShellState;
+  const state = { running: 0, inspectorOpened: false } as ShellState;
   render(<Shell view={view} options={options} state={state} />);
   return { user, state };
 }

@@ -71,6 +71,7 @@ function Shell({ core, ids }: { core: CoreApi; ids: IdSummary[] }) {
     setError: () => {},
     setView: () => {},
     setInspectorHidden: () => {},
+    openInspector: () => {},
     openLog: unused,
     swapCompareLog: unused,
     openLogPicker: () => {},

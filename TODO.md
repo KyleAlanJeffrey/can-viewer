@@ -125,6 +125,8 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] Trace filters: "Any byte changes" ignores a payload that only grows or shrinks, matching the changed bytes the trace highlights (a length change has no changed byte to show); the sheet's hint now says so
 - [x] Bit flips (`IdStats::bit_flips`, `bitFlipsBetween`) and change activity compare each frame with the previous frame of its ID and kind, as the trace's changed bytes and the filter do, so a polled ID's remote frames no longer hide the changes between its data frames; the Inspector heatmap, Reverse Engineer's Bit Activity and window strip, and Suggested signals all read these counts
 - [ ] Trace filters: check the sheet, the ID combobox and the range handles with a real screen reader (VoiceOver or NVDA) (owner)
+- [ ] Compare: the byte profiles in `crates/can-wasm/src/compare.rs` (`profile`) pair each frame with the frame before it whatever its kind, so a polled ID's remote frames (no payload) hide its changes there; pair within a frame kind, as bit flips now do
+- [ ] Bit activity shares ("% of frames" in the Inspector heatmap and Reverse Engineer's Bit Activity) divide by `count - 1` over every kind of frame, so they read low for an ID with remote frames; the core would need to give the number of same-kind pairs (whole log and per window)
 - [ ] Memory: the store's columns are plain `Vec`s, and doubling on growth nearly doubles peak memory; switch to fixed-size chunked columns
 - [ ] Parallel parsing: a pool of workers parsing `Blob.slice` ranges for multi-core throughput
 - [ ] Plot queries: level-of-detail pyramids, so a query no longer scales linearly with the points in range

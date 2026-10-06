@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::TryReserveError;
+use std::fmt;
 use std::ops::Range;
 
 use rustc_hash::FxHashMap;
@@ -239,7 +240,6 @@ pub struct FrameStore {
 }
 
 /// The [`IdStats`] of every ID, in order of first appearance.
-#[derive(Debug)]
 struct IdIndex {
     by_key: FxHashMap<IdKey, usize>,
     ids: Vec<IdStats>,
@@ -252,6 +252,16 @@ const RECENT_SLOTS: usize = 256;
 
 /// No ID's key: channels and IDs take 40 bits.
 const NO_KEY: IdKey = IdKey::MAX;
+
+/// Without `recent`, a cache of `by_key`.
+impl fmt::Debug for IdIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IdIndex")
+            .field("by_key", &self.by_key)
+            .field("ids", &self.ids)
+            .finish_non_exhaustive()
+    }
+}
 
 impl Default for IdIndex {
     fn default() -> Self {

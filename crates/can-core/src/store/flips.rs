@@ -42,6 +42,9 @@ impl FlipTally {
     /// Counts the bits that differ between `a` and `b`, over the bytes both have.
     pub(super) fn add_pair(&mut self, a: &[u8], b: &[u8]) {
         let common = a.len().min(b.len());
+        if common == 0 {
+            return;
+        }
         self.grow(common);
         if self.pending.len() < common {
             self.pending.resize(common, 0);

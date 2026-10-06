@@ -201,7 +201,7 @@ impl IdStats {
     /// Carries on with the frames of `part`, the same ID's frames in a segment whose first frame
     /// is now at `first`, as [`IdStats::observe`] would frame by frame.
     fn join(&mut self, part: &SegmentId<'_>, segment: &Segment<'_>, first: usize) {
-        self.bit_flips.grow(part.bit_flips.len() / 32);
+        self.bit_flips.grow(part.bit_flips().len() / 8);
         for (kind, last_of_part) in part.last_data.iter().enumerate() {
             let Some(last_of_part) = last_of_part else {
                 continue;
@@ -279,7 +279,7 @@ fn u32_at(bytes: &[u8], i: usize) -> u32 {
     u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
 }
 
-fn u32s(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
+fn u32s(bytes: &[u8]) -> impl ExactSizeIterator<Item = u32> + '_ {
     bytes
         .as_chunks::<4>()
         .0
@@ -458,7 +458,7 @@ impl SegmentId<'_> {
         u32s(self.frames).map(|j| j as usize)
     }
 
-    fn bit_flips(&self) -> impl Iterator<Item = u32> + '_ {
+    fn bit_flips(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
         u32s(self.bit_flips)
     }
 

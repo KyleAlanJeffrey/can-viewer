@@ -17,7 +17,7 @@ use std::collections::{TryReserveError, VecDeque};
 
 use can_core::{
     flags, tp::MAX_TRANSFER, Combine, DataRule, FilterPass, FlipCounts, FrameFilter, FrameKind,
-    FrameRef, FrameSink, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
+    FrameRef, FrameSink, FrameStore, IdKey, IdStats, TimeShift, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
 };
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{mf4, writer, AnyParser, Format, LogParser, ParseStats};
@@ -237,10 +237,12 @@ struct LogInput {
     parts: Option<Parts>,
 }
 
-/// What the parts joined on so far counted, and the header state the last one left.
+/// What the parts joined on so far counted, and the header state and sum of relative times
+/// the last one left.
 struct Parts {
     stats: ReadStats,
     state: String,
+    carried_ns: i64,
 }
 
 impl LogInput {
@@ -370,18 +372,28 @@ impl LogInput {
     /// Joins a part read by `parse_segment` onto the log, or refuses it, perhaps after storing
     /// some of its frames.
     fn push_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
-        let state = self.splittable_parser().ok_or(())?.state();
+        let parser = self.splittable_parser().ok_or(())?;
+        let (state, carried_ns) = (parser.state(), parser.carried_ns());
         let part = Part::read(bytes).ok_or(())?;
         let parts = self.parts.get_or_insert_with(|| Parts {
             stats: ReadStats::default(),
             state,
+            carried_ns,
         });
         if part.entry != parts.state {
             return Err(());
         }
-        store.append_segment(part.frames).map_err(|_| ())?;
+        let carried_ns = part.times.join(parts.carried_ns).ok_or(())?;
+        let shift = TimeShift {
+            frames: usize::try_from(part.times.frames).map_err(|_| ())?,
+            ns: parts.carried_ns,
+        };
+        store
+            .append_shifted_segment(part.frames, shift)
+            .map_err(|_| ())?;
         parts.stats.append(&part.stats);
         parts.state = part.exit.to_owned();
+        parts.carried_ns = carried_ns;
         Ok(())
     }
 }

@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 
 mod segment;
 
-pub use segment::SegmentError;
+pub use segment::{SegmentError, TimeShift};
 
 use crate::chunked::{Column, Payloads};
 use crate::{flags, tp, FrameKind, FrameRef, FrameSink, EXT_FLAG};

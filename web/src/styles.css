@@ -1449,6 +1449,27 @@ input[type='checkbox'] {
   }
 }
 
+/* Narrow, Cancel takes the place of Export Log, which can't be used while a log is read. */
+@container toolbar (max-width: 999px) {
+  .toolbar[data-reading-log] .export-log {
+    display: none;
+  }
+
+  .cancel-read {
+    width: 32px;
+    padding: 0;
+  }
+
+  .cancel-read .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 /* The view switcher needs the toolbar's middle, so it tightens too well before phone widths. */
 @media (max-width: 1439px) {
   .toolbar-button {

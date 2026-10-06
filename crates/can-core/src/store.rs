@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::TryReserveError;
 use std::ops::Range;
 
@@ -712,11 +713,17 @@ impl FrameSink for FrameStore {
         if let Some(i) = self.channels.iter().position(|c| c.as_bytes() == name) {
             return i as u8;
         }
+        let name = String::from_utf8_lossy(name);
+        // A name that isn't UTF-8 is kept lossily, so its bytes never match it above.
+        if let Cow::Owned(lossy) = &name {
+            if let Some(i) = self.channels.iter().position(|c| c == lossy) {
+                return i as u8;
+            }
+        }
         if self.channels.len() > usize::from(u8::MAX) {
             return u8::MAX;
         }
-        self.channels
-            .push(String::from_utf8_lossy(name).into_owned());
+        self.channels.push(name.into_owned());
         (self.channels.len() - 1) as u8
     }
 
@@ -886,6 +893,15 @@ mod tests {
         assert_eq!(s.channel_index(b"can1"), 1);
         assert_eq!(s.channel_index(b"can0"), 0);
         assert_eq!(s.channels(), ["can0", "can1"]);
+    }
+
+    #[test]
+    fn interns_a_channel_name_that_is_not_utf8_once() {
+        let mut s = FrameStore::new();
+        assert_eq!(s.channel_index(b"c\xff0"), 0);
+        assert_eq!(s.channel_index(b"can1"), 1);
+        assert_eq!(s.channel_index(b"c\xff0"), 0);
+        assert_eq!(s.channels(), ["c\u{fffd}0", "can1"]);
     }
 
     #[test]

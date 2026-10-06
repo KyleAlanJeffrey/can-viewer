@@ -67,6 +67,7 @@ function Shell({ core, ids }: { core: CoreApi; ids: IdSummary[] }) {
       await task();
       return true;
     },
+    busyLabel: () => null,
     setError: () => {},
     setView: () => {},
     setInspectorHidden: () => {},

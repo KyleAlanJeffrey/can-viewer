@@ -8,6 +8,7 @@ import { useFrameAt } from '../reverse/useFrameAt';
 import '../reverse/reverse.css';
 import type { ViewContext } from '../types';
 import { SIGNIFICANT, bitList } from './findings';
+import { onLogB } from './logBWork';
 import { useFrameAtB } from './useFrameAtB';
 
 interface Props {
@@ -40,7 +41,7 @@ export function ByteCompare({ ctx, comparison: c, logA, logB, options, onOpenInR
   useEffect(() => {
     let live = true;
     setDetail(null);
-    core.compareBytes(c.keyA, c.keyB, options).then(
+    onLogB(core, core.compareBytes(c.keyA, c.keyB, options)).then(
       (d) => live && setDetail(d),
       (e) => live && ctx.setError(errorText(e)),
     );

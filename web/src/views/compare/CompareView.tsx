@@ -5,6 +5,7 @@ import { formatCount, formatDuration, noFramesMessage } from '../../format';
 import { forget, loadSaved, save } from '../../session';
 import type { SelectedByte } from '../reverse/ByteMatrix';
 import { errorText } from '../reverse/bits';
+import { isVideoFile } from '../plot/video/videoSession';
 import { startTextSave } from '../shared/saveFile';
 import { useViewState } from '../shared/viewState';
 import { SidebarSlot } from '../slots';
@@ -13,7 +14,8 @@ import { ByteCompare } from './ByteCompare';
 import { CompareTable } from './CompareTable';
 import { IgnoreRulesSheet } from './IgnoreRules';
 import { LogCards, type Reading } from './LogCards';
-import { DEFAULT_OPTIONS, GROUPS, SHOW_OPTIONS, busesMatchedByOrder, findingsCsv, groupOf, looksTheSame, matchesQuery, rowKey, stem, type Show } from './findings';
+import { forgetLogBOnReset, onLogB } from './logBWork';
+import { DEFAULT_OPTIONS, GROUPS, SHOW_OPTIONS, busesMatchedByOrder, findingsCsv, groupOf, looksTheSame, matchesQuery, rowKey, stem, withinANote, type Show } from './findings';
 import './compare.css';
 
 /** A log file as the session store keeps it. */
@@ -29,6 +31,13 @@ interface SavedLog {
 let heldB: SavedLog | null = null;
 
 const ONLY_IN_B = 'Only in log B: swap the logs to open it in Reverse Engineer.';
+
+/** Why `file` can't be log B, or null when it may be a log. */
+function notALog(file: File): string | null {
+  if (file.name.toLowerCase().endsWith('.dbc')) return `${file.name} is a DBC file, not a CAN log. Open DBCs with Open DBC\u2026 in the toolbar.`;
+  if (isVideoFile(file)) return `${file.name} is a video, not a CAN log. Add a video to log A with Add video\u2026 in the Plot view.`;
+  return null;
+}
 
 /** Compares the open log (A) with a second log (B): which IDs and bytes behave differently. */
 export function CompareView({ ctx }: ViewProps) {
@@ -62,15 +71,23 @@ function CompareLogs({ ctx }: ViewProps) {
   const restoredFor = useRef<number | null>(null);
   /** Bumped by every read of log B, so an older check of the core can't overwrite a newer read. */
   const readsOfB = useRef(0);
+  /** Settles when the latest read of log B has ended. */
+  const pendingB = useRef<Promise<unknown>>(Promise.resolve());
 
   /** Reads `file` as log B. `persist` keeps a copy so a reload reopens it. */
-  const readB = async (file: Blob, name: string, persist: boolean): Promise<LogInfo | null> => {
+  const readB = (file: Blob, name: string, persist: boolean): Promise<LogInfo | null> => {
+    const read = readLogB(file, name, persist);
+    pendingB.current = read.catch(() => null);
+    return read;
+  };
+
+  const readLogB = async (file: Blob, name: string, persist: boolean): Promise<LogInfo | null> => {
     let info: LogInfo | null = null;
     const thisRead = ++readsOfB.current;
     setReading({ name, fraction: 0 });
     await ctx.run(`Reading ${name}\u2026`, async () => {
       try {
-        const read = await core.openCompareLog(file, name, (p) => setReading({ name, fraction: p.total > 0 ? p.bytes / p.total : 1 }));
+        const read = await onLogB(core, core.openCompareLog(file, name, (p) => setReading({ name, fraction: p.total > 0 ? p.bytes / p.total : 1 })));
         const empty = read.frames === 0 ? (noFramesMessage(read) ?? `No CAN frames in ${name}.`) : null;
         if (empty) {
           await core.closeCompareLog();
@@ -99,6 +116,8 @@ function CompareLogs({ ctx }: ViewProps) {
     if (!left) await forget('compare');
     return null;
   };
+
+  useEffect(() => forgetLogBOnReset(core), [core]);
 
   // The core holds log B across view switches; after a reload it is read again from the saved copy.
   useEffect(() => {
@@ -133,7 +152,7 @@ function CompareLogs({ ctx }: ViewProps) {
     }
     let live = true;
     setResults(null);
-    core.compareLogs(options).then(
+    onLogB(core, core.compareLogs(options)).then(
       (found) => live && setResults(found),
       (e) => live && ctx.setError(errorText(e)),
     );
@@ -152,10 +171,32 @@ function CompareLogs({ ctx }: ViewProps) {
 
   if (!log) return null;
 
-  const openB = (file: File) => void readB(file, file.name, true);
+  const busyWith = ctx.busyLabel();
+
+  /** Whatever is under way ends before another log is read, as the shell's own drop does. */
+  const refusedWhileBusy = () => {
+    const label = ctx.busyLabel();
+    if (label) ctx.setError(`Wait for "${label}" to finish, then open the log again.`);
+    return label !== null;
+  };
+
+  const openB = (file: File) => {
+    if (refusedWhileBusy()) return;
+    const why = notALog(file);
+    if (why) {
+      ctx.setError(why);
+      return;
+    }
+    void readB(file, file.name, true);
+  };
 
   const replaceA = async (file: File) => {
-    const keep = heldB && heldB.name === logB?.name ? heldB : await loadSaved<SavedLog>('compare');
+    // A read of log B under way ends first, so the log B read again is the latest one.
+    await pendingB.current;
+    if (refusedWhileBusy()) return;
+    const held = heldB;
+    const current = held && (await core.compareLogInfo().catch(() => null));
+    const keep = held && held.name === current?.name ? held : await loadSaved<SavedLog>('compare');
     if (!(await ctx.openLog(file, file.name))) return;
     if (keep) await readB(keep.blob, keep.name, true);
   };
@@ -185,6 +226,7 @@ function CompareLogs({ ctx }: ViewProps) {
   };
 
   const same = !!logB && results !== null && looksTheSame(results);
+  const hiddenWithinA = results && withinANote(results);
   const matchedBuses = results ? busesMatchedByOrder(results) : null;
 
   return (
@@ -195,6 +237,7 @@ function CompareLogs({ ctx }: ViewProps) {
           logA={log}
           logB={logB}
           reading={reading}
+          busy={busyWith !== null}
           notKept={notKept}
           onReplaceA={() => pickA.current?.click()}
           onPickB={() => pickB.current?.click()}
@@ -217,6 +260,7 @@ function CompareLogs({ ctx }: ViewProps) {
                 These logs look the same
               </h2>
               <p className="hint">No differences found with the current ignore rules.</p>
+              {hiddenWithinA && <p className="hint">{hiddenWithinA}</p>}
               {matchedBuses && <p className="hint">Buses matched by order: {matchedBuses}</p>}
               <p className="cmp-same-count">
                 0 changed IDs &middot; {formatCount(results.length)} compared
@@ -226,7 +270,7 @@ function CompareLogs({ ctx }: ViewProps) {
               <button type="button" className="button" onClick={() => setRulesOpen(true)}>
                 Review ignore rules&hellip;
               </button>
-              <button type="button" className="primary" onClick={() => pickB.current?.click()} disabled={!!reading}>
+              <button type="button" className="primary" onClick={() => pickB.current?.click()} disabled={!!reading || busyWith !== null}>
                 Replace log B&hellip;
               </button>
             </div>

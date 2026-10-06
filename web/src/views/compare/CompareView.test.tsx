@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ByteComparison, CompareOptions, CoreApi, IdComparison } from '../../core/api';
+import type { ByteComparison, CompareOptions, CoreApi, IdComparison, LogInfo } from '../../core/api';
 import { fakeCore, lane, logInfo, makeRowBatch } from '../../test/fixtures';
 import { renderInShell } from '../../test/shell';
 import { CompareView } from './CompareView';
@@ -37,6 +37,8 @@ function comparison(id: number, fields: Partial<IdComparison> = {}): IdCompariso
     score: 0,
     reason: 'No significant changes',
     bytes: [],
+    tooFewFrames: false,
+    changesWithinA: false,
     ...fields,
   };
 }
@@ -192,6 +194,41 @@ describe('choosing log B', () => {
     await screen.findByRole('region', { name: 'Log B' });
     expect(screen.getByRole('button', { name: 'Replace log A\u2026' }).hasAttribute('disabled')).toBe(false);
   });
+
+  it('turns log B away while log B is read', async () => {
+    const openCompareLog = vi.fn(() => new Promise<LogInfo>(() => {}));
+    const { state } = renderInShell(CompareView, { core: compareCore(RESULTS, { compareLogInfo: async () => null, openCompareLog }) });
+    const zone = (await screen.findByText('Choose a second log')).closest('.cmp-drop')!;
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(['b'], 'door-lock.log')] } });
+    const reading = (await screen.findByText(/^Reading/)).closest('.cmp-log')!;
+    fireEvent.drop(reading, { dataTransfer: { files: [new File(['c'], 'other.log')] } });
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(state.error).toBe('Wait for "Reading door-lock.log\u2026" to finish, then open the log again.');
+    expect(openCompareLog).toHaveBeenCalledTimes(1);
+  });
+
+  it('turns log B away while the app is busy', async () => {
+    const openCompareLog = vi.fn(async () => logB);
+    const core = compareCore(RESULTS, { compareLogInfo: async () => null, openCompareLog });
+    const { state } = renderInShell(CompareView, { core, busy: 'Loading body.dbc\u2026' });
+    const zone = (await screen.findByText('Choose a second log')).closest('.cmp-drop')!;
+    expect(screen.getByRole('button', { name: 'Open log B\u2026' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Replace log A\u2026' }).hasAttribute('disabled')).toBe(true);
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(['b'], 'door-lock.log')] } });
+    await waitFor(() => expect(state.error).toBe('Wait for "Loading body.dbc\u2026" to finish, then open the log again.'));
+    expect(openCompareLog).not.toHaveBeenCalled();
+  });
+
+  it('takes only a CAN log as log B', async () => {
+    const openCompareLog = vi.fn(async () => logB);
+    const { state } = renderInShell(CompareView, { core: compareCore(RESULTS, { compareLogInfo: async () => null, openCompareLog }) });
+    const zone = (await screen.findByText('Choose a second log')).closest('.cmp-drop')!;
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(['VERSION ""'], 'body.dbc')] } });
+    await waitFor(() => expect(state.error).toBe('body.dbc is a DBC file, not a CAN log. Open DBCs with Open DBC\u2026 in the toolbar.'));
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(['v'], 'dashcam.mp4', { type: 'video/mp4' })] } });
+    await waitFor(() => expect(state.error).toBe('dashcam.mp4 is a video, not a CAN log. Add a video to log A with Add video\u2026 in the Plot view.'));
+    expect(openCompareLog).not.toHaveBeenCalled();
+  });
 });
 
 describe('results', () => {
@@ -325,6 +362,54 @@ describe('logs that look the same', () => {
     await user.click(within(sheet).getByRole('checkbox', { name: /^Ignore counters and checksums/ }));
     await waitFor(() => expect(compareLogs).toHaveBeenLastCalledWith({ ignoreCounters: false, ignoreChangesWithinA: true }));
   });
+
+  it('says how many IDs the within-A rule left out', async () => {
+    const drifting = comparison(0x3e9, { score: 1, reason: 'Also changes within A', changesWithinA: true });
+    renderInShell(CompareView, { core: compareCore([steady, drifting]) });
+    expect(await screen.findByRole('heading', { name: 'These logs look the same' })).toBeTruthy();
+    expect(screen.getByText('1 ID changes within A; turn off the rule to see it.')).toBeTruthy();
+  });
+
+  it('leaves IDs with too few frames to their own group', async () => {
+    const few = comparison(0x5a0, { framesA: 3, framesB: 6, tooFewFrames: true, reason: 'Too few frames to compare; payloads differ' });
+    const { user } = renderInShell(CompareView, { core: compareCore([body, few]) });
+    expect(await screen.findByRole('button', { name: 'Too few frames to compare(1)' })).toBeTruthy();
+    expect(screen.getByRole('row', { name: /^5A0 / })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /Too few frames to compare/ }));
+    expect(screen.queryByRole('row', { name: /^5A0 / })).toBeNull();
+  });
+});
+
+describe('a core that stops', () => {
+  it('forgets the saved log B when the core restarts while comparing it', async () => {
+    let reset = () => {};
+    const core = compareCore(RESULTS, {
+      compareLogs: () => new Promise(() => {}),
+      onReset: (listener) => {
+        reset = listener;
+        return () => {};
+      },
+    });
+    renderInShell(CompareView, { core });
+    expect(await screen.findByRole('region', { name: 'Log B' })).toBeTruthy();
+    await waitFor(() => expect(session.forget).not.toHaveBeenCalled());
+    reset();
+    expect(session.forget).toHaveBeenCalledWith('compare');
+  });
+
+  it('keeps the saved log B when the core restarts with no work on it', async () => {
+    let reset = () => {};
+    const core = compareCore(RESULTS, {
+      onReset: (listener) => {
+        reset = listener;
+        return () => {};
+      },
+    });
+    renderInShell(CompareView, { core });
+    expect(await screen.findByRole('row', { name: /^450 BODY/ })).toBeTruthy();
+    reset();
+    expect(session.forget).not.toHaveBeenCalled();
+  });
 });
 
 describe('a comparison with no IDs', () => {
@@ -337,9 +422,14 @@ describe('a comparison with no IDs', () => {
 
 describe('replacing log A', () => {
   it('opens the new log A in place and reads log B again', async () => {
-    const openCompareLog = vi.fn(async () => logB);
-    const openLog = vi.fn(async () => true);
-    const core = compareCore(RESULTS, { compareLogInfo: async () => null, openCompareLog });
+    // The core holds log B once it has read it, and drops it with log A.
+    let held: LogInfo | null = null;
+    const openCompareLog = vi.fn(async () => (held = logB));
+    const openLog = vi.fn(async () => {
+      held = null;
+      return true;
+    });
+    const core = compareCore(RESULTS, { compareLogInfo: async () => held, openCompareLog });
     const { user } = renderInShell(CompareView, { core, openLog });
     await screen.findByText('Choose a second log');
     const fileB = new File(['b'], 'door-lock.log');
@@ -351,5 +441,34 @@ describe('replacing log A', () => {
     expect(openLog).toHaveBeenCalledWith(fileA, 'idle-2.log');
     await waitFor(() => expect(openCompareLog).toHaveBeenCalledTimes(2));
     expect(openCompareLog).toHaveBeenLastCalledWith(fileB, 'door-lock.log', expect.any(Function));
+  });
+
+  it('waits for a read of log B under way, and reads the latest log B again', async () => {
+    let held: LogInfo | null = null;
+    let finish: () => void = () => {};
+    const openCompareLog = vi.fn(async (_file: Blob, name: string) => {
+      if (name === 'second.log') await new Promise<void>((resolve) => (finish = resolve));
+      return (held = logInfo({ name }));
+    });
+    const openLog = vi.fn(async () => {
+      held = null;
+      return true;
+    });
+    const core = compareCore(RESULTS, { compareLogInfo: async () => held, openCompareLog });
+    const { user } = renderInShell(CompareView, { core, openLog });
+    await screen.findByText('Choose a second log');
+    await user.upload(fileInputs()[0], new File(['b'], 'first.log'));
+    await screen.findByRole('region', { name: 'Log B' });
+    const second = new File(['c'], 'second.log');
+    await user.upload(fileInputs()[0], second);
+    await screen.findByText(/^Reading/);
+
+    // The picker was open before the read began.
+    await user.upload(fileInputs()[1], new File(['a'], 'idle-2.log'));
+    expect(openLog).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(openLog).toHaveBeenCalled());
+    await waitFor(() => expect(openCompareLog).toHaveBeenCalledTimes(3));
+    expect(openCompareLog).toHaveBeenLastCalledWith(second, 'second.log', expect.any(Function));
   });
 });

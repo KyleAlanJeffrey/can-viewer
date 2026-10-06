@@ -105,12 +105,16 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
   const inFlight = useRef(new Set<number>());
   // The key the scan has in hand.
   const scanning = useRef<number | null>(null);
+  // The open message, when it was left to the scan. Cancelling the scan gives up the message in
+  // hand, so the scan's end suggests for this one on its own if the scan didn't.
+  const leftToScan = useRef<number | null>(null);
 
   // Leaving the view, or opening another log, stops the scan; it picks up again where it left off.
   useEffect(
     () => () => {
       controller.current?.abort();
       controller.current = null;
+      leftToScan.current = null;
       inFlight.current.clear();
       setRunning([]);
       setProgress(null);
@@ -135,57 +139,6 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
       return next;
     });
 
-  const scanAll = useCallback(
-    (first?: number) => {
-      if (controller.current) return;
-      const { saved: now, unknown: keys } = latest.current;
-      const todo = keys.filter((k) => !now.results[k]);
-      if (first !== undefined && todo.includes(first)) todo.sort((a, b) => Number(b === first) - Number(a === first));
-      if (todo.length === 0) {
-        setSaved((s) => ({ ...s, scan: 'done' }));
-        return;
-      }
-      const abort = new AbortController();
-      const logVersion = latest.current.logVersion;
-      controller.current = abort;
-      cancelledByUser.current = false;
-      setScanError(null);
-      setProgress({ done: 0, total: todo.length });
-      core
-        .scanSignals(
-          todo,
-          {},
-          (done, total, found) => {
-            // The message in hand when the scan was cancelled still counts: it may be the one open.
-            if (found) store(found, logVersion);
-            if (!abort.signal.aborted) setProgress({ done, total });
-          },
-          abort.signal,
-          // Passes over a message suggested for out of turn, as when opened during the scan.
-          (k) => {
-            const skip = !!latest.current.saved.results[k] || inFlight.current.has(k);
-            if (!skip) scanning.current = k;
-            return skip;
-          },
-        )
-        .then(
-          () => logVersion === latest.current.logVersion && setSaved((s) => ({ ...s, scan: 'done' })),
-          (e) => {
-            if (logVersion !== latest.current.logVersion) return;
-            if (!isAbort(e)) setScanError(errorText(e));
-            setSaved((s) => ({ ...s, scan: isAbort(e) && !cancelledByUser.current ? 'none' : 'stopped' }));
-          },
-        )
-        .finally(() => {
-          if (controller.current !== abort) return;
-          controller.current = null;
-          scanning.current = null;
-          setProgress(null);
-        });
-    },
-    [core, setSaved, store],
-  );
-
   const rescan = useCallback(
     (key: number, hints?: MessageHints) => {
       const use = hints ?? latest.current.saved.hints[key] ?? NO_HINTS;
@@ -209,12 +162,73 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
     [core, store],
   );
 
+  const scanAll = useCallback(
+    (first?: number) => {
+      if (controller.current) return;
+      const { saved: now, unknown: keys } = latest.current;
+      const todo = keys.filter((k) => !now.results[k]);
+      if (first !== undefined && todo.includes(first)) todo.sort((a, b) => Number(b === first) - Number(a === first));
+      if (todo.length === 0) {
+        setSaved((s) => ({ ...s, scan: 'done' }));
+        return;
+      }
+      const abort = new AbortController();
+      const logVersion = latest.current.logVersion;
+      controller.current = abort;
+      cancelledByUser.current = false;
+      setScanError(null);
+      setProgress({ done: 0, total: todo.length });
+      core
+        .scanSignals(
+          todo,
+          {},
+          (done, total, found) => {
+            if (found) store(found, logVersion);
+            if (found && found.key === leftToScan.current) leftToScan.current = null;
+            if (!abort.signal.aborted) setProgress({ done, total });
+          },
+          abort.signal,
+          // Passes over a message suggested for out of turn, as when opened during the scan.
+          (k) => {
+            const skip = !!latest.current.saved.results[k] || inFlight.current.has(k);
+            if (!skip) scanning.current = k;
+            return skip;
+          },
+        )
+        .then(
+          () => logVersion === latest.current.logVersion && setSaved((s) => ({ ...s, scan: 'done' })),
+          (e) => {
+            if (logVersion !== latest.current.logVersion) return;
+            if (!isAbort(e)) setScanError(errorText(e));
+            setSaved((s) => ({ ...s, scan: isAbort(e) && !cancelledByUser.current ? 'none' : 'stopped' }));
+          },
+        )
+        .finally(() => {
+          if (controller.current !== abort) return;
+          controller.current = null;
+          scanning.current = null;
+          setProgress(null);
+          const open = leftToScan.current;
+          leftToScan.current = null;
+          if (open !== null) rescan(open);
+        });
+    },
+    [core, setSaved, store, rescan],
+  );
+
   const ensure = useCallback(
     (key: number) => {
       const { saved: now, unknown: keys } = latest.current;
+      leftToScan.current = null;
       if (now.results[key] || inFlight.current.has(key)) return;
-      if (controller.current && scanning.current === key) return;
-      if (keys.includes(key) && !controller.current && now.scan === 'none') scanAll(key);
+      if (controller.current && scanning.current === key) {
+        leftToScan.current = key;
+        return;
+      }
+      if (keys.includes(key) && !controller.current && now.scan === 'none') {
+        leftToScan.current = key;
+        scanAll(key);
+      }
       // During a scan this goes ahead of the messages still to come, which then skip it.
       else rescan(key);
     },

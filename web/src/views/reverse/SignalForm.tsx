@@ -171,12 +171,14 @@ export function SignalForm(props: Props) {
   const float = !!form.float && range?.size === 32;
   const mux = form.mux ?? null;
   const multiplexor = !mux && !!form.multiplexor;
-  const selector = target?.signals.find((s) => s.isMultiplexor) ?? null;
+  const multiplexors = target?.signals.filter((s) => s.isMultiplexor) ?? [];
+  // A message with nested multiplexors has several; a page signal goes on the one with its bits.
+  const selector = mux ? (multiplexors.find((s) => s.startBit === mux.startBit && s.size === mux.size && s.byteOrder === mux.byteOrder) ?? null) : null;
   const muxError =
-    mux && !(selector && selector.startBit === mux.startBit && selector.size === mux.size && selector.byteOrder === mux.byteOrder)
+    mux && !selector
       ? `Add the multiplexor at ${layoutString(mux, false)} first; this signal is on its page m${mux.value}.`
-      : multiplexor && selector
-        ? `${target?.name} already has a multiplexor, ${selector.name}.`
+      : multiplexor && multiplexors.length > 0
+        ? `${target?.name} already has a multiplexor, ${multiplexors[0].name}.`
         : null;
   const pageNote = mux ? ` m${mux.value}` : multiplexor ? ' M' : '';
   const factor = parseNumber(form.factor);
@@ -208,6 +210,8 @@ export function SignalForm(props: Props) {
       unit: form.unit.trim(),
       isMultiplexor: multiplexor,
       muxValue: mux ? mux.value : null,
+      // A multiplexor that is itself on a page of another switches its signals by SG_MUL_VAL_.
+      ...(mux && selector && (selector.muxValue !== null || selector.muxSwitch) && { muxSwitch: { signal: selector.name, ranges: [[mux.value, mux.value]] } }),
       valueTable: [],
       comment: null,
     };

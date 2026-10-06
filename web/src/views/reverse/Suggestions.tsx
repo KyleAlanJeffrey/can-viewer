@@ -86,6 +86,14 @@ function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndo
     const loaded = ctx.dbcs.find((d) => d.id === accepted.dbc);
     const signals = loaded?.db.messages.find((m) => m.id === accepted.messageId)?.signals ?? [];
     const target = signals.find((x) => isAcceptedSignal(x, id, accepted.signal));
+    // Without its multiplexor, a page's signals would never decode, and the DBC would be invalid.
+    const pages = target?.isMultiplexor ? signals.filter((x) => x.muxValue !== null || x.muxSwitch?.signal === target.name) : [];
+    if (pages.length > 0) {
+      const names = pages.map((x) => x.name);
+      const listed = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+      ctx.setError(`Couldn't undo ${accepted.signal}: ${listed} ${names.length === 1 ? 'is' : 'are'} on its pages. Undo or remove ${names.length === 1 ? 'it' : 'them'} first.`);
+      return;
+    }
     discovery.markAccepted(id, null);
     if (!loaded || !target) {
       ctx.setError(`Couldn't undo ${accepted.signal}: it's no longer in ${loaded ? loaded.db.name : 'the database it went into'}.`);

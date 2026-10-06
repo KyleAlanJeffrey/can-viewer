@@ -140,8 +140,9 @@ describe('Suggested signals', () => {
     expect(within(panel()).getByText('1 suggestion across 1 message')).toBeTruthy();
   });
 
-  it('keeps the open message suggested for when the scan is cancelled while on it', async () => {
-    const { core, scan } = discoveryCore();
+  it('keeps the open message suggested for when the scan is cancelled as it finishes it', async () => {
+    const suggestSignals = vi.fn(async (key: number) => found(key, [speed]));
+    const { core, scan } = discoveryCore({ suggestSignals });
     const { user } = await openAdvanced(core);
     expect(scan.keys[0]).toBe(first.key);
 
@@ -152,6 +153,21 @@ describe('Suggested signals', () => {
     });
     expect(await within(panel()).findByText('Counter')).toBeTruthy();
     expect(within(panel()).queryByText('Not scanned yet.')).toBeNull();
+    expect(suggestSignals).not.toHaveBeenCalled();
+  });
+
+  it('suggests for the open message on its own when the scan is cancelled part way through it', async () => {
+    const suggestSignals = vi.fn(async (key: number) => found(key, [counter]));
+    const { core, scan } = discoveryCore({ suggestSignals });
+    const { user } = await openAdvanced(core);
+    expect(scan.keys[0]).toBe(first.key);
+
+    await user.click(within(panel()).getByRole('button', { name: 'Cancel' }));
+    act(() => scan.fail(new DOMException('The scan was cancelled.', 'AbortError')));
+    expect(await within(panel()).findByText('Counter')).toBeTruthy();
+    expect(within(panel()).queryByText('Not scanned yet.')).toBeNull();
+    expect(suggestSignals).toHaveBeenCalledTimes(1);
+    expect(suggestSignals).toHaveBeenCalledWith(first.key, { markers: [], reference: null });
   });
 
   it('stops the scan on Cancel and offers to scan the rest', async () => {
@@ -281,12 +297,55 @@ describe('Suggested signals', () => {
       await add();
       await waitFor(() => expect(within(row(n)).getByRole('status').textContent).toBe(`Accepted \u00b7 Value_8_m${n - 2}`));
     }
-    const signals = state.dbcs[0].db.messages.find((m) => m.id === 0x200)?.signals ?? [];
-    expect(signals.map((s) => [s.name, s.isMultiplexor, s.muxValue])).toEqual([
+    const signals = () => state.dbcs[0].db.messages.find((m) => m.id === 0x200)?.signals ?? [];
+    expect(signals().map((s) => [s.name, s.isMultiplexor, s.muxValue])).toEqual([
       ['Mux', true, null],
       ['Value_8_m0', false, 0],
       ['Value_8_m1', false, 1],
     ]);
+
+    // Undoing the multiplexor would leave its pages switched by nothing.
+    await user.click(within(row(1)).getByRole('button', { name: 'Undo Mux' }));
+    expect((await screen.findByRole('alert')).textContent).toBe("Couldn't undo Mux: Value_8_m0 and Value_8_m1 are on its pages. Undo or remove them first.");
+    expect(signals().map((s) => s.name)).toEqual(['Mux', 'Value_8_m0', 'Value_8_m1']);
+    expect(within(row(1)).getByRole('status').textContent).toBe('Accepted \u00b7 Mux');
+
+    for (const n of [3, 2]) {
+      await user.click(within(row(n)).getByRole('button', { name: `Undo Value_8_m${n - 2}` }));
+      await waitFor(() => expect(within(row(n)).getByRole('button', { name: `Accept suggestion ${n}` })).toBeTruthy());
+    }
+    await user.click(within(row(1)).getByRole('button', { name: 'Undo Mux' }));
+    await waitFor(() => expect(state.dbcs[0].db.messages.map((m) => m.id)).toEqual([0x100]));
+  });
+
+  it('puts a page signal on its own multiplexor when the message nests them', async () => {
+    const inner = { startBit: 8, size: 4, byteOrder: 'intel' as const };
+    const nested: LoadedDbc = {
+      ...car,
+      db: {
+        ...car.db,
+        messages: [
+          ...car.db.messages,
+          message(0x200, 'Paged', {
+            signals: [signal('Outer', { isMultiplexor: true }), signal('Inner', { ...inner, isMultiplexor: true, muxValue: 1, muxSwitch: { signal: 'Outer', ranges: [[1, 1]] } })],
+          }),
+        ],
+      },
+    };
+    const cell = suggestion('continuous', 16, 16, { spec: { startBit: 16, size: 16, byteOrder: 'intel', signed: false, factor: 1, offset: 0, mux: { ...inner, value: 2 } } });
+    const { core, scan } = discoveryCore({ suggestSignals: vi.fn(async (key: number) => found(key, [cell])) });
+    const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [nested], selected: first.key, capturing: false });
+    await shell.user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    await screen.findByRole('region', { name: 'Suggested signals' });
+    act(() => scan.finish());
+    await shell.user.click(await within(panel()).findByRole('button', { name: 'Accept suggestion 1' }));
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' });
+    await waitFor(() => expect((within(inspector).getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('Value_16_m2'));
+    expect(within(inspector).getByText('On page m2 of the multiplexor at 8|4@1+.')).toBeTruthy();
+    await shell.user.click(within(inspector).getByRole('button', { name: 'Add to Database' }));
+    await waitFor(() => expect(within(row(1)).getByRole('status').textContent).toBe('Accepted \u00b7 Value_16_m2'));
+    const added = shell.state.dbcs[0].db.messages.find((m) => m.id === 0x200)?.signals[2];
+    expect([added?.muxValue, added?.muxSwitch]).toEqual([2, { signal: 'Inner', ranges: [[2, 2]] }]);
   });
 
   it('dismisses a suggestion and brings it back', async () => {

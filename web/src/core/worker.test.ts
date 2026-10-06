@@ -86,8 +86,11 @@ class FakeSession {
   compare_log_info() {
     return this.hasB ? JSON.stringify({ frames: 3, durationS: 28 }) : undefined;
   }
+  /** Calls to `close_compare_log`. */
+  compareClosed = 0;
   close_compare_log() {
     this.hasB = false;
+    this.compareClosed += 1;
   }
   swap_compare_log() {
     return JSON.stringify({ frames: 3, durationS: 28 });
@@ -334,7 +337,7 @@ describe('core worker', () => {
       expect(replies[2]).toMatchObject({ id: 3, result: { name: 'idle2.log' } });
       const withB = FakeSession.made[1];
       expect(withB.compareRead).toBe(8 << 20);
-      expect(withB.hasB).toBe(false);
+      expect(withB.compareClosed).toBe(1);
       send(4, 'compareLogInfo');
       await vi.waitUntil(() => replies.length === 4);
       expect(replies[3]).toEqual({ id: 4, result: null });

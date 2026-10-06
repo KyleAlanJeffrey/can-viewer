@@ -310,6 +310,8 @@ Which frames a filtered trace keeps. Passed to [`setTraceFilter`](#settracefilte
 - **`t0`** `number | null` - Window start in seconds, inclusive, or null for the start of the log.
 - **`t1`** `number | null` - Window end in seconds, inclusive, or null for the end of the log. A window that ends before it starts matches nothing.
 
+Times count from the log's first frame, as in [`rows`](#rows). A capture's filter keeps them so: a window set before the first frame came counts from that frame once it comes, and one set before [`endCapture`](#endcapture) sorts an earlier frame first counts from that frame afterwards.
+
 ### The DataRule object
 
 One condition on a frame's payload, told apart by `type`. Bytes count from 0, over the whole payload (a reassembled J1939 transfer included), and bit 0 is the least significant bit of its byte, as in [`bitFlips`](#bitflips). A frame too short to have the byte matches neither a byte rule nor a bit rule, whether the bit is wanted set or clear.
@@ -519,7 +521,7 @@ Adds frames to the running capture, in the order received, and those that match 
 
 **Returns** the capture so far.
 
-**Errors** Rejects with `no capture is running` or `the capture has ended`, and with `a captured frame is longer than 64 bytes` or `a captured frame has no time` for a frame that cannot be stored; frames before it in the batch are kept. Rejects with `there is no memory left for more frames` when the engine can't grow its frame store for the batch; then none of the batch is kept, and the frames appended before stay intact. Rejects with `there is no memory left to filter the new frames` when the batch was kept but its matches could not be added to the filtered rows, which then stay as they were.
+**Errors** Rejects with `no capture is running` or `the capture has ended`, and with `a captured frame is longer than 64 bytes` or `a captured frame has no time` for a frame that cannot be stored; frames before it in the batch are kept. Rejects with `there is no memory left for more frames` when the engine can't grow its frame store for the batch; then none of the batch is kept, and the frames appended before stay intact. When the batch is kept but there is no memory to add its matches to the filtered rows, the trace filter is dropped and the capture goes on; [`filteredRowCount`](#filteredrowcount) then resolves null.
 
 ```ts
 const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xde, 0xad) }]);
@@ -531,7 +533,7 @@ const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: f
 endCapture(): Promise<LogInfo>
 ```
 
-Ends the running capture and puts its frames in time order, then finds the rows of the trace filter again, if one is set. The capture stays the current log, so it can be viewed and exported with [`exportLog`](#exportlog) (the web app's Save Capture... writes `'candump'`); `appendFrames` rejects from then on.
+Ends the running capture and puts its frames in time order, then finds the rows of the trace filter again, if one is set; without the memory for them, the filter is dropped, and [`filteredRowCount`](#filteredrowcount) resolves null. The capture stays the current log, so it can be viewed and exported with [`exportLog`](#exportlog) (the web app's Save Capture... writes `'candump'`); `appendFrames` rejects from then on.
 
 **Returns** the finished capture.
 
@@ -714,6 +716,21 @@ const matches = await core.setTraceFilter({
 });
 console.log(`${matches} of ${log.frames} frames match`);
 const batch = await core.rows(FILTERED_ROWS, 0, 40);
+```
+
+### filteredRowCount
+
+```ts
+filteredRowCount(): Promise<number | null>
+```
+
+The number of rows of `FILTERED_ROWS`, as [`rowCount`](#rowcount) gives it, or null when the engine holds no trace filter: none was set, or the engine dropped it for want of memory as a capture grew or ended (see [`appendFrames`](#appendframes) and [`endCapture`](#endcapture)). The web app's Trace view asks it at each refresh of a capture, to follow the count, and turns its filters off with a message when it resolves null.
+
+**Returns** the count, or null.
+
+```ts
+const matches = await core.filteredRowCount();
+if (matches === null) turnFiltersOff();
 ```
 
 ### countFilterMatches

@@ -528,6 +528,12 @@ export interface CoreApi {
    */
   setTraceFilter(filter: FrameFilter | null): Promise<number>;
   /**
+   * `rowCount(FILTERED_ROWS)`, or null when the engine holds no trace filter: none was set, or
+   * it was dropped because there was no memory to match a capture's new frames or to filter it
+   * again when it ended.
+   */
+  filteredRowCount(): Promise<number | null>;
+  /**
    * How many frames match `filter`, keeping nothing: a preview. It runs in steps, letting other
    * calls run between them. Resolves null when a later count or `setTraceFilter` stopped it.
    */

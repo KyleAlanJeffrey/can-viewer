@@ -159,7 +159,8 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, follow = fal
     return () => {
       stale = true;
     };
-  }, [core, filterKey, top, visible, rowCount, logVersion]);
+    // `follow` ends with a capture, which may sort its frames, so the rows are fetched again.
+  }, [core, filterKey, top, visible, rowCount, logVersion, follow]);
 
   useEffect(() => {
     const el = wrapRef.current;

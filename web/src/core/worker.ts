@@ -171,6 +171,7 @@ const handlers = {
     transfer(session.compare_byte_lanes(key, first, count, t0, t1, buckets)),
   compareFrameAt: (key: number, t: number) => transfer(session.compare_frame_at(key, t)),
   setTraceFilter: (filter: FrameFilter | null) => session.set_trace_filter(JSON.stringify(filter)),
+  filteredRowCount: () => session.filtered_row_count() ?? null,
   exportLog(format: ExportFormat) {
     session.export_log(format);
     // Taken a chunk at a time, so the core frees each as it is copied out, and added to the

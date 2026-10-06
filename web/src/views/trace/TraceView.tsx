@@ -86,13 +86,21 @@ export function TraceView({ ctx }: ViewProps) {
   const result = filters && filtered && filtered.query === query && filtered.logVersion === logVersion ? filtered : null;
 
   // The core adds a capture's new frames that match to the rows, and finds them again in time
-  // order when it ends, so the count follows each refresh of the capture.
+  // order when it ends, so the count follows each refresh of the capture. Without the memory
+  // for that, the core drops the filter and goes on recording.
   const resultVersion = result?.version;
   useEffect(() => {
     if (resultVersion === undefined || log?.format !== 'capture') return;
     let stale = false;
-    core.rowCount(FILTERED_ROWS).then((count) => {
+    core.filteredRowCount().then((count) => {
       if (stale) return;
+      if (count === null) {
+        held.delete(core);
+        setFiltered(null);
+        setFilters(null);
+        setError("The filters were turned off: there was no memory left to filter the capture's frames.");
+        return;
+      }
       setFiltered((f) => {
         if (!f || f.version !== resultVersion || f.count === count) return f;
         const next = { ...f, count };
@@ -103,7 +111,7 @@ export function TraceView({ ctx }: ViewProps) {
     return () => {
       stale = true;
     };
-  }, [core, log, resultVersion]);
+  }, [core, log, resultVersion, setError, setFilters]);
   const shownQuery = result?.query;
   const highlight = useMemo(() => {
     const rules = shownQuery ? (JSON.parse(shownQuery) as FrameFilter).rules : [];

@@ -75,15 +75,19 @@ function Switcher(props: ViewProps) {
   );
 }
 
-/** The Trace view over a capture, with a button that adds 200 frames to it as a refresh would. */
+/** The Trace view over a capture, with buttons that add 200 frames to it as a refresh would, and stop it. */
 function GrowingCapture(props: ViewProps) {
   const [log, setLog] = useState(() => logInfo({ format: 'capture', frames: FRAMES, channels: ['can0', 'can1'], durationS: 100 }));
+  const [capturing, setCapturing] = useState(true);
   return (
     <>
       <button type="button" onClick={() => setLog((l) => ({ ...l, frames: l.frames + 200 }))}>
         More frames
       </button>
-      <TraceView ctx={{ ...props.ctx, log, capturing: true }} />
+      <button type="button" onClick={() => setCapturing(false)}>
+        Stop
+      </button>
+      <TraceView ctx={{ ...props.ctx, log, capturing }} />
     </>
   );
 }
@@ -256,9 +260,8 @@ describe('Trace filters', () => {
 
   it('filters a capture while it records, the count following the frames that come', async () => {
     const { user, core, setTraceFilter } = renderFilters(undefined, { view: GrowingCapture });
-    let kept = MATCHES;
-    const rowCount = vi.fn<CoreApi['rowCount']>(async (key) => (key === FILTERED_ROWS ? kept : 0));
-    core.rowCount = rowCount;
+    let kept: number | null = MATCHES;
+    core.filteredRowCount = async () => kept;
     await addByteRule(user, '1F');
     await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
     await waitFor(() => expect(countLine()).toBe(`${MATCHES} of 1,000 frames match`));
@@ -269,6 +272,21 @@ describe('Trace filters', () => {
     await waitFor(() => expect(countLine()).toBe(`${MATCHES + 8} of 1,200 frames match`));
     // The core added the new matches itself; the log is not filtered again.
     expect(applied(setTraceFilter)).toHaveLength(1);
+
+    // Out of memory, the core dropped the filter and recorded on.
+    kept = null;
+    await user.click(screen.getByRole('button', { name: 'More frames' }));
+    expect(await screen.findByText(/The filters were turned off: there was no memory left/)).toBeTruthy();
+    expect(screen.queryByRole('list', { name: 'Applied filters' })).toBeNull();
+    expect(await screen.findByRole('grid', { name: 'Frame trace' })).toBeTruthy();
+  });
+
+  it('fetches the rows again when the capture stops, since stopping may sort its frames', async () => {
+    const { user, rows } = renderFilters(undefined, { view: GrowingCapture });
+    await waitFor(() => expect(rows).toHaveBeenCalled());
+    const fetched = rows.mock.calls.length;
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(rows.mock.calls.length).toBeGreaterThan(fetched));
   });
 
   it('narrows the filters to the ID picked in the sidebar', async () => {

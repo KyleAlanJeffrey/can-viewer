@@ -73,9 +73,10 @@ export interface ViewContext {
   openInspector(): void;
   /**
    * Whether the view shows its own amber button now, for a view where it comes and goes, so
-   * Open Log... drops to an outline button meanwhile. The shell resets it on a view change.
+   * Open Log... drops to an outline button meanwhile. Null leaves it to `ViewMeta.hasPrimary`;
+   * the view sets that as it unmounts, as not every view change goes through the shell's setView.
    */
-  setViewPrimary(has: boolean): void;
+  setViewPrimary(has: boolean | null): void;
   /** Show the sidebar, if hidden, for a view that sends the user there. */
   showSidebar(): void;
   /** Open `file` as the log, as Open Log... does but staying in this view. Resolves false if it failed. */

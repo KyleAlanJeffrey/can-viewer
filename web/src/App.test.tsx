@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { LOG_SUPERSEDED, type CaptureFrame, type CoreApi, type LogInfo, type Progress, type SeriesInfo } from './core/api';
 import { FakeSerialPort } from './test/fakeSerial';
 import { fakeCore, logInfo, message, seriesInfo, signal as signalDef, summary } from './test/fixtures';
+import { stubToolbarWidth } from './test/toolbarWidth';
 
 /** session.ts caches its open database, so each test loads a fresh copy of the app's modules. */
 async function freshApp() {
@@ -23,6 +24,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   delete (navigator as { serial?: unknown }).serial;
 });
 
@@ -119,6 +121,70 @@ describe('App', () => {
 });
 
 /** The toolbar's status line, which screen readers hear; views have status lines of their own. */
+describe('App toolbar', () => {
+  const blfCore = (overrides: Partial<CoreApi> = {}) =>
+    fakeCore({ openLog: () => Promise.resolve(logInfo({ name: 'x.blf', format: 'blf' })), idSummary: () => Promise.resolve([]), ...overrides });
+
+  async function openBlf(container: HTMLElement) {
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    await userEvent.upload(container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!, new File(['LOGG'], 'x.blf'));
+    await screen.findByText(/^BLF/);
+  }
+  const more = () => screen.getByRole('button', { name: 'More actions' });
+  const menuLabels = () => screen.getAllByRole('menuitem').map((item) => item.textContent);
+
+  it('moves the actions that do not fit into the More menu, and gives it focus after an export from there', async () => {
+    stubToolbarWidth(700);
+    const App = await freshApp();
+    const exportLog = vi.fn<CoreApi['exportLog']>(() => Promise.reject(new Error('No room.')));
+    const { container } = render(<App core={blfCore({ exportLog })} />);
+    await openBlf(container);
+    const bar = within(document.querySelector<HTMLElement>('.toolbar')!);
+    expect(bar.getByRole('button', { name: 'Open DBC\u2026' })).toBeTruthy();
+    expect(bar.queryByRole('button', { name: 'Export Log\u2026' })).toBeNull();
+    expect(bar.queryByRole('button', { name: 'Connect live\u2026' })).toBeNull();
+    expect(document.querySelector('.toolbar')?.classList.contains('two-rows')).toBe(true);
+
+    await userEvent.click(more());
+    expect(menuLabels()).toEqual(['Export Log\u2026', 'Connect live\u2026', 'Close x.blf']);
+    expect(screen.getByRole('menuitem', { name: 'Close x.blf' }).getAttribute('title')).toBe('Close x.blf');
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Export Log\u2026' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Export Log' })).getByRole('button', { name: 'Download' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('No room.');
+    // With no Export Log button to go back to, focus goes to the menu it came from.
+    await waitFor(() => expect(document.activeElement).toBe(more()));
+  });
+
+  it('puts the views beside the log only when everything fits', async () => {
+    const toolbar = stubToolbarWidth(2000);
+    const App = await freshApp();
+    const { container } = render(<App core={blfCore()} />);
+    await openBlf(container);
+    const header = document.querySelector('.toolbar')!;
+    expect(header.classList.contains('one-row')).toBe(true);
+    const trace = screen.getByRole('radio', { name: 'Trace' });
+    trace.focus();
+    toolbar.resize(1200);
+    expect(header.classList.contains('two-rows')).toBe(true);
+    // The tabs stay the same element as they move to their own row, so focus stays on them.
+    expect(screen.getByRole('radio', { name: 'Trace' })).toBe(trace);
+    expect(document.activeElement).toBe(trace);
+  });
+
+  it('moves focus to Open Log once closing the log leaves the More menu empty', async () => {
+    const App = await freshApp();
+    const { container } = render(<App core={blfCore()} />);
+    await openBlf(container);
+    // Every action fits, so Close is all the menu has.
+    await userEvent.click(more());
+    expect(menuLabels()).toEqual(['Close x.blf']);
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Close x.blf' }));
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open Log\u2026' })));
+  });
+});
+
 const toolbarStatus = () => document.querySelector('.toolbar [role=status]')?.textContent;
 
 describe('App while a log is read', () => {
@@ -551,6 +617,32 @@ describe('App live capture', () => {
     });
     return { core, frames };
   }
+
+  it('keeps the views on their own row while recording, and leaves Close out of the More menu', async () => {
+    const toolbar = stubToolbarWidth(4000);
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    render(<App core={core} />);
+    await startCapture(port);
+    const header = document.querySelector('.toolbar')!;
+    expect(header.classList.contains('two-rows')).toBe(true);
+    // Open DBC... fits, and there is nothing else to put in a menu.
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
+
+    toolbar.resize(500);
+    await userEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Open DBC\u2026']);
+    await userEvent.keyboard('{Escape}');
+
+    toolbar.resize(4000);
+    port.send('t1232DEAD\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await screen.findByText(/Not saved/);
+    expect(header.classList.contains('one-row')).toBe(true);
+  });
 
   async function startCapture(port: FakeSerialPort) {
     await userEvent.click(await screen.findByRole('button', { name: 'Connect live\u2026' }));

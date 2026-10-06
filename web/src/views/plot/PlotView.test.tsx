@@ -85,6 +85,14 @@ function readoutRow(label: string): string[] {
 }
 
 describe('Plot signal tree', () => {
+  it('hands the amber button back to the shell as it unmounts', () => {
+    const { state, unmount } = renderPlot();
+    expect(state.viewPrimary).toBe(true);
+    // A restore can change the view without the shell's setView, which would reset it.
+    unmount();
+    expect(state.viewPrimary).toBeNull();
+  });
+
   it('adds a lane for each ticked signal and removes it when unticked or removed', async () => {
     const { user, state } = renderPlot();
     expect(screen.getByRole('heading', { name: 'Choose signals to plot' })).toBeTruthy();
@@ -145,10 +153,11 @@ describe('Plot signal tree', () => {
 
   it('asks for a DBC when none is loaded', () => {
     renderPlot({ dbcs: [] });
-    expect(within(tree()).getByRole('button', { name: 'Open DBC\u2026' })).toBeTruthy();
+    expect(within(tree()).getByText('Signals come from a DBC. Open one to list the signals in this log.')).toBeTruthy();
     expect(screen.getByText('Signals come from a DBC, so open one first.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Choose Signals' })).toBeNull();
-    expect(screen.getAllByRole('button', { name: 'Open DBC\u2026' })).toHaveLength(2);
+    // One in the view, not another in the sidebar beside it.
+    expect(screen.getAllByRole('button', { name: 'Open DBC\u2026' })).toHaveLength(1);
   });
 });
 

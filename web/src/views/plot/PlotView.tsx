@@ -137,6 +137,7 @@ export function PlotView({ ctx }: ViewProps) {
   const { setViewPrimary } = ctx;
   useLayoutEffect(() => {
     setViewPrimary(!hasPlots);
+    return () => setViewPrimary(null);
   }, [setViewPrimary, hasPlots]);
 
   if (!log) return null;

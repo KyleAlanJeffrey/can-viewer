@@ -328,21 +328,21 @@ button:disabled {
 .toolbar {
   position: relative;
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--hairline);
   min-width: 0;
 }
 
-.toolbar-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.toolbar-leading,
+.toolbar-actions {
   height: 60px;
-  padding: 0 12px;
-  min-width: 0;
 }
 
-.toolbar.two-rows .toolbar-row {
+.toolbar.two-rows .toolbar-leading,
+.toolbar.two-rows .toolbar-actions {
   height: 56px;
 }
 
@@ -367,10 +367,20 @@ button:disabled {
 }
 
 .toolbar-views {
+  order: 1;
+  flex: 1 0 100%;
   display: flex;
+  align-self: stretch;
   height: 40px;
-  padding: 0 8px;
+  margin: 0 -4px;
   min-width: 0;
+}
+
+.toolbar.one-row .toolbar-views {
+  order: 0;
+  flex: none;
+  height: auto;
+  margin: 0;
 }
 
 /* The views as tabs, underlined in Ochre Control on the toolbar's bottom edge. */
@@ -475,6 +485,7 @@ button:disabled {
 
 /* Leading and trailing groups share the slack equally, so the views sit centred. */
 .toolbar.one-row .toolbar-actions {
+  order: 1;
   flex: 1 1 0;
   min-width: max-content;
 }
@@ -523,8 +534,13 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
-.menu-item:hover:not(:disabled) {
+.menu-item:hover:not([aria-disabled='true']) {
   background: var(--hover-wash);
+}
+
+.menu-item[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .menu-item:focus-visible {
@@ -1173,9 +1189,10 @@ button:disabled {
 .content-header {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px 16px;
   min-height: 60px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--hairline);
@@ -1192,11 +1209,15 @@ button:disabled {
   color: var(--slate);
 }
 
+/* Onto a line of their own, then onto more lines, rather than out of reach under the inspector. */
 .content-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .content-scroll {
@@ -1480,30 +1501,19 @@ input[type='checkbox'] {
   line-height: 16px;
 }
 
-/* Narrow windows: the side panes float over the content instead of squeezing it. */
+/* Narrow windows: the side panes float over the content instead of squeezing it. The inspector
+   floats first, as the view headers and tables need the room. In step with App.tsx. */
 .scrim {
   display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 13;
+  background: var(--scrim);
 }
 
-@media (max-width: 900px) {
-  .app {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .scrim {
+@media (max-width: 1240px) {
+  .scrim.under-inspector {
     display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 13;
-    background: var(--scrim);
-  }
-
-  .sidebar {
-    position: fixed;
-    inset: 0 auto 0 0;
-    width: min(300px, 85vw);
-    z-index: 15;
-    box-shadow: var(--shadow-float);
   }
 
   .body {
@@ -1517,6 +1527,24 @@ input[type='checkbox'] {
     inset: 0 0 0 auto;
     width: min(360px, 92vw);
     z-index: 14;
+    box-shadow: var(--shadow-float);
+  }
+}
+
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .scrim {
+    display: block;
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(300px, 85vw);
+    z-index: 15;
     box-shadow: var(--shadow-float);
   }
 }

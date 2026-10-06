@@ -400,10 +400,18 @@ async function shootApp(tab, origin, viewport, shots, notes) {
 
   const file = `app-capture-sheet-${viewport.name}.png`;
   tab.step = file;
-  const unreachable = await tab.click('.toolbar-button.capture');
+  // Connect live... is in the More menu once the toolbar runs out of room.
+  const fromMenu = async () => {
+    const reason = await tab.click('.toolbar [aria-label="More actions"]');
+    if (reason) return `More actions: ${reason}`;
+    if (!(await tab.waitFor('the More menu did not open', `!!document.querySelector('.menu [data-action="capture"]')`, 5_000))) return 'not in the More menu';
+    return tab.click('.menu [data-action="capture"]');
+  };
+  const inline = await tab.evaluate(`!!document.querySelector('.toolbar-button.capture')`);
+  const unreachable = inline ? await tab.click('.toolbar-button.capture') : await fromMenu();
   if (unreachable) {
-    if (viewport.mobile) notes.push(`Capture button not clickable at ${viewport.width} px: ${unreachable}`);
-    else tab.problem('unreachable', `Capture button: ${unreachable}`);
+    if (viewport.mobile) notes.push(`Connect live not clickable at ${viewport.width} px: ${unreachable}`);
+    else tab.problem('unreachable', `Connect live: ${unreachable}`);
     return;
   }
   await tab.waitFor('the Capture sheet did not open', `!!document.querySelector('dialog.sheet[open] .sheet-title')?.textContent.includes('Live Capture')`, 30_000);

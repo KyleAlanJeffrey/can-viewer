@@ -262,3 +262,21 @@ describe('Database export', () => {
     await waitFor(() => expect(state.dbcs.map((d) => d.edited)).toEqual([false, false]));
   });
 });
+
+describe('Database inspector', () => {
+  it('shows a signal in the inspector, which Details toggles, and collapses it for a message without signals', async () => {
+    const { user, state } = renderDatabase();
+    const details = () => screen.getByRole('button', { name: 'Details' });
+    expect(state.inspectorHidden).toBe(false);
+    expect(details().getAttribute('aria-pressed')).toBe('true');
+    await user.click(details());
+    expect(details().getAttribute('aria-pressed')).toBe('false');
+    await user.click(details());
+    expect(details().getAttribute('aria-pressed')).toBe('true');
+
+    await user.click(messageRow(/^400\s*Lights/));
+    expect(state.inspectorHidden).toBe(true);
+    expect(details()).toHaveProperty('disabled', true);
+    expect(details().getAttribute('title')).toBe('Add a signal to edit its details');
+  });
+});

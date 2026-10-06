@@ -35,14 +35,20 @@ describe('MenuButton', () => {
     expect(document.activeElement).toBe(button);
   });
 
-  it('moves through the enabled items with the arrow keys, Home and End, and closes on Escape', async () => {
+  it('moves through every item with the arrow keys, Home and End, and closes on Escape', async () => {
     const { user, close, button } = renderMenu();
     button.focus();
     await user.keyboard('{ArrowUp}');
     const last = screen.getByRole('menuitem', { name: 'Close demo.log' });
+    const busy = screen.getByRole('menuitem', { name: 'Export Log\u2026' });
     const first = screen.getByRole('menuitem', { name: 'Open DBC\u2026' });
     expect(document.activeElement).toBe(last);
-    // The disabled item is skipped.
+    // The disabled item can be reached, so a screen reader announces it, but does nothing.
+    await user.keyboard('{ArrowUp}');
+    expect(document.activeElement).toBe(busy);
+    expect(busy.getAttribute('aria-disabled')).toBe('true');
+    await user.keyboard('{Enter}');
+    expect(screen.getByRole('menu')).toBeTruthy();
     await user.keyboard('{ArrowUp}');
     expect(document.activeElement).toBe(first);
     await user.keyboard('{ArrowUp}');
@@ -55,9 +61,28 @@ describe('MenuButton', () => {
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(button);
 
-    await user.keyboard('{ArrowDown}');
-    await user.keyboard('{ArrowDown}{Enter}');
+    await user.keyboard('{ArrowUp}{Enter}');
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('closes on Escape with focus still on the button', async () => {
+    const { user, button } = renderMenu();
+    await user.click(button);
+    button.focus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('closes when its last item goes, and stays closed when items come back', async () => {
+    const items = [{ id: 'open', label: 'Open DBC\u2026', onSelect: () => {} }];
+    const { rerender } = render(<MenuButton label="More actions" items={items} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getByRole('menu')).toBeTruthy();
+    rerender(<MenuButton label="More actions" items={[]} />);
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
+    rerender(<MenuButton label="More actions" items={items} />);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('closes on a click elsewhere', async () => {

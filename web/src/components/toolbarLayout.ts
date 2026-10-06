@@ -6,13 +6,16 @@ export type SpareAction = 'open-dbc' | 'export-log' | 'save-capture' | 'capture'
 /** The order they move in, the least needed first. */
 const OVERFLOW_ORDER: SpareAction[] = ['capture', 'export-log', 'open-dbc', 'save-capture'];
 
-/** The room each takes in the toolbar, its gap included. */
+/** The room each takes in the toolbar, its gap included, as measured in Chrome. */
 const ACTION_WIDTH: Record<SpareAction, number> = {
-  'open-dbc': 116,
-  'export-log': 122,
-  'save-capture': 132,
-  capture: 136,
+  'open-dbc': 127,
+  'export-log': 130,
+  'save-capture': 146,
+  capture: 140,
 };
+
+/** The buttons that never move into the menu, measured the same way (Open Log as the amber button, the wider). */
+export const FIXED_WIDTH = { openLog: 107, stopCapture: 141, cancel: 96, more: 40 };
 
 const TOOLBAR_PADDING = 24;
 const GAP = 12;
@@ -48,26 +51,28 @@ export function toolbarLayout(width: number, spare: SpareAction[], fixed: number
   return { oneRow: false, inline };
 }
 
-/** `toolbarLayout` for the toolbar `ref`, kept up to date as it resizes. */
-export function useToolbarLayout(ref: RefObject<HTMLElement | null>, spare: SpareAction[], fixed: number): ToolbarLayout {
+/**
+ * `toolbarLayout` for the toolbar `ref`, kept up to date as it or its view switcher resizes.
+ * `hasViews` says whether the switcher is shown, to watch it once it is.
+ */
+export function useToolbarLayout(ref: RefObject<HTMLElement | null>, spare: SpareAction[], fixed: number, hasViews: boolean): ToolbarLayout {
   const [size, setSize] = useState({ width: 0, views: 0 });
 
-  const measure = () => {
-    const el = ref.current;
-    if (!el) return;
-    const views = el.querySelector<HTMLElement>('.view-switcher')?.offsetWidth ?? 0;
-    const width = el.getBoundingClientRect().width;
-    setSize((s) => (s.width === width && s.views === views ? s : { width, views }));
-  };
-  // Every render, as the view switcher comes and goes without the toolbar resizing.
-  useLayoutEffect(measure);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
+    const switcher = el.querySelector<HTMLElement>('.view-switcher');
+    const measure = () => {
+      const views = switcher?.offsetWidth ?? 0;
+      const width = el.getBoundingClientRect().width;
+      setSize((s) => (s.width === width && s.views === views ? s : { width, views }));
+    };
+    measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
+    if (switcher) observer.observe(switcher);
     return () => observer.disconnect();
-  }, [ref]);
+  }, [ref, hasViews]);
 
   return toolbarLayout(size.width, spare, fixed, size.views);
 }

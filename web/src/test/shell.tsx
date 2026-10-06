@@ -197,6 +197,6 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
 export function renderInShell(view: ComponentType<ViewProps>, options: ShellOptions) {
   const user = userEvent.setup();
   const state = { running: 0, inspectorOpened: false, inspectorHidden: false, viewPrimary: null, sidebarShown: false } as ShellState;
-  render(<Shell view={view} options={options} state={state} />);
-  return { user, state };
+  const { unmount } = render(<Shell view={view} options={options} state={state} />);
+  return { user, state, unmount };
 }

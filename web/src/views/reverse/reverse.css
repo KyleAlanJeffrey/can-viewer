@@ -626,8 +626,15 @@
 
 .re-modes {
   display: flex;
+  flex: none;
   align-self: stretch;
+  min-height: 48px;
   gap: 4px;
+}
+
+/* Wrapped below the tabs, the actions keep the header's height. */
+.re-header .content-actions {
+  padding: 8px 0;
 }
 
 .re-mode {
@@ -638,6 +645,7 @@
   color: var(--slate);
   font: inherit;
   font-size: 15px;
+  white-space: nowrap;
 }
 
 .re-mode:hover {

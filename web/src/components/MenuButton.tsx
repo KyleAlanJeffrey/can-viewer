@@ -21,7 +21,8 @@ interface Props {
 
 /**
  * An icon button that opens a menu of actions below it. Arrow keys, Home and End move through
- * the enabled items; Escape closes it and returns focus to the button.
+ * the items; Escape closes it and returns focus to the button. Disabled items stay focusable, so
+ * screen reader users still learn they exist.
  */
 export function MenuButton({ label, items, buttonRef }: Props) {
   const [open, setOpen] = useState(false);
@@ -32,11 +33,11 @@ export function MenuButton({ label, items, buttonRef }: Props) {
   // Which item gets focus once the menu has rendered.
   const [initialFocus, setInitialFocus] = useState<'first' | 'last' | null>(null);
 
-  const enabledItems = () => [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+  const menuItems = () => [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
 
   useEffect(() => {
     if (!open || initialFocus === null) return;
-    const all = enabledItems();
+    const all = menuItems();
     (initialFocus === 'first' ? all[0] : all[all.length - 1])?.focus();
     setInitialFocus(null);
   }, [open, initialFocus]);
@@ -49,6 +50,12 @@ export function MenuButton({ label, items, buttonRef }: Props) {
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open]);
+
+  // The button goes with the last item; a menu left open would reappear with the next one.
+  const empty = items.length === 0;
+  useEffect(() => {
+    if (empty) setOpen(false);
+  }, [empty]);
 
   const show = (focus: 'first' | 'last') => {
     setOpen(true);
@@ -63,11 +70,15 @@ export function MenuButton({ label, items, buttonRef }: Props) {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       show(e.key === 'ArrowDown' ? 'first' : 'last');
+    } else if (e.key === 'Escape' && open) {
+      e.preventDefault();
+      e.stopPropagation();
+      close(true);
     }
   };
 
   const onMenuKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const all = enabledItems();
+    const all = menuItems();
     const at = all.indexOf(document.activeElement as HTMLButtonElement);
     let next: HTMLButtonElement | undefined;
     if (e.key === 'ArrowDown') next = all[(at + 1) % all.length];
@@ -87,7 +98,7 @@ export function MenuButton({ label, items, buttonRef }: Props) {
     next?.focus();
   };
 
-  if (items.length === 0) return null;
+  if (empty) return null;
 
   return (
     <div ref={root} className="menu-anchor">
@@ -116,11 +127,13 @@ export function MenuButton({ label, items, buttonRef }: Props) {
               key={item.id}
               type="button"
               role="menuitem"
+              data-action={item.id}
               tabIndex={-1}
               className={item.separated ? 'menu-item separated' : 'menu-item'}
-              disabled={item.disabled}
+              aria-disabled={item.disabled || undefined}
               title={item.title}
               onClick={() => {
+                if (item.disabled) return;
                 close(true);
                 item.onSelect();
               }}

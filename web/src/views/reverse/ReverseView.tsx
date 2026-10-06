@@ -287,6 +287,7 @@ export function ReverseView({ ctx }: ViewProps) {
                 onClearSelection={() => {
                   setSelectedByte(null);
                   setPickedId(null);
+                  ctx.select(ALL_IDS);
                 }}
               />
             </div>

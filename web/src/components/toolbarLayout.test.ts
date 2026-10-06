@@ -18,13 +18,13 @@ describe('toolbarLayout', () => {
 
   it('moves the least needed actions into the More menu first', () => {
     expect(inline(1200)).toEqual(ALL);
-    expect(inline(900)).toEqual(['open-dbc', 'export-log', 'save-capture']);
-    expect(inline(780)).toEqual(['open-dbc', 'save-capture']);
+    expect(inline(1000)).toEqual(['open-dbc', 'export-log', 'save-capture']);
+    expect(inline(800)).toEqual(['open-dbc', 'save-capture']);
     expect(inline(700)).toEqual(['save-capture']);
     expect(inline(400)).toEqual([]);
   });
 
   it('keeps the actions a log without a capture has, when they fit', () => {
-    expect(inline(900, ['open-dbc', 'export-log', 'capture'])).toEqual(['open-dbc', 'export-log', 'capture']);
+    expect(inline(1000, ['open-dbc', 'export-log', 'capture'])).toEqual(['open-dbc', 'export-log', 'capture']);
   });
 });

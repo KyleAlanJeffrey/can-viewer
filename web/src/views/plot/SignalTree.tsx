@@ -50,14 +50,8 @@ export function SignalTree({ ctx, navRef }: { ctx: ViewContext; navRef?: Ref<HTM
 
   let body;
   if (dbcs.length === 0) {
-    body = (
-      <div className="pv-tree-empty">
-        <p>Signals come from a DBC. Open one to list the signals in this log.</p>
-        <button className="button" onClick={ctx.openDbcPicker}>
-          Open DBC&hellip;
-        </button>
-      </div>
-    );
+    // The view's own Open DBC... button is beside this, and the toolbar's.
+    body = <p className="pv-tree-empty">Signals come from a DBC. Open one to list the signals in this log.</p>;
   } else if (groups.length === 0) {
     const none = dbcs.length === 1 ? 'The DBC describes no message in this log.' : 'No loaded DBC describes a message in this log.';
     body = <p className="pv-tree-empty">{q ? 'No signals match.' : none}</p>;

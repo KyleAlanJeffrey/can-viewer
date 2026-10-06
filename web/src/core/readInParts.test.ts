@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
-import { lineStart, partBytes, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FIRST_REPLY_MS, lineStart, partBytes, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+const realSetTimeout = globalThis.setTimeout;
 
 /** A CRLF log of numbered lines, one of them longer than a scan window. */
 function log(lines = 40): string {
@@ -200,5 +201,91 @@ describe('reading a log in parts', () => {
       expect(warn).toHaveBeenCalledTimes(failAt >= 0 ? 1 : 0);
       warn.mockRestore();
     }
+  });
+
+  describe('with a worker that never answers', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it(`gives up once a worker has not answered its first part in ${FIRST_REPLY_MS / 1000} s`, async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const onStalled = vi.fn();
+      const workers: PartWorker[] = [];
+      const startWorker = () => {
+        const worker = {
+          read: vi.fn(() => new Promise<Uint8Array>(() => undefined)),
+          close: vi.fn(),
+        };
+        workers.push(worker);
+        return worker;
+      };
+      let settled: boolean | undefined;
+      void readInParts(new Blob([log(400)]), new RecordingSession('candump'), { workers: 2, partSize: 250, startWorker, onStalled }, () => undefined).then((read) => {
+        settled = read;
+      });
+      // Not vi.waitUntil, which would run the fake timers.
+      while (!(workers.length === 2 && workers.every((worker) => vi.mocked(worker.read).mock.calls.length === 1))) {
+        await new Promise((resolve) => realSetTimeout(resolve, 0));
+      }
+      await vi.advanceTimersByTimeAsync(FIRST_REPLY_MS - 1);
+      expect(settled).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(false);
+      expect(onStalled).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(workers.every((worker) => vi.mocked(worker.close).mock.calls.length > 0)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('waits as long as a part takes once a worker has answered', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const onStalled = vi.fn();
+      EchoWorker.tasks = [];
+      const session = new RecordingSession('candump');
+      const content = log(60);
+      const partSize = 400;
+      // The second part each worker reads takes far longer than the first-reply limit.
+      const startWorker = () => {
+        let reads = 0;
+        return new EchoWorker(partSize, () => (++reads === 2 ? 2 * FIRST_REPLY_MS : 0));
+      };
+      const reading = readInParts(new Blob([content]), session, { workers: 1, partSize, startWorker, onStalled }, () => undefined);
+      await vi.runAllTimersAsync();
+      expect(await reading).toBe(true);
+      expect(session.bytes).toBe(content);
+      expect(onStalled).not.toHaveBeenCalled();
+    });
+  });
+
+  it('stops the other workers, without a warning, when joining a part throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    EchoWorker.tasks = [];
+    const workers: EchoWorker[] = [];
+    const session = new RecordingSession('candump');
+    session.push_segment = () => {
+      throw new WebAssembly.RuntimeError('unreachable');
+    };
+    const reading = readInParts(
+      new Blob([log(400)]),
+      session,
+      {
+        workers: 3,
+        partSize: 250,
+        startWorker: () => {
+          const worker = new EchoWorker(250, (task) => (task === EchoWorker.tasks[0] ? 0 : 5));
+          workers.push(worker);
+          return worker;
+        },
+      },
+      () => undefined,
+    );
+    await expect(reading).rejects.toThrow('unreachable');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(workers.every((worker) => worker.closed)).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

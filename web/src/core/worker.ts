@@ -41,26 +41,32 @@ const withMemory = (json: string, meta: LogMeta) => ({ ...JSON.parse(json), ...m
 /** The request being answered, so its progress events reach the right listener. */
 let currentId = 0;
 
-/** Reports the bytes of `file` read so far, at most every 100 ms. */
+/**
+ * Reports the bytes of `file` read so far, at most every 100 ms. A log read again in one worker
+ * after its parts failed starts from 0, so the bar holds at the most it showed until then.
+ */
 function progressOf(file: Blob): (bytes: number) => void {
   let lastReport = 0;
+  let most = 0;
   return (bytes) => {
+    most = Math.max(most, bytes);
     const now = performance.now();
     if (now - lastReport > 100) {
       lastReport = now;
-      port.postMessage({ event: 'progress', id: currentId, bytes, total: file.size });
+      port.postMessage({ event: 'progress', id: currentId, bytes: most, total: file.size });
     }
   };
 }
 
 /** Reads `file` in chunks through `push`, reporting progress. */
-function readChunks(file: Blob, push: (chunk: Uint8Array) => void) {
-  return readChunksFrom(file, push, progressOf(file));
+function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress = progressOf(file)) {
+  return readChunksFrom(file, push, onProgress);
 }
 
 /**
- * Set when a part worker stopped (it failed to start, or ran out of memory), so later logs are
- * read in this worker alone. Some browsers, Electron's among them, start no workers from a worker.
+ * Set when a part worker can't start (it can't be created, its script fails, or it doesn't answer
+ * its first part), so later logs are read in this worker alone. Some browsers, Electron's among
+ * them, start no workers from a worker.
  */
 let partWorkersFailed = false;
 
@@ -72,7 +78,14 @@ function partWorkerCount(file: Blob): number {
 }
 
 function startPartWorker(): PartWorker {
-  const worker = new Worker(new URL('./partWorker.ts', import.meta.url), { type: 'module' });
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL('./partWorker.ts', import.meta.url), { type: 'module' });
+  } catch (err) {
+    partWorkersFailed = true;
+    const message = err instanceof Error ? err.message : String(err);
+    return { read: () => Promise.reject(new Error(`a part worker couldn't start: ${message}`)), close() {} };
+  }
   let pending: { resolve: (segment: Uint8Array) => void; reject: (err: Error) => void } | null = null;
   const fail = (message: string) => {
     pending?.reject(new Error(message));
@@ -131,7 +144,11 @@ const handlers = {
       session.set_file_name(name);
       session.reserve_for_bytes(file.size);
       const workers = partWorkerCount(file);
-      const read = workers > 0 && (await readInParts(file, session, { workers, startWorker: startPartWorker }, progressOf(file)));
+      const progress = progressOf(file);
+      const onStalled = () => {
+        partWorkersFailed = true;
+      };
+      const read = workers > 0 && (await readInParts(file, session, { workers, startWorker: startPartWorker, onStalled }, progress));
       if (!read) {
         if (workers > 0) {
           // It holds part of the log.
@@ -140,7 +157,7 @@ const handlers = {
           session.set_file_name(name);
           session.reserve_for_bytes(file.size);
         }
-        await readChunks(file, (chunk) => session.push_chunk(chunk));
+        await readChunks(file, (chunk) => session.push_chunk(chunk), progress);
       }
       const json = session.finish();
       logMeta = { name, parseMs: performance.now() - started };

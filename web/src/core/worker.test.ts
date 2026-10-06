@@ -4,9 +4,18 @@ import type { Request } from './worker';
 class FakeSession {
   static captures: [string, number][] = [];
   static filters: string[] = [];
+  static made: FakeSession[] = [];
   pushed: Uint8Array[] = [];
   hasB = false;
-  free() {}
+  freed = false;
+  /** Bytes given to `push_chunk`. */
+  read = 0;
+  constructor() {
+    FakeSession.made.push(this);
+  }
+  free() {
+    this.freed = true;
+  }
   set_databases() {}
   start_capture(channel: string, startedAtMs: number) {
     FakeSession.captures.push([channel, startedAtMs]);
@@ -43,7 +52,15 @@ class FakeSession {
   }
   set_file_name() {}
   reserve_for_bytes() {}
-  push_chunk() {}
+  push_chunk(chunk: Uint8Array) {
+    this.read += chunk.length;
+  }
+  segment_format() {
+    return 'candump';
+  }
+  push_segment() {
+    return true;
+  }
   finish() {
     return JSON.stringify({ frames: 10, durationS: 30 });
   }
@@ -126,6 +143,8 @@ function call(port: Port, id: number, method: Request['method'], ...args: unknow
   return reply;
 }
 
+const started = vi.fn();
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout'] });
 });
@@ -136,6 +155,63 @@ afterEach(() => {
 });
 
 describe('core worker', () => {
+  describe('reading a large log in parts', () => {
+    const size = 33 << 20;
+    const bigLog = () => new Blob([new Uint8Array(size).fill(10)]);
+
+    for (const [how, PartWorker] of [
+      [
+        'cannot be created',
+        class {
+          constructor() {
+            started();
+            throw new Error('nested workers are not supported');
+          }
+        },
+      ],
+      [
+        'fails to load its script',
+        class {
+          onerror: ((e: { message: string; preventDefault(): void }) => void) | null = null;
+          constructor() {
+            started();
+          }
+          postMessage() {
+            queueMicrotask(() => this.onerror?.({ message: 'An unknown error occurred when fetching the script', preventDefault() {} }));
+          }
+          terminate() {}
+        },
+      ],
+    ] as const) {
+      it(`reads the log again in a fresh session when a part worker ${how}, and later logs in one worker`, async () => {
+        const port = await startWorker();
+        // The part worker's URL is resolved against the worker's own location.
+        Object.assign(port, { location: 'http://localhost/assets/worker.js' });
+        vi.stubGlobal('navigator', { hardwareConcurrency: 4 });
+        vi.stubGlobal('Worker', PartWorker);
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        started.mockClear();
+        FakeSession.made = [];
+
+        expect(await call(port, 1, 'openLog', bigLog(), 'drive.log')).toMatchObject({ id: 1, result: { name: 'drive.log', frames: 10 } });
+        expect(started).toHaveBeenCalledTimes(3);
+        const [inParts, again] = FakeSession.made;
+        expect(FakeSession.made).toHaveLength(2);
+        expect(inParts.freed).toBe(true);
+        expect(inParts.read).toBe(2 << 20);
+        expect(again.freed).toBe(false);
+        expect(again.read).toBe(size);
+
+        FakeSession.made = [];
+        expect(await call(port, 2, 'openLog', bigLog(), 'drive2.log')).toMatchObject({ id: 2, result: { name: 'drive2.log' } });
+        expect(started).toHaveBeenCalledTimes(3);
+        expect(FakeSession.made).toHaveLength(1);
+        expect(FakeSession.made[0].read).toBe(size);
+        vi.mocked(console.warn).mockRestore();
+      });
+    }
+  });
+
   it('answers a call that trapped, then rethrows the trap outside the call for the page to restart it', async () => {
     const port = await startWorker();
     expect(await ask(port, 1, 1)).toEqual({ id: 1, error: 'unreachable' });

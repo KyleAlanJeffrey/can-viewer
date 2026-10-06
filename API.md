@@ -6,7 +6,7 @@
 
 - The web build implements `CoreApi` with `WebCore` (`web/src/core/webCore.ts`). `WebCore` starts one module Web Worker (`web/src/core/worker.ts`). The worker loads the wasm build of `crates/can-wasm` and owns a single `Session`, which holds the parsed log, the loaded databases and the decoded series.
 - Each call posts `{ id, method, args }` to the worker. The worker answers with `{ id, result }` or `{ id, error }`, and pushes parse progress as `{ event: 'progress', bytes, total }`.
-- Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it. The one exception is [`countFilterMatches`](#countfiltermatches): a count still waiting when a newer count arrives is answered with null instead of run.
+- Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it. The one exception is [`countFilterMatches`](#countfiltermatches): it runs in steps of about 524,000 frames, and the calls sent during a step run before the next one, so a count delays them by one step at most; a count that a newer count or a [`setTraceFilter`](#settracefilter) follows stops at its next step, or before it starts, and is answered with null.
 - Bulk results (trace rows, bit counts, series points, bus load) arrive as typed arrays whose buffers are transferred, not copied. Small structured results cross the wasm boundary as JSON.
 - If the worker itself stops (an uncaught error or a reply that cannot be read), `WebCore` terminates it and starts another: every call in flight rejects with `The CAN core stopped and was restarted. Open the log again.`, the databases from the last `setDatabases` are set again, and the listeners given to [`onReset`](#onreset) are called. The log and every series are gone. A worker that stopped before it ever answered is not replaced, since another would fail the same way; every later call then rejects with the worker's error.
 - The planned desktop app will implement the same interface over Tauri commands, with the same crates running natively.
@@ -722,13 +722,13 @@ const batch = await core.rows(FILTERED_ROWS, 0, 40);
 countFilterMatches(filter: FrameFilter): Promise<number | null>
 ```
 
-How many frames match `filter`, without keeping them or changing the rows of `FILTERED_ROWS`: a preview while a filter is edited. Requests still run in order, so send a count only when the edit settles (the Trace view waits 250 ms). If another count arrives while this one is still waiting behind other work, this one is skipped and resolves to null, so only the newest count costs a pass over the log.
+How many frames match `filter`, without keeping them or changing the rows of `FILTERED_ROWS`: a preview while a filter is edited. The count goes through the frames in steps of about 524,000 (some tens of milliseconds each), and the calls sent during a step, such as the trace's row fetches, run before the next step. When another count or a `setTraceFilter` arrives, this count stops at its next step, or before it starts, and resolves to null, so only the newest count costs a pass over the log. Still, send a count only when the edit settles (the Trace view waits 250 ms). It covers the frames there were when it started; during a capture, frames appended meanwhile are left out. Starting or ending a capture, or opening or swapping a log, while it runs makes it start over on the new frames.
 
 **Parameters**
 
 - **`filter`** [`FrameFilter`](#the-framefilter-object) - The frames to count.
 
-**Returns** the number of matching frames, or null when a later count replaced this one before it ran.
+**Returns** the number of matching frames, or null when a later count or `setTraceFilter` stopped this one.
 
 **Errors** Rejects for a malformed `filter` as [`setTraceFilter`](#settracefilter) does. A count never changes the rows of `FILTERED_ROWS`, even when it fails.
 

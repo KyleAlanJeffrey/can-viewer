@@ -526,8 +526,8 @@ export interface CoreApi {
    */
   setTraceFilter(filter: FrameFilter | null): Promise<number>;
   /**
-   * How many frames match `filter`, keeping nothing: a preview. Resolves null when a later call
-   * replaced this one before it ran.
+   * How many frames match `filter`, keeping nothing: a preview. It runs in steps, letting other
+   * calls run between them. Resolves null when a later count or `setTraceFilter` stopped it.
    */
   countFilterMatches(filter: FrameFilter): Promise<number | null>;
   /**

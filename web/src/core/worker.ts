@@ -5,6 +5,8 @@ import type { CompareOptions, Database, DiscoveryHints, ExportFormat, FindRule, 
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
 
 const CHUNK_BYTES = 8 << 20;
+/** Frames a filter count goes through before the requests sent meanwhile may run. */
+const COUNT_STEP_FRAMES = 1 << 19;
 
 interface WorkerPort {
   onmessage: ((e: MessageEvent<Request>) => void) | null;
@@ -13,7 +15,7 @@ interface WorkerPort {
 
 export interface Request {
   id: number;
-  method: keyof typeof handlers;
+  method: keyof typeof handlers | 'countFilterMatches';
   args: unknown[];
 }
 
@@ -169,7 +171,6 @@ const handlers = {
     transfer(session.compare_byte_lanes(key, first, count, t0, t1, buckets)),
   compareFrameAt: (key: number, t: number) => transfer(session.compare_frame_at(key, t)),
   setTraceFilter: (filter: FrameFilter | null) => session.set_trace_filter(JSON.stringify(filter)),
-  countFilterMatches: (filter: FrameFilter) => session.count_filter_matches(JSON.stringify(filter)),
   exportLog(format: ExportFormat) {
     session.export_log(format);
     // Taken a chunk at a time, so the core frees each as it is copied out, and added to the
@@ -198,37 +199,74 @@ let queue: Promise<void> = ready.then(
   },
 );
 
-/** The newest count request; older ones still queued behind work are answered null unrun. */
+function enqueue(task: () => Promise<void>) {
+  queue = queue.then(task);
+}
+
+function answerError(id: number, err: unknown) {
+  port.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
+  // A trapped instance can't be trusted afterwards. Thrown uncaught, it reaches the page's
+  // worker.onerror, which starts a new worker.
+  if (err instanceof WebAssembly.RuntimeError) {
+    setTimeout(() => {
+      throw err;
+    });
+  }
+}
+
+async function run(id: number, method: keyof typeof handlers, args: unknown[]) {
+  try {
+    if (initError) throw initError;
+    currentId = id;
+    const handler = handlers[method] as (...a: unknown[]) => unknown;
+    const out = await handler(...args);
+    if (withTransfer.has(method)) {
+      const [result, buffers] = out as [unknown, Transferable[]];
+      port.postMessage({ id, result }, buffers);
+    } else {
+      port.postMessage({ id, result: out });
+    }
+  } catch (err) {
+    answerError(id, err);
+  }
+}
+
+/** The newest count or filter request: a count older than it stops, answered with null. */
 let latestCount = 0;
+/** The count the session holds, if it is still running. */
+let runningCount = 0;
+
+/**
+ * One step of a filter count. The next step joins the queue behind the requests sent
+ * meanwhile, so a count delays them by one step at most, and a newer count or filter stops it.
+ */
+async function countStep(id: number, filter: FrameFilter) {
+  if (id !== latestCount) {
+    port.postMessage({ id, result: null });
+    return;
+  }
+  try {
+    if (initError) throw initError;
+    // A new log, or the end of a capture, drops the count the session held; it starts over.
+    if (runningCount !== id || !session.count_running()) {
+      runningCount = id;
+      session.count_begin(JSON.stringify(filter));
+    }
+    const count = session.count_step(COUNT_STEP_FRAMES);
+    if (count === undefined) {
+      await new Promise((resolve) => setTimeout(resolve));
+      enqueue(() => countStep(id, filter));
+      return;
+    }
+    port.postMessage({ id, result: count });
+  } catch (err) {
+    answerError(id, err);
+  }
+}
 
 port.onmessage = (e) => {
   const { id, method, args } = e.data;
-  if (method === 'countFilterMatches') latestCount = id;
-  queue = queue.then(async () => {
-    try {
-      if (initError) throw initError;
-      if (method === 'countFilterMatches' && id !== latestCount) {
-        port.postMessage({ id, result: null });
-        return;
-      }
-      currentId = id;
-      const handler = handlers[method] as (...a: unknown[]) => unknown;
-      const out = await handler(...args);
-      if (withTransfer.has(method)) {
-        const [result, buffers] = out as [unknown, Transferable[]];
-        port.postMessage({ id, result }, buffers);
-      } else {
-        port.postMessage({ id, result: out });
-      }
-    } catch (err) {
-      port.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
-      // A trapped instance can't be trusted afterwards. Thrown uncaught, it reaches the page's
-      // worker.onerror, which starts a new worker.
-      if (err instanceof WebAssembly.RuntimeError) {
-        setTimeout(() => {
-          throw err;
-        });
-      }
-    }
-  });
+  if (method === 'countFilterMatches' || method === 'setTraceFilter') latestCount = id;
+  if (method === 'countFilterMatches') enqueue(() => countStep(id, args[0] as FrameFilter));
+  else enqueue(() => run(id, method, args));
 };

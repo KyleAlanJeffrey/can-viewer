@@ -15,8 +15,8 @@ mod suggest;
 use std::collections::{TryReserveError, VecDeque};
 
 use can_core::{
-    flags, tp::MAX_TRANSFER, Combine, DataRule, FrameFilter, FrameKind, FrameRef, FrameSink,
-    FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
+    flags, tp::MAX_TRANSFER, Combine, DataRule, FilterPass, FrameFilter, FrameKind, FrameRef,
+    FrameSink, FrameStore, IdKey, IdStats, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD,
 };
 use can_dbc_model::{bits, ByteOrder, Database, MessageDef};
 use can_formats::{mf4, writer, AnyParser, Format, LogParser, ParseStats};
@@ -82,6 +82,8 @@ pub struct Session {
     log_b: Option<compare::LogB>,
     /// The frames the trace filter matched.
     filtered: Option<Matches>,
+    /// A count begun by [`Session::count_begin`] and not finished.
+    count: Option<FilterPass>,
     /// The chunks of the last `export_log` not yet taken by `export_chunk`.
     export: VecDeque<Vec<u8>>,
 }
@@ -543,6 +545,7 @@ impl Session {
         self.input = LogInput::default();
         self.series.clear();
         self.filtered = None;
+        self.count = None;
         self.export = VecDeque::new();
         // Compared against a capture still growing, log B would show differences that aren't.
         self.log_b = None;
@@ -576,6 +579,7 @@ impl Session {
             .ok_or_else(|| js_err("no capture is running"))?;
         capture.finished = true;
         self.store.sort_by_time();
+        self.count = None;
         // Sorting may move frames, so the rows are found again.
         if let Some(filtered) = self.filtered.take() {
             self.filtered = Matches::find(&self.store, filtered.filter).ok();
@@ -647,13 +651,39 @@ impl Session {
         Ok(count)
     }
 
-    /// How many frames match a JSON `FrameFilter`, keeping nothing.
-    pub fn count_filter_matches(&self, json: &str) -> Result<u32, JsError> {
+    /// Begin counting the frames that match a JSON `FrameFilter`, without keeping them, in place
+    /// of any count not finished. [`Session::count_step`] does the work a slice at a time.
+    pub fn count_begin(&mut self, json: &str) -> Result<(), JsError> {
+        self.count = None;
         let filter = self
             .parse_filter(json)
             .map_err(js_err)?
             .ok_or_else(|| js_err("no filter to count"))?;
-        Ok(self.store.count_matches(&filter) as u32)
+        let pass = FilterPass::new(&self.store, filter)
+            .map_err(|_| js_err("not enough memory to count the matches"))?;
+        self.count = Some(pass);
+        Ok(())
+    }
+
+    /// Go on with the count through about `frames` more frames: the number of matches once it
+    /// is done, or none while frames remain. The count covers the frames stored when it began.
+    pub fn count_step(&mut self, frames: u32) -> Result<Option<u32>, JsError> {
+        let pass = self
+            .count
+            .as_mut()
+            .ok_or_else(|| js_err("no count is running"))?;
+        if !pass.step(&self.store, frames as usize) {
+            return Ok(None);
+        }
+        let matches = pass.count() as u32;
+        self.count = None;
+        Ok(Some(matches))
+    }
+
+    /// Whether a count is begun and not finished. Opening a log, starting or ending a capture
+    /// and swapping logs drop it.
+    pub fn count_running(&self) -> bool {
+        self.count.is_some()
     }
 
     /// Rows `start..start + count` of the trace, packed [`ROW_STRIDE`] bytes each. A row holds
@@ -1899,6 +1929,18 @@ mod tests {
         filter.to_string()
     }
 
+    /// The matches of `filter`, counted a frame per step.
+    fn count(s: &mut Session, filter: &str) -> u32 {
+        s.count_begin(filter).unwrap();
+        loop {
+            if let Some(matches) = s.count_step(1).unwrap() {
+                assert!(!s.count_running());
+                return matches;
+            }
+            assert!(s.count_running());
+        }
+    }
+
     /// Store indices (offset 12) of the rows of `key`.
     fn row_indices(s: &Session, key: f64) -> Vec<u32> {
         s.rows(key, 0, u32::MAX)
@@ -1918,7 +1960,7 @@ mod tests {
             "keys": [id_key(0, 0x123), id_key(1, 0x7FF)],
             "rules": [{ "type": "bit", "byte": 1, "bit": 2, "set": true }],
         }));
-        assert_eq!(s.count_filter_matches(&filter).unwrap(), 2);
+        assert_eq!(count(&mut s, &filter), 2);
         assert_eq!(s.row_count(FILTERED), 0, "counting keeps nothing");
         assert_eq!(s.set_trace_filter(&filter).unwrap(), 2);
         assert_eq!(s.row_count(FILTERED), 2);
@@ -1946,9 +1988,9 @@ mod tests {
         assert_eq!(s.set_trace_filter(&any).unwrap(), 3);
         assert_eq!(row_indices(&s, FILTERED), [2, 4, 5]);
         let errors = filter_json(json!({ "kinds": ["error"] }));
-        assert_eq!(s.count_filter_matches(&errors).unwrap(), 1);
+        assert_eq!(count(&mut s, &errors), 1);
         let remote = filter_json(json!({ "kinds": ["remote", "reassembled"] }));
-        assert_eq!(s.count_filter_matches(&remote).unwrap(), 0);
+        assert_eq!(count(&mut s, &remote), 0);
 
         assert_eq!(s.set_trace_filter("null").unwrap(), 0);
         assert_eq!(s.row_count(FILTERED), 0);
@@ -1978,6 +2020,30 @@ mod tests {
         s.finish_capture().unwrap();
         assert_eq!(s.store.frame(0).ts_ns, 1_000_000);
         assert_eq!(row_indices(&s, FILTERED), [1, 3]);
+    }
+
+    #[test]
+    fn a_count_covers_the_frames_stored_when_it_began_and_ends_with_the_capture() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let batch: Vec<u8> = (0..4)
+            .flat_map(|i| capture_record(f64::from(i) * 1e6, 0x100, 0, &[1]))
+            .collect();
+        assert!(s.push_frames(&batch).is_ok());
+        let every = filter_json(json!({}));
+        s.count_begin(&every).unwrap();
+        assert_eq!(s.count_step(2).unwrap(), None);
+        assert!(s.push_frames(&capture_record(5e6, 0x100, 0, &[1])).is_ok());
+        assert_eq!(s.count_step(100).unwrap(), Some(4));
+
+        s.count_begin(&every).unwrap();
+        assert_eq!(s.count_step(2).unwrap(), None);
+        s.finish_capture().unwrap();
+        assert!(
+            !s.count_running(),
+            "the sort moves the frames the count went through"
+        );
+        assert_eq!(count(&mut s, &every), 5);
     }
 
     #[test]

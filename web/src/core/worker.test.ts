@@ -596,6 +596,22 @@ describe('core worker', () => {
     expect(await call(port, 8, 'compareLogInfo')).toEqual({ id: 8, result: null });
   });
 
+  it('posts the last progress of a read even when it came within 100 ms of the one before', async () => {
+    vi.stubGlobal('navigator', { hardwareConcurrency: 1 });
+    const port = await startWorker();
+    const progress: { bytes: number; total: number }[] = [];
+    const reply = new Promise((resolve) =>
+      port.postMessage.mockImplementation((message: { event?: string; bytes: number; total: number }) =>
+        message.event === 'progress' ? progress.push(message) : resolve(message),
+      ),
+    );
+    // Two chunks, read well within 100 ms of each other.
+    const size = (8 << 20) + 5;
+    port.onmessage?.({ data: { id: 1, method: 'openLog', args: [new Blob([new Uint8Array(size).fill(10)]), 'drive.log'] } });
+    expect(await reply).toMatchObject({ id: 1 });
+    expect(progress.at(-1)).toEqual(expect.objectContaining({ bytes: size, total: size }));
+  });
+
   it('leaves no log B after a failed read', async () => {
     const port = await startWorker();
     expect(await call(port, 1, 'openCompareLog', new Blob(['x']), 'broken.log')).toEqual({ id: 1, error: 'No CAN frames' });

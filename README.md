@@ -134,6 +134,8 @@ MF4 logs of 32 MiB or more have their records read in parts by the part workers 
 
 Most of the time left in parts is the core's merge and store (0.95 s of the 0.99 s in Node), which stays on one core so that the frames, `LogInfo` and per-ID statistics are those of a read in one worker.
 
+The parts are read ahead in the order the merge will want them: each data group's first part, then the others by the time each starts. A 66 MB, 7M-frame MF4 whose four data groups run one after another in time (one per file segment) took 1.48 s in parts in wasm in Node while the parts were read ahead by their place in each group's stream, since the read-ahead filled with the later groups' parts and the merge waited for the first group's one at a time; it now loads in 0.97 s against 2.00 s in one worker (2.1x). The same frames side by side (1.13 s) and the 79 MB MF4 above (1.03 s in this run) load as fast as before.
+
 ## Known gaps / next steps
 
 The larger ones; every open task is in [TODO.md](TODO.md).

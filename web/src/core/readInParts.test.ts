@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CHUNK_BYTES, READY_MS, lineStart, partBytes, rangeBytes, readChunks, readInParts, taskBytes, type FramePartTask, type PartTask, type PartWorker, type ReadSession } from './readInParts';
+import { CHUNK_BYTES, READY_MS, WHOLE_READ_SHARE, lineStart, partBytes, rangeBytes, readChunks, readInParts, taskBytes, type FramePartTask, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const realSetTimeout = globalThis.setTimeout;
@@ -60,7 +60,7 @@ class RecordingSession implements ReadSession {
  */
 class FrameSession extends RecordingSession {
   constructor(
-    private readonly order: number[],
+    readonly order: number[],
     private readonly refuseNth = -1,
     /** Parts planned, when the log ends at a limit before the session asks for them all. */
     private readonly count = order.length,
@@ -95,6 +95,8 @@ class FrameSession extends RecordingSession {
 class FrameWorker implements PartWorker {
   static reading = 0;
   static mostReading = 0;
+  /** The parts read, in the order their reads started, each with the part the session awaited then. */
+  static starts: { part: number; awaited: number }[] = [];
   closed = false;
   /** The parts whose reads got past their delay. */
   partsRead: number[] = [];
@@ -111,6 +113,7 @@ class FrameWorker implements PartWorker {
     // Parts read or reading but not yet joined, which the session last asked for counted out.
     const held = FrameWorker.reading - (this.session?.joined.length ?? 0);
     FrameWorker.mostReading = Math.max(FrameWorker.mostReading, held);
+    if (this.session) FrameWorker.starts.push({ part: task.task[0], awaited: this.session.order[this.session.joined.length] });
     const body = text(await rangeBytes(task.file, task.ranges));
     // Closing stops a read at once, as terminating the real worker does.
     await new Promise((resolve, reject) => {
@@ -425,12 +428,17 @@ describe('reading a log in parts', () => {
   it('reads a log that the session says cannot be split, or a small one, whole and in order', async () => {
     const content = log(30);
     const startWorker = vi.fn();
+    // Parsed as it is pushed, so its progress is the bytes read, whatever the session says next.
     const unsplittable = new RecordingSession(undefined);
-    expect(await readInParts(new Blob([content]), unsplittable, { workers: 4, partSize: 50, startWorker }, () => undefined)).toBe(true);
+    const wholeProgress: number[] = [];
+    expect(await readInParts(new Blob([content]), unsplittable, { workers: 4, partSize: 50, startWorker }, (bytes) => wholeProgress.push(bytes))).toBe(true);
     expect(unsplittable.bytes).toBe(content);
+    expect(wholeProgress).toEqual([50, content.length]);
     const small = new RecordingSession('candump');
-    expect(await readInParts(new Blob([content]), small, { workers: 4, partSize: 1 << 20, startWorker }, () => undefined)).toBe(true);
+    const progress: number[] = [];
+    expect(await readInParts(new Blob([content]), small, { workers: 4, partSize: 1 << 20, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
     expect(small.bytes).toBe(content);
+    expect(progress).toEqual([content.length]);
     expect(startWorker).not.toHaveBeenCalled();
   });
 
@@ -650,6 +658,54 @@ describe('reading a log in parts', () => {
       expect(FrameWorker.mostReading).toBeLessThanOrEqual(2 * 2 + 1);
     });
 
+    it('reads ahead in plan order, the part the session waits for first, so a plan in the order the session asks keeps ahead', async () => {
+      // Two data groups one after another in time: the session asks for the first part of each, then
+      // for the rest of the first group's parts before the second's.
+      const asked = [0, 1, 2, 4, 6, 8, 10, 12, 3, 5, 7, 9, 11, 13];
+      // Planned by when each part starts, as the core plans them, and by place in each group's stream.
+      const byTime = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+      const waits: number[] = [];
+      for (const order of [byTime, asked]) {
+        FrameWorker.starts = [];
+        const session = new FrameSession(order);
+        const startWorker = () => new FrameWorker((index) => 2 + ((index * 7) % 5), -1, session);
+        expect(await readInParts(new Blob([content]), session, { workers: 2, startWorker }, () => undefined)).toBe(true);
+        expect(session.joined).toEqual(order);
+        const started = new Set<number>();
+        for (const { part, awaited } of FrameWorker.starts) {
+          let nextInPlan = 0;
+          while (started.has(nextInPlan)) nextInPlan++;
+          expect([awaited, nextInPlan]).toContain(part);
+          started.add(part);
+        }
+        // Reads started only once the session waited for them, part 0 among them.
+        waits.push(FrameWorker.starts.filter(({ part, awaited }) => part === awaited).length);
+      }
+      expect(waits[0]).toBe(1);
+      expect(waits[1]).toBeGreaterThan(2);
+    });
+
+    it('counts reading an MF4 file as a share of the progress and each part joined as an even share of the rest', async () => {
+      for (const id of ['MDF     ', 'UnFinMF ']) {
+        const mf4 = id + content;
+        const session = new FrameSession(order);
+        const progress: number[] = [];
+        const startWorker = () => new FrameWorker((index) => index % 3);
+        expect(await readInParts(new Blob([mf4]), session, { workers: 3, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
+        const size = mf4.length;
+        const joined = order.map((_, i) => size * (WHOLE_READ_SHARE + ((1 - WHOLE_READ_SHARE) * (i + 1)) / order.length));
+        expect(progress).toEqual([size * WHOLE_READ_SHARE, ...joined].map(Math.round));
+      }
+    });
+
+    it('ends the progress of an MF4 file whose parts the session cannot plan at its size', async () => {
+      const mf4 = 'MDF     ' + content;
+      const session = new RecordingSession(undefined);
+      const progress: number[] = [];
+      expect(await readInParts(new Blob([mf4]), session, { workers: 3, startWorker: () => new FrameWorker() }, (bytes) => progress.push(bytes))).toBe(true);
+      expect(progress).toEqual([Math.round(mf4.length * WHOLE_READ_SHARE), mf4.length]);
+    });
+
     it('starts no more workers than there are parts', async () => {
       const workers: FrameWorker[] = [];
       const session = new FrameSession([0, 1]);
@@ -672,7 +728,9 @@ describe('reading a log in parts', () => {
         workers.push(worker);
         return worker;
       };
-      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
+      const progress: number[] = [];
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, (bytes) => progress.push(bytes))).toBe(true);
+      expect(progress.at(-1)).toBe(content.length);
       expect(session.joined).toEqual([0, 2, 1]);
       expect(workers.every((worker) => worker.closed)).toBe(true);
       // The slow reads of the parts after them were stopped, not waited for.

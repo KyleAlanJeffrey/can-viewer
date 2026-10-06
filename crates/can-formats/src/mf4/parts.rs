@@ -14,6 +14,14 @@
 //! A frame whose payload is in variable length data is finished in the core, which keeps that
 //! data from reading the file up to the frames.
 //!
+//! The parts are numbered in the order the merge asks for them, which the workers read them
+//! in: each data group's first part, then the others by the time of their first frame record
+//! ([`order_by_time`]). The plan finds that time where it is cheap: from a virtual time
+//! channel, from a record in an uncompressed block, in the walk of an unsorted group, and for
+//! a sorted group in compressed blocks, by inflating only as much of a block as the time field
+//! of its first and last records needs, at most a quarter of the file's size in all. A part
+//! whose time isn't found is placed between the times found before and after it in its stream.
+//!
 //! The plan and the reads keep to the file's budgets for data and frames, as a read of each
 //! data group alone would: a data list that links the same blocks over and over is planned no
 //! further than a read of the whole file gets. The data groups' plans together take at most
@@ -26,6 +34,8 @@
 //! between the groups, so data groups that link the same blocks can be planned and read
 //! further than the merge then takes them. A part's reads take more bytes than its stream when
 //! its records are only a few bytes long.
+
+use std::cmp::Ordering;
 
 use super::*;
 
@@ -192,8 +202,9 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
     // The data the blocks sized for the plans may charge together, kept apart from the
     // allowance because a walk can stop well before the blocks sized for it.
     let mut sizing_allowance = allowance.data;
-    // Each part with the data group it reads and how far into its stream it starts.
-    let mut planned: Vec<(f64, usize, PartTask)> = Vec::new();
+    let mut time_inflate_left = file.len() as u64 / FILE_BYTES_PER_TIME_BYTE;
+    let mut planned: Vec<Planned> = Vec::new();
+    let mut parts_of = vec![0; sources.len()];
     let mut pieces = 0;
     for (s, source) in sources.iter().enumerate() {
         let reader = &source.reader;
@@ -213,6 +224,7 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
         let ends_open = reader.records.ends_open() && !over_budget;
         let (cuts, stop) = if reader.record_id_size == 0 {
             let record_len = reader.groups[0].record_len as u64;
+            let time = &reader.groups[0].bus.as_ref()?.time;
             // A read ends with the frame that takes it over the frame budget, if not before.
             let frames_end = budget.frames.saturating_add(1).saturating_mul(record_len);
             let total = blocks.last().map_or(0, |block| block.start + block.len);
@@ -224,46 +236,77 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
                 .last()
                 .map_or(0, |block| block.charged_before + block.charge);
             allowance.take(charged, end / record_len)?;
-            let cuts = sorted_cuts(&blocks, record_len, part_bytes, end)
-                .into_iter()
-                .map(|at| Some((at, vec![usize::try_from(at / record_len).ok()?])))
-                .collect::<Option<Vec<_>>>()?;
+            let mut cuts = Vec::new();
+            for at in sorted_cuts(&blocks, record_len, part_bytes, end) {
+                let index = usize::try_from(at / record_len).ok()?;
+                // Only the first part's start is worth inflating for: the others in compressed
+                // blocks are placed between it and the last record's.
+                let inflate = cuts.is_empty().then_some(&mut time_inflate_left);
+                cuts.push(Cut {
+                    at,
+                    indexes: vec![index],
+                    time: sorted_time(file, &blocks, time, at, index, inflate),
+                });
+            }
+            let records = end / record_len;
+            let last = if records > 0 && cuts.iter().any(|cut| cut.time.is_none()) {
+                let at = (records - 1) * record_len;
+                usize::try_from(records - 1)
+                    .ok()
+                    .and_then(|index| {
+                        sorted_time(file, &blocks, time, at, index, Some(&mut time_inflate_left))
+                    })
+                    .map(|time| (at, time))
+            } else {
+                None
+            };
+            place_between(&mut cuts, last);
             (cuts, (end < total).then_some(end))
         } else {
-            walked_cuts(reader, part_bytes, budget, &mut allowance)?
+            let (mut cuts, stop) = walked_cuts(reader, part_bytes, budget, &mut allowance)?;
+            place_between(&mut cuts, None);
+            (cuts, stop)
         };
         let total = blocks.last().map_or(0, |block| block.start + block.len);
-        for (i, (from, indexes)) in cuts.iter().enumerate() {
-            let to = cuts.get(i + 1).map(|(at, _)| *at).or(stop);
+        for i in 0..cuts.len() {
+            let to = cuts.get(i + 1).map(|cut| cut.at).or(stop);
+            let cut = &cuts[i];
             let task = part_task(
                 &spec,
                 &blocks,
                 ends_open,
-                *from,
+                cut.at,
                 to,
-                indexes,
+                &cut.indexes,
                 budget,
                 &mut pieces,
             );
-            planned.push((*from as f64 / total.max(1) as f64, s, task));
+            planned.push(Planned {
+                stream: cut.at as f64 / total.max(1) as f64,
+                source: s,
+                rank: i,
+                time: cut.time,
+                task,
+            });
             if planned.len() > MAX_PARTS || pieces > MAX_PIECES {
                 return None;
             }
         }
+        parts_of[s] = cuts.len();
     }
     if planned.len() < 2 {
         return None;
     }
-    // Parts are handed out about in the order the merge by time will want them.
-    planned.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    order_by_time(&mut planned);
     let mut payloads = Vec::new();
     let mut join_sources: Vec<JoinSource> = sources
         .iter_mut()
-        .map(|source| JoinSource {
+        .zip(parts_of)
+        .map(|(source, parts)| JoinSource {
             variable: variable_payloads(&mut source.reader, &mut payloads),
             window: Window::new(source.window.len),
             ended: false,
-            parts: Vec::new(),
+            parts: vec![0; parts],
             joined: 0,
             reads: Vec::new(),
             at: 0,
@@ -271,10 +314,10 @@ pub(super) fn plan(file: &[u8], stats: &mut ParseStats, part_bytes: u64) -> Opti
         .collect();
     let mut part_sources = Vec::with_capacity(planned.len());
     let mut tasks = Vec::with_capacity(planned.len());
-    for (part, (_, s, task)) in planned.into_iter().enumerate() {
-        join_sources[s].parts.push(part);
-        part_sources.push(s);
-        tasks.push(task);
+    for (part, planned) in planned.into_iter().enumerate() {
+        join_sources[planned.source].parts[planned.rank] = part;
+        part_sources.push(planned.source);
+        tasks.push(planned.task);
     }
     let needs = join_sources[0].parts[0];
     Some(Join {
@@ -384,20 +427,190 @@ fn sorted_cuts(blocks: &[SizedBlock], record_len: u64, part_bytes: u64, end: u64
     cuts
 }
 
-/// Where parts of a stream start, each with the records read in each channel group before it.
-type Cuts = Vec<(u64, Vec<usize>)>;
+/// Where a part of a data group's stream starts.
+struct Cut {
+    at: u64,
+    /// The records read in each channel group before it.
+    indexes: Vec<usize>,
+    /// When its first frame record is, in seconds from the file's start time, if known.
+    time: Option<f64>,
+}
+
+/// A planned part, with the data group it reads and its place in the group's parts.
+struct Planned {
+    source: usize,
+    rank: usize,
+    /// How far into the data group's stream it starts, from 0 to 1.
+    stream: f64,
+    time: Option<f64>,
+    task: PartTask,
+}
+
+/// Puts the parts in the order the merge by time will want them, which the workers read
+/// them in. The merge starts with the first frame of every data group, so each group's first
+/// part comes first, in group order (part 0 is the first it asks for); then the others by
+/// when they start, as far as the plan knows. Parts of data groups with no known times are
+/// placed by how far into their streams they start, as if the streams all spanned the times
+/// known. The order sets only what is read ahead, so how fast: never the join's result or bounds.
+fn order_by_time(planned: &mut [Planned]) {
+    let (first, last) = planned
+        .iter()
+        .filter_map(|part| part.time)
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(first, last), time| {
+            (first.min(time), last.max(time))
+        });
+    let span = if first <= last {
+        (first, last)
+    } else {
+        (0.0, 0.0)
+    };
+    let key = |part: &Planned| {
+        part.time
+            .unwrap_or(span.0 + part.stream * (span.1 - span.0))
+    };
+    planned.sort_by(|a, b| match (a.rank, b.rank) {
+        (0, 0) => a.source.cmp(&b.source),
+        (0, _) => Ordering::Less,
+        (_, 0) => Ordering::Greater,
+        _ => key(a)
+            .total_cmp(&key(b))
+            .then(a.stream.total_cmp(&b.stream))
+            .then(a.source.cmp(&b.source)),
+    });
+}
+
+/// Gives each cut without a time one placed between the times known before and after it in
+/// the stream, in proportion to where it is; `last` is a time known further on, past the cuts.
+fn place_between(cuts: &mut [Cut], last: Option<(u64, f64)>) {
+    let mut known: Vec<(u64, f64)> = cuts
+        .iter()
+        .filter_map(|cut| Some((cut.at, cut.time?)))
+        .chain(last)
+        .collect();
+    // The last record can start before a last cut into a record cut short.
+    known.sort_by_key(|&(at, _)| at);
+    for cut in cuts.iter_mut().filter(|cut| cut.time.is_none()) {
+        let after = known.partition_point(|&(at, _)| at <= cut.at);
+        cut.time = match (after.checked_sub(1).map(|i| known[i]), known.get(after)) {
+            (Some((from, start)), Some(&(to, end))) => {
+                Some(start + (end - start) * ((cut.at - from) as f64 / (to - from) as f64))
+            }
+            (Some((_, time)), None) | (None, Some(&(_, time))) => Some(time),
+            (None, None) => None,
+        };
+    }
+}
+
+/// What the plan may inflate to find when parts start: one byte for each this many of the file.
+const FILE_BYTES_PER_TIME_BYTE: u64 = 4;
+
+/// The time of the record at `at` in a sorted data group's stream, its `index`th, in seconds
+/// from the file's start time, if that is cheap to find: from its index, or from its time field
+/// when that lies in one block, read from the file, or from a compressed block when
+/// `inflate_left` holds what inflating as much of it as the field needs takes from it.
+fn sorted_time(
+    file: &[u8],
+    blocks: &[SizedBlock],
+    time: &Time,
+    at: u64,
+    index: usize,
+    inflate_left: Option<&mut u64>,
+) -> Option<f64> {
+    let Time::Field {
+        field,
+        offset,
+        factor,
+    } = time
+    else {
+        return record_seconds(time, &[], index)
+            .ok()
+            .filter(|time| time.is_finite());
+    };
+    let span = u64::from(field.bit_offset.checked_add(field.bit_count)?.div_ceil(8));
+    if !(1..=8).contains(&span) {
+        return None;
+    }
+    let from = at.checked_add(field.byte_offset as u64)?;
+    let block = blocks.get(blocks.partition_point(|block| block.start + block.len <= from))?;
+    if from < block.start || from + span > block.start + block.len {
+        return None;
+    }
+    let bytes = block_bytes(file, block, from - block.start, span, inflate_left)?;
+    let local = Field {
+        byte_offset: 0,
+        ..*field
+    };
+    Some(offset + factor * field_f64(&bytes, &local)?).filter(|time| time.is_finite())
+}
+
+/// The bytes `[from, from + len)` of a block's data as a read gives them. A compressed block
+/// is inflated only as far as they need, and only when `inflate_left` holds what that takes,
+/// which is taken from it.
+fn block_bytes(
+    file: &[u8],
+    block: &SizedBlock,
+    from: u64,
+    len: u64,
+    inflate_left: Option<&mut u64>,
+) -> Option<Vec<u8>> {
+    if !block.compressed {
+        let at = usize::try_from(block.data_at.checked_add(from)?).ok()?;
+        return file
+            .get(at..at.checked_add(usize::try_from(len).ok()?)?)
+            .map(<[u8]>::to_vec);
+    }
+    let inflate_left = inflate_left?;
+    let data = Block::at(file, block.at)?.data;
+    let zip_type = *data.get(2)?;
+    let columns = u64::from(u32_at(data.get(..8)?, 4));
+    let compressed_len = u64_at(data.get(..24)?, 16);
+    let compressed = data.get(24..24usize.checked_add(usize::try_from(compressed_len).ok()?)?)?;
+    // A transposed block holds its bytes column by column, all but those past its last whole
+    // row, as `untranspose` reads them.
+    let rows = match zip_type {
+        0 => 0,
+        1 if columns > 0 && columns < block.len => block.len / columns,
+        1 => 0,
+        _ => return None,
+    };
+    let places: Vec<u64> = (from..from + len)
+        .map(|at| {
+            if at < rows * columns {
+                (at % columns) * rows + at / columns
+            } else {
+                at
+            }
+        })
+        .collect();
+    let needed = places.iter().max()? + 1;
+    // Charged for the compressed bytes too, as `inflate` is.
+    *inflate_left = inflate_left.checked_sub(needed.max(compressed_len))?;
+    #[cfg(test)]
+    TIME_INFLATED.with(|inflated| inflated.set(inflated.get() + needed.max(compressed_len)));
+    let limit = usize::try_from(needed).ok()?;
+    let inflated = match miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(compressed, limit)
+    {
+        Ok(inflated) => inflated,
+        Err(err) if err.status == miniz_oxide::inflate::TINFLStatus::HasMoreOutput => err.output,
+        Err(_) => return None,
+    };
+    places
+        .iter()
+        .map(|&at| inflated.get(usize::try_from(at).ok()?).copied())
+        .collect()
+}
 
 /// Where an unsorted data group's parts start, about `part_bytes` apart, each where a frame
-/// record ends, with the records read in each channel group before it; and where the reads of
-/// the stream stop short of its end, if they do: at an error, or at the frame or data that
-/// takes them over `budget`. None when the walk would take more than is left of `allowance`,
-/// which it takes its walk from.
+/// record ends, with the records read in each channel group before it and the time of the
+/// frame record after it; and where the reads of the stream stop short of its end, if they
+/// do: at an error, or at the frame or data that takes them over `budget`. None when the walk
+/// would take more than is left of `allowance`, which it takes its walk from.
 fn walked_cuts(
     reader: &RecordReader<'_>,
     part_bytes: u64,
     budget: Budget,
     allowance: &mut Budget,
-) -> Option<(Cuts, Option<u64>)> {
+) -> Option<(Vec<Cut>, Option<u64>)> {
     let groups = &reader.groups;
     let is_frame = |index: usize| groups[index].bus.is_some() && !groups[index].vlsd;
     let mut records = reader.records.unread_copy();
@@ -406,7 +619,12 @@ fn walked_cuts(
     walk.data_left = data_left;
     let frames_left = budget.frames.min(allowance.frames);
     let mut indexes = vec![0; groups.len()];
-    let mut cuts = vec![(0, indexes.clone())];
+    let mut cuts = vec![Cut {
+        at: 0,
+        indexes: indexes.clone(),
+        time: None,
+    }];
+    let mut timed = false;
     let mut last = 0;
     let mut frames = 0u64;
     let stop = loop {
@@ -417,7 +635,19 @@ fn walked_cuts(
             &mut walk,
             is_frame,
         ) {
-            Ok(Some((group_index, _))) => group_index,
+            Ok(Some((group_index, record))) => {
+                if !timed {
+                    timed = true;
+                    cuts.last_mut()?.time = groups[group_index]
+                        .bus
+                        .as_ref()
+                        .and_then(|bus| {
+                            record_seconds(&bus.time, record, indexes[group_index]).ok()
+                        })
+                        .filter(|time| time.is_finite());
+                }
+                group_index
+            }
             Ok(None) => break None,
             Err(reason) => {
                 if reason == DATA_OVER && data_left < budget.data {
@@ -439,7 +669,12 @@ fn walked_cuts(
             break Some(at);
         }
         if at - last >= part_bytes {
-            cuts.push((at, indexes.clone()));
+            cuts.push(Cut {
+                at,
+                indexes: indexes.clone(),
+                time: None,
+            });
+            timed = false;
             last = at;
         }
     };
@@ -451,6 +686,8 @@ fn walked_cuts(
 thread_local! {
     /// Records walked to plan parts, so tests can bound the work.
     pub(super) static WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// What planning charged for inflating to find when parts start.
+    pub(super) static TIME_INFLATED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The task of a part whose reads start at `from` in the stream, with `indexes` records read

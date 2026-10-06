@@ -313,7 +313,7 @@ export function Workspace(props: Props) {
 
   return (
     <>
-      <div className="re-docked">
+      <div className="re-docked" role="tabpanel" aria-label="Advanced">
         <div className="re-message-head">
           <h2 className="content-title re-title">
             <span className="mono">{formatId(summary.id, summary.extended)}</span>

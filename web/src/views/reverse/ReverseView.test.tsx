@@ -225,13 +225,28 @@ describe('Pinned references', () => {
     const onTop = () => {
       const refs = screen.getByRole('region', { name: 'Pinned references' });
       expect(refs.closest('.content-scroll')).toBeNull();
-      return refs.closest('.re-docked');
+      return refs.parentElement;
     };
+    expect(onTop()).toBe(screen.getByRole('tabpanel', { name: 'Byte Values' }));
     expect(onTop()).toBe(screen.getByRole('table').closest('.content-scroll')?.parentElement);
 
     await user.click(within(screen.getByRole('rowheader')).getByRole('button'));
     await user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    expect(onTop()).toBe(screen.getByRole('tabpanel', { name: 'Advanced' }));
     expect(onTop()).toBe(screen.getByRole('heading', { name: 'Bit History' }).closest('.content-scroll')?.parentElement);
+  });
+
+  it('scroll only the pinned rows, keeping the candidate in view under them', async () => {
+    const user = renderView([engine]);
+    await user.click(screen.getByRole('button', { name: /^100 byte 2/ }));
+    await user.click(screen.getByRole('button', { name: 'Pin byte' }));
+    await user.click(screen.getByRole('button', { name: /^Open in Advanced/ }));
+
+    const pinned = await screen.findByRole('img', { name: /^100 \u00b7 Byte 2 from/ });
+    const candidate = screen.getByRole('img', { name: /the candidate, across the window$/ });
+    expect(pinned.closest('.re-ref-rows')).toBeTruthy();
+    expect(candidate.closest('.re-ref-rows')).toBeNull();
+    expect(candidate.closest('section')).toBe(screen.getByRole('region', { name: 'Pinned references' }));
   });
 });
 

@@ -15,10 +15,12 @@
   min-width: 0;
   min-height: 0;
   padding-top: 16px;
+  container: re-dock / size;
 }
 
 .re-docked > .re-message-head,
 .re-docked > .re-refs {
+  flex: none;
   margin: 0 20px 12px;
 }
 
@@ -26,25 +28,31 @@
   padding-top: 0;
 }
 
-/* Never most of the view: past this the reference rows scroll inside the card, and in a very short
-   view, where even one row won't fit, the whole card scrolls. */
-.re-docked > .re-refs {
-  display: flex;
-  flex-direction: column;
-  max-height: 40%;
-  overflow-y: auto;
-}
-
-.re-docked > .re-refs > * {
-  flex: none;
-}
-
-.re-docked > .re-refs > .re-ref-rows {
-  flex: 0 1 auto;
-  /* The first row's plot, under its cursor time. */
-  min-height: 74px;
+/* Only the pinned rows scroll, so the card's head, candidate, time axis and analysis window stay in
+   view. At least the first row shows: its cursor time (18px) over a REF_PLOT_H plot. */
+.re-docked .re-ref-rows {
+  max-height: max(74px, 25cqh);
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+/* A short view keeps its height for the content below. */
+@container re-dock (max-height: 479px) {
+  .re-docked .re-ref-rows {
+    max-height: 74px;
+  }
+}
+
+/* A classic scrollbar on the rows narrows their plots; the same gutter keeps the rest aligned. */
+.re-docked .re-ref-rows,
+.re-docked .re-ref-row.candidate,
+.re-docked .re-ref-axis-row {
+  scrollbar-gutter: stable;
+}
+
+.re-docked .re-ref-row.candidate,
+.re-docked .re-ref-axis-row {
+  overflow: hidden;
 }
 
 .re-card {
@@ -890,7 +898,7 @@
 }
 
 /* Room for the cursor time above the first plot. */
-.re-ref-row:first-child .re-ref-plot {
+.re-ref-row.first .re-ref-plot {
   margin-top: 18px;
 }
 
@@ -968,6 +976,14 @@
     min-height: 280px;
     border-left: 0;
     border-top: 1px solid var(--hairline);
+  }
+
+  /* In a short window the matrix and the pinned references above it need the height more. */
+  @media (max-height: 900px) {
+    .re-sugpanel {
+      height: 30%;
+      min-height: 160px;
+    }
   }
 }
 

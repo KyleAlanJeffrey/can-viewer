@@ -5,7 +5,7 @@ import { formatCount } from '../../format';
 import type { ViewContext } from '../types';
 import { Sparkline } from './Sparkline';
 import { layoutString, plainNumber, rangeBits } from './bits';
-import { KIND_LABELS, bitOwners, shownSuggestions, type ShownSuggestion } from './suggestionList';
+import { KIND_LABELS, shownSuggestions, type ShownSuggestion } from './suggestionList';
 import './suggestions.css';
 import type { Discovery, MessageHints } from './useDiscovery';
 
@@ -22,7 +22,8 @@ export function describePlace(s: Suggestion): string {
   const hi = Math.max(...bits);
   const where = bits.length === 1 ? `bit ${lo}` : hi - lo + 1 === bits.length ? `bits ${lo}-${hi}` : layoutString(s.spec, s.spec.signed);
   const reading = s.spec.float ? 'float' : s.spec.signed ? 'signed' : 'unsigned';
-  return `${where} \u00b7 ${s.spec.byteOrder === 'intel' ? 'Intel' : 'Motorola'} \u00b7 ${reading}`;
+  const page = s.spec.mux ? ` \u00b7 page m${s.spec.mux.value}` : '';
+  return `${where} \u00b7 ${s.spec.byteOrder === 'intel' ? 'Intel' : 'Motorola'} \u00b7 ${reading}${page}`;
 }
 
 /** The unknown message other than `current` with the most likely suggestions. */
@@ -45,12 +46,14 @@ const NAME_STEMS: Record<Suggestion['kind'], string> = {
   continuous: 'Value',
   signed: 'Signed',
   float: 'Float',
+  multiplexor: 'Mux',
 };
 
 /** `Counter`, or `Value_16` for kinds a message often has several of, made unique in `message`. */
 function suggestedName(s: ShownSuggestion, message: MessageDef | null): string {
   const { kind } = s.suggestion;
-  const base = kind === 'counter' || kind === 'checksum' ? NAME_STEMS[kind] : `${NAME_STEMS[kind]}_${Math.min(...s.bits)}`;
+  const page = s.suggestion.spec.mux ? `_m${s.suggestion.spec.mux.value}` : '';
+  const base = kind === 'counter' || kind === 'checksum' || kind === 'multiplexor' ? NAME_STEMS[kind] : `${NAME_STEMS[kind]}_${Math.min(...s.bits)}${page}`;
   const taken = new Set((message?.signals ?? []).map((x) => x.name));
   let name = base;
   for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
@@ -160,7 +163,7 @@ export function Suggestions(props: Props) {
   let total = 0;
   let messages = 0;
   for (const found of Object.values(discovery.results)) {
-    const n = shownSuggestions(discovery, found.key, bitOwners(ctx.messageOf(found.key), MAX_BITS)).length;
+    const n = shownSuggestions(discovery, found.key, ctx.messageOf(found.key), MAX_BITS).length;
     total += n;
     if (n > 0) messages++;
   }

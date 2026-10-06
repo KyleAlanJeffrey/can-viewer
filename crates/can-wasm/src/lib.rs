@@ -325,6 +325,19 @@ struct RawSignalSpec {
     float: bool,
     factor: f64,
     offset: f64,
+    /// Read only from the frames whose selector holds this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mux: Option<MuxSpec>,
+}
+
+/// A multiplexed signal's selector, and the selector's value on the signal's page.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MuxSpec {
+    start_bit: u16,
+    size: u16,
+    byte_order: ByteOrder,
+    value: u64,
 }
 
 #[derive(Deserialize)]
@@ -780,7 +793,20 @@ impl Session {
         if spec.float && spec.size != 32 {
             return Err(js_err("a float must be 32 bits"));
         }
+        if let Some(mux) = spec.mux {
+            if bits::extract(&longest, mux.start_bit, mux.size, mux.byte_order).is_none() {
+                return Err(js_err(
+                    "the selector must be 1 to 64 bits and fit in this ID's frames",
+                ));
+            }
+        }
         let series = Series::decode(&self.store, &stats.frames, self.origin_ns(), |data| {
+            if let Some(mux) = spec.mux {
+                let selector = bits::extract(data, mux.start_bit, mux.size, mux.byte_order)?;
+                if selector != mux.value {
+                    return None;
+                }
+            }
             let raw = bits::extract(data, spec.start_bit, spec.size, spec.byte_order)?;
             let value = if spec.float {
                 f64::from(f32::from_bits(raw as u32))
@@ -797,7 +823,11 @@ impl Session {
         };
         let sign = if spec.signed || spec.float { '-' } else { '+' };
         let float = if spec.float { " float" } else { "" };
-        let name = format!("bits {}|{}@{order}{sign}{float}", spec.start_bit, spec.size);
+        let page = spec.mux.map_or(String::new(), |m| format!(" m{}", m.value));
+        let name = format!(
+            "bits {}|{}@{order}{sign}{float}{page}",
+            spec.start_bit, spec.size
+        );
         Ok(add_series(&mut self.series, series, &name, ""))
     }
 
@@ -916,6 +946,7 @@ impl Session {
                         byte_order: found.range.byte_order,
                         signed: false,
                         float: false,
+                        mux: None,
                         factor: 1.0,
                         offset: 0.0,
                     },

@@ -206,6 +206,16 @@ export interface RawSignalSpec {
   float?: boolean;
   factor: number;
   offset: number;
+  /** Read only from the frames whose multiplexer selector holds `mux.value`. Absent means every frame. */
+  mux?: MuxSpec;
+}
+
+/** A multiplexed signal's selector, and the selector's value on the signal's page. */
+export interface MuxSpec {
+  startBit: number;
+  size: number;
+  byteOrder: 'intel' | 'motorola';
+  value: number;
 }
 
 export type Behaviour = 'increases' | 'decreases' | 'constant' | 'changes';
@@ -225,7 +235,7 @@ export interface Candidate {
 }
 
 /** What a suggested signal looks like it is. */
-export type SuggestionKind = 'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed' | 'float';
+export type SuggestionKind = 'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed' | 'float' | 'multiplexor';
 
 /** Optional help for `suggestSignals` and `scanSignals`. */
 export interface DiscoveryHints {

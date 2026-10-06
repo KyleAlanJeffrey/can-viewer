@@ -75,7 +75,8 @@ export interface Discovery {
 
 /** A suggestion's id: its message and bits, so it survives a scan again with other hints. */
 export function suggestionId(key: number, s: Suggestion): string {
-  return `${key}:${s.spec.startBit}:${s.spec.size}:${s.spec.byteOrder}`;
+  const page = s.spec.mux ? `:m${s.spec.mux.value}` : '';
+  return `${key}:${s.spec.startBit}:${s.spec.size}:${s.spec.byteOrder}${page}`;
 }
 
 export function toCoreHints(hints: MessageHints): DiscoveryHints {

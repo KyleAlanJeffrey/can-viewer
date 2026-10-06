@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::discover::{self, Findings, Hints, Job, Kind, Marker, Reference, STEP_WORK};
-use crate::{js_err, to_json, RawSignalSpec, Session};
+use crate::{js_err, to_json, MuxSpec, RawSignalSpec, Session};
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -263,6 +263,12 @@ impl Session {
                         float: s.kind == Kind::Float,
                         factor,
                         offset,
+                        mux: s.page.map(|(selector, value)| MuxSpec {
+                            start_bit: selector.start_bit,
+                            size: selector.size,
+                            byte_order: selector.byte_order,
+                            value,
+                        }),
                     },
                     confidence: (s.score * 100.0).round() / 100.0,
                     level: level(s.score),
@@ -420,6 +426,39 @@ mod tests {
             (info["min"].as_f64().unwrap() + 10.0).abs() < 1e-3,
             "{info}"
         );
+    }
+
+    #[test]
+    fn a_page_suggestion_decodes_only_its_page() {
+        let mut log = String::new();
+        for i in 0..4000u32 {
+            let page = i % 2;
+            let base = [1000.0, 40_000.0][page as usize];
+            let v = (base + (f64::from(i) / 200.0).sin() * 800.0) as u16;
+            let [lo, hi] = v.to_le_bytes();
+            let t = f64::from(i) / 100.0;
+            log += &format!("({t:.6}) can0 100#{page:02X}{lo:02X}{hi:02X}0000000000\n");
+        }
+        let mut s = Session::new();
+        s.push_chunk(log.as_bytes());
+        s.finish();
+        let key = id_key(0, 0x100) as f64;
+        let found: Value = serde_json::from_str(&s.suggest_signals(key, "").unwrap()).unwrap();
+        let all = found["suggestions"].as_array().unwrap();
+        assert_eq!(all[0]["kind"], "multiplexor");
+        let page1 = all
+            .iter()
+            .find(|g| g["spec"]["mux"]["value"] == 1)
+            .expect("a page 1 cell");
+        assert_eq!(
+            page1["spec"]["mux"],
+            json!({ "startBit": 0, "size": 8, "byteOrder": "intel", "value": 1 })
+        );
+        let info: Value =
+            serde_json::from_str(&s.decode_raw(key, &page1["spec"].to_string()).unwrap()).unwrap();
+        assert_eq!(info["count"], 2000);
+        assert!(info["min"].as_f64().unwrap() >= 39_000.0, "{info}");
+        assert!(info["name"].as_str().unwrap().ends_with(" m1"), "{info}");
     }
 
     #[test]

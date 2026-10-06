@@ -242,6 +242,53 @@ describe('Suggested signals', () => {
     expect(state.dbcs[0].db.messages.map((m) => m.id)).toEqual([0x100]);
   });
 
+  it('accepts a multiplexor and then its page cells into the DBC multiplexing', async () => {
+    const selector = { startBit: 0, size: 8, byteOrder: 'intel' as const };
+    const mux = suggestion('multiplexor', 0, 8, { reason: 'Selects which of 2 pages bytes 1-2 carry' });
+    const cell = (value: number) =>
+      suggestion('continuous', 8, 16, { spec: { startBit: 8, size: 16, byteOrder: 'intel', signed: false, factor: 1, offset: 0, mux: { ...selector, value } } });
+    const decodeRaw = vi.fn(async () => seriesInfo(1, 'raw'));
+    const { core, scan } = discoveryCore({ decodeRaw });
+    const { user, state } = await openAdvanced(core);
+    act(() => {
+      scan.progress(1, 2, found(first.key, [mux, cell(0), cell(1)]));
+      scan.progress(2, 2, found(second.key, []));
+      scan.finish();
+    });
+    await waitFor(() => expect(within(panel()).queryByRole('progressbar')).toBeNull());
+    expect(within(row(3)).getByRole('button', { name: /^3\. Continuous value, bits 8-23 \u00b7 Intel \u00b7 unsigned \u00b7 page m1,/ })).toBeTruthy();
+
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' });
+    const name = within(inspector).getByRole('textbox', { name: 'Name' }) as HTMLInputElement;
+    const add = () => user.click(within(inspector).getByRole('button', { name: 'Add to Database' }));
+
+    // A cell needs its multiplexor in the message first.
+    await user.click(within(row(2)).getByRole('button', { name: 'Accept suggestion 2' }));
+    await waitFor(() => expect(name.value).toBe('Value_8_m0'));
+    expect(within(inspector).getByText('Add the multiplexor at 0|8@1+ first; this signal is on its page m0.')).toBeTruthy();
+    await waitFor(() => expect(decodeRaw).toHaveBeenLastCalledWith(first.key, expect.objectContaining({ startBit: 8, mux: { ...selector, value: 0 } })));
+    await add();
+    expect(state.dbcs[0].db.messages.some((m) => m.id === 0x200)).toBe(false);
+
+    await user.click(within(row(1)).getByRole('button', { name: 'Accept suggestion 1' }));
+    await waitFor(() => expect(name.value).toBe('Mux'));
+    await add();
+    await waitFor(() => expect(within(row(1)).getByRole('status').textContent).toBe('Accepted \u00b7 Mux'));
+
+    for (const n of [2, 3]) {
+      await user.click(within(row(n)).getByRole('button', { name: `Accept suggestion ${n}` }));
+      await waitFor(() => expect(name.value).toBe(`Value_8_m${n - 2}`));
+      await add();
+      await waitFor(() => expect(within(row(n)).getByRole('status').textContent).toBe(`Accepted \u00b7 Value_8_m${n - 2}`));
+    }
+    const signals = state.dbcs[0].db.messages.find((m) => m.id === 0x200)?.signals ?? [];
+    expect(signals.map((s) => [s.name, s.isMultiplexor, s.muxValue])).toEqual([
+      ['Mux', true, null],
+      ['Value_8_m0', false, 0],
+      ['Value_8_m1', false, 1],
+    ]);
+  });
+
   it('dismisses a suggestion and brings it back', async () => {
     const { core, scan } = discoveryCore();
     const { user } = await openAdvanced(core);

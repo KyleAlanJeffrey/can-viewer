@@ -1,5 +1,5 @@
 import { useId, useState, type ReactNode, type Ref } from 'react';
-import { dbcId, formatId, type Database, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo, type SignalDef } from '../../core/api';
+import { dbcId, formatId, type Database, type IdSummary, type MessageDef, type MuxSpec, type RawSignalSpec, type SeriesInfo, type SignalDef } from '../../core/api';
 import { Segmented } from '../../components/Segmented';
 import { formatCount } from '../../format';
 import { useViewState } from '../shared/viewState';
@@ -36,6 +36,10 @@ export interface FormState {
   signed: boolean;
   /** Read as a 32-bit IEEE 754 float, when the range is 32 bits. Missing in forms saved before it existed. */
   float?: boolean;
+  /** Added as the message's multiplexer selector. Missing in forms saved before it existed. */
+  multiplexor?: boolean;
+  /** Added on this page of the message's multiplexor, and decoded from its frames only. */
+  mux?: MuxSpec | null;
   factor: string;
   offset: string;
   unit: string;
@@ -64,6 +68,8 @@ export function initialForm(spec: RawSignalSpec | null): FormState {
     fromGrid: false,
     signed: spec?.signed ?? false,
     float: spec?.float ?? false,
+    multiplexor: false,
+    mux: spec?.mux ?? null,
     factor: spec ? plainNumber(spec.factor) : '1',
     offset: spec ? plainNumber(spec.offset) : '0',
     unit: '',
@@ -163,6 +169,16 @@ export function SignalForm(props: Props) {
         : null;
 
   const float = !!form.float && range?.size === 32;
+  const mux = form.mux ?? null;
+  const multiplexor = !mux && !!form.multiplexor;
+  const selector = target?.signals.find((s) => s.isMultiplexor) ?? null;
+  const muxError =
+    mux && !(selector && selector.startBit === mux.startBit && selector.size === mux.size && selector.byteOrder === mux.byteOrder)
+      ? `Add the multiplexor at ${layoutString(mux, false)} first; this signal is on its page m${mux.value}.`
+      : multiplexor && selector
+        ? `${target?.name} already has a multiplexor, ${selector.name}.`
+        : null;
+  const pageNote = mux ? ` m${mux.value}` : multiplexor ? ' M' : '';
   const factor = parseNumber(form.factor);
   const factorError = factor === null ? 'Enter a number.' : factor === 0 ? "The factor can't be zero." : null;
   const offsetError = parseNumber(form.offset) === null ? 'Enter a number.' : null;
@@ -178,7 +194,7 @@ export function SignalForm(props: Props) {
   const add = () => {
     setSubmitted(true);
     setAdded(null);
-    if (!range || !name || nameError || factorError || offsetError || limitsError || factor === null || min === null || max === null) return;
+    if (!range || !name || nameError || factorError || offsetError || limitsError || muxError || factor === null || min === null || max === null) return;
     const signal: SignalDef = {
       name,
       startBit: range.startBit,
@@ -190,8 +206,8 @@ export function SignalForm(props: Props) {
       min,
       max,
       unit: form.unit.trim(),
-      isMultiplexor: false,
-      muxValue: null,
+      isMultiplexor: multiplexor,
+      muxValue: mux ? mux.value : null,
       valueTable: [],
       comment: null,
     };
@@ -359,6 +375,12 @@ export function SignalForm(props: Props) {
           </label>
         )}
 
+        {(mux || multiplexor) && (
+          <p className={muxError ? 'field-error' : 'hint re-form-hint'}>
+            {muxError ?? (mux ? `On page m${mux.value} of the multiplexor at ${layoutString(mux, false)}.` : 'Added as the multiplexor.')}
+          </p>
+        )}
+
         <div className="re-pair">
           <Field id={`${ids}factor`} label="Factor" error={factorError}>
             <input
@@ -427,7 +449,7 @@ export function SignalForm(props: Props) {
         <dl className="re-stats" aria-label="Decoded values">
           <div>
             <dt>Layout</dt>
-            <dd className="mono">{range ? layoutString(range, form.signed && !float, float) : '\u2013'}</dd>
+            <dd className="mono">{range ? `${layoutString(range, form.signed && !float, float)}${pageNote}` : '\u2013'}</dd>
           </div>
           {decodeError ? (
             <div>

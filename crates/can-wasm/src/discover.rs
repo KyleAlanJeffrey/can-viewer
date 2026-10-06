@@ -10,8 +10,9 @@
 //! whole bytes are tested against checksum rules. The best-scoring candidates that don't overlap
 //! are kept, and an unsigned value is widened over never-set bits above it to an aligned field.
 //! Words that read as IEEE 754 floats are suggested as floats when the evidence is strict
-//! enough, and get no other suggestions either way; nor do the bytes of a multiplexed message
-//! that take turns with its selector.
+//! enough, and get no other suggestions either way. The bytes of a multiplexed message that take
+//! turns with its selector are looked at a page at a time, and the selector is suggested as a
+//! multiplexor only when enough pages have a signal of their own.
 
 use std::borrow::Cow;
 
@@ -69,6 +70,8 @@ pub enum Kind {
     Signed,
     /// An IEEE 754 single-precision float, always 32 bits.
     Float,
+    /// A multiplexer selector: which page of signals the frame carries.
+    Multiplexor,
 }
 
 /// A bit range in DBC conventions.
@@ -198,8 +201,11 @@ pub struct Suggestion {
     /// A checksum whose rule did not hold on every frame, or was not found at all.
     pub unconfirmed: bool,
     pub fit: Option<Fit>,
-    /// Timestamps and scaled values across the whole log, for a sparkline.
+    /// Timestamps and scaled values across the whole log, for a sparkline; for a multiplexed
+    /// cell, across the frames of its page.
     pub spark: Vec<(i64, f64)>,
+    /// For a multiplexed cell, its selector and the selector's value on the cell's page.
+    pub page: Option<(Range, u64)>,
 }
 
 /// What [`suggest`] looked at.
@@ -253,21 +259,10 @@ impl<'a> Frames<'a> {
             .copied()
             .filter(|&f| carries_data(f).is_some_and(|l| l >= len))
             .collect();
-        let mut flips = vec![0u32; len * 8];
-        for pair in list.windows(2) {
-            let (a, b) = (store.frame(pair[0] as usize), store.frame(pair[1] as usize));
-            for (byte, (x, y)) in a.data[..len].iter().zip(&b.data[..len]).enumerate() {
-                let mut changed = x ^ y;
-                while changed != 0 {
-                    flips[byte * 8 + changed.trailing_zeros() as usize] += 1;
-                    changed &= changed - 1;
-                }
-            }
-        }
         Self {
+            flips: Cow::Owned(flips_of(store, &list, len)),
             list: Cow::Owned(list),
             len,
-            flips: Cow::Owned(flips),
         }
     }
 
@@ -294,6 +289,22 @@ impl<'a> Frames<'a> {
     fn data<'s>(&self, store: &'s FrameStore, position: usize) -> &'s [u8] {
         store.frame(self.list[position] as usize).data
     }
+}
+
+/// Changes of each of the first `len` bytes' bits between consecutive frames of `list`.
+fn flips_of(store: &FrameStore, list: &[u32], len: usize) -> Vec<u32> {
+    let mut flips = vec![0u32; len * 8];
+    for pair in list.windows(2) {
+        let (a, b) = (store.frame(pair[0] as usize), store.frame(pair[1] as usize));
+        for (byte, (x, y)) in a.data[..len].iter().zip(&b.data[..len]).enumerate() {
+            let mut changed = x ^ y;
+            while changed != 0 {
+                flips[byte * 8 + changed.trailing_zeros() as usize] += 1;
+                changed &= changed - 1;
+            }
+        }
+    }
+    flips
 }
 
 /// A fixed pseudo-random number for `n` (SplitMix64).
@@ -1773,7 +1784,20 @@ impl Job {
             .map(|m| frames.between(store, m.t_ns, i64::MAX).start)
             .filter(|&at| at < frames.list.len())
             .collect();
-        let sample = SampleBuf::new(store, &frames, &around, sample_budget(frames.len));
+        let budget = sample_budget(frames.len);
+        let mut job = Self::of(store, frames, hints, &around, budget);
+        job.frame_count = stats.frames.len();
+        job
+    }
+
+    fn of(
+        store: &FrameStore,
+        frames: Frames<'static>,
+        hints: Hints,
+        around: &[usize],
+        budget: usize,
+    ) -> Self {
+        let sample = SampleBuf::new(store, &frames, around, budget);
         let steps = frames.steps();
         let bits = frames.len * 8;
         let rates: Vec<f64> = (0..bits)
@@ -1791,7 +1815,7 @@ impl Job {
             candidates(&rates, bits)
         };
         Self {
-            frame_count: stats.frames.len(),
+            frame_count: 0,
             store_len: store.len(),
             frames,
             sample,
@@ -1876,7 +1900,6 @@ impl Job {
             };
         }
         let len = frames.len;
-        let steps = frames.steps();
         let log = Log {
             store,
             frames: &frames,
@@ -1885,14 +1908,14 @@ impl Job {
             rereads: &rereads,
         };
 
-        // Cells of a multiplexed message take turns with the selector, which read frame to frame
-        // can pass for toggles and values; nothing is suggested in them. A byte is a cell when many
-        // of its bits change with the page; elsewhere each candidate is judged on its own, apart from
-        // counters: a heartbeat bit, or a second counter whose period divides the pages, moves the
-        // same way.
+        // Cells of a multiplexed message take turns with the selector, which read frame to
+        // frame can pass for toggles and values; they are judged a page at a time below. A byte
+        // is a cell when many of its bits change with the page; elsewhere each candidate is
+        // judged on its own, apart from counters: a heartbeat bit, or a second counter whose
+        // period divides the pages, moves the same way.
+        let mut paging = None;
         if let Some((selector, pages)) = selector(&scored, &sample) {
             let selector_mask = selector.mask();
-            let overlaps = |a: &[u64], b: &[u64]| a.iter().zip(b).any(|(x, y)| x & y != 0);
             let mut cells = [0u64; MAX_PAYLOAD / 8];
             for byte in 0..len {
                 let mask = Range::intel(byte * 8, 8).mask();
@@ -1913,6 +1936,9 @@ impl Job {
                         && (s.kind == Kind::Counter
                             || !changes_with_the_page(&sample, s.range, pages)))
             });
+            if cells.iter().any(|&c| c != 0) {
+                paging = Some((selector, pages, cells));
+            }
         }
 
         let mut fits: Vec<Option<Fit>> = scored
@@ -1945,30 +1971,22 @@ impl Job {
                 }
             }
         }
-        let mut order: Vec<usize> = (0..scored.len()).collect();
-        order.sort_by(|&a, &b| {
-            let (a, b) = (&scored[a], &scored[b]);
-            b.score
-                .total_cmp(&a.score)
-                .then(a.range.sort_key().cmp(&b.range.sort_key()))
-        });
-        let masks: Vec<[u64; MAX_PAYLOAD / 8]> = scored.iter().map(|s| s.range.mask()).collect();
-        let overlaps = |a: &[u64], b: &[u64]| a.iter().zip(b).any(|(x, y)| x & y != 0);
         // The counters and checksums that will be suggested, best first.
         let mut kept: Vec<[u64; MAX_PAYLOAD / 8]> = Vec::new();
-        for &i in &order {
+        for i in best_first(&scored) {
             let s = &scored[i];
+            let mask = s.range.mask();
             if s.score >= MIN_SCORE
                 && !s.unconfirmed
                 && matches!(s.kind, Kind::Counter | Kind::Checksum)
-                && !kept.iter().any(|k| overlaps(k, &masks[i]))
+                && !kept.iter().any(|k| overlaps(k, &mask))
             {
-                kept.push(masks[i]);
+                kept.push(mask);
             }
         }
         let (mut taken, mut floats) = float_words(&sample, len, &kept);
-        let inside = |a: &[u64], b: &[u64]| a.iter().zip(b).all(|(x, y)| x & !y == 0);
         let cap = MAX_SUGGESTIONS.max(len);
+        let considered = scored.len();
         let mut chosen = Vec::new();
         // The float words, best first, that don't overlap one another.
         floats.sort_by(|a, b| {
@@ -1989,112 +2007,337 @@ impl Job {
             scored.push(f);
             fits.push(None);
         }
-        for (rank, &i) in order.iter().enumerate() {
-            let s = &scored[i];
-            let mask = &masks[i];
-            if s.score < MIN_SCORE || overlaps(mask, &taken) {
-                continue;
-            }
-            // Two ranges side by side beat one that straddles them: a candidate gives way to a
-            // range inside it when both that range and a neighbour it overlaps score about as well.
-            let close: Vec<usize> = order[rank + 1..]
-                .iter()
-                .copied()
-                .take_while(|&j| scored[j].score >= s.score - CLOSE_SCORE)
-                .filter(|&j| scored[j].score >= MIN_SCORE && !overlaps(&masks[j], &taken))
-                .collect();
-            let gives_way = close.iter().any(|&b| {
-                overlaps(&masks[b], mask)
-                    && !inside(&masks[b], mask)
-                    && close
-                        .iter()
-                        .any(|&a| inside(&masks[a], mask) && !overlaps(&masks[a], &masks[b]))
-            });
-            if gives_way
-                || (s.kind == Kind::Flag
-                    && flag_moves_with_a_neighbour(&log, usize::from(s.range.start_bit)))
-            {
-                continue;
-            }
-            for (t, m) in taken.iter_mut().zip(mask) {
-                *t |= *m;
-            }
-            chosen.push(i);
-            if chosen.len() == cap {
-                break;
-            }
+        chosen.extend(choose(
+            &scored[..considered],
+            &log,
+            &mut taken,
+            cap - chosen.len(),
+        ));
+        let mut suggestions = suggestions_from(&log, &mut scored, chosen, &mut fits);
+        if let Some((selector, pages, cells)) = paging {
+            multiplex(&log, &mut suggestions, selector, pages, &cells, cap);
         }
-
-        chosen.sort_by(|&a, &b| scored[b].score.total_cmp(&scored[a].score));
-        let from_sample: Vec<usize> = chosen
-            .iter()
-            .copied()
-            .filter(|&i| scored[i].kind == Kind::Continuous && fits[i].is_none() && sample.partial)
-            .collect();
-        let ranges: Vec<Range> = from_sample.iter().map(|&i| scored[i].range).collect();
-        for (i, reason) in from_sample
-            .into_iter()
-            .zip(whole_log_value_reasons(&log, &ranges))
-        {
-            let marker_note = scored[i]
-                .reason
-                .find("; changes near")
-                .map_or(String::new(), |at| scored[i].reason[at..].to_string());
-            scored[i].reason = reason + &marker_note;
-        }
-        let first = frames.data(store, 0);
-        for &i in &chosen {
-            if scored[i].kind != Kind::Continuous {
-                continue;
-            }
-            let mut claimed = [0u64; MAX_PAYLOAD / 8];
-            for &j in chosen.iter().filter(|&&j| j != i) {
-                for (c, m) in claimed.iter_mut().zip(scored[j].range.mask()) {
-                    *c |= m;
-                }
-            }
-            if let Some(range) = widened(scored[i].range, &rates, first, &claimed) {
-                let added = range.size - scored[i].range.size;
-                scored[i].range = range;
-                scored[i].reason += &if added == 1 {
-                    "; width inferred: its top bit is 0 throughout".to_string()
-                } else {
-                    format!("; width inferred: its top {added} bits are 0 throughout")
-                };
-            }
-        }
-        let suggestions = chosen
-            .into_iter()
-            .map(|i| {
-                let s = &scored[i];
-                let fit = fits[i].take();
-                let reason = if s.kind == Kind::Flag {
-                    let marker_note = s
-                        .reason
-                        .find("; changes near")
-                        .map_or("", |at| &s.reason[at..]);
-                    let flips = frames.flips[usize::from(s.range.start_bit)];
-                    flag_reason(flips, steps, set_share(&log, s.range)) + marker_note
-                } else {
-                    s.reason.clone()
-                };
-                Suggestion {
-                    kind: s.kind,
-                    range: s.range,
-                    signed: s.signed,
-                    score: s.score.clamp(0.0, 0.99),
-                    reason,
-                    unconfirmed: s.unconfirmed,
-                    fit,
-                    spark: sparkline(&log, s, fit),
-                }
-            })
-            .collect();
         Findings {
             suggestions,
             sampled_frames: sample.len(),
         }
     }
+
+    /// The suggestions within one page of a multiplexed message, none of them over `taken`.
+    fn finish_page(self, store: &FrameStore, mut taken: Mask, cap: usize) -> Vec<Suggestion> {
+        let Self {
+            frames,
+            sample,
+            rates,
+            rereads,
+            mut scored,
+            ..
+        } = self;
+        let sample = sample.view();
+        let log = Log {
+            store,
+            frames: &frames,
+            sample: &sample,
+            rates: &rates,
+            rereads: &rereads,
+        };
+        let chosen = choose(&scored, &log, &mut taken, cap);
+        let mut fits = vec![None; scored.len()];
+        suggestions_from(&log, &mut scored, chosen, &mut fits)
+    }
+}
+
+/// A set of payload bits, `byte * 8 + bit`.
+type Mask = [u64; MAX_PAYLOAD / 8];
+
+fn overlaps(a: &[u64], b: &[u64]) -> bool {
+    a.iter().zip(b).any(|(x, y)| x & y != 0)
+}
+
+fn inside(a: &[u64], b: &[u64]) -> bool {
+    a.iter().zip(b).all(|(x, y)| x & !y == 0)
+}
+
+/// Positions of `scored`, best first.
+fn best_first(scored: &[Scored]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..scored.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&scored[a], &scored[b]);
+        b.score
+            .total_cmp(&a.score)
+            .then(a.range.sort_key().cmp(&b.range.sort_key()))
+    });
+    order
+}
+
+/// Up to `cap` of `scored`, best first, that overlap neither one another nor `taken`, which
+/// gains their bits.
+fn choose(scored: &[Scored], log: &Log, taken: &mut Mask, cap: usize) -> Vec<usize> {
+    let order = best_first(scored);
+    let masks: Vec<Mask> = scored.iter().map(|s| s.range.mask()).collect();
+    let mut chosen = Vec::new();
+    for (rank, &i) in order.iter().enumerate() {
+        if chosen.len() >= cap {
+            break;
+        }
+        let s = &scored[i];
+        let mask = &masks[i];
+        if s.score < MIN_SCORE || overlaps(mask, taken) {
+            continue;
+        }
+        // Two ranges side by side beat one that straddles them: a candidate gives way to a
+        // range inside it when both that range and a neighbour it overlaps score about as well.
+        let close: Vec<usize> = order[rank + 1..]
+            .iter()
+            .copied()
+            .take_while(|&j| scored[j].score >= s.score - CLOSE_SCORE)
+            .filter(|&j| scored[j].score >= MIN_SCORE && !overlaps(&masks[j], taken))
+            .collect();
+        let gives_way = close.iter().any(|&b| {
+            overlaps(&masks[b], mask)
+                && !inside(&masks[b], mask)
+                && close
+                    .iter()
+                    .any(|&a| inside(&masks[a], mask) && !overlaps(&masks[a], &masks[b]))
+        });
+        if gives_way
+            || (s.kind == Kind::Flag
+                && flag_moves_with_a_neighbour(log, usize::from(s.range.start_bit)))
+        {
+            continue;
+        }
+        for (t, m) in taken.iter_mut().zip(mask) {
+            *t |= *m;
+        }
+        chosen.push(i);
+    }
+    chosen
+}
+
+/// The `chosen` of `scored` as suggestions, best first: a sampled value's range read over the
+/// whole log, an unsigned value widened over never-set bits above it, and a flag's share of
+/// frames set counted over the whole log.
+fn suggestions_from(
+    log: &Log,
+    scored: &mut [Scored],
+    mut chosen: Vec<usize>,
+    fits: &mut [Option<Fit>],
+) -> Vec<Suggestion> {
+    let frames = log.frames;
+    let steps = frames.steps();
+    chosen.sort_by(|&a, &b| scored[b].score.total_cmp(&scored[a].score));
+    let from_sample: Vec<usize> = chosen
+        .iter()
+        .copied()
+        .filter(|&i| scored[i].kind == Kind::Continuous && fits[i].is_none() && log.sample.partial)
+        .collect();
+    let ranges: Vec<Range> = from_sample.iter().map(|&i| scored[i].range).collect();
+    for (i, reason) in from_sample
+        .into_iter()
+        .zip(whole_log_value_reasons(log, &ranges))
+    {
+        let marker_note = scored[i]
+            .reason
+            .find("; changes near")
+            .map_or(String::new(), |at| scored[i].reason[at..].to_string());
+        scored[i].reason = reason + &marker_note;
+    }
+    let first = frames.data(log.store, 0);
+    for &i in &chosen {
+        if scored[i].kind != Kind::Continuous {
+            continue;
+        }
+        let mut claimed = [0u64; MAX_PAYLOAD / 8];
+        for &j in chosen.iter().filter(|&&j| j != i) {
+            for (c, m) in claimed.iter_mut().zip(scored[j].range.mask()) {
+                *c |= m;
+            }
+        }
+        if let Some(range) = widened(scored[i].range, log.rates, first, &claimed) {
+            let added = range.size - scored[i].range.size;
+            scored[i].range = range;
+            scored[i].reason += &if added == 1 {
+                "; width inferred: its top bit is 0 throughout".to_string()
+            } else {
+                format!("; width inferred: its top {added} bits are 0 throughout")
+            };
+        }
+    }
+    chosen
+        .into_iter()
+        .map(|i| {
+            let s = &scored[i];
+            let fit = fits[i].take();
+            let reason = if s.kind == Kind::Flag {
+                let marker_note = s
+                    .reason
+                    .find("; changes near")
+                    .map_or("", |at| &s.reason[at..]);
+                let flips = frames.flips[usize::from(s.range.start_bit)];
+                flag_reason(flips, steps, set_share(log, s.range)) + marker_note
+            } else {
+                s.reason.clone()
+            };
+            Suggestion {
+                kind: s.kind,
+                range: s.range,
+                signed: s.signed,
+                score: s.score.clamp(0.0, 0.99),
+                reason,
+                unconfirmed: s.unconfirmed,
+                fit,
+                spark: sparkline(log, s, fit),
+                page: None,
+            }
+        })
+        .collect()
+}
+
+/// A page's cell suggestion must score at least this, and cover every cell byte it touches, to
+/// be kept; a message is suggested as multiplexed only when at least half its pages have one.
+const PAGE_SCORE: f64 = 0.6;
+
+/// Turns the counter at `selector` among `suggestions` into a multiplexer selector, and adds the
+/// signals found within each of its `pages` in the `cells` bytes, when at least half the pages
+/// have a good one: a counter beside bytes that merely change with it is left a counter.
+fn multiplex(
+    log: &Log,
+    suggestions: &mut Vec<Suggestion>,
+    selector: Range,
+    pages: usize,
+    cells: &Mask,
+    cap: usize,
+) {
+    let Some(at) = suggestions
+        .iter()
+        .position(|s| s.kind == Kind::Counter && s.range == selector)
+    else {
+        return;
+    };
+    let mut taken = [0u64; MAX_PAYLOAD / 8];
+    for s in suggestions.iter() {
+        for (t, m) in taken.iter_mut().zip(s.range.mask()) {
+            *t |= m;
+        }
+    }
+    let found: Vec<Vec<Suggestion>> = page_suggestions(log, selector, pages, cells, taken, cap)
+        .into_iter()
+        .map(|page| {
+            page.into_iter()
+                .filter(|s| s.score >= PAGE_SCORE && covers_its_bytes(s.range, cells))
+                .collect()
+        })
+        .collect();
+    if found.iter().filter(|page| !page.is_empty()).count() * 2 < pages {
+        return;
+    }
+    let mut claimed = *cells;
+    for (_, s) in suggestions.iter().enumerate().filter(|&(i, _)| i != at) {
+        for (c, m) in claimed.iter_mut().zip(s.range.mask()) {
+            *c |= m;
+        }
+    }
+    let first = log.frames.data(log.store, 0);
+    let range = widened(selector, log.rates, first, &claimed).unwrap_or(selector);
+    let cell_bytes: Vec<usize> = (0..log.frames.len)
+        .filter(|&b| cells[b / 8] >> (b % 8 * 8) & 0xFF != 0)
+        .collect();
+    let s = &mut suggestions[at];
+    s.kind = Kind::Multiplexor;
+    s.range = range;
+    s.reason = format!(
+        "Selects which of {pages} pages {} {} carry, as each page moves on its own",
+        if cell_bytes.len() == 1 {
+            "byte"
+        } else {
+            "bytes"
+        },
+        list_of(&cell_bytes)
+    );
+    for (value, page) in found.into_iter().enumerate() {
+        for mut cell in page {
+            cell.page = Some((range, value as u64));
+            suggestions.push(cell);
+        }
+    }
+}
+
+/// Whether `range` takes in the whole of each `cells` byte it touches: a noisy reading that
+/// only jumps with the page leaves fragments of its bytes that pass for small values.
+fn covers_its_bytes(range: Range, cells: &Mask) -> bool {
+    let mask = range.mask();
+    (0..MAX_PAYLOAD).all(|byte| {
+        let (word, shift) = (byte / 8, byte % 8 * 8);
+        let (cell, have) = (cells[word] >> shift & 0xFF, mask[word] >> shift & 0xFF);
+        have == 0 || cell == 0 || have == 0xFF
+    })
+}
+
+/// For each value of `selector` up to `pages`, the suggestions over the frames that carry it,
+/// within the `cells` bytes and the bits that page never changes, and not over `taken`.
+fn page_suggestions(
+    log: &Log,
+    selector: Range,
+    pages: usize,
+    cells: &Mask,
+    taken: Mask,
+    cap: usize,
+) -> Vec<Vec<Suggestion>> {
+    let (store, len) = (log.store, log.frames.len);
+    let mut lists: Vec<Vec<u32>> = vec![Vec::new(); pages];
+    for &f in log.frames.list.iter() {
+        let value = selector.read(store.frame(f as usize).data);
+        if let Some(list) = usize::try_from(value).ok().and_then(|v| lists.get_mut(v)) {
+            list.push(f);
+        }
+    }
+    let budget = (sample_budget(len) / pages).max(SAMPLE_BLOCKS * 50);
+    lists
+        .into_iter()
+        .map(|list| {
+            let page = Frames {
+                flips: Cow::Owned(flips_of(store, &list, len)),
+                list: Cow::Owned(list),
+                len,
+            };
+            let mut job = Job::of(store, page, Hints::default(), &[], budget);
+            if job.done == usize::MAX {
+                return Vec::new();
+            }
+            let rates = &job.rates;
+            job.candidates.retain(|r| {
+                let mask = r.mask();
+                overlaps(&mask, cells)
+                    && !overlaps(&mask, &taken)
+                    && r.bits()
+                        .iter()
+                        .all(|&b| rates[b] == 0.0 || cells[b / 64] >> (b % 64) & 1 == 1)
+            });
+            // No checksum is looked for within a page.
+            job.done = len;
+            while !job.step(store, usize::MAX) {}
+            job.finish_page(store, taken, cap)
+        })
+        .collect()
+}
+
+/// `1, 3, 5`, or `1-3`, for byte numbers in order.
+fn list_of(bytes: &[usize]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let mut j = i;
+        while j + 1 < bytes.len() && bytes[j + 1] == bytes[j] + 1 {
+            j += 1;
+        }
+        parts.push(if j > i {
+            format!("{}-{}", bytes[i], bytes[j])
+        } else {
+            bytes[i].to_string()
+        });
+        i = j + 1;
+    }
+    parts.join(", ")
 }
 
 /// A candidate as classified over the log, raised when it changes near the markers.
@@ -2894,6 +3137,53 @@ mod tests {
         });
         let all = run(&s, &Hints::default());
         assert_eq!(
+            (all[0].kind, all[0].range, all[0].page),
+            (Kind::Multiplexor, Range::intel(0, 8), None)
+        );
+        assert_eq!(
+            all[0].reason,
+            "Selects which of 4 pages bytes 1-2 carry, as each page moves on its own"
+        );
+        let rest: Vec<(Range, Option<u64>)> = all[1..]
+            .iter()
+            .inspect(|s| assert_eq!(s.kind, Kind::Continuous))
+            .inspect(|s| assert!(s.page.is_none_or(|(selector, _)| selector == all[0].range)))
+            .map(|s| (s.range, s.page.map(|(_, value)| value)))
+            .collect();
+        let cell = |page| (Range::intel(8, 16), Some(page));
+        assert_eq!(
+            rest,
+            [
+                (Range::intel(24, 8), None),
+                cell(0),
+                cell(1),
+                cell(2),
+                cell(3)
+            ]
+        );
+        assert!(
+            all[2].reason.starts_with("Changes smoothly; ")
+                && all[2].reason.ends_with("from 1000 to 1900")
+        );
+
+        // Bytes that only jump with the page, with noise on each page, leave a counter a counter.
+        let s = store(6000, |i, rng| {
+            let page = i % 4;
+            let jump = [10u8, 90, 170, 250][page];
+            let noise = (rng.next() % 5) as u8;
+            [
+                page as u8,
+                jump - noise,
+                jump - (noise ^ 3),
+                (wave(i) * 100.0) as u8,
+                0,
+                0,
+                0,
+                0,
+            ]
+        });
+        let all = run(&s, &Hints::default());
+        assert_eq!(
             (all[0].kind, all[0].range),
             (Kind::Counter, Range::intel(0, 2))
         );
@@ -2901,8 +3191,7 @@ mod tests {
             all[0].reason,
             "Increments by 1 each frame; wraps at 3: a counter or multiplexer selector"
         );
-        let rest: Vec<Range> = all[1..].iter().map(|s| s.range).collect();
-        assert_eq!(rest, [Range::intel(24, 8)]);
+        assert!(all.iter().all(|s| s.page.is_none()));
 
         // A 2-bit alive counter, with a heartbeat bit toggling each frame and a door flag in
         // another byte: neither is a cell, though the heartbeat repeats with the pages.

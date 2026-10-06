@@ -13,6 +13,11 @@ export type Pin =
   | { kind: 'byte'; key: number; byte: number }
   | { kind: 'range'; key: number; spec: RawSignalSpec; label: string; unit: string };
 
+/** ` m2` for a range read from page 2 of its message's multiplexor, else nothing. */
+function pageOf(spec: RawSignalSpec): string {
+  return spec.mux ? ` m${spec.mux.value}` : '';
+}
+
 export function pinId(p: Pin): string {
   switch (p.kind) {
     case 'signal':
@@ -21,7 +26,7 @@ export function pinId(p: Pin): string {
       return `${p.key}:b:${p.byte}`;
     case 'range':
       // The scale too, so a suggestion plotted with a fitted scale is a pin of its own.
-      return `${p.key}:r:${layoutString(p.spec, p.spec.signed, p.spec.float)}:${p.spec.factor}:${p.spec.offset}`;
+      return `${p.key}:r:${layoutString(p.spec, p.spec.signed, p.spec.float)}:${p.spec.factor}:${p.spec.offset}${pageOf(p.spec)}`;
   }
 }
 
@@ -145,7 +150,7 @@ export function useReferences(ctx: ViewContext, pins: Pin[]): Reference[] {
         pin,
         id: pinId(pin),
         name: `${idText} \u00b7 ${pin.label}`,
-        source: `${layoutString(pin.spec, pin.spec.signed, pin.spec.float)} \u00b7 ${bus}`,
+        source: `${layoutString(pin.spec, pin.spec.signed, pin.spec.float)}${pageOf(pin.spec)} \u00b7 ${bus}`,
         unit: pin.unit,
         color: graphite,
         range: null,

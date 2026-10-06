@@ -170,7 +170,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * Opens the CAN channel with `C` (in case it was left open), `S<n>`, then `O`, or for listen
  * only `L`, else `M1` (CANable's silent mode, which it takes only while off the bus) and `O`.
  * Whether the adapter answers commands at all is learnt from `S<n>`, which every Lawicel adapter
- * answers. Listen-only counts as confirmed only when an adapter answers `L` or `M1` with CR.
+ * answers. Listen-only counts as confirmed only when an adapter answers `L` with CR.
  * Frames are stamped with the host clock when their bytes arrive, not with the adapter's `Z1`
  * timestamps, and are read only once `O` or `L` has been sent.
  */
@@ -261,8 +261,10 @@ export class SlcanAdapter implements CaptureAdapter {
         if (listenOnly === 'ok') return { listenOnly: true };
         this.busOpen = false;
       }
+      // Only L confirms listen-only: on Lawicel adapters M sets the acceptance code, so a CR for
+      // M1 proves nothing.
       const silent = await this.expect('M1', wait, null);
-      if (silent !== 'ok' && !settings.allowUnconfirmedListenOnly) {
+      if (!settings.allowUnconfirmedListenOnly) {
         throw new ListenOnlyUnconfirmedError(
           silent === 'refused' && listenOnly !== 'no answer'
             ? "This adapter can't listen only, so it would acknowledge frames on the bus."
@@ -270,7 +272,7 @@ export class SlcanAdapter implements CaptureAdapter {
         );
       }
       await open();
-      return { listenOnly: silent === 'ok' };
+      return { listenOnly: false };
     } catch (e) {
       if (!this.cancelled) {
         await this.stop();
@@ -416,7 +418,8 @@ export class SlcanAdapter implements CaptureAdapter {
         case 'reply':
           break;
         case 'error':
-          if (!this.answer('refused')) this.events?.onProblem('The adapter reported an error.');
+          // A late BEL to a command no longer waited for, such as the opening C, is no problem.
+          if (!this.answer('refused') && this.busOpen) this.events?.onProblem('The adapter reported an error.');
           break;
         case 'bad':
           if (this.busOpen) this.events?.onProblem(`A line from the adapter wasn't a CAN frame (${event.reason}).`);

@@ -172,12 +172,14 @@ describe('SlcanAdapter', () => {
     expect(port.commands).toEqual(['C', command, 'O']);
   });
 
-  it("falls back to CANable's silent mode when the adapter refuses L", async () => {
+  it('sends M1 when the adapter refuses L, but asks first, as a CR for M1 proves nothing', async () => {
     const port = new FakeSerialPort();
     port.answer = (command) => (command === 'L' ? '\x07' : '\r');
     const adapter = new SlcanAdapter(port, timing);
-    expect(await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0)).toEqual({ listenOnly: true });
-    expect(port.commands).toEqual(['C', 'S6', 'L', 'M1', 'O']);
+    const refusal = await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0).catch((e: unknown) => e);
+    expect(isListenOnlyUnconfirmed(refusal)).toBe(true);
+    expect((refusal as Error).message).toMatch(/^This adapter didn't confirm listen-only mode/);
+    expect(port.commands).toEqual(['C', 'S6', 'L', 'M1', 'C']);
   });
 
   it('opens an adapter that refuses listen-only only when the user agrees', async () => {
@@ -408,6 +410,20 @@ describe('SlcanAdapter', () => {
     expect(port.commands).not.toContain('O');
     expect(port.commands).not.toContain('S6');
     expect(port.closed).toBe(true);
+  });
+
+  it('reports no problem for a late BEL before the bus opens', async () => {
+    const port = new FakeSerialPort();
+    port.answer = (command) => (command === 'C' ? null : '\r');
+    const adapter = new SlcanAdapter(port, { commandMs: 50, settleMs: 50 });
+    const { problems, events } = recordingEvents();
+    const starting = adapter.start({ bitrate: 500_000, listenOnly: false }, events, () => 0);
+    // Past the 50 ms wait for an answer to C, within the pause after it.
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    port.send('\x07');
+    await starting;
+    expect(problems).toEqual([]);
+    await adapter.stop();
   });
 
   it('stops only once, however often it is asked', async () => {

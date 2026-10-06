@@ -38,6 +38,7 @@ function comparison(id: number, fields: Partial<IdComparison> = {}): IdCompariso
     reason: 'No significant changes',
     bytes: [],
     tooFewFrames: false,
+    payloadsDiffer: false,
     changesWithinA: false,
     ...fields,
   };
@@ -371,7 +372,7 @@ describe('logs that look the same', () => {
   });
 
   it('leaves IDs with too few frames to their own group', async () => {
-    const few = comparison(0x5a0, { framesA: 3, framesB: 6, tooFewFrames: true, reason: 'Too few frames to compare; payloads differ' });
+    const few = comparison(0x5a0, { framesA: 3, framesB: 6, tooFewFrames: true, payloadsDiffer: true, reason: 'Too few frames to compare; payloads differ' });
     const { user } = renderInShell(CompareView, { core: compareCore([body, few]) });
     expect(await screen.findByRole('button', { name: 'Too few frames to compare(1)' })).toBeTruthy();
     expect(screen.getByRole('row', { name: /^5A0 / })).toBeTruthy();

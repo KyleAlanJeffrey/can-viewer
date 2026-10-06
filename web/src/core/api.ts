@@ -359,6 +359,8 @@ export interface IdComparison {
   bytes: number[];
   /** Either log has fewer than 8 frames of the ID, so it is not scored. */
   tooFewFrames: boolean;
+  /** With `tooFewFrames`: the logs' payloads take different values or lengths anyway. */
+  payloadsDiffer: boolean;
   /** The ID differs, but `ignoreChangesWithinA` left every difference out as a change within log A. */
   changesWithinA: boolean;
 }

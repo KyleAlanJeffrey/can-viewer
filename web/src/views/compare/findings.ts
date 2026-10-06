@@ -43,11 +43,11 @@ export function matchesQuery(c: IdComparison, query: string): boolean {
 
 /**
  * No ID differs under the current ignore rules, and there was something to compare. IDs with
- * too few frames say nothing either way.
+ * too few frames say nothing either way, unless their payloads differ.
  */
 export function looksTheSame(results: IdComparison[]): boolean {
   const groups = results.map(groupOf);
-  return groups.includes('same') && groups.every((g) => g === 'same' || g === 'tooFew');
+  return groups.includes('same') && results.every((c, i) => groups[i] === 'same' || (groups[i] === 'tooFew' && !c.payloadsDiffer));
 }
 
 /** How many IDs the within-A rule left out, for the states that show no differences, or null. */

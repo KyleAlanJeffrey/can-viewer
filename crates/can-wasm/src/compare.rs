@@ -103,6 +103,8 @@ pub struct IdComparison {
     pub bytes: Vec<usize>,
     /// Either log has fewer than `MIN_FRAMES` frames of the ID, so it is not scored.
     pub too_few_frames: bool,
+    /// Not scored for too few frames, but the payloads take different lengths or values.
+    pub payloads_differ: bool,
     /// The ID differs, but no more than it changes within log A, and the within-A rule left
     /// the differences out.
     pub changes_within_a: bool,
@@ -913,6 +915,7 @@ struct Verdict {
     byte_scores: Vec<f64>,
     byte_reasons: Vec<ByteReason>,
     too_few: bool,
+    payloads_differ: bool,
     /// Differences the within-A rule left out.
     within_a: bool,
 }
@@ -960,9 +963,10 @@ fn judge(
     noise: Option<&Components>,
 ) -> Verdict {
     if a.frames < MIN_FRAMES || b.frames < MIN_FRAMES {
+        let differ = payloads_differ(a, b);
         return Verdict {
             score: 0.0,
-            reason: if payloads_differ(a, b) {
+            reason: if differ {
                 format!("{TOO_FEW_FRAMES}; payloads differ")
             } else {
                 TOO_FEW_FRAMES.to_owned()
@@ -970,6 +974,7 @@ fn judge(
             byte_scores: vec![0.0; ab.bytes.len()],
             byte_reasons: vec![ByteReason::Shift; ab.bytes.len()],
             too_few: true,
+            payloads_differ: differ,
             within_a: false,
         };
     }
@@ -1053,6 +1058,7 @@ fn judge(
         byte_scores,
         byte_reasons,
         too_few: false,
+        payloads_differ: false,
         within_a,
     }
 }
@@ -1217,14 +1223,14 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                     100,
                     "Appears only in A".to_owned(),
                     vec![],
-                    (false, false),
+                    (false, false, false),
                 ),
                 (None, Some(_)) => (
                     Presence::OnlyB,
                     100,
                     "Appears only in B".to_owned(),
                     vec![],
-                    (false, false),
+                    (false, false, false),
                 ),
                 _ => {
                     let analysis = analyse(side_a, side_b, options);
@@ -1246,7 +1252,7 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                         percent(verdict.score),
                         verdict.reason,
                         bytes.into_iter().map(|(k, _)| k).collect(),
-                        (verdict.too_few, verdict.within_a),
+                        (verdict.too_few, verdict.payloads_differ, verdict.within_a),
                     )
                 }
             };
@@ -1269,7 +1275,8 @@ pub fn compare_logs(a: &FrameStore, b: &FrameStore, options: Options) -> Vec<IdC
                 reason,
                 bytes,
                 too_few_frames: flags.0,
-                changes_within_a: flags.1,
+                payloads_differ: flags.1,
+                changes_within_a: flags.2,
             }
         })
         .collect();
@@ -2040,10 +2047,17 @@ mod tests {
             (0, "Too few frames to compare; payloads differ")
         );
         assert!(found.too_few_frames);
+        assert!(found.payloads_differ);
         assert!(found.bytes.is_empty());
         let detail = compare_bytes(first_id(&a), first_id(&b), NO_RULES);
         assert_eq!(detail.byte_reasons, vec!["Too few frames to compare"]);
         assert_eq!(detail.byte_scores, vec![0]);
+
+        let alike = store(&periodic(0x300, 1.0, 3.0, |i, _| vec![50 + i as u8]));
+        let found = &compare_logs(&alike, &alike, NO_RULES)[0];
+        assert_eq!(found.reason, "Too few frames to compare");
+        assert!(found.too_few_frames);
+        assert!(!found.payloads_differ);
     }
 
     #[test]

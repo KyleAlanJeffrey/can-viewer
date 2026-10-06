@@ -21,6 +21,7 @@ function comparison(fields: Partial<IdComparison> = {}): IdComparison {
     reason: 'No significant changes',
     bytes: [],
     tooFewFrames: false,
+    payloadsDiffer: false,
     changesWithinA: false,
     ...fields,
   };
@@ -45,9 +46,14 @@ describe('groupOf', () => {
   });
 
   it('lets IDs with too few frames say nothing either way', () => {
-    const tooFew = comparison({ id: 0x5a0, tooFewFrames: true, reason: 'Too few frames to compare; payloads differ' });
+    const tooFew = comparison({ id: 0x5a0, tooFewFrames: true, reason: 'Too few frames to compare' });
     expect(looksTheSame([comparison(), tooFew])).toBe(true);
     expect(looksTheSame([tooFew])).toBe(false);
+  });
+
+  it('counts a rarely sent ID whose payloads differ as a difference', () => {
+    const changed = comparison({ id: 0x5a0, tooFewFrames: true, payloadsDiffer: true, reason: 'Too few frames to compare; payloads differ' });
+    expect(looksTheSame([comparison(), changed])).toBe(false);
   });
 });
 

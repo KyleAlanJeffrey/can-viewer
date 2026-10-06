@@ -10,6 +10,8 @@
 
 use std::fmt;
 
+use rustc_hash::FxHashSet;
+
 use crate::{flags, id_key, FrameKind, FrameRef, FrameSink, MAX_PAYLOAD};
 
 use super::{count_flips, set_last_data, FrameStore, IdStats};
@@ -278,8 +280,10 @@ impl<'a> Segment<'a> {
         {
             return Err(SegmentError::Malformed);
         }
-        // Each frame must belong to exactly one ID, so the joined statistics count it once.
+        // Each frame must belong to exactly one ID, and each ID come once, so the joined
+        // statistics count every frame once and in order.
         let mut owned = vec![false; len];
+        let mut keys = FxHashSet::default();
         for _ in 0..r.len()? {
             let part = SegmentId {
                 channel: usize::from(r.u8()?),
@@ -307,7 +311,11 @@ impl<'a> Segment<'a> {
             let in_range = u32s(part.frames)
                 .last()
                 .is_some_and(|last| (last as usize) < len);
-            if part.channel >= segment.channels.len() || !ordered || !in_range {
+            if part.channel >= segment.channels.len()
+                || !ordered
+                || !in_range
+                || !keys.insert(id_key(part.channel as u8, part.id))
+            {
                 return Err(SegmentError::Malformed);
             }
             for j in part.frames() {
@@ -710,5 +718,37 @@ mod tests {
             Err(SegmentError::Malformed)
         );
         assert_eq!(FrameStore::new().append_segment(&bytes), Ok(()));
+    }
+
+    #[test]
+    fn a_segment_that_lists_an_id_twice_is_refused() {
+        let mut part = FrameStore::for_segment();
+        push_into(
+            &mut part,
+            &[frame("can0", 1, 0x100, &[1]), frame("can0", 2, 0x200, &[2])],
+        );
+        let bytes = part.encode_segment();
+        // Make frame 1 and its ID's entry 0x100 as well: two entries for one ID, each owning a
+        // frame of its own. The entry is found by its ID, flags and first time.
+        let ids_at = 4 + 4 + 4 + 4 + 4 + 2 * 8;
+        let mut entry = 0x200u32.to_le_bytes().to_vec();
+        entry.push(0);
+        entry.extend_from_slice(&2i64.to_le_bytes());
+        let entry_id = bytes
+            .windows(entry.len())
+            .rposition(|w| w == entry)
+            .unwrap();
+        let mut twice = bytes.clone();
+        twice[ids_at + 4..ids_at + 8].copy_from_slice(&0x100u32.to_le_bytes());
+        twice[entry_id..entry_id + 4].copy_from_slice(&0x100u32.to_le_bytes());
+        assert_eq!(
+            FrameStore::new().append_segment(&twice),
+            Err(SegmentError::Malformed)
+        );
+        // The same edit to an ID the segment doesn't have is accepted: it is the repeat that isn't.
+        let mut sole = bytes.clone();
+        sole[ids_at + 4..ids_at + 8].copy_from_slice(&0x300u32.to_le_bytes());
+        sole[entry_id..entry_id + 4].copy_from_slice(&0x300u32.to_le_bytes());
+        assert_eq!(FrameStore::new().append_segment(&sole), Ok(()));
     }
 }

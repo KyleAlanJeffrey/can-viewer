@@ -107,7 +107,7 @@ export function TraceView({ ctx }: ViewProps) {
         if (held.get(core) === f) held.set(core, next);
         return next;
       });
-    });
+    }, () => undefined);
     return () => {
       stale = true;
     };

@@ -85,6 +85,22 @@ impl CsvParser {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Forgets the lines read so far, keeping what they set, to go on with a part of the file
+    /// that starts at a line boundary further on; see [`crate::AnyParser::prime`].
+    pub(crate) fn start_part(&mut self) {
+        self.stats = ParseStats::default();
+        self.lines = LineSplitter::mid_file();
+    }
+
+    pub(crate) fn mid_line(&self) -> bool {
+        self.lines.mid_line()
+    }
+
+    /// The layout the header line set, with the time unit once a row has decided it.
+    pub(crate) fn state(&self) -> String {
+        format!("{:?} {}", self.layout, self.bad_header)
+    }
 }
 
 /// Whether `line` is a header line this parser can use, for format detection.

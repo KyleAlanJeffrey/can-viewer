@@ -145,6 +145,62 @@ impl AnyParser {
             parser.expect_bytes(total_bytes);
         }
     }
+
+    /// Whether the rest of the file can be read in parts, each from a line boundary by a parser
+    /// of its own that read only the file's start (see [`AnyParser::prime`]), given what the
+    /// file has set so far, and only between lines. A text format's lines depend only on its
+    /// header, except for ASC with relative timestamps. The binary formats are read whole.
+    #[must_use]
+    pub fn splittable(&self) -> bool {
+        match self {
+            AnyParser::Candump(parser) => !parser.mid_line(),
+            AnyParser::Trc(parser) => !parser.mid_line(),
+            AnyParser::Csv(parser) => !parser.mid_line(),
+            AnyParser::Asc(parser) => !parser.relative() && !parser.mid_line(),
+            AnyParser::Blf(_) | AnyParser::Mf4(_) => false,
+        }
+    }
+
+    /// What the lines read so far set that the lines after them are read by: the header, and
+    /// a CSV file's time unit once a row has decided it. A part read by a parser of its own
+    /// reads as it would in the whole file when that parser's state at its start is the state
+    /// the parts before it ended in.
+    #[must_use]
+    pub fn state(&self) -> String {
+        match self {
+            AnyParser::Candump(_) | AnyParser::Blf(_) | AnyParser::Mf4(_) => String::new(),
+            AnyParser::Asc(parser) => parser.state(),
+            AnyParser::Trc(parser) => parser.state(),
+            AnyParser::Csv(parser) => parser.state(),
+        }
+    }
+
+    /// Readies a parser of a [`AnyParser::splittable`] format to read a part of the file that
+    /// starts at a line boundary further on: reads `head`, the start of the file, up to its
+    /// last line break for what its header sets, dropping its frames, then counts lines,
+    /// bytes and rejections from zero.
+    pub fn prime(&mut self, head: &[u8]) {
+        let head = &head[..memchr::memrchr(b'\n', head).map_or(0, |nl| nl + 1)];
+        self.push(head, &mut Discard);
+        match self {
+            AnyParser::Candump(parser) => parser.start_part(),
+            AnyParser::Asc(parser) => parser.start_part(),
+            AnyParser::Trc(parser) => parser.start_part(),
+            AnyParser::Csv(parser) => parser.start_part(),
+            AnyParser::Blf(_) | AnyParser::Mf4(_) => {}
+        }
+    }
+}
+
+/// Drops every frame.
+struct Discard;
+
+impl FrameSink for Discard {
+    fn channel_index(&mut self, _name: &[u8]) -> u8 {
+        0
+    }
+
+    fn push(&mut self, _frame: FrameRef<'_>) {}
 }
 
 impl LogParser for AnyParser {

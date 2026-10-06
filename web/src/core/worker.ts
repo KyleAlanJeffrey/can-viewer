@@ -3,8 +3,12 @@
 
 import type { CompareOptions, Database, DiscoveryHints, ExportFormat, FindRule, FrameFilter, LogInfo, RawSignalSpec, ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
+import { readChunks as readChunksFrom, readInParts, type PartTask, type PartWorker } from './readInParts';
 
-const CHUNK_BYTES = 8 << 20;
+/** Smaller logs are read in this worker alone: starting part workers would cost more than they save. */
+const PARTS_MIN_BYTES = 32 << 20;
+/** Part workers at most, each holding a part's text and frames (tens of MB) while it reads. */
+const MAX_PART_WORKERS = 6;
 /** Frames a filter count goes through before the requests sent meanwhile may run. */
 const COUNT_STEP_FRAMES = 1 << 19;
 
@@ -37,18 +41,105 @@ const withMemory = (json: string, meta: LogMeta) => ({ ...JSON.parse(json), ...m
 /** The request being answered, so its progress events reach the right listener. */
 let currentId = 0;
 
-/** Reads `file` in chunks through `push`, reporting progress at most every 100 ms. */
-async function readChunks(file: Blob, push: (chunk: Uint8Array) => void) {
+/**
+ * Reports the bytes of `file` read so far, at most every 100 ms. A log read again in one worker
+ * after its parts failed starts from 0, so the bar holds at the most it showed until then.
+ */
+function progressOf(file: Blob): (bytes: number) => void {
   let lastReport = 0;
-  for (let at = 0; at < file.size; at += CHUNK_BYTES) {
-    const chunk = new Uint8Array(await file.slice(at, at + CHUNK_BYTES).arrayBuffer());
-    push(chunk);
+  let most = 0;
+  return (bytes) => {
+    most = Math.max(most, bytes);
     const now = performance.now();
     if (now - lastReport > 100) {
       lastReport = now;
-      port.postMessage({ event: 'progress', id: currentId, bytes: at + chunk.length, total: file.size });
+      port.postMessage({ event: 'progress', id: currentId, bytes: most, total: file.size });
     }
+  };
+}
+
+/** Reads `file` in chunks through `push`, reporting progress. */
+function readChunks(file: Blob, push: (chunk: Uint8Array) => void, onProgress = progressOf(file)) {
+  return readChunksFrom(file, push, onProgress);
+}
+
+/**
+ * Set when a part worker can't start (it can't be created, its script or wasm fails to load, or it
+ * doesn't load in `READY_MS`), so later logs are read in this worker alone. Some browsers,
+ * Electron's among them, start no workers from a worker.
+ */
+let partWorkersFailed = false;
+
+/** How many part workers to read `file` with, or 0 to read it here. One core is left for this worker. */
+function partWorkerCount(file: Blob): number {
+  if (file.size < PARTS_MIN_BYTES || typeof Worker === 'undefined' || partWorkersFailed) return 0;
+  const workers = Math.min(MAX_PART_WORKERS, (navigator.hardwareConcurrency || 1) - 1);
+  return workers > 1 ? workers : 0;
+}
+
+/** What a part worker posts: that it loaded or couldn't, then a part or the error reading it. */
+type PartReply = { ready: true } | { startError: string } | { segment: Uint8Array } | { error: string };
+
+function startPartWorker(): PartWorker {
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL('./partWorker.ts', import.meta.url), { type: 'module' });
+  } catch (err) {
+    partWorkersFailed = true;
+    const failure = new Error(`a part worker couldn't start: ${err instanceof Error ? err.message : String(err)}`);
+    return { ready: Promise.reject(failure), read: () => Promise.reject(failure), close() {} };
   }
+  let started: { resolve: () => void; reject: (err: Error) => void } | null = null;
+  const ready = new Promise<void>((resolve, reject) => {
+    started = { resolve, reject };
+  });
+  const cannotStart = (message: string) => {
+    started?.reject(new Error(message));
+    started = null;
+  };
+  let pending: { resolve: (segment: Uint8Array) => void; reject: (err: Error) => void } | null = null;
+  const fail = (message: string) => {
+    pending?.reject(new Error(message));
+    pending = null;
+  };
+  worker.onmessage = (e: MessageEvent<PartReply>) => {
+    if ('ready' in e.data) {
+      started?.resolve();
+      started = null;
+      return;
+    }
+    if ('startError' in e.data) {
+      partWorkersFailed = true;
+      cannotStart(e.data.startError);
+      return;
+    }
+    if ('error' in e.data) fail(e.data.error);
+    else pending?.resolve(e.data.segment);
+    pending = null;
+  };
+  worker.onerror = (e) => {
+    // Handled here, so it doesn't reach the page as a failure of this worker.
+    e.preventDefault();
+    partWorkersFailed = true;
+    const message = e.message || 'a part worker stopped';
+    cannotStart(message);
+    fail(message);
+  };
+  worker.onmessageerror = () => fail("a part worker's reply couldn't be read");
+  return {
+    ready,
+    read(task: PartTask) {
+      return new Promise<Uint8Array>((resolve, reject) => {
+        pending = { resolve, reject };
+        worker.postMessage(task);
+      });
+    },
+    close() {
+      worker.terminate();
+      cannotStart('closed');
+      fail('closed');
+    },
+  };
 }
 
 function freshSession(): Session {
@@ -77,7 +168,22 @@ const handlers = {
     try {
       session.set_file_name(name);
       session.reserve_for_bytes(file.size);
-      await readChunks(file, (chunk) => session.push_chunk(chunk));
+      const workers = partWorkerCount(file);
+      const progress = progressOf(file);
+      const onStalled = () => {
+        partWorkersFailed = true;
+      };
+      const read = workers > 0 && (await readInParts(file, session, { workers, startWorker: startPartWorker, onStalled }, progress));
+      if (!read) {
+        if (workers > 0) {
+          // It holds part of the log.
+          session.free();
+          session = freshSession();
+          session.set_file_name(name);
+          session.reserve_for_bytes(file.size);
+        }
+        await readChunks(file, (chunk) => session.push_chunk(chunk), progress);
+      }
       const json = session.finish();
       logMeta = { name, parseMs: performance.now() - started };
       return withMemory(json, logMeta);

@@ -6,7 +6,7 @@ mod store;
 pub mod tp;
 
 pub use filter::{Combine, DataRule, FilterPass, FrameFilter, FrameKind};
-pub use store::{frame_bits, id_key, FrameStore, IdKey, IdStats};
+pub use store::{frame_bits, id_key, FrameStore, IdKey, IdStats, SegmentError};
 
 /// Largest payload of any frame a log can hold (CAN FD). Frames reassembled from J1939
 /// transport protocol packets ([`tp`]) are longer, up to [`tp::MAX_TRANSFER`] bytes.

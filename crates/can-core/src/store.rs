@@ -1,7 +1,12 @@
+use std::borrow::Cow;
 use std::collections::TryReserveError;
 use std::ops::Range;
 
 use rustc_hash::FxHashMap;
+
+mod segment;
+
+pub use segment::SegmentError;
 
 use crate::chunked::{Column, Payloads};
 use crate::{flags, tp, FrameKind, FrameRef, FrameSink, EXT_FLAG};
@@ -85,24 +90,34 @@ impl IdStats {
         match &mut self.last_data[FrameKind::of(frame.flags) as usize] {
             Some(last) => {
                 count_flips(&mut self.bit_flips, last, frame.data);
-                last.clear();
-                last.extend_from_slice(frame.data);
+                set_last_data(last, frame.data);
             }
             none => *none = Some(frame.data.to_vec()),
         }
+        self.observe_time(index, frame.ts_ns);
+        self.flags |= frame.flags;
+        let len16 = len as u16;
+        self.min_len = self.min_len.min(len16);
+        self.max_len = self.max_len.max(len16);
+    }
+
+    /// The part of [`IdStats::observe`] that depends on the order of every frame of the ID:
+    /// the frame list and the gaps, which [`FrameStore::append_segment`] redoes frame by frame.
+    fn observe_time(&mut self, index: u32, ts_ns: i64) {
         if !self.frames.is_empty() {
-            let gap = (frame.ts_ns - self.last_ts_ns) as f64;
+            let gap = (ts_ns - self.last_ts_ns) as f64;
             let delta = gap - self.gap_mean_ns;
             self.gap_mean_ns += delta / self.frames.len() as f64;
             self.gap_m2 += delta * (gap - self.gap_mean_ns);
         }
         self.frames.push(index);
-        self.flags |= frame.flags;
-        self.last_ts_ns = frame.ts_ns;
-        let len16 = len as u16;
-        self.min_len = self.min_len.min(len16);
-        self.max_len = self.max_len.max(len16);
+        self.last_ts_ns = ts_ns;
     }
+}
+
+fn set_last_data(last: &mut Vec<u8>, data: &[u8]) {
+    last.clear();
+    last.extend_from_slice(data);
 }
 
 /// Adds one to `counts[byte * 8 + bit]` for every bit that differs between `a` and `b`, over
@@ -175,6 +190,8 @@ pub struct FrameStore {
     /// [`FrameStore::drop_before`] dropped frames, perhaps the first packets of transfers
     /// already reassembled.
     trimmed: bool,
+    /// A part of a log read apart from the rest, whose transfers the store it joins finds.
+    segment: bool,
 }
 
 /// The [`IdStats`] of every ID, in order of first appearance.
@@ -256,6 +273,17 @@ impl FrameStore {
         Self::default()
     }
 
+    /// A store for one part of a log, read apart from the parts before it and joined onto the
+    /// store that read them with [`FrameStore::append_segment`]. It leaves J1939 transfers to
+    /// that store, as their packets may span parts.
+    #[must_use]
+    pub fn for_segment() -> Self {
+        Self {
+            segment: true,
+            ..Self::default()
+        }
+    }
+
     /// Pre-allocate for roughly `frames` more frames carrying `payload_bytes` of data in
     /// total, as far as memory allows. The columns grow without copying, so this is only
     /// worth it to know the room is there: see [`FrameStore::try_reserve`].
@@ -291,8 +319,10 @@ impl FrameStore {
         self.flags.release_spare();
         self.data_start.release_spare();
         self.data.release_spare();
+        // Bit flips too, so their room does not depend on how the frames came in.
         for stats in &mut self.index.ids {
             stats.frames.shrink_to_fit();
+            stats.bit_flips.shrink_to_fit();
         }
     }
 
@@ -683,69 +713,84 @@ impl FrameSink for FrameStore {
         if let Some(i) = self.channels.iter().position(|c| c.as_bytes() == name) {
             return i as u8;
         }
+        let name = String::from_utf8_lossy(name);
+        // A name that isn't UTF-8 is kept lossily, so its bytes never match it above.
+        if let Cow::Owned(lossy) = &name {
+            if let Some(i) = self.channels.iter().position(|c| c == lossy) {
+                return i as u8;
+            }
+        }
         if self.channels.len() > usize::from(u8::MAX) {
             return u8::MAX;
         }
-        self.channels
-            .push(String::from_utf8_lossy(name).into_owned());
+        self.channels.push(name.into_owned());
         (self.channels.len() - 1) as u8
     }
 
     fn push(&mut self, frame: FrameRef<'_>) {
         self.store(&frame, None);
-        self.reassemble(&frame);
     }
 
     fn push_remote(&mut self, frame: FrameRef<'_>, dlc: u8) {
         self.store(&frame, Some(dlc));
-        self.reassemble(&frame);
     }
 }
 
 impl FrameStore {
-    fn reassemble(&mut self, frame: &FrameRef<'_>) {
-        if let Some(transfer) = self.reassembler.push(frame) {
-            self.reassembled_frames += 1;
-            self.store(
-                &FrameRef {
-                    ts_ns: transfer.ts_ns,
-                    channel: frame.channel,
-                    id: transfer.id,
-                    flags: flags::REASSEMBLED,
-                    data: &transfer.data,
-                },
-                None,
-            );
+    /// Feeds a frame to the J1939 reassembler as [`FrameStore::frame`] reads it back, so that
+    /// a frame pushed, appended from a segment or sorted is fed the same, and stores the
+    /// transfer it completes, with its statistics if `observe`. Returns whether it completed one.
+    fn reassemble(&mut self, frame: &FrameRef<'_>, observe: bool) -> bool {
+        if self.segment {
+            return false;
         }
+        let Some(transfer) = self.reassembler.push(frame) else {
+            return false;
+        };
+        self.reassembled_frames += 1;
+        let reassembled = FrameRef {
+            ts_ns: transfer.ts_ns,
+            channel: frame.channel,
+            id: transfer.id,
+            flags: flags::REASSEMBLED,
+            data: &transfer.data,
+        };
+        if observe {
+            self.index.observe(self.len() as u32, &reassembled);
+        }
+        self.append_row(&reassembled, &transfer.data);
+        true
     }
 
     /// A remote frame keeps no payload; its data column holds the DLC it asked for, if known,
     /// as one byte, which [`FrameStore::frame`] leaves out.
     fn store(&mut self, frame: &FrameRef<'_>, remote_dlc: Option<u8>) {
+        let remote = frame.flags & flags::RTR != 0;
+        let frame = FrameRef {
+            data: if remote { &[][..] } else { frame.data },
+            ..*frame
+        };
+        self.index.observe(self.len() as u32, &frame);
+        let stored = match remote_dlc.filter(|_| remote) {
+            Some(dlc) => &[dlc][..],
+            None => frame.data,
+        };
+        self.append_row(&frame, stored);
+        self.reassemble(&frame, true);
+    }
+
+    /// Adds a frame to the columns, with `stored` as its bytes, without the per-ID statistics.
+    fn append_row(&mut self, frame: &FrameRef<'_>, stored: &[u8]) {
         if self.ts_ns.last().is_some_and(|last| frame.ts_ns < last) {
             self.out_of_order = true;
         }
-        let remote = frame.flags & flags::RTR != 0;
-        let payload = if remote { &[][..] } else { frame.data };
-        self.index.observe(
-            self.ts_ns.len() as u32,
-            &FrameRef {
-                data: payload,
-                ..*frame
-            },
-        );
         if frame.flags & flags::ERROR != 0 {
             self.error_frames += 1;
         }
-
         self.ts_ns.push(frame.ts_ns);
         self.id.push(frame.id);
         self.channel.push(frame.channel);
         self.flags.push(frame.flags);
-        let stored = match remote_dlc.filter(|_| remote) {
-            Some(dlc) => &[dlc][..],
-            None => payload,
-        };
         self.data_start.push(self.data.push(stored));
     }
 }
@@ -848,6 +893,15 @@ mod tests {
         assert_eq!(s.channel_index(b"can1"), 1);
         assert_eq!(s.channel_index(b"can0"), 0);
         assert_eq!(s.channels(), ["can0", "can1"]);
+    }
+
+    #[test]
+    fn interns_a_channel_name_that_is_not_utf8_once() {
+        let mut s = FrameStore::new();
+        assert_eq!(s.channel_index(b"c\xff0"), 0);
+        assert_eq!(s.channel_index(b"can1"), 1);
+        assert_eq!(s.channel_index(b"c\xff0"), 0);
+        assert_eq!(s.channels(), ["c\u{fffd}0", "can1"]);
     }
 
     #[test]

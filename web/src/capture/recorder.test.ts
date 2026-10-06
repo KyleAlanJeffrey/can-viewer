@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CaptureFrame, LogInfo } from '../core/api';
 import { fakeCore, logInfo } from '../test/fixtures';
 import { DeviceClock, type CaptureAdapter, type CaptureEvents, type StartedCapture } from './adapter';
+import type { CaptureKeeper } from './keeper';
 import { CAPTURE_LIMITS, CaptureRecorder, captureFrameBytes, captureName } from './recorder';
 
 const frame = (timeNs: number): CaptureFrame => ({ timeNs, id: 0x123, extended: false, flags: 0, data: new Uint8Array(0) });
@@ -165,6 +166,51 @@ describe('CaptureRecorder rolling capture', () => {
     expect(recorder.status().frames).toBe(5);
     expect(recorder.text.title(recorder.status())).toMatch(/\nKeeping only about the last 1 min\./);
     await recorder.stop();
+  });
+
+  it('hands the keeper what the core took and dropped, and its last frames on stop', async () => {
+    const { adapter, state } = fakeAdapter();
+    const order: string[] = [];
+    const core = fakeCore({
+      startCapture: vi.fn(() => {
+        order.push('startCapture');
+        return Promise.resolve(logInfo());
+      }),
+      appendFrames: () => Promise.resolve(logInfo()),
+      trimCapture: () => Promise.resolve(logInfo()),
+      endCapture: () => Promise.resolve(logInfo()),
+    });
+    const added: number[] = [];
+    const keeper = {
+      // Never begins: the capture doesn't wait for it.
+      begin: vi.fn(() => {
+        order.push('begin');
+        return new Promise<void>(() => {});
+      }),
+      add: vi.fn((frames: CaptureFrame[]) => void added.push(...frames.map((f) => f.timeNs))),
+      trim: vi.fn(),
+      stop: vi.fn(async () => void order.push('keeper stop')),
+    };
+    const time = clock();
+    const recorder = new CaptureRecorder(core, adapter, 'c.log', time, { intervalMs: 5 });
+    recorder.keeper = keeper as unknown as CaptureKeeper;
+    await recorder.start({ ...settings, keepMinutes: 1, bus: 'body' });
+    expect(order).toEqual(['startCapture', 'begin']);
+    expect(keeper.begin).toHaveBeenCalledWith({ name: 'c.log', bus: 'body', startedAtMs: 1_700_000_001_000, bitrate: 500_000 });
+
+    const started = time.ms;
+    for (const seconds of [0, 75]) {
+      time.ms = started + seconds * 1000;
+      state.events!.onFrames([frame(seconds * 1e9)]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(added).toEqual([0, 75e9]);
+    expect(keeper.trim).toHaveBeenCalledWith(15e9);
+
+    state.events!.onFrames([frame(76e9)]);
+    await recorder.stop();
+    expect(added).toEqual([0, 75e9, 76e9]);
+    expect(order.at(-1)).toBe('keeper stop');
   });
 
   it('does not let a frame timed far ahead of the computer drop the frames in the window', async () => {

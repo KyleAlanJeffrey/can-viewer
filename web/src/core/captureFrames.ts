@@ -38,3 +38,30 @@ export function packFrames(frames: CaptureFrame[]): Uint8Array {
   }
   return bytes;
 }
+
+/** The frames `packFrames` packed into `bytes`. Each payload is a view into `bytes`, not a copy. */
+export function unpackFrames(bytes: Uint8Array): CaptureFrame[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const frames: CaptureFrame[] = [];
+  let at = 0;
+  while (at + CAPTURE_RECORD_HEADER <= bytes.length) {
+    const rawId = view.getUint32(at + 8, true);
+    const flags = bytes[at + 12];
+    const remote = (flags & FLAG_RTR) !== 0;
+    const length = remote ? 0 : bytes[at + 13];
+    const start = at + CAPTURE_RECORD_HEADER;
+    const frame: CaptureFrame = {
+      timeNs: view.getFloat64(at, true),
+      id: flags & FLAG_ERROR ? rawId & CAN_EFF_MASK : rawId & (rawId & EXT_FLAG ? CAN_EFF_MASK : 0x7ff),
+      extended: (rawId & EXT_FLAG) !== 0,
+      flags,
+      data: bytes.subarray(start, start + length),
+    };
+    if (remote) frame.dlc = bytes[at + 13];
+    if (start + length > bytes.length) break;
+    frames.push(frame);
+    at = start + length;
+  }
+  if (at !== bytes.length) throw new Error('some of its frames are cut short');
+  return frames;
+}

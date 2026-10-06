@@ -537,6 +537,8 @@ startCapture(name: string, channel: string, startedAtMs: number): Promise<LogInf
 
 Starts a live capture of one bus in place of the log, as [`openLog`](#openlog) replaces it: the previous log, any [log B](#compare-logs) and every decoded series are freed, and the loaded databases are kept. Series handles restart from 0. An `openLog` or `openCompareLog` still reading is stopped, and rejects as superseded.
 
+The web app also reopens an unsaved capture it kept in the browser, after a reload or a crash, by sending its frames again through `startCapture`, [`appendFrames`](#appendframes) and [`endCapture`](#endcapture) (see "Saved sessions" in [COMPATIBILITY.md](COMPATIBILITY.md#saved-sessions)).
+
 **Parameters**
 
 - **`name`** `string` - What to call the capture; returned as `LogInfo.name`. The web app uses `capture-YYYYMMDD-HHMMSS.log`.

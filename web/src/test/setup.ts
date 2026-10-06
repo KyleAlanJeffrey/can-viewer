@@ -1,4 +1,5 @@
 import { cleanup } from '@testing-library/react';
+import { IDBKeyRange as FakeIDBKeyRange } from 'fake-indexeddb';
 import { afterEach } from 'vitest';
 
 // Stand-ins for the browser APIs jsdom lacks. They do nothing; tests check the DOM, not pixels.
@@ -11,6 +12,9 @@ class NoopResizeObserver {
   disconnect() {}
 }
 globalThis.ResizeObserver ??= NoopResizeObserver as unknown as typeof ResizeObserver;
+
+// Tests stub `indexedDB` with fake-indexeddb, whose key ranges are its own.
+globalThis.IDBKeyRange ??= FakeIDBKeyRange;
 
 window.matchMedia ??= (media: string) =>
   ({

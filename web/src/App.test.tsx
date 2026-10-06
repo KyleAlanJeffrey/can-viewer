@@ -662,7 +662,8 @@ describe('App live capture', () => {
     expect(await screen.findByText(name)).toBeTruthy();
   });
 
-  it('forgets an unsaved capture after a reload', async () => {
+  // With Web Locks it comes back instead; see AppCaptureKept.test.tsx.
+  it('forgets an unsaved capture after a reload in a browser without Web Locks', async () => {
     const App = await freshApp();
     const port = new FakeSerialPort();
     withSerialPort(port);

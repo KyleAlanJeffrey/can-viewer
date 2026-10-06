@@ -100,6 +100,15 @@ export const MAX_AHEAD_OF_HOST_NS = 1e9;
 const MAX_SLEW = 1e-3;
 
 /**
+ * How far before its arrival a frame may be timed before `DeviceClock` counts its anchor as off:
+ * a second more than `MAX_AHEAD_OF_HOST_NS`, for USB and browser delays.
+ */
+export const MAX_BEHIND_HOST_NS = 2e9;
+
+/** How long, in host time, frames must keep being timed past those bounds before `DeviceClock` re-anchors. */
+export const REANCHOR_AFTER_NS = 2e9;
+
+/**
  * An adapter's own timestamps, from a counter that wraps every `wrapNs`, as capture times:
  * anchored to the host clock, and unwrapped by taking the number of wraps that brings the time
  * counted nearest to what the host clock says has passed. Times stay absolute, and the host's
@@ -107,19 +116,31 @@ const MAX_SLEW = 1e-3;
  * when one is, the anchor is moved back by up to `MAX_SLEW` of the adapter time since the latest
  * adapter time seen: that undoes an anchor taken late and follows an adapter clock that runs fast, while
  * times keep rising. A time still more than `MAX_AHEAD_OF_HOST_NS` past the host clock is held
- * to it and leaves the anchor alone.
+ * to it and leaves the anchor alone. When every frame for `REANCHOR_AFTER_NS` is held, or timed
+ * more than `MAX_BEHIND_HOST_NS` before it arrived, the adapter's clock jumped (as when the
+ * computer sleeps): the clock re-anchors at that frame, tells `onReanchor`, and keeps times
+ * rising past the last one given out.
  */
 export class DeviceClock {
   private anchor: { deviceNs: number; hostNs: number } | null = null;
   /** The furthest adapter time since the anchor timed so far, which each slew is measured from. */
   private lastElapsedNs = 0;
+  /** While frames keep being timed past the bounds the same way: which way, and the first one's arrival. */
+  private off: { ahead: boolean; sinceHostNs: number } | null = null;
+  private lastTimeNs = -Infinity;
+  /** Set by a re-anchor, until times pass the last one given out before it. */
+  private catchingUp = false;
 
-  constructor(private readonly wrapNs: number) {}
+  constructor(
+    private readonly wrapNs: number,
+    private readonly onReanchor: (message: string) => void = () => {},
+  ) {}
 
   /** The device read `deviceNs` at host time `hostNs`. Without it, the first frame anchors. */
   sync(deviceNs: number, hostNs: number) {
     this.anchor = { deviceNs, hostNs };
     this.lastElapsedNs = 0;
+    this.off = null;
   }
 
   /** The capture time of a frame the device stamped `deviceNs`, which arrived at host time `hostNs`. */
@@ -130,10 +151,41 @@ export class DeviceClock {
     const wraps = Math.round((hostNs - anchor.hostNs - counted) / this.wrapNs);
     const elapsedNs = counted + wraps * this.wrapNs;
     const aheadNs = anchor.hostNs + elapsedNs - hostNs;
-    if (aheadNs > MAX_AHEAD_OF_HOST_NS) return hostNs + MAX_AHEAD_OF_HOST_NS;
+    if (this.keptOff(aheadNs, hostNs)) {
+      this.sync(deviceNs, hostNs);
+      this.catchingUp = true;
+      const seconds = (Math.abs(aheadNs) / 1e9).toFixed(1);
+      this.onReanchor(`The adapter's clock was ${seconds} s ${aheadNs > 0 ? 'ahead of' : 'behind'} the computer's, so frames are timed from the computer's clock again.`);
+      return this.givenOut(hostNs);
+    }
+    if (aheadNs > MAX_AHEAD_OF_HOST_NS) return this.givenOut(hostNs + MAX_AHEAD_OF_HOST_NS);
     if (aheadNs > 0) anchor.hostNs -= Math.min(aheadNs, MAX_SLEW * Math.max(0, elapsedNs - this.lastElapsedNs));
     this.lastElapsedNs = Math.max(this.lastElapsedNs, elapsedNs);
-    return anchor.hostNs + elapsedNs;
+    return this.givenOut(anchor.hostNs + elapsedNs);
+  }
+
+  /** Whether frames, this one included, have been timed past the bounds the same way for `REANCHOR_AFTER_NS`. */
+  private keptOff(aheadNs: number, hostNs: number): boolean {
+    if (aheadNs <= MAX_AHEAD_OF_HOST_NS && aheadNs >= -MAX_BEHIND_HOST_NS) {
+      this.off = null;
+      return false;
+    }
+    const ahead = aheadNs > 0;
+    if (this.off?.ahead !== ahead) this.off = { ahead, sinceHostNs: hostNs };
+    return hostNs - this.off.sinceHostNs >= REANCHOR_AFTER_NS;
+  }
+
+  /**
+   * `timeNs`, except that after a re-anchor moved times back (the frames held before it were
+   * timed up to `MAX_AHEAD_OF_HOST_NS` ahead), times up to the last one given out are put just past it.
+   */
+  private givenOut(timeNs: number): number {
+    if (this.catchingUp) {
+      if (timeNs > this.lastTimeNs) this.catchingUp = false;
+      else timeNs = this.lastTimeNs + 1;
+    }
+    this.lastTimeNs = timeNs;
+    return timeNs;
   }
 }
 

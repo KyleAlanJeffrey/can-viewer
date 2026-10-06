@@ -286,7 +286,7 @@ export class SlcanAdapter implements CaptureAdapter {
     this.reading = null;
     this.writer = null;
     this.busOpen = false;
-    this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
+    this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS, (message) => events.onProblem(message));
     this.timestampsAsked = false;
     this.awaitingVersion = false;
     this.events = events;

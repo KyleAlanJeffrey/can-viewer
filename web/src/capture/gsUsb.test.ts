@@ -258,6 +258,29 @@ describe('GsUsbAdapter', () => {
     await adapter.stop();
   });
 
+  it("re-anchors and reports it when the device's counter keeps running ahead, as after the computer sleeps", async () => {
+    const device = new FakeUsbDevice();
+    device.limits = { ...CANDLELIGHT, feature: 1 | (1 << 4) };
+    const adapter = new GsUsbAdapter(device);
+    const { frames, problems, events } = recordingEvents();
+    let now = 0;
+    await adapter.start({ bitrate: 500_000, listenOnly: true }, events, () => now);
+    for (const [hostS, deviceS] of [
+      [1, 1],
+      [2, 12],
+      [4, 14],
+      [5, 15],
+    ]) {
+      now = hostS * 1e9;
+      device.receive(hostFrame(0x123, 1, [1], { timestampUs: deviceS * 1e6 }));
+      await tick();
+    }
+    // Held to a second past the host clock, then timed from it again.
+    expect(frames.map((f) => f.timeNs)).toEqual([1e9, 3e9, 4e9, 5e9]);
+    expect(problems).toEqual(["The adapter's clock was 10.0 s ahead of the computer's, so frames are timed from the computer's clock again."]);
+    await adapter.stop();
+  });
+
   it('anchors to the first frame when the device does not answer the counter read', async () => {
     const device = new FakeUsbDevice();
     device.limits = { ...CANDLELIGHT, feature: 1 | (1 << 4) };

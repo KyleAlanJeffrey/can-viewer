@@ -359,16 +359,25 @@ impl LogInput {
     }
 
     /// The parser, if the rest of the log can be read in parts: see `AnyParser::splittable`.
-    /// A log read beside another is read whole, as the reads in parts don't count towards its
-    /// memory limit.
     fn splittable_parser(&self) -> Option<&AnyParser> {
         let parser = self.parser.as_ref()?;
-        (self.limit.is_none() && !self.refused && parser.splittable()).then_some(parser)
+        (!self.refused && parser.splittable()).then_some(parser)
+    }
+
+    fn segment_format(&self) -> Option<String> {
+        self.splittable_parser()
+            .map(|parser| parser.format().name().to_owned())
     }
 
     /// Joins a part read by `parse_segment` onto the log, or refuses it, perhaps after storing
-    /// some of its frames.
+    /// some of its frames. Like `push`, sets `refused` once the store outgrows `limit`.
     fn push_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
+        let joined = self.join_part(bytes, store);
+        self.refuse_if_over_limit(store);
+        joined
+    }
+
+    fn join_part(&mut self, bytes: &[u8], store: &mut FrameStore) -> Result<(), ()> {
         let parser = self.splittable_parser().ok_or(())?;
         let (state, carried_ns) = (parser.state(), parser.carried_ns());
         let part = Part::read(bytes).ok_or(())?;
@@ -688,9 +697,7 @@ impl Session {
         if self.capture.is_some() {
             return None;
         }
-        self.input
-            .splittable_parser()
-            .map(|parser| parser.format().name().to_owned())
+        self.input.segment_format()
     }
 
     /// Joins a part of the log read by [`parse_segment`] onto it, the parts in file order after

@@ -4,9 +4,12 @@ use std::ops::Range;
 
 use rustc_hash::FxHashMap;
 
+mod flips;
 mod segment;
 
 pub use segment::SegmentError;
+
+use flips::FlipTally;
 
 use crate::chunked::{Column, Payloads};
 use crate::{flags, tp, FrameKind, FrameRef, FrameSink, EXT_FLAG};
@@ -33,10 +36,8 @@ pub struct IdStats {
     /// Payload lengths in bytes. Above [`crate::MAX_PAYLOAD`] only for reassembled frames.
     pub min_len: u16,
     pub max_len: u16,
-    /// How often each payload bit changed from the previous frame of this ID and the same
-    /// [`FrameKind`], as [`FrameStore::previous_of_same_kind`] pairs them, indexed by
-    /// `byte * 8 + bit` where bit 0 is the least significant bit of the byte.
-    pub bit_flips: Vec<u32>,
+    /// See [`IdStats::bit_flips`].
+    bit_flips: FlipTally,
     /// The pairs of frames `bit_flips` compared, by the length of the shorter payload of each,
     /// which is how many bytes the pair was compared over: index `n` counts the pairs over `n`
     /// bytes. Pairs over no byte, such as two remote frames, are left out. See
@@ -60,7 +61,7 @@ impl IdStats {
             last_ts_ns: ts_ns,
             min_len: u16::MAX,
             max_len: 0,
-            bit_flips: Vec::new(),
+            bit_flips: FlipTally::default(),
             pairs_by_len: Vec::new(),
             last_data: Default::default(),
             gap_mean_ns: 0.0,
@@ -88,21 +89,28 @@ impl IdStats {
         (gaps >= 2).then(|| (self.gap_m2 / gaps as f64).sqrt())
     }
 
+    /// How often each payload bit changed from the previous frame of this ID and the same
+    /// [`FrameKind`], as [`FrameStore::previous_of_same_kind`] pairs them, indexed by
+    /// `byte * 8 + bit` where bit 0 is the least significant bit of the byte. One count per bit
+    /// of the longest payload.
+    #[must_use]
+    pub fn bit_flips(&self) -> Cow<'_, [u32]> {
+        self.bit_flips.counts()
+    }
+
     /// [`IdStats::bit_flips`] with, per byte, the pairs of frames its bits were compared in.
     #[must_use]
     pub fn flip_counts(&self) -> FlipCounts {
-        FlipCounts::new(self.bit_flips.clone(), &self.pairs_by_len)
+        FlipCounts::new(self.bit_flips().into_owned(), &self.pairs_by_len)
     }
 
     fn observe(&mut self, index: u32, frame: &FrameRef<'_>) {
         let len = frame.data.len();
-        if self.bit_flips.len() < len * 8 {
-            self.bit_flips.resize(len * 8, 0);
-        }
+        self.bit_flips.grow(len);
         match &mut self.last_data[FrameKind::of(frame.flags) as usize] {
             Some(last) => {
                 count_pair(&mut self.pairs_by_len, last.len().min(len));
-                count_flips(&mut self.bit_flips, last, frame.data);
+                self.bit_flips.add_pair(last, frame.data);
                 set_last_data(last, frame.data);
             }
             none => *none = Some(frame.data.to_vec()),
@@ -168,18 +176,6 @@ fn count_pair(pairs_by_len: &mut Vec<u32>, common: usize) {
     pairs_by_len[common] += 1;
 }
 
-/// Adds one to `counts[byte * 8 + bit]` for every bit that differs between `a` and `b`, over
-/// the bytes both have.
-fn count_flips(counts: &mut [u32], a: &[u8], b: &[u8]) {
-    for (byte, (x, y)) in a.iter().zip(b).enumerate() {
-        let mut changed = x ^ y;
-        while changed != 0 {
-            counts[byte * 8 + changed.trailing_zeros() as usize] += 1;
-            changed &= changed - 1;
-        }
-    }
-}
-
 /// Bits one frame occupies on the bus, without stuff bits but including the 3-bit interframe
 /// space. CAN FD frames are counted as if sent entirely at the nominal bitrate, which
 /// overestimates frames sent with bit rate switching.
@@ -243,11 +239,28 @@ pub struct FrameStore {
 }
 
 /// The [`IdStats`] of every ID, in order of first appearance.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct IdIndex {
     by_key: FxHashMap<IdKey, usize>,
     ids: Vec<IdStats>,
-    last_lookup: Option<(IdKey, usize)>,
+    /// IDs looked up lately, each in the slot its key hashes to: a log's busy IDs take turns,
+    /// and finding them here costs less than in `by_key`.
+    recent: [(IdKey, usize); RECENT_SLOTS],
+}
+
+const RECENT_SLOTS: usize = 256;
+
+/// No ID's key: channels and IDs take 40 bits.
+const NO_KEY: IdKey = IdKey::MAX;
+
+impl Default for IdIndex {
+    fn default() -> Self {
+        Self {
+            by_key: FxHashMap::default(),
+            ids: Vec::new(),
+            recent: [(NO_KEY, 0); RECENT_SLOTS],
+        }
+    }
 }
 
 impl IdIndex {
@@ -257,10 +270,11 @@ impl IdIndex {
     }
 
     fn stats_index(&mut self, key: IdKey, frame: &FrameRef<'_>) -> usize {
-        if let Some((last_key, i)) = self.last_lookup {
-            if last_key == key {
-                return i;
-            }
+        let slot =
+            (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - RECENT_SLOTS.ilog2())) as usize;
+        let (recent_key, i) = self.recent[slot];
+        if recent_key == key {
+            return i;
         }
         let next = self.ids.len();
         let i = *self.by_key.entry(key).or_insert(next);
@@ -268,7 +282,7 @@ impl IdIndex {
             self.ids
                 .push(IdStats::new(frame.channel, frame.id, frame.ts_ns));
         }
-        self.last_lookup = Some((key, i));
+        self.recent[slot] = (key, i);
         i
     }
 }
@@ -513,7 +527,8 @@ impl FrameStore {
     /// `[t0_ns, t1_ns]`.
     #[must_use]
     pub fn bit_flips_between(&self, stats: &IdStats, t0_ns: i64, t1_ns: i64) -> FlipCounts {
-        let mut flips = vec![0; stats.bit_flips.len()];
+        let mut flips = FlipTally::default();
+        flips.grow(stats.bit_flips.len() / 8);
         let mut pairs_by_len = Vec::new();
         let mut last_of_kind = [None; 4];
         for &index in &stats.frames[self.id_frames_between(stats, t0_ns, t1_ns)] {
@@ -522,11 +537,11 @@ impl FrameStore {
             if let Some(previous) = last_of_kind[kind] {
                 let (before, data) = (self.frame(previous).data, self.frame(index).data);
                 count_pair(&mut pairs_by_len, before.len().min(data.len()));
-                count_flips(&mut flips, before, data);
+                flips.add_pair(before, data);
             }
             last_of_kind[kind] = Some(index);
         }
-        FlipCounts::new(flips, &pairs_by_len)
+        FlipCounts::new(flips.into_counts(), &pairs_by_len)
     }
 
     /// Payload bits that changed from the previous frame of the same ID and kind, summed per
@@ -624,7 +639,7 @@ impl FrameStore {
                 .iter()
                 .map(|s| {
                     s.frames.capacity() * size_of::<u32>()
-                        + s.bit_flips.capacity() * size_of::<u32>()
+                        + s.bit_flips.heap_bytes()
                         + s.pairs_by_len.capacity() * size_of::<u32>()
                 })
                 .sum::<usize>()
@@ -893,12 +908,32 @@ mod tests {
         push(&mut s, 3, 0x100, &[0b0000_0001, 0x80]);
         let stats = s.id_stats(id_key(0, 0x100)).unwrap();
         assert_eq!(stats.frames, vec![0, 2, 3]);
-        assert_eq!(stats.bit_flips[0], 0);
-        assert_eq!(stats.bit_flips[1], 2);
-        assert_eq!(stats.bit_flips[15], 1);
-        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 3);
+        assert_eq!(stats.bit_flips()[0], 0);
+        assert_eq!(stats.bit_flips()[1], 2);
+        assert_eq!(stats.bit_flips()[15], 1);
+        assert_eq!(stats.bit_flips().iter().sum::<u32>(), 3);
         assert_eq!(stats.flip_counts().pairs, [2, 2]);
         assert_eq!(stats.mean_period_ns(), Some(1.5));
+    }
+
+    #[test]
+    fn keeps_each_id_apart_when_more_ids_take_turns_than_lookups_remember() {
+        let mut s = FrameStore::new();
+        let keys = 3 * RECENT_SLOTS;
+        for round in 0..4u8 {
+            for k in 0..keys {
+                let (channel, id) = ((k % 3) as u8, (k / 3) as u32);
+                push_on(&mut s, i64::from(round), channel, id, 0, &[round; 2]);
+            }
+        }
+        assert_eq!(s.ids().len(), keys);
+        for (k, stats) in s.ids().iter().enumerate() {
+            assert_eq!(stats.key(), id_key((k % 3) as u8, (k / 3) as u32));
+            let at = |round: usize| (round * keys + k) as u32;
+            assert_eq!(stats.frames, [at(0), at(1), at(2), at(3)]);
+            // Rounds 1, 2 and 3 change bit 0, bits 0 and 1, then bit 0.
+            assert_eq!(stats.bit_flips()[..2], [3, 1]);
+        }
     }
 
     #[test]
@@ -1159,7 +1194,7 @@ mod tests {
         assert_eq!(stats.frames, [16]);
         assert_eq!((stats.min_len, stats.max_len), (100, 100));
         assert_eq!(stats.flags, flags::REASSEMBLED);
-        assert_eq!(stats.bit_flips.len(), 800);
+        assert_eq!(stats.bit_flips().len(), 800);
 
         // A second transfer of the same group counts its bit flips against the first: byte 99
         // goes from 0x63 to 0xFF, four bits.
@@ -1168,8 +1203,8 @@ mod tests {
         push_bam(&mut s, 0, 100, 0x00, &changed);
         let stats = s.id_stats(id_key(0, 0x18FE_CA00 | EXT_FLAG)).unwrap();
         assert_eq!(stats.frames, [16, 33]);
-        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 4);
-        assert_eq!(stats.bit_flips[99 * 8 + 7], 1);
+        assert_eq!(stats.bit_flips().iter().sum::<u32>(), 4);
+        assert_eq!(stats.bit_flips()[99 * 8 + 7], 1);
     }
 
     #[test]
@@ -1303,7 +1338,7 @@ mod tests {
         assert_eq!(stats.frames, [0, 2]);
         assert_eq!(stats.first_ts_ns, 30);
         // Only the change from [0xff, 2] to [0x0f, 3] is left: four bits, then one.
-        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 4 + 1);
+        assert_eq!(stats.bit_flips().iter().sum::<u32>(), 4 + 1);
         assert!(s.id_stats(id_key(0, ERR_FLAG | 4)).is_none());
 
         assert_eq!(s.drop_before(i64::MAX), 3);
@@ -1397,8 +1432,8 @@ mod tests {
         assert_eq!(stats.mean_period_ns(), Some(15.0));
         assert_eq!(stats.jitter_ns(), Some(5.0));
         // 0x00 to 0x01 to 0x03: one flip each of bits 0 and 1.
-        assert_eq!(stats.bit_flips[..2], [1, 1]);
-        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 2);
+        assert_eq!(stats.bit_flips()[..2], [1, 1]);
+        assert_eq!(stats.bit_flips().iter().sum::<u32>(), 2);
         assert_eq!(s.previous_of_same_kind(3), Some(0));
     }
 
@@ -1505,8 +1540,8 @@ mod tests {
             push_on(&mut s, t + 10, 0, 0x100, 0, &[data]);
         }
         let stats = s.id_stats(id_key(0, 0x100)).unwrap();
-        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 5);
-        assert_eq!(stats.bit_flips[0], 2);
+        assert_eq!(stats.bit_flips().iter().sum::<u32>(), 5);
+        assert_eq!(stats.bit_flips()[0], 2);
         assert_eq!(s.bit_flips_between(stats, 0, 50), stats.flip_counts());
         assert_eq!(
             s.bit_flips_between(stats, 20, 50).flips.iter().sum::<u32>(),

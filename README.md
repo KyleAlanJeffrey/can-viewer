@@ -116,6 +116,13 @@ The frame store's columns grow 4 MiB at a time rather than doubling, so wasm mem
 
 Natively (`sample-gen bench`) the in-order candump parses at 268 MB/s against 274 MB/s, and the sorted one at 145 MB/s against 155 MB/s. Smaller chunks cost more in wasm, where every allocation that grows the memory costs the JavaScript side: 64 KiB chunks loaded the candump 15% slower and 1 MiB chunks 4% slower, against about 2% for 4 MiB.
 
+The per-ID statistics worked out as each frame is stored (`IdIndex::observe`) were made cheaper on 2026-10-06, measured on Apple Silicon with the 1M-frame, 55 MB candump demo (best of several loads). They took 88 ns per frame natively, most of it a hard-to-predict branch per changed payload bit; bit flips are now added up in eight byte-wide counters per payload byte and moved into the per-bit counts every 255 pairs, and busy IDs are found in a small table of recent lookups before the hash map, for 20 ns per frame. The counts are the same bit for bit, and memory after the load is unchanged.
+
+| Load (1M frames) | native before | native after | wasm before | wasm after |
+|---|---|---|---|---|
+| candump, in time order | 272 MB/s | 419 MB/s | 352 ms | 274 ms |
+| candump, first 1,000 lines moved to the end (sorted after reading) | 149 MB/s | 240 MB/s | 575 ms | 423 ms |
+
 ## Known gaps / next steps
 
 The larger ones; every open task is in [TODO.md](TODO.md).

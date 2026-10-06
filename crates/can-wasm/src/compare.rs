@@ -2773,7 +2773,7 @@ mod tests {
         let dm1 = side(&store, 0x18FE_CA00 | EXT_FLAG).unwrap();
         assert_eq!(store.reassembled_frames(), 20);
         let detail = compare_bytes(Some(dm1), Some(dm1), NO_RULES);
-        assert_eq!(detail.flips_a, dm1.stats.bit_flips);
+        assert_eq!(detail.flips_a, *dm1.stats.bit_flips());
         assert!(detail.flips_a.iter().all(|&n| n == 0));
         // 19 pairs of single frames over 8 bytes, 19 pairs of transfers over 20.
         let mut pairs = vec![19; 20];

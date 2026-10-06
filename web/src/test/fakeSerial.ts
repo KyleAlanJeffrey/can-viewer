@@ -15,6 +15,8 @@ export class FakeSerialPort implements SerialPortLike {
   baudRate: number | null = null;
   /** Set by `canable()`'s firmware when it took M1. */
   silentMode = false;
+  /** Set by `lawicel()`'s firmware while its CAN channel is open. */
+  channelOpen = false;
   /** What the adapter answers to a command, or null for no answer. */
   answer: (command: string) => string | null = (command) => (command === 'V' ? 'V1013\r' : '\r');
   /** Set to make `open` fail, as when another program holds the port. */
@@ -94,6 +96,24 @@ export class FakeSerialPort implements SerialPortLike {
       if (command === 'M1' && !busOpen) this.silentMode = true;
       if (command === 'M0' && !busOpen) this.silentMode = false;
       return null;
+    };
+  }
+
+  /**
+   * A Lawicel adapter (CANUSB, USBtin): `O` and `L` open the channel and `C` closes it; while it
+   * is open, every command but `C` and `V` is refused with BEL. `V` is answered with `version`.
+   */
+  lawicel(version: string | null = 'V1013\r') {
+    this.answer = (command) => {
+      if (command === 'V') return version;
+      if (command === 'C') {
+        const wasOpen = this.channelOpen;
+        this.channelOpen = false;
+        return wasOpen ? '\r' : '\x07';
+      }
+      if (this.channelOpen) return '\x07';
+      if (command === 'O' || command === 'L') this.channelOpen = true;
+      return '\r';
     };
   }
 

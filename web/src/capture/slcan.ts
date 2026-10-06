@@ -112,6 +112,8 @@ const FRAME_TYPES: Record<string, FrameType> = {
 };
 
 const HEX = /^[0-9A-Fa-f]+$/;
+/** The answer to `V`: hardware then software version, two hex digits each, such as `V1013`. */
+const VERSION_REPLY = /^[Vv][0-9A-Fa-f]{4}/;
 
 function hex(text: string): number | null {
   return HEX.test(text) ? parseInt(text, 16) : null;
@@ -196,7 +198,8 @@ export interface SlcanTiming {
   commandMs: number;
   /**
    * A pause after the first command, so a late answer to it can't be taken for the next one's;
-   * also how long to wait between commands to an adapter that answers nothing.
+   * also how long to wait between commands to an adapter that answers nothing, and after the
+   * version line that comes before `L`.
    */
   settleMs: number;
 }
@@ -209,10 +212,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Opens the CAN channel with `C` (in case it was left open), `S<n>` (or `s` with custom bit
- * timing), `Y<n>` for a CAN FD data bitrate, then `O`, or for listen only `L`, else `M1` (CANable's silent mode, which it takes
+ * timing), `Y<n>` for a CAN FD data bitrate, then `O`. For listen only it sends `V` and `L`, and
+ * if `L` is refused, or the adapter answers nothing, `M1` (CANable's silent mode, which it takes
  * only while off the bus) and `O`.
  * Whether the adapter answers commands at all is learnt from `S<n>` or `s`, which every Lawicel
- * adapter answers. Listen-only counts as confirmed only when an adapter answers `L` with CR.
+ * adapter answers. Listen-only counts as confirmed only when an adapter answers `L` with CR, and
+ * only once the version line it sends for `V` has shown that every earlier answer has come.
+ * An `L` that isn't refused but isn't confirmed either is left in place, without `M1` or `O`.
  * `Z1` asks for the adapter's own timestamps before the bus opens; frames that carry one are
  * timed by it (see `DeviceClock`), others by the host clock when their bytes arrive. Frames are
  * read only once `O` or `L` has been sent.
@@ -240,6 +246,8 @@ export class SlcanAdapter implements CaptureAdapter {
   private deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
   /** `Z1` was sent and not refused, so a stop sends `Z0`: Lawicel adapters keep the setting. */
   private timestampsAsked = false;
+  /** Set while the answer to `V` is awaited: until it comes, a CR or BEL answers an earlier command. */
+  private awaitingVersion = false;
 
   constructor(
     private readonly port: SerialPortLike,
@@ -280,6 +288,7 @@ export class SlcanAdapter implements CaptureAdapter {
     this.busOpen = false;
     this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
     this.timestampsAsked = false;
+    this.awaitingVersion = false;
     this.events = events;
     this.clock = clock;
     try {
@@ -325,10 +334,24 @@ export class SlcanAdapter implements CaptureAdapter {
         return { listenOnly: false };
       }
       // CANable ignores L, so a silent adapter gets only M1, which CANable takes as silent mode.
-      let listenOnly: Answer | null = null;
       if (answers) {
-        listenOnly = await this.expect('L', wait, null, busOpened);
-        if (listenOnly === 'ok') return { listenOnly: true };
+        const drained = await this.drainAnswers(wait);
+        const listenOnly = await this.expect('L', wait, null, busOpened);
+        // Without the version line, this answer may still be an earlier command's.
+        if (drained && listenOnly === 'ok') return { listenOnly: true };
+        if (listenOnly !== 'refused') {
+          // The channel is likely open in listen-only mode, where Lawicel adapters refuse M1 and
+          // O, so it is left as it is: the safer of the two.
+          if (settings.allowUnconfirmedListenOnly) return { listenOnly: false };
+          this.busOpen = false;
+          throw new ListenOnlyUnconfirmedError(
+            listenOnly === 'ok'
+              ? "This adapter was sent listen-only mode (L), but its answer couldn't be told from an earlier command's, so it may still acknowledge frames on the bus."
+              : "This adapter was sent listen-only mode (L) but didn't confirm it in time, so it may still acknowledge frames on the bus.",
+          );
+        }
+        // Without the version line this BEL may be an earlier command's while L opened the
+        // channel; M1 and O are then refused with a visible error, which is safe.
         this.busOpen = false;
       }
       // Only L confirms listen-only: on Lawicel adapters M sets the acceptance code, so a CR for
@@ -336,7 +359,7 @@ export class SlcanAdapter implements CaptureAdapter {
       const silent = await this.expect('M1', wait, null);
       if (!settings.allowUnconfirmedListenOnly) {
         throw new ListenOnlyUnconfirmedError(
-          silent === 'refused' && listenOnly !== 'no answer'
+          silent === 'refused'
             ? "This adapter can't listen only, so it would acknowledge frames on the bus."
             : "This adapter didn't confirm listen-only mode. Silent mode (M1) was sent, which CANable firmware follows, but another adapter may still acknowledge frames on the bus.",
         );
@@ -451,10 +474,27 @@ export class SlcanAdapter implements CaptureAdapter {
   /**
    * Waits a little after an adapter that answers commands gave none, as one writing a setting to
    * its EEPROM may answer late: an answer that comes while no command waits is dropped, rather
-   * than taken for the next command's, which for L would confirm listen-only falsely.
+   * than taken for the next command's.
    */
   private async settleUnanswered(answer: Answer, answers: boolean) {
     if (answers && answer === 'no answer') await sleep(this.timing.settleMs);
+  }
+
+  /**
+   * Sends `V` and drops every CR and BEL until its version line comes. An adapter answers in
+   * order, so those answer earlier commands, however late, and the next answer is the next
+   * command's. Answers are dropped a little past the line too, in case firmware ends it with
+   * another CR. False when no version line came, so the next answer may still be stale.
+   */
+  private async drainAnswers(waitMs: number): Promise<boolean> {
+    this.awaitingVersion = true;
+    try {
+      if ((await this.expect('V', waitMs, null)) !== 'ok') return false;
+      await sleep(this.timing.settleMs);
+      return true;
+    } finally {
+      this.awaitingVersion = false;
+    }
   }
 
   /** Hands `answer` to the oldest command waiting for one. False when none is waiting. */
@@ -509,11 +549,13 @@ export class SlcanAdapter implements CaptureAdapter {
           break;
         }
         case 'ok':
-          this.answer('ok');
+          if (!this.awaitingVersion) this.answer('ok');
           break;
         case 'reply':
+          if (this.awaitingVersion && VERSION_REPLY.test(event.text)) this.answer('ok');
           break;
         case 'error':
+          if (this.awaitingVersion) break;
           // A late BEL to a command no longer waited for, such as the opening C, is no problem.
           if (!this.answer('refused') && this.busOpen) this.events?.onProblem('The adapter reported an error.');
           break;

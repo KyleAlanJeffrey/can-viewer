@@ -151,7 +151,7 @@ describe('App live capture', () => {
     const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
     await screen.findByRole('button', { name: 'Stop Capture' });
-    expect(port.commands).toEqual(['C', 'S6', 'Z1', 'L']);
+    expect(port.commands).toEqual(['C', 'S6', 'Z1', 'V', 'L']);
   }
 
   it('records from an slcan adapter, shows the frames as they come, and saves them as a candump log', async () => {

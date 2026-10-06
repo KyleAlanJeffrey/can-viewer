@@ -211,8 +211,20 @@ export interface RawSignalSpec {
   size: number;
   byteOrder: 'intel' | 'motorola';
   signed: boolean;
+  /** Read as an IEEE 754 single float; the range must be 32 bits. Absent means false. */
+  float?: boolean;
   factor: number;
   offset: number;
+  /** Read only from the frames whose multiplexer selector holds `mux.value`. Absent means every frame. */
+  mux?: MuxSpec;
+}
+
+/** A multiplexed signal's selector, and the selector's value on the signal's page. */
+export interface MuxSpec {
+  startBit: number;
+  size: number;
+  byteOrder: 'intel' | 'motorola';
+  value: number;
 }
 
 export type Behaviour = 'increases' | 'decreases' | 'constant' | 'changes';
@@ -232,7 +244,7 @@ export interface Candidate {
 }
 
 /** What a suggested signal looks like it is. */
-export type SuggestionKind = 'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed';
+export type SuggestionKind = 'counter' | 'checksum' | 'flag' | 'enum' | 'continuous' | 'signed' | 'float' | 'multiplexor';
 
 /** Optional help for `suggestSignals` and `scanSignals`. */
 export interface DiscoveryHints {
@@ -266,7 +278,7 @@ export interface Suggestion {
   reason: string;
   /** A checksum whose rule held on only most frames, or that matched no known rule. */
   unconfirmed: boolean;
-  /** About 64 evenly spaced values across the whole log, scaled by `spec`; times in seconds. */
+  /** About 64 evenly spaced values across the whole log, or across its page's frames for a signal with `mux`, scaled by `spec`; times in seconds. */
   sparkline: { t: number[]; v: number[] };
   fit: SignalFit | null;
 }
@@ -276,7 +288,7 @@ export interface MessageSuggestions {
   /** Frames of the ID in the log, and how many of them were read. */
   frames: number;
   sampledFrames: number;
-  /** Best first; their bit ranges never overlap. */
+  /** Best first; their bit ranges never overlap, except signals on different pages of a multiplexor. */
   suggestions: Suggestion[];
 }
 
@@ -491,16 +503,18 @@ export interface CoreApi {
    */
   findSignal(rules: FindRule[], keys: number[], limit: number): Promise<Candidate[]>;
   /**
-   * Suggested signals for one ID: likely counters, checksums, flags, enums and values, judged
-   * from how its bits change over a sample of about 20,000 frames. Guesses to check, not
-   * decodes. Rejects for an unknown key, or a reference no loaded DBC decodes. See `suggest` in
+   * Suggested signals for one ID: likely counters, checksums, flags, enums, values and floats,
+   * judged from how its bits change over a sample of about 20,000 frames. Guesses to check, not
+   * decodes. The work runs a few milliseconds at a time, so other calls run in between, and
+   * aborting `signal` rejects with an `AbortError` at the next step. Rejects for an unknown key,
+   * a reference no loaded DBC decodes, or a log that changed meanwhile. See `suggest` in
    * crates/can-wasm/src/discover.rs.
    */
-  suggestSignals(key: number, hints?: DiscoveryHints): Promise<MessageSuggestions>;
+  suggestSignals(key: number, hints?: DiscoveryHints, signal?: AbortSignal): Promise<MessageSuggestions>;
   /**
    * `suggestSignals` for each of `keys` in turn, calling `onProgress` with each message's
-   * suggestions as they arrive. Aborting `signal` rejects with an `AbortError` once the message
-   * in hand is done; the messages already passed to `onProgress` stay valid. A key for which
+   * suggestions as they arrive. Aborting `signal` rejects with an `AbortError` within the message
+   * in hand; the messages already passed to `onProgress` stay valid. A key for which
    * `skip` returns true when its turn comes, such as one suggested for meanwhile, is passed over
    * but counts as done, with `latest` null.
    */

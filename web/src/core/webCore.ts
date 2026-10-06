@@ -20,7 +20,7 @@ import type {
   SeriesInfo,
 } from './api';
 import { packFrames } from './captureFrames';
-import { scanEach } from './discovery';
+import { scanEach, suggestInSteps } from './discovery';
 import { RowBatch } from './rows';
 import type { Request } from './worker';
 
@@ -188,7 +188,17 @@ export class WebCore implements CoreApi {
     return this.call<Candidate[]>('findSignal', rules, keys, limit);
   }
 
-  suggestSignals = (key: number, hints: DiscoveryHints = {}) => this.call<MessageSuggestions>('suggestSignals', key, hints);
+  suggestSignals = (key: number, hints: DiscoveryHints = {}, signal?: AbortSignal) =>
+    suggestInSteps(
+      {
+        begin: (k, h) => this.call<number>('suggestBegin', k, h),
+        step: (job) => this.call<MessageSuggestions | null>('suggestStep', job),
+        drop: (job) => this.call<void>('suggestDrop', job),
+      },
+      key,
+      hints,
+      signal,
+    );
 
   scanSignals(
     keys: number[],

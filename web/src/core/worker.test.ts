@@ -69,9 +69,17 @@ class FakeSession {
     if (key === 2) throw new Error('No such ID');
     return 7;
   }
-  suggest_signals(key: number, hints: string): string {
-    return JSON.stringify({ key, hints: JSON.parse(hints) });
+  /** Each job takes one step before it is done. */
+  jobs: { key: number; hints: unknown; stepped: boolean }[] = [];
+  suggest_begin(key: number, hints: string): number {
+    return this.jobs.push({ key, hints: JSON.parse(hints), stepped: false }) - 1;
   }
+  suggest_step(job: number): string | undefined {
+    const { key, hints, stepped } = this.jobs[job];
+    this.jobs[job].stepped = true;
+    return stepped ? JSON.stringify({ key, hints }) : undefined;
+  }
+  suggest_drop() {}
   private chunks: Uint8Array[] = [];
   export_log(format: string) {
     if (format !== 'csv') throw new Error('Not a format');
@@ -150,11 +158,15 @@ describe('core worker', () => {
     expect(await ask(port, 2, 3)).toEqual({ id: 2, result: 7 });
   });
 
-  it('passes discovery hints to the session as JSON, and none as an empty object', async () => {
+  it('passes discovery hints to the session as JSON, and none as an empty object, and steps a job until done', async () => {
     const port = await startWorker();
     const hints = { markers: [{ t: 12 }], reference: { key: 5, signal: 'Speed' } };
-    expect(await ask(port, 1, 9, 'suggestSignals', hints)).toEqual({ id: 1, result: { key: 9, hints } });
-    expect(await ask(port, 2, 9, 'suggestSignals')).toEqual({ id: 2, result: { key: 9, hints: {} } });
+    expect(await ask(port, 1, 9, 'suggestBegin', hints)).toEqual({ id: 1, result: 0 });
+    expect(await ask(port, 2, 9, 'suggestBegin')).toEqual({ id: 2, result: 1 });
+    expect(await ask(port, 3, 0, 'suggestStep')).toEqual({ id: 3, result: null });
+    expect(await ask(port, 4, 0, 'suggestStep')).toEqual({ id: 4, result: { key: 9, hints } });
+    expect(await ask(port, 5, 1, 'suggestStep')).toEqual({ id: 5, result: null });
+    expect(await ask(port, 6, 1, 'suggestStep')).toEqual({ id: 6, result: { key: 9, hints: {} } });
   });
 
   it('runs a capture in a fresh session, without the old log B', async () => {

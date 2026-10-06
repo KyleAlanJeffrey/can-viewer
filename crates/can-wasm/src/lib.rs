@@ -90,6 +90,7 @@ pub struct Session {
     preview: Option<Matches>,
     /// The chunks of the last `export_log` not yet taken by `export_chunk`.
     export: VecDeque<Vec<u8>>,
+    discovery: suggest::PendingSuggestions,
 }
 
 /// The frames a filter matched.
@@ -405,8 +406,24 @@ struct RawSignalSpec {
     size: u16,
     byte_order: ByteOrder,
     signed: bool,
+    /// Read as an IEEE 754 single float, which takes exactly 32 bits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    float: bool,
     factor: f64,
     offset: f64,
+    /// Read only from the frames whose selector holds this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mux: Option<MuxSpec>,
+}
+
+/// A multiplexed signal's selector, and the selector's value on the signal's page.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MuxSpec {
+    start_bit: u16,
+    size: u16,
+    byte_order: ByteOrder,
+    value: u64,
 }
 
 #[derive(Deserialize)]
@@ -550,7 +567,8 @@ fn byte_lanes_in(
         let byte = byte as usize;
         let series = Series::decode(store, frames, origin, |data| {
             data.get(byte).map(|&b| f64::from(b))
-        });
+        })
+        .without_pyramid();
         let view = series.view(t0, t1, buckets as usize);
         out.push((view.len() / 2) as f64);
         out.extend_from_slice(&view);
@@ -593,11 +611,13 @@ impl Session {
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) {
+        self.discovery.store_changed();
         self.input.push(chunk, &mut self.store);
     }
 
     /// Flush the parser and return a JSON `LogInfo`.
     pub fn finish(&mut self) -> String {
+        self.discovery.store_changed();
         self.input.finish(&mut self.store);
         self.log_info()
     }
@@ -605,6 +625,7 @@ impl Session {
     /// Start a live capture on one bus named `channel` in place of the log. `started_at_ms` is
     /// the wall-clock start in milliseconds since the Unix epoch; frames are timed from it.
     pub fn start_capture(&mut self, channel: &str, started_at_ms: f64) {
+        self.discovery.store_changed();
         self.store = FrameStore::new();
         self.input = LogInput::default();
         self.series.clear();
@@ -627,6 +648,7 @@ impl Session {
     /// and those that match the trace filter to its rows. Without the memory for those, the
     /// filter is dropped and the capture goes on. Returns a JSON `LogInfo` of the capture so far.
     pub fn push_frames(&mut self, packed: &[u8]) -> Result<String, JsError> {
+        self.discovery.store_changed();
         self.push_capture_records(packed).map_err(js_err)?;
         if let Some(filtered) = &mut self.filtered {
             if filtered.follow(&self.store).is_err() {
@@ -639,6 +661,7 @@ impl Session {
     /// Drop the running capture's frames timed before `before_ns` nanoseconds since it started,
     /// for a rolling capture; see [`FrameStore::drop_before`]. Returns a JSON `LogInfo`.
     pub fn trim_capture(&mut self, before_ns: f64) -> Result<String, JsError> {
+        self.discovery.store_changed();
         self.drop_captured_before(before_ns).map_err(js_err)?;
         Ok(self.log_info())
     }
@@ -651,6 +674,7 @@ impl Session {
             .as_mut()
             .ok_or_else(|| js_err("no capture is running"))?;
         capture.finished = true;
+        self.discovery.store_changed();
         self.store.sort_by_time();
         self.store.shrink_to_fit();
         self.count = None;
@@ -659,6 +683,10 @@ impl Session {
         // is dropped, which `filtered_row_count` tells.
         if let Some(filtered) = self.filtered.take() {
             self.filtered = filtered.refind(&self.store).ok();
+        }
+        // Not every view decodes its series again when the capture ends.
+        for series in self.series.iter_mut().flatten() {
+            series.allow_pyramid();
         }
         Ok(self.log_info())
     }
@@ -912,9 +940,7 @@ impl Session {
         let sig = message
             .signal(signal)
             .ok_or_else(|| js_err("unknown signal"))?;
-        let series = Series::decode(&self.store, &stats.frames, self.origin_ns(), |data| {
-            message.decode(sig, data)
-        });
+        let series = self.decode_series(&stats.frames, |data| message.decode(sig, data));
         // Owned because `sig` borrows all of `self`, and `add_series` borrows `self.series` mutably.
         let (name, unit) = (sig.name.clone(), sig.unit.clone());
         Ok(add_series(&mut self.series, series, &name, &unit))
@@ -935,9 +961,27 @@ impl Session {
                 "the bit range must be 1 to 64 bits and fit in this ID's frames",
             ));
         }
-        let series = Series::decode(&self.store, &stats.frames, self.origin_ns(), |data| {
+        if spec.float && spec.size != 32 {
+            return Err(js_err("a float must be 32 bits"));
+        }
+        if let Some(mux) = spec.mux {
+            if bits::extract(&longest, mux.start_bit, mux.size, mux.byte_order).is_none() {
+                return Err(js_err(
+                    "the selector must be 1 to 64 bits and fit in this ID's frames",
+                ));
+            }
+        }
+        let series = self.decode_series(&stats.frames, |data| {
+            if let Some(mux) = spec.mux {
+                let selector = bits::extract(data, mux.start_bit, mux.size, mux.byte_order)?;
+                if selector != mux.value {
+                    return None;
+                }
+            }
             let raw = bits::extract(data, spec.start_bit, spec.size, spec.byte_order)?;
-            let value = if spec.signed {
+            let value = if spec.float {
+                f64::from(f32::from_bits(raw as u32))
+            } else if spec.signed {
                 bits::sign_extend(raw, spec.size) as f64
             } else {
                 raw as f64
@@ -948,8 +992,13 @@ impl Session {
             ByteOrder::Intel => 1,
             ByteOrder::Motorola => 0,
         };
-        let sign = if spec.signed { '-' } else { '+' };
-        let name = format!("bits {}|{}@{order}{sign}", spec.start_bit, spec.size);
+        let sign = if spec.signed || spec.float { '-' } else { '+' };
+        let float = if spec.float { " float" } else { "" };
+        let page = spec.mux.map_or(String::new(), |m| format!(" m{}", m.value));
+        let name = format!(
+            "bits {}|{}@{order}{sign}{float}{page}",
+            spec.start_bit, spec.size
+        );
         Ok(add_series(&mut self.series, series, &name, ""))
     }
 
@@ -1067,6 +1116,8 @@ impl Session {
                         size: found.range.size,
                         byte_order: found.range.byte_order,
                         signed: false,
+                        float: false,
+                        mux: None,
                         factor: 1.0,
                         offset: 0.0,
                     },
@@ -1113,6 +1164,16 @@ impl Session {
         let mut file = ChunkedFile::default();
         writer::write_log(format, &self.store, clock::local_time(), &mut file)?;
         Ok(file.into_chunks())
+    }
+
+    /// A running capture's series are decoded again as frames come, each to be viewed about
+    /// once, so they get no pyramid.
+    fn decode_series(&self, frames: &[u32], value: impl FnMut(&[u8]) -> Option<f64>) -> Series {
+        let series = Series::decode(&self.store, frames, self.origin_ns(), value);
+        match &self.capture {
+            Some(capture) if !capture.finished => series.without_pyramid(),
+            _ => series,
+        }
     }
 
     /// Times cross the boundary as seconds from the first frame, as in [`Session::rows`].
@@ -1550,6 +1611,31 @@ mod tests {
             s.push_capture_records(&remote),
             Err("a captured remote frame has a DLC over 15")
         );
+    }
+
+    #[test]
+    fn series_get_a_pyramid_only_once_the_capture_ends() {
+        let mut s = Session::new();
+        s.start_capture("can0", 0.0);
+        let batch: Vec<u8> = (0..2000u16)
+            .flat_map(|i| capture_record(f64::from(i) * 1e6, 0x123, 0, &i.to_le_bytes()))
+            .collect();
+        s.push_frames(&batch).unwrap();
+        let decode = |s: &mut Session| {
+            let info = json(
+                &s.decode_raw(key_123(), &spec(0, 16, "intel", false).to_string())
+                    .unwrap(),
+            );
+            let handle = info["handle"].as_u64().unwrap() as usize;
+            assert_eq!(s.series_view(handle, 0.0, 2.0, 10).len(), 40);
+            s.series[handle].as_ref().unwrap().has_pyramid()
+        };
+        assert!(!decode(&mut s));
+        s.finish_capture().unwrap();
+        // The series decoded during the capture can build one now too.
+        assert_eq!(s.series_view(0, 0.0, 2.0, 10).len(), 40);
+        assert!(s.series[0].as_ref().unwrap().has_pyramid());
+        assert!(decode(&mut s));
     }
 
     #[test]

@@ -179,5 +179,6 @@ describe('layoutString', () => {
   it('writes DBC notation', () => {
     expect(layoutString({ startBit: 23, size: 16, byteOrder: 'motorola' }, false)).toBe('23|16@0+');
     expect(layoutString({ startBit: 0, size: 8, byteOrder: 'intel' }, true)).toBe('0|8@1-');
+    expect(layoutString({ startBit: 0, size: 32, byteOrder: 'intel' }, false, true)).toBe('0|32@1- float');
   });
 });

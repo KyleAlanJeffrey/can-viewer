@@ -285,7 +285,7 @@ Signals take `series-1` to `series-6` in order: Deep Ochre, Workshop Blue, Bench
 - **Heat ramp:** the comp's cream-to-ochre steps were indistinguishable at the light end (1.17:1 on white); the ramp above replaces them.
 - **Series:** the comp's blue #397BA6 and teal #24836E were too close (delta E 10.2); Workshop Blue and Bench Green replace them.
 - **Unknown dot:** the comp's orange dot was 2.6:1; Rust replaces it.
-- **Plot marks:** lines carry no sample markers; a point appears only at the cursor. Y labels stay on the right.
+- **Plot marks:** lines carry no sample markers; a point appears only at the cursor. Y labels stay on the right. A NaN or infinite value (a float signal's) breaks the line, the value axis fits the other values, and readouts show "NaN".
 - **Outline buttons:** the comp's orange borders become Hairline on Paper White with Deep Ochre text, 8px corners, 32px tall.
 
 ### Named Rules

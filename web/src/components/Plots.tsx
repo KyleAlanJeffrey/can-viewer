@@ -4,6 +4,7 @@ import 'uplot/dist/uPlot.min.css';
 import { X } from 'lucide-react';
 import type { CoreApi, SeriesInfo } from '../core/api';
 import { cssVar, formatDuration, useFontsReady } from '../format';
+import { withGaps } from '../plotGaps';
 
 export interface PlotSpec {
   /** `${idKey}:${signal}` */
@@ -282,7 +283,8 @@ function Plot({
     let stale = false;
     core.seriesView(spec.info.handle, range[0], range[1], width).then(([x, y]) => {
       if (stale) return;
-      u.setData([x, y]);
+      viewValues.set(u, y);
+      u.setData([x, withGaps(y)]);
     });
     return () => {
       stale = true;
@@ -316,10 +318,13 @@ function Plot({
   );
 }
 
+/** Each plot's values as fetched, so a readout over a gap in the line still shows the NaN. */
+const viewValues = new WeakMap<uPlot, Float64Array>();
+
 function readoutAt(u: uPlot, i: number | null | undefined, left: number | null, unit: string): Readout | null {
   if (i == null || i < 0) return null;
   const x = u.data[0][i];
-  const y = u.data[1][i];
+  const y = viewValues.get(u)?.[i] ?? u.data[1][i];
   if (x == null || y == null) return null;
   return { value: `${formatValue(y)}${unit ? ` ${unit}` : ''}`, time: `${x.toFixed(3)} s`, left };
 }

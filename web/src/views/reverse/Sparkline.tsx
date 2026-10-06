@@ -1,3 +1,5 @@
+import { finiteRange } from '../../plotGaps';
+
 const W = 100;
 const H = 30;
 
@@ -14,28 +16,30 @@ interface Props {
 
 /** A neutral graphite line with no axes, for scanning shape rather than reading values. */
 export function Sparkline({ x, y, x0, x1, y0, y1 }: Props) {
-  let lo = y0 ?? Infinity;
-  let hi = y1 ?? -Infinity;
-  if (y0 === undefined || y1 === undefined) {
-    for (let i = 0; i < y.length; i++) {
-      if (y0 === undefined) lo = Math.min(lo, y[i]);
-      if (y1 === undefined) hi = Math.max(hi, y[i]);
-    }
-  }
+  const own = finiteRange(y);
+  const lo = y0 ?? own.lo;
+  const hi = y1 ?? own.hi;
   const span = hi - lo;
   const xSpan = x1 - x0 || 1;
-  const points: string[] = [];
+  // NaN and infinite values break the line into runs.
+  let path = '';
+  let drawing = false;
   for (let i = 0; i < x.length; i++) {
+    if (!Number.isFinite(y[i])) {
+      drawing = false;
+      continue;
+    }
     const px = ((x[i] - x0) / xSpan) * W;
     // A flat line sits in the middle rather than on the floor.
     const py = span > 0 ? H - 2 - ((y[i] - lo) / span) * (H - 4) : H / 2;
-    points.push(`${px.toFixed(2)},${py.toFixed(2)}`);
+    path += `${drawing ? 'L' : 'M'}${px.toFixed(2)},${py.toFixed(2)}`;
+    drawing = true;
   }
   return (
     <svg className="re-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
-      {points.length > 1 && (
-        <polyline
-          points={points.join(' ')}
+      {path.includes('L') && (
+        <path
+          d={path}
           fill="none"
           stroke="var(--graphite)"
           strokeWidth={1.25}

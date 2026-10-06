@@ -160,6 +160,21 @@ describe('Plot cursors', () => {
     expect(() => readoutRow('B')).toThrow();
   });
 
+  it('reads out NaN where a float signal is NaN, and a difference with it as NaN', async () => {
+    const core = fakeCore({
+      decodeSignal: async (_key, name) => infoOf(name),
+      seriesView: async (_handle, t0, t1) => {
+        const xs = t0 === t1 ? [Math.floor(t0), Math.floor(t0) + 1] : [t0, t1];
+        return [Float64Array.from(xs), Float64Array.from(xs, (x) => (x < 50 ? NaN : x))];
+      },
+    });
+    const { user } = renderPlot({ core, plots: [plotOf('EngineSpeed')] });
+    await waitFor(() => expect(readoutRow('A')).toEqual(['33.333 s', 'NaN']));
+    await user.click(screen.getByRole('radio', { name: '2 cursors' }));
+    await waitFor(() => expect(readoutRow('B')).toEqual(['66.667 s', '67']));
+    expect(readoutRow('\u0394 B\u2212A')).toEqual(['33.333 s', 'NaN']);
+  });
+
   it('starts cursor A at a time pinned elsewhere, and drops a marker there', async () => {
     const { user } = renderPlot({ plots: [plotOf('Throttle')], pinnedTime: 12.5 });
     await waitFor(() => expect(readoutRow('A')).toEqual(['12.500 s', '212']));

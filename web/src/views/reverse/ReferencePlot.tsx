@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import { cssVar, useFontsReady } from '../../format';
+import { gapIfNotFinite, withGaps } from '../../plotGaps';
 import { formatTick, formatYTick } from '../plot/model';
 import { formatSeconds, pointAt, type TimeWindow, type Trace } from './bits';
 
@@ -62,7 +63,7 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
     const font = `400 11px ${cssVar('--font-ui')}`;
     const grid = { stroke: cssVar('--gridline'), width: 1 };
     const graphite = cssVar('--graphite');
-    const line = { width: 1.5, spanGaps: true, points: { show: false } };
+    const line = { width: 1.5, points: { show: false } };
     const u = new uPlot(
       {
         width: Math.max(1, host.clientWidth),
@@ -156,7 +157,7 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
 
   const data = useMemo<uPlot.AlignedData>(() => {
     if (!trace) return [new Float64Array(0), new Float64Array(0)];
-    if (!overlay) return [trace.x as number[], trace.y as number[]];
+    if (!overlay) return [trace.x as number[], withGaps(trace.y as number[])];
     return aligned(trace, overlay);
   }, [trace, overlay]);
 
@@ -199,11 +200,14 @@ export function ReferencePlot({ trace, color, dashed = false, overlay, window: w
   return <div className="re-ref-plot" ref={hostRef} role="img" aria-label={label} />;
 }
 
-/** Two traces on one time axis: the union of their times, with nulls where one has no point. */
+/**
+ * Two traces on one time axis: the union of their times. Where one has no point it gets
+ * undefined, which uPlot bridges, and where a value can't be drawn it gets null, a gap.
+ */
 function aligned(a: Trace, b: Trace): uPlot.AlignedData {
   const xs: number[] = [];
-  const ya: (number | null)[] = [];
-  const yb: (number | null)[] = [];
+  const ya: (number | null | undefined)[] = [];
+  const yb: (number | null | undefined)[] = [];
   let i = 0;
   let j = 0;
   while (i < a.x.length || j < b.x.length) {
@@ -211,14 +215,14 @@ function aligned(a: Trace, b: Trace): uPlot.AlignedData {
     const tb = j < b.x.length ? b.x[j] : Infinity;
     if (ta <= tb) {
       xs.push(ta);
-      ya.push(a.y[i]);
-      yb.push(ta === tb ? b.y[j] : null);
+      ya.push(gapIfNotFinite(a.y[i]));
+      yb.push(ta === tb ? gapIfNotFinite(b.y[j]) : undefined);
       i++;
       if (ta === tb) j++;
     } else {
       xs.push(tb);
-      ya.push(null);
-      yb.push(b.y[j]);
+      ya.push(undefined);
+      yb.push(gapIfNotFinite(b.y[j]));
       j++;
     }
   }

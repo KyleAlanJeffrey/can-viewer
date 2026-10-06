@@ -470,7 +470,9 @@ export function SignalForm(props: Props) {
                       ? '\u2026'
                       : stats.frames === 0
                         ? 'No frames'
-                        : `${formatValue(stats.min)} to ${formatValue(stats.max)}${unit}`}
+                        : stats.min > stats.max
+                          ? 'Only NaN'
+                          : `${formatValue(stats.min)} to ${formatValue(stats.max)}${unit}`}
                   </dd>
                 </div>
                 <div>

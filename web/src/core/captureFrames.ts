@@ -58,8 +58,10 @@ export function unpackFrames(bytes: Uint8Array): CaptureFrame[] {
       data: bytes.subarray(start, start + length),
     };
     if (remote) frame.dlc = bytes[at + 13];
+    if (start + length > bytes.length) break;
     frames.push(frame);
     at = start + length;
   }
+  if (at !== bytes.length) throw new Error('some of its frames are cut short');
   return frames;
 }

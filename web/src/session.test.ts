@@ -1,6 +1,6 @@
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installLocks, removeLocks, type FakeLocks } from './test/fakeLocks';
+import { FakeLocks, installLocks, removeLocks } from './test/fakeLocks';
 
 type Session = typeof import('./session');
 
@@ -178,9 +178,9 @@ describe('kept captures', () => {
   it('reads the chunks back in order, a few at a time, and drops the ones before a given chunk', async () => {
     const session = await openTab();
     const kept = capture('a', 1);
-    for (let seq = 0; seq < 20; seq++) await session.writeCaptureChunk(kept, chunk(seq));
+    for (let seq = 0; seq < 20; seq++) await session.writeKeptCapture(kept, chunk(seq));
     expect(await chunksOf(session, 'a')).toEqual([...Array(20).keys()]);
-    await session.writeCaptureChunk(kept, chunk(20), 15);
+    await session.writeKeptCapture(kept, chunk(20), 15);
     expect(await chunksOf(session, 'a')).toEqual([15, 16, 17, 18, 19, 20]);
     expect(await session.keptCaptures()).toEqual([kept]);
   });
@@ -188,8 +188,8 @@ describe('kept captures', () => {
   it('forgets one capture, leaving the others and the saved session', async () => {
     const session = await openTab();
     await session.save('ui', { view: 'trace' });
-    await session.writeCaptureChunk(capture('a', 1), chunk(1));
-    await session.writeCaptureChunk(capture('b', 2), chunk(2));
+    await session.writeKeptCapture(capture('a', 1), chunk(1));
+    await session.writeKeptCapture(capture('b', 2), chunk(2));
     expect(await session.forgetCapture('a')).toBe(true);
     expect((await session.keptCaptures()).map((c) => c.id)).toEqual(['b']);
     expect(await chunksOf(session, 'a')).toEqual([]);
@@ -199,9 +199,9 @@ describe('kept captures', () => {
 
   it('claims the newest capture no tab holds, and only once', async () => {
     const session = await openTab();
-    await session.writeCaptureChunk(capture('old', 1), chunk(1));
-    await session.writeCaptureChunk(capture('new', 3), chunk(3));
-    await session.writeCaptureChunk(capture('live', 5), chunk(5));
+    await session.writeKeptCapture(capture('old', 1), chunk(1));
+    await session.writeKeptCapture(capture('new', 3), chunk(3));
+    await session.writeKeptCapture(capture('live', 5), chunk(5));
     const liveTab = await session.lockCapture('live');
     expect(liveTab).not.toBeNull();
 
@@ -219,16 +219,16 @@ describe('kept captures', () => {
 
   it('deletes, rather than offers, a capture no tab holds with no frames or another layout', async () => {
     const session = await openTab();
-    await session.writeCaptureChunk(capture('empty', 3, 0));
-    await session.writeCaptureChunk({ ...capture('future', 2), layout: 2 }, chunk(2));
-    await session.writeCaptureChunk(capture('good', 1), chunk(1));
+    await session.writeKeptCapture(capture('empty', 3, 0));
+    await session.writeKeptCapture({ ...capture('future', 2), layout: 2 }, chunk(2));
+    await session.writeKeptCapture(capture('good', 1), chunk(1));
     expect((await session.claimKeptCapture())?.capture.id).toBe('good');
     expect((await session.keptCaptures()).map((c) => c.id)).toEqual(['good']);
   });
 
   it('forgets a claimed capture before letting go of it', async () => {
     const session = await openTab();
-    await session.writeCaptureChunk(capture('a', 1), chunk(1));
+    await session.writeKeptCapture(capture('a', 1), chunk(1));
     const claimed = await session.claimKeptCapture();
     await claimed!.held.forget();
     expect(claimed!.held.kept).toBe(false);
@@ -237,9 +237,42 @@ describe('kept captures', () => {
     expect(await session.claimKeptCapture()).toBeUndefined();
   });
 
+  it('passes over a capture its tab deleted just before letting go of it', async () => {
+    const session = await openTab();
+    const otherTab = await openTab();
+    await session.writeKeptCapture(capture('gone', 2), chunk(2));
+    await session.writeKeptCapture(capture('older', 1), chunk(1));
+    const request = FakeLocks.prototype.request;
+    vi.spyOn(locks, 'request').mockImplementationOnce(async (...args) => {
+      await otherTab.forgetCapture('gone');
+      return request.apply(locks, args);
+    });
+    expect((await session.claimKeptCapture())?.capture.id).toBe('older');
+    expect(locks.holds('freecan-studio-capture-gone')).toBe(false);
+  });
+
+  it('tries a delete again, and holds on to a capture it still could not delete', async () => {
+    const session = await openTab();
+    await session.writeKeptCapture(capture('a', 1), chunk(1));
+    const refuse = () => {
+      throw new DOMException('Nope.', 'UnknownError');
+    };
+    vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementationOnce(refuse);
+    expect(await session.forgetCapture('a')).toBe(true);
+    expect(await session.keptCaptures()).toEqual([]);
+
+    await session.writeKeptCapture(capture('b', 1), chunk(1));
+    const claimed = await session.claimKeptCapture();
+    vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(refuse);
+    await claimed!.held.forget();
+    vi.restoreAllMocks();
+    expect(locks.holds('freecan-studio-capture-b')).toBe(true);
+    expect(await session.keptCaptures()).toHaveLength(1);
+  });
+
   it('claims nothing without Web Locks, as it could not tell whether another tab has the capture', async () => {
     const session = await openTab();
-    await session.writeCaptureChunk(capture('a', 1), chunk(1));
+    await session.writeKeptCapture(capture('a', 1), chunk(1));
     removeLocks();
     expect(session.canKeepCaptures()).toBe(false);
     expect(await session.claimKeptCapture()).toBeUndefined();

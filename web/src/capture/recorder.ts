@@ -206,8 +206,8 @@ export class CaptureRecorder {
       await this.adapter.stop();
       throw e;
     }
-    await this.keeper?.begin({ name: this.name, bus: this.bus, startedAtMs, bitrate: settings.bitrate });
     this.batcher.start();
+    void this.keeper?.begin({ name: this.name, bus: this.bus, startedAtMs, bitrate: settings.bitrate });
     return { info: this.info, listenOnly: started.listenOnly };
   }
 

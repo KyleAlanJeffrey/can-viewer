@@ -4,7 +4,7 @@ import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, PanelRight, 
 import type { CaptureAdapter, CaptureSettings } from './capture/adapter';
 import type { CaptureRecorder, CaptureStatus } from './capture/recorder';
 import './capture/capture.css';
-import { ALL_IDS, EXT_FLAG, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
+import { ALL_IDS, EXT_FLAG, type CaptureFrame, type CoreApi, type Database, type IdSummary, type LogInfo, type MessageDef, type SignalDef } from './core/api';
 import { unpackFrames } from './core/captureFrames';
 import { EXPORT_FORMATS, ExportLogSheet } from './components/ExportLogSheet';
 import { Logo } from './components/Logo';
@@ -14,7 +14,7 @@ import { ChunkBoundary } from './components/ChunkBoundary';
 import { Sheet } from './components/Sheet';
 import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
-import { claimKeptCapture, forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, readCaptureChunks, save, saveDbcs, type HeldCapture, type KeptCapture } from './session';
+import { claimKeptCapture, forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, readCaptureChunks, save, saveDbcs, writeKeptCapture, type HeldCapture, type KeptCapture } from './session';
 import { VIEWS, viewMeta } from './views';
 import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { chooseBlobFile } from './views/shared/saveFile';
@@ -100,6 +100,15 @@ const FRAMES_PER_EXTRA_REFRESH_MS = 2000;
 const LIVE_PLOT_REFRESHES = 4;
 /** Save Capture writes candump, which keeps every frame, bus name and error class. */
 const CANDUMP_FILE = EXPORT_FORMATS.find((f) => f.format === 'candump')!.kind;
+
+/** Page loads that may try to restore an unsaved capture before it is deleted. */
+const MAX_CAPTURE_RESTORES = 2;
+
+/** An unsaved capture whose stored frames can't be restored, however often it is tried. */
+class DamagedCapture extends Error {}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 /** Loaded apart from the app, with the adapters behind it, as most visits never capture. */
 const CaptureSheet = lazy(() => import('./capture/CaptureSheet').then((m) => ({ default: m.CaptureSheet })));
 
@@ -398,6 +407,15 @@ export function App({ core }: { core: CoreApi }) {
     return held?.forget();
   }, []);
 
+  /** Lets go of this tab's unsaved capture, leaving its stored copy for a reload. Returns whether there is one. */
+  const letGoOfKeptCapture = useCallback(() => {
+    const held = keptRef.current;
+    keptRef.current = null;
+    const kept = held?.kept ?? false;
+    void held?.letGo();
+    return kept;
+  }, []);
+
   /** Show no log. The core has already dropped it, with every decoded series. */
   const showNoLog = useCallback(() => {
     plotSignals.current.clear();
@@ -557,30 +575,46 @@ export function App({ core }: { core: CoreApi }) {
 
   /**
    * Reopens an unsaved capture kept as it ran, after a reload or a crash, as a stopped capture
-   * still to be saved. One that can't be read is forgotten, as a saved log that fails to reopen is.
+   * still to be saved. Its stored copy is deleted only if it is damaged or fails to restore
+   * `MAX_CAPTURE_RESTORES` times, since it exists nowhere else.
    */
   const restoreKeptCapture = useCallback(
     (capture: KeptCapture, held: HeldCapture, ui: SavedUi) =>
       run(`Restoring ${capture.name}\u2026`, (report) =>
         serially(async () => {
+          const tries = (capture.failedRestores ?? 0) + 1;
           let info: LogInfo;
           try {
+            if (tries > MAX_CAPTURE_RESTORES) throw new DamagedCapture(`the last ${MAX_CAPTURE_RESTORES} tries didn't finish`);
+            // Counted first, so a restore that takes the page down isn't tried forever.
+            await writeKeptCapture({ ...capture, failedRestores: tries }).catch(() => undefined);
             await core.startCapture(capture.name, capture.bus, capture.startedAtMs);
             let read = 0;
             await readCaptureChunks(capture.id, async (chunk) => {
-              await core.appendFrames(unpackFrames(chunk));
+              let frames: CaptureFrame[];
+              try {
+                frames = unpackFrames(chunk);
+              } catch (e) {
+                throw new DamagedCapture(errorText(e));
+              }
+              await core.appendFrames(frames);
               read += chunk.length;
               report({ label: `Restoring ${capture.name}\u2026 ${Math.round((100 * read) / capture.bytes)}%`, fraction: read / capture.bytes });
             });
+            // The chunks hold some of the frames a rolling capture had already dropped.
+            if (capture.trimmedBeforeNs !== undefined) await core.trimCapture(capture.trimmedBeforeNs);
             info = await core.endCapture();
-            if (info.frames === 0) throw new Error('none of its frames were found');
+            if (info.frames === 0) throw new DamagedCapture('none of its frames were found');
           } catch (e) {
             // As Close does, so the core holds no half-restored capture.
             await core.openLog(new Blob([]), '', () => {}).catch(() => undefined);
-            await held.forget();
+            const damaged = e instanceof DamagedCapture || tries >= MAX_CAPTURE_RESTORES;
+            await (damaged ? held.forget() : held.letGo());
             showNoLog();
-            throw new Error(`The unsaved capture ${capture.name} couldn't be restored: ${e instanceof Error ? e.message : String(e)}`);
+            const failed = `The unsaved capture ${capture.name} couldn't be restored`;
+            throw new Error(damaged ? `${failed}, so it was deleted: ${errorText(e)}` : `${failed}: ${sentence(errorText(e))} Reload the page to try again.`);
           }
+          void writeKeptCapture({ ...capture, failedRestores: 0 }).catch(() => undefined);
           const nextIds = await core.idSummary();
           showOpenedLog(info, nextIds);
           keptRef.current = held;
@@ -758,14 +792,16 @@ export function App({ core }: { core: CoreApi }) {
           setCaptureNotice(status.problems > 0 ? `${formatCountOf(status.problems, 'problem', 'problems')} during the capture. The last: ${status.lastProblem}` : null);
         });
       } catch (e) {
+        const kept = letGoOfKeptCapture();
         showNoLog();
-        setError(`The capture couldn't be finished: ${e instanceof Error ? e.message : String(e)}`);
+        const failed = `The capture couldn't be finished: ${errorText(e)}`;
+        setError(kept ? `${sentence(failed)} Reload the page to get the capture back.` : failed);
       } finally {
         stoppingRef.current = false;
         setStopping(false);
       }
     },
-    [core, serially, showNoLog, redecodePlots],
+    [core, serially, showNoLog, redecodePlots, letGoOfKeptCapture],
   );
 
   /** Start capturing from `adapter`. Rejects, leaving the open log as it was, if it can't start. */
@@ -782,7 +818,7 @@ export function App({ core }: { core: CoreApi }) {
         keeper.onNotKept = (reason) => {
           if (keptRef.current !== keeper) return;
           setCaptureNotKept({ name: recorder.name, detail: notKeptDetail(reason) });
-          if (liveRef.current?.recorder === recorder) setLiveAnnouncement(`This browser couldn't keep a copy of ${recorder.name}, so it won't come back after a reload.`);
+          if (liveRef.current?.recorder === recorder) setLiveAnnouncement(`This browser couldn't keep a copy of ${recorder.name}, so it won't reopen after a reload.`);
         };
         recorder.keeper = keeper;
         keptRef.current = keeper;
@@ -911,14 +947,15 @@ export function App({ core }: { core: CoreApi }) {
       if (savedDbcs?.length) await run('Restoring your DBCs\u2026', () => mutateDbcs(() => withJ1939Flags(savedDbcs), false));
       const ui = savedUi ?? { view: 'overview', selected: ALL_IDS, pinnedTime: null, plots: [] };
       // An unsaved capture exists nowhere else, so it comes back in place of a saved log, whose file the user has.
-      if (keptCapture) {
-        await restoreKeptCapture(keptCapture.capture, keptCapture.held, ui);
-      } else if (savedLog && (!demoRequested.current || savedLog.name === 'demo.log')) {
-        // A saved log other than the demo would only be replaced by it, so it isn't parsed first.
-        // A copy that can't be read is forgotten, as is any log that fails to open.
-        await openLog(savedLog.blob, savedLog.name, { restore: ui });
-      } else if (savedUi && savedDbcs?.length && !viewMeta(savedUi.view).needsLog) {
-        setViewState(savedUi.view);
+      const restoredCapture = keptCapture !== undefined && (await restoreKeptCapture(keptCapture.capture, keptCapture.held, ui));
+      if (!restoredCapture) {
+        if (savedLog && (!demoRequested.current || savedLog.name === 'demo.log')) {
+          // A saved log other than the demo would only be replaced by it, so it isn't parsed first.
+          // A copy that can't be read is forgotten, as is any log that fails to open.
+          await openLog(savedLog.blob, savedLog.name, { restore: ui });
+        } else if (savedUi && savedDbcs?.length && !viewMeta(savedUi.view).needsLog) {
+          setViewState(savedUi.view);
+        }
       }
       setRestoring(false);
     })();
@@ -967,10 +1004,7 @@ export function App({ core }: { core: CoreApi }) {
           setLiveStatus(null);
         }
         // Left stored, not forgotten, so a reload brings the capture back.
-        const held = keptRef.current;
-        keptRef.current = null;
-        const kept = held?.kept ?? false;
-        void held?.letGo();
+        const kept = letGoOfKeptCapture();
         showNoLog();
         setError(
           kept
@@ -980,7 +1014,7 @@ export function App({ core }: { core: CoreApi }) {
               : 'The CAN core stopped and was restarted. Open the log again.',
         );
       }),
-    [core, showNoLog],
+    [core, showNoLog, letGoOfKeptCapture],
   );
 
   // While capturing, the views get the new frames and the status line its numbers.
@@ -1483,7 +1517,7 @@ export function App({ core }: { core: CoreApi }) {
               <div className="banner">
                 <AlertTriangle size={16} strokeWidth={1.75} />
                 <p>
-                  This browser couldn&rsquo;t keep a copy of {captureNotKept.name}, so it won&rsquo;t come back after a reload.
+                  This browser couldn&rsquo;t keep a copy of {captureNotKept.name}, so it won&rsquo;t reopen after a reload.
                   <span className="detail"> {captureNotKept.detail} Save Capture&hellip; keeps it in a file.</span>
                 </p>
                 <button className="icon-button small" onClick={() => setCaptureNotKept(null)} aria-label="Dismiss">

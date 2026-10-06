@@ -2,7 +2,8 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CaptureFrame, CoreApi } from './core/api';
+import { LOG_SUPERSEDED, type CaptureFrame, type CoreApi, type LogInfo } from './core/api';
+import type { KeptCapture } from './session';
 import { FakeSerialPort } from './test/fakeSerial';
 import { installLocks, removeLocks, type FakeLocks } from './test/fakeLocks';
 import { fakeCore, logInfo, summary } from './test/fixtures';
@@ -66,6 +67,10 @@ function captureCore() {
       frames.push(...batch);
       return Promise.resolve(info());
     }),
+    trimCapture: vi.fn((beforeNs: number) => {
+      frames.splice(0, frames.length, ...frames.filter((f) => f.timeNs >= beforeNs));
+      return Promise.resolve(info());
+    }),
     endCapture: vi.fn(() => Promise.resolve(info())),
     idSummary: () => Promise.resolve(frames.length > 0 ? [summary({ id: 0x123, count: frames.length })] : []),
     exportLog: vi.fn(() => Promise.resolve(new Blob(['(1.000000) can0 123#DEAD\n']))),
@@ -100,6 +105,21 @@ async function reload(unmount: () => void) {
   render(<Reloaded core={core} />);
   return { core, frames };
 }
+
+/** Stores an unsaved capture with frames at `times`, as a tab that has since gone away left it. */
+async function storedCapture(fields: Partial<KeptCapture> = {}, times = [5]) {
+  const session = await storage();
+  const { packFrames } = await import('./core/captureFrames');
+  const chunk = packFrames(times.map((timeNs) => ({ timeNs, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(1) })));
+  const capture: KeptCapture = { id: 'gone', name: 'capture-20261006-101500.log', bus: 'can0', startedAtMs: 1_700_000_000_000, bitrate: 500_000, layout: 1, frames: times.length, bytes: chunk.length, ...fields };
+  await session.writeKeptCapture(capture, { seq: 0, bytes: chunk.buffer as ArrayBuffer });
+  return { session, capture };
+}
+
+/** fake-indexeddb can't clone jsdom's Blobs, and a saved copy is only read by the fake core. */
+const blobOf = (size: number) => ({ size }) as Blob;
+
+const alertText = async () => (await screen.findByRole('alert')).textContent;
 
 const stubSavePicker = () =>
   vi.stubGlobal('showSaveFilePicker', async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {} }) }));
@@ -250,7 +270,7 @@ describe('App unsaved capture across a reload', () => {
     const { packFrames } = await import('./core/captureFrames');
     const chunk = packFrames([{ timeNs: 5, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(1) }]);
     expect(await otherTab.lockCapture('other')).not.toBeNull();
-    await otherTab.writeCaptureChunk(capture, { seq: 0, bytes: chunk.buffer as ArrayBuffer });
+    await otherTab.writeKeptCapture(capture, { seq: 0, bytes: chunk.buffer as ArrayBuffer });
 
     const App = await freshApp();
     const { core } = captureCore();
@@ -283,7 +303,7 @@ describe('App unsaved capture across a reload', () => {
     await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
     fillStorage();
     window.dispatchEvent(new Event('beforeunload', { cancelable: true }));
-    const banner = await screen.findByText(/couldn\u2019t keep a copy of capture-\d{8}-\d{6}\.log, so it won\u2019t come back after a reload/);
+    const banner = await screen.findByText(/couldn\u2019t keep a copy of capture-\d{8}-\d{6}\.log, so it won\u2019t reopen after a reload/);
     expect(banner.textContent).toMatch(/Its storage is full\. Save Capture\u2026 keeps it in a file\.$/);
     expect(document.querySelector('.toolbar [role=status]')?.textContent).toMatch(/couldn't keep a copy/);
     const session = await storage();
@@ -337,25 +357,162 @@ describe('App unsaved capture across a reload', () => {
     }
   });
 
-  it('forgets a kept capture that fails to restore, so it is not tried again', async () => {
-    const App = await freshApp();
-    const port = new FakeSerialPort();
-    withSerialPort(port);
-    const { core } = captureCore();
-    const { unmount } = render(<App core={core} />);
-    const name = await unsavedCapture(port, core);
-
-    unmount();
-    locks.dropAll();
-    const Reloaded = await freshApp();
-    const broken = captureCore().core;
-    broken.appendFrames = vi.fn(() => Promise.reject(new Error('There isn\u2019t enough memory.')));
-    const second = render(<Reloaded core={broken} />);
-    expect((await screen.findByRole('alert')).textContent).toBe(`The unsaved capture ${name} couldn't be restored: There isn\u2019t enough memory.`);
+  it('keeps a capture that fails to restore for a reload to try again, and deletes it after a second failure', async () => {
+    const { session, capture } = await storedCapture();
+    const brokenCore = () => {
+      const { core } = captureCore();
+      core.appendFrames = vi.fn(() => Promise.reject(new Error('There isn\u2019t enough memory')));
+      return core;
+    };
+    let App = await freshApp();
+    const first = render(<App core={brokenCore()} />);
+    expect(await alertText()).toBe(`The unsaved capture ${capture.name} couldn't be restored: There isn\u2019t enough memory. Reload the page to try again.`);
     expect(await emptyState()).toBeTruthy();
+    await waitFor(() => expect([...locks.heldNames()]).toEqual([]));
+    expect(await session.keptCaptures()).toMatchObject([{ id: 'gone', failedRestores: 1 }]);
+
+    first.unmount();
+    App = await freshApp();
+    const second = render(<App core={brokenCore()} />);
+    expect(await alertText()).toBe(`The unsaved capture ${capture.name} couldn't be restored, so it was deleted: There isn\u2019t enough memory`);
+    await waitFor(async () => expect(await session.keptCaptures()).toEqual([]));
 
     const reloaded = await reload(second.unmount);
     expect(await emptyState()).toBeTruthy();
     expect(reloaded.core.startCapture).not.toHaveBeenCalled();
+  });
+
+  it('deletes a capture whose restore never finished twice, without trying again', async () => {
+    const { session } = await storedCapture({ failedRestores: 2 });
+    const App = await freshApp();
+    const { core } = captureCore();
+    render(<App core={core} />);
+    expect(await alertText()).toMatch(/couldn't be restored, so it was deleted: the last 2 tries didn't finish$/);
+    await waitFor(async () => expect(await session.keptCaptures()).toEqual([]));
+    expect(core.startCapture).not.toHaveBeenCalled();
+  });
+
+  it('counts a restore as done once it is', async () => {
+    const { session } = await storedCapture({ failedRestores: 1 });
+    const App = await freshApp();
+    render(<App core={captureCore().core} />);
+    expect(await screen.findByText(/Not saved \u00b7 1 frame/)).toBeTruthy();
+    await waitFor(async () => expect(await session.keptCaptures()).toMatchObject([{ failedRestores: 0 }]));
+  });
+
+  it('deletes at once a capture whose stored frames are damaged', async () => {
+    const { session, capture } = await storedCapture();
+    const { packFrames } = await import('./core/captureFrames');
+    const cutShort = packFrames([{ timeNs: 5, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(1, 2, 3) }]).slice(0, 15);
+    await session.writeKeptCapture(capture, { seq: 0, bytes: cutShort.buffer as ArrayBuffer });
+    const App = await freshApp();
+    render(<App core={captureCore().core} />);
+    expect(await alertText()).toBe(`The unsaved capture ${capture.name} couldn't be restored, so it was deleted: some of its frames are cut short`);
+    await waitFor(async () => expect(await session.keptCaptures()).toEqual([]));
+  });
+
+  it('keeps a capture whose restore an engine restart cut short, for a reload to bring back', async () => {
+    const { session, capture } = await storedCapture();
+    const App = await freshApp();
+    const { core } = captureCore();
+    let reset: (() => void) | null = null;
+    core.onReset = (listener) => {
+      reset = listener;
+      return () => (reset = null);
+    };
+    core.appendFrames = vi.fn(() => {
+      act(() => reset?.());
+      return Promise.reject(new Error('The CAN core stopped'));
+    });
+    const { unmount } = render(<App core={core} />);
+    // In place of the restart's own message, which says to open the log again.
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(`The unsaved capture ${capture.name} couldn't be restored: The CAN core stopped. Reload the page to try again.`));
+    expect(await session.keptCaptures()).toHaveLength(1);
+
+    const reloaded = await reload(unmount);
+    await waitFor(() => expect(reloaded.core.endCapture).toHaveBeenCalled());
+    expect(await screen.findByText(/Not saved \u00b7 1 frame/)).toBeTruthy();
+  });
+
+  it('opens the saved log when a capture fails to restore', async () => {
+    const { session, capture } = await storedCapture();
+    await session.save('log', { name: 'p.log', blob: blobOf(10) });
+    const App = await freshApp();
+    const { core } = captureCore();
+    core.appendFrames = vi.fn(() => Promise.reject(new Error('There isn\u2019t enough memory')));
+    render(<App core={core} />);
+    await waitFor(() => expect(document.querySelector('.doc-title')?.textContent).toBe('p.log'));
+    expect(await alertText()).toMatch(new RegExp(`^The unsaved capture ${capture.name} couldn't be restored`));
+  });
+
+  it('restores a rolling capture without the frames it had dropped', async () => {
+    await storedCapture({ trimmedBeforeNs: 7 }, [5, 10]);
+    const App = await freshApp();
+    const { core, frames } = captureCore();
+    render(<App core={core} />);
+    await waitFor(() => expect(core.endCapture).toHaveBeenCalled());
+    expect(core.trimCapture).toHaveBeenCalledWith(7);
+    expect(frames.map((f) => f.timeNs)).toEqual([10]);
+  });
+
+  it('reopens log B beside a capture brought back', async () => {
+    const { session } = await storedCapture();
+    await session.save('compare', { name: 'b.log', blob: blobOf(5) });
+    await session.save('ui', { view: 'compare', selected: -1, pinnedTime: null, plots: [] });
+    const App = await freshApp();
+    const { core } = captureCore();
+    let logB: LogInfo | null = null;
+    Object.assign(core, {
+      openCompareLog: vi.fn<CoreApi['openCompareLog']>(async (_file, name) => (logB = logInfo({ name }))),
+      compareLogInfo: async () => logB,
+      compareLogs: async () => [],
+    });
+    render(<App core={core} />);
+    expect(await screen.findByText(/Not saved \u00b7 1 frame/)).toBeTruthy();
+    await waitFor(() => expect(core.openCompareLog).toHaveBeenCalledWith(expect.anything(), 'b.log', expect.any(Function)));
+    expect((await session.loadSaved<{ name: string }>('compare'))?.name).toBe('b.log');
+    expect(await session.keptCaptures()).toHaveLength(1);
+  });
+
+  /** Restores a stored capture, then begins reading other.log over it. Resolves with how to end the read. */
+  async function readOverRestored() {
+    const { session } = await storedCapture();
+    const App = await freshApp();
+    const { core } = captureCore();
+    let failRead: (e: unknown) => void = () => {};
+    core.openLog = vi.fn<CoreApi['openLog']>(async (file, name) => {
+      if (file.size === 0) {
+        failRead(new DOMException(LOG_SUPERSEDED, 'AbortError'));
+        return logInfo({ name, frames: 0, bytes: 0 });
+      }
+      return new Promise<LogInfo>((_, reject) => (failRead = reject));
+    });
+    const { container, unmount } = render(<App core={core} />);
+    await screen.findByText(/Not saved \u00b7 1 frame/);
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
+    await userEvent.upload(input, new File(['(1.0) can0 123#00\n'], 'other.log'));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Discard the capture?' })).getByRole('button', { name: 'Discard Capture' }));
+    await screen.findByRole('button', { name: 'Cancel reading other.log' });
+    return { session, unmount, fail: (message: string) => act(async () => failRead(new Error(message))) };
+  }
+
+  it('leaves no log, and no capture to bring back, when a read over a restored capture is cancelled', async () => {
+    const { session, unmount } = await readOverRestored();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel reading other.log' }));
+    expect(await emptyState()).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await waitFor(async () => expect(await session.keptCaptures()).toEqual([]));
+
+    const reloaded = await reload(unmount);
+    expect(await emptyState()).toBeTruthy();
+    expect(reloaded.core.startCapture).not.toHaveBeenCalled();
+  });
+
+  it('leaves no log, and no capture to bring back, when a read over a restored capture fails', async () => {
+    const { session, fail } = await readOverRestored();
+    await fail('other.log is not a CAN log.');
+    expect(await alertText()).toContain('other.log is not a CAN log.');
+    expect(await emptyState()).toBeTruthy();
+    expect(await session.keptCaptures()).toEqual([]);
   });
 });

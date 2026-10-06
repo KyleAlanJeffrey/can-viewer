@@ -2,20 +2,21 @@ import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureFrame } from '../core/api';
 import { unpackFrames } from '../core/captureFrames';
-import { claimKeptCapture, forgetCapture, keptCaptures, readCaptureChunks, writeCaptureChunk, type HeldCapture } from '../session';
+import { claimKeptCapture, forgetCapture, keptCaptures, readCaptureChunks, writeKeptCapture, type HeldCapture } from '../session';
 import { installLocks, removeLocks, type FakeLocks } from '../test/fakeLocks';
-import { CaptureKeeper, notKeptDetail } from './keeper';
+import { CaptureKeeper, KEEPER_DEFAULTS, notKeptDetail } from './keeper';
 
-const failure = vi.hoisted(() => ({ next: null as unknown }));
+const failure = vi.hoisted(() => ({ next: null as unknown, forget: false }));
 vi.mock('../session', async (importOriginal) => {
   const real = await importOriginal<typeof import('../session')>();
   return {
     ...real,
-    writeCaptureChunk: (...args: Parameters<typeof real.writeCaptureChunk>) => {
+    writeKeptCapture: (...args: Parameters<typeof real.writeKeptCapture>) => {
       const error = failure.next;
       failure.next = null;
-      return error ? Promise.reject(error) : real.writeCaptureChunk(...args);
+      return error ? Promise.reject(error) : real.writeKeptCapture(...args);
     },
+    forgetCapture: (id: string) => (failure.forget ? Promise.resolve(false) : real.forgetCapture(id)),
   };
 });
 
@@ -39,6 +40,7 @@ async function onlyKept() {
 
 let locks: FakeLocks;
 beforeEach(async () => {
+  failure.forget = false;
   vi.stubGlobal('indexedDB', new IDBFactory());
   locks = installLocks();
   // session.ts keeps the database it opened first, so what a test stored is deleted here.
@@ -148,7 +150,7 @@ describe('CaptureKeeper', () => {
   });
 
   it('stops keeping a capture that outgrows the storage left by every other capture kept', async () => {
-    await writeCaptureChunk({ ...info, id: 'other tab', layout: 1, frames: 10, bytes: 10 * FRAME_BYTES });
+    await writeKeptCapture({ ...info, id: 'other tab', layout: 1, frames: 10, bytes: 10 * FRAME_BYTES });
     const keeper = new CaptureKeeper({ maxBytes: 20 * FRAME_BYTES });
     const notKept = vi.fn();
     keeper.onNotKept = notKept;
@@ -160,7 +162,71 @@ describe('CaptureKeeper', () => {
     await keeper.flush();
     expect(notKept).toHaveBeenCalledWith('tooLarge');
     expect((await keptCaptures()).map((c) => c.id)).toEqual(['other tab']);
-    expect(notKeptDetail('tooLarge', { intervalMs: 1, maxFrames: 1, maxBytes: 512 * 1024 ** 2 })).toBe('It needs more than the 512 MB kept for unsaved captures.');
+    expect(notKeptDetail('tooLarge', { ...KEEPER_DEFAULTS, maxBytes: 512 * 1024 ** 2 })).toBe('The unsaved captures kept in this browser would need more than 512 MB.');
+  });
+
+  it('counts again, before giving up, the storage other tabs have since let go of', async () => {
+    await writeKeptCapture({ ...info, id: 'other tab', layout: 1, frames: 15, bytes: 15 * FRAME_BYTES });
+    const keeper = new CaptureKeeper({ maxBytes: 20 * FRAME_BYTES });
+    const notKept = vi.fn();
+    keeper.onNotKept = notKept;
+    await keeper.begin(info);
+    await forgetCapture('other tab');
+    keeper.add(frames(0, 10));
+    await keeper.flush();
+    expect(notKept).not.toHaveBeenCalled();
+    expect(await onlyKept()).toMatchObject({ frames: 10 });
+    await keeper.forget();
+  });
+
+  it('counts again, every few chunks, the storage other tabs have since taken', async () => {
+    const keeper = new CaptureKeeper({ maxBytes: 20 * FRAME_BYTES, recountEvery: 2 });
+    const notKept = vi.fn();
+    keeper.onNotKept = notKept;
+    await keeper.begin(info);
+    await writeKeptCapture({ ...info, id: 'other tab', layout: 1, frames: 15, bytes: 15 * FRAME_BYTES });
+    keeper.add(frames(0, 3));
+    await keeper.flush();
+    expect(notKept).not.toHaveBeenCalled();
+    keeper.add(frames(3, 3));
+    await keeper.flush();
+    expect(notKept).toHaveBeenCalledWith('tooLarge');
+    expect((await keptCaptures()).map((c) => c.id)).toEqual(['other tab']);
+  });
+
+  it('gives up once storage falls too far behind', async () => {
+    const keeper = new CaptureKeeper({ maxFrames: 1000, maxWaitingBytes: 5 * FRAME_BYTES });
+    const notKept = vi.fn();
+    keeper.onNotKept = notKept;
+    await keeper.begin(info);
+    const { id } = await onlyKept();
+    keeper.add(frames(0, 5));
+    keeper.add(frames(5, 1));
+    await keeper.flush();
+    expect(notKept).toHaveBeenCalledWith('failed');
+    expect(await keptCaptures()).toEqual([]);
+    expect(locks.holds(`freecan-studio-capture-${id}`)).toBe(false);
+  });
+
+  it('keeps the frames that arrive before it has begun', async () => {
+    const keeper = new CaptureKeeper();
+    const begun = keeper.begin(info);
+    keeper.add(frames(0, 3));
+    await begun;
+    keeper.add(frames(3, 2));
+    await keeper.stop();
+    expect(await storedTimes((await onlyKept()).id)).toEqual([0, 1, 2, 3, 4]);
+    await keeper.forget();
+  });
+
+  it('holds on to a capture it could not delete, so no other tab restores it', async () => {
+    const keeper = new CaptureKeeper();
+    await keeper.begin(info);
+    const { id } = await onlyKept();
+    failure.forget = true;
+    await keeper.forget();
+    expect(locks.holds(`freecan-studio-capture-${id}`)).toBe(true);
+    expect(await claimKeptCapture()).toBeUndefined();
   });
 
   it('drops whole chunks a rolling capture has dropped', async () => {
@@ -175,7 +241,7 @@ describe('CaptureKeeper', () => {
     await keeper.flush();
     const kept = await onlyKept();
     expect(await storedTimes(kept.id)).toEqual([...Array(20).keys()].map((i) => i + 10));
-    expect(kept).toMatchObject({ frames: 20, bytes: 20 * FRAME_BYTES });
+    expect(kept).toMatchObject({ frames: 20, bytes: 20 * FRAME_BYTES, trimmedBeforeNs: 15 });
     await keeper.forget();
   });
 

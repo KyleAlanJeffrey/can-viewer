@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FLAG_ERROR, FLAG_FD, FLAG_RTR } from './api';
+import { FLAG_BRS, FLAG_ERROR, FLAG_FD, FLAG_RTR } from './api';
 import { CAPTURE_RECORD_HEADER, packFrames, unpackFrames } from './captureFrames';
 
 describe('packFrames', () => {
@@ -43,6 +43,29 @@ describe('packFrames', () => {
 });
 
 describe('unpackFrames', () => {
+  it('reads layout 1 as unsaved captures kept by earlier versions stored it', () => {
+    // Changing these bytes means bumping KEPT_CAPTURE_LAYOUT, or captures kept before won't restore.
+    const hex = [
+      '0000000060e33641' + '23010000' + '00' + '02' + '0102',
+      '0000000080843e41' + '78563492' + '08' + '08',
+      '0000000060e34641' + '21030000' + '03' + '03' + 'aabbcc',
+    ].join('');
+    const stored = Uint8Array.from(hex.match(/../g)!, (byte) => parseInt(byte, 16));
+    const frames = [
+      { timeNs: 1_500_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(1, 2) },
+      { timeNs: 2_000_000, id: 0x1234_5678, extended: true, flags: FLAG_RTR, data: new Uint8Array(0), dlc: 8 },
+      { timeNs: 3_000_000, id: 0x321, extended: false, flags: FLAG_FD | FLAG_BRS, data: Uint8Array.of(0xaa, 0xbb, 0xcc) },
+    ];
+    expect(unpackFrames(stored)).toEqual(frames);
+    expect(packFrames(frames)).toEqual(stored);
+  });
+
+  it('refuses a buffer whose last frame is cut short', () => {
+    const packed = packFrames([{ timeNs: 1, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(1, 2, 3) }]);
+    expect(() => unpackFrames(packed.subarray(0, packed.length - 1))).toThrow('some of its frames are cut short');
+    expect(() => unpackFrames(packed.subarray(0, 5))).toThrow('some of its frames are cut short');
+  });
+
   it('reads back what packFrames packed, byte for byte', () => {
     const packed = packFrames([
       { timeNs: 1_500_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(1, 2) },

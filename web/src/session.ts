@@ -191,13 +191,17 @@ export interface KeptCapture {
   frames: number;
   /** Bytes of chunks stored. */
   bytes: number;
+  /** For a rolling capture, where the core last dropped frames before, in ns; chunks may hold some. */
+  trimmedBeforeNs?: number;
+  /** Page loads that began restoring it and didn't finish. */
+  failedRestores?: number;
 }
 
 /** An unsaved capture this tab keeps, which no other tab will restore or delete meanwhile. */
 export interface HeldCapture {
   /** Whether a copy is stored, so a reload would restore it. */
   readonly kept: boolean;
-  /** Deletes the stored copy, as the capture was saved or replaced, then lets go of it. */
+  /** Deletes the stored copy, as the capture was saved or replaced, then lets go of it; holds on if the delete fails. */
   forget(): Promise<void>;
   /** Lets go of it, leaving what is stored for the next page load to restore. */
   letGo(): Promise<void>;
@@ -231,11 +235,20 @@ export async function keptCaptures(): Promise<KeptCapture[]> {
   }
 }
 
+/** The kept capture `id`, or undefined if there is none or storage can't be read. */
+export async function keptCapture(id: string): Promise<KeptCapture | undefined> {
+  try {
+    return await request<KeptCapture | undefined>('readonly', (s) => s.get(['capture', id]));
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Stores `capture` with `chunk` as its chunk number `seq` (if any), deleting its chunks before
  * `dropBefore`, all at once. Rejects with the browser's error, a `QuotaExceededError` when full.
  */
-export function writeCaptureChunk(capture: KeptCapture, chunk?: { seq: number; bytes: ArrayBuffer }, dropBefore = 0): Promise<void> {
+export function writeKeptCapture(capture: KeptCapture, chunk?: { seq: number; bytes: ArrayBuffer }, dropBefore = 0): Promise<void> {
   // Relaxed: a chunk lost to a power cut is acceptable, and not waiting for the disk keeps writes cheap.
   return transaction(
     'readwrite',
@@ -248,17 +261,20 @@ export function writeCaptureChunk(capture: KeptCapture, chunk?: { seq: number; b
   );
 }
 
-/** Deletes a kept capture and its chunks. Resolves false if storage refused. */
+/** Deletes a kept capture and its chunks, trying twice. Resolves false if storage refused. */
 export async function forgetCapture(id: string): Promise<boolean> {
-  try {
-    await transaction('readwrite', (store) => {
-      store.delete(chunksRange(id));
-      store.delete(['capture', id]);
-    });
-    return true;
-  } catch {
-    return false;
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      await transaction('readwrite', (store) => {
+        store.delete(chunksRange(id));
+        store.delete(['capture', id]);
+      });
+      return true;
+    } catch {
+      // Tried again, then left to the next page load.
+    }
   }
+  return false;
 }
 
 /** Calls `each` with each chunk of a kept capture in order, reading a few at a time. */
@@ -312,12 +328,13 @@ export const canKeepCaptures = () => typeof navigator !== 'undefined' && !!navig
 export async function claimKeptCapture(): Promise<{ capture: KeptCapture; held: HeldCapture } | undefined> {
   if (!canKeepCaptures()) return undefined;
   const kept = (await keptCaptures()).sort((a, b) => b.startedAtMs - a.startedAtMs);
-  for (const capture of kept) {
-    const release = await lockCapture(capture.id);
+  for (const listed of kept) {
+    const release = await lockCapture(listed.id);
     if (!release) continue;
-    if (capture.layout === KEPT_CAPTURE_LAYOUT && capture.frames > 0) return { capture, held: heldCapture(capture.id, release) };
-    await forgetCapture(capture.id);
-    release();
+    // Its tab may have deleted it, or written more, before letting go.
+    const capture = await keptCapture(listed.id);
+    if (capture?.layout === KEPT_CAPTURE_LAYOUT && capture.frames > 0) return { capture, held: heldCapture(capture.id, release) };
+    if (!capture || (await forgetCapture(capture.id))) release();
   }
   return undefined;
 }
@@ -334,8 +351,7 @@ function heldCapture(id: string, release: () => void): HeldCapture {
       held = false;
       kept = false;
       // Deleted before the lock goes, so no other tab can restore it meanwhile.
-      await forgetCapture(id);
-      release();
+      if (await forgetCapture(id)) release();
     },
     async letGo() {
       if (!held) return;

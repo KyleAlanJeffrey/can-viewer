@@ -182,7 +182,11 @@ describe('CaptureRecorder rolling capture', () => {
     });
     const added: number[] = [];
     const keeper = {
-      begin: vi.fn(async () => void order.push('begin')),
+      // Never begins: the capture doesn't wait for it.
+      begin: vi.fn(() => {
+        order.push('begin');
+        return new Promise<void>(() => {});
+      }),
       add: vi.fn((frames: CaptureFrame[]) => void added.push(...frames.map((f) => f.timeNs))),
       trim: vi.fn(),
       stop: vi.fn(async () => void order.push('keeper stop')),

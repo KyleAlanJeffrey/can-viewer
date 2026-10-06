@@ -1,6 +1,6 @@
 import type { CaptureFrame } from '../core/api';
 import { packFrames } from '../core/captureFrames';
-import { canKeepCaptures, forgetCapture, KEPT_CAPTURE_LAYOUT, keptCaptures, lockCapture, writeCaptureChunk, type HeldCapture, type KeptCapture } from '../session';
+import { canKeepCaptures, forgetCapture, KEPT_CAPTURE_LAYOUT, keptCaptures, lockCapture, writeKeptCapture, type HeldCapture, type KeptCapture } from '../session';
 
 export interface KeeperOptions {
   /** How often the frames that have arrived are written. */
@@ -9,10 +9,14 @@ export interface KeeperOptions {
   maxFrames: number;
   /** The most that every kept capture together may store, in bytes of packed frames. */
   maxBytes: number;
+  /** How often, in chunks, to look again at what other tabs' captures store. */
+  recountEvery: number;
+  /** Give up once this many packed bytes wait for storage that doesn't keep up. */
+  maxWaitingBytes: number;
 }
 
 /** 512 MB holds about 24 million classic frames, about what a capture holds when it stops by itself. */
-export const KEEPER_DEFAULTS: KeeperOptions = { intervalMs: 1000, maxFrames: 20_000, maxBytes: 512 * 1024 ** 2 };
+export const KEEPER_DEFAULTS: KeeperOptions = { intervalMs: 1000, maxFrames: 20_000, maxBytes: 512 * 1024 ** 2, recountEvery: 30, maxWaitingBytes: 8 * 1024 ** 2 };
 
 /** Why a capture stopped being kept: storage full, over `maxBytes`, or storage refused otherwise. */
 export type NotKeptReason = 'full' | 'tooLarge' | 'failed';
@@ -20,7 +24,7 @@ export type NotKeptReason = 'full' | 'tooLarge' | 'failed';
 /** What the app says, after naming the capture, when it stopped being kept. */
 export function notKeptDetail(reason: NotKeptReason, options: KeeperOptions = KEEPER_DEFAULTS): string {
   if (reason === 'full') return 'Its storage is full.';
-  if (reason === 'tooLarge') return `It needs more than the ${Math.round(options.maxBytes / 1024 ** 2)} MB kept for unsaved captures.`;
+  if (reason === 'tooLarge') return `The unsaved captures kept in this browser would need more than ${Math.round(options.maxBytes / 1024 ** 2)} MB.`;
   return 'Its storage may be full or turned off.';
 }
 
@@ -34,8 +38,9 @@ interface StoredChunk {
 /**
  * Keeps a running capture in the browser's storage, so a reload or a crash doesn't lose it: the
  * frames the core took are packed as they come and written as one chunk every `intervalMs` (or
- * `maxFrames`), one write at a time. If storage refuses a write or the capture outgrows
- * `maxBytes`, what was stored is deleted and `onNotKept` is called; the capture goes on.
+ * `maxFrames`), one write at a time. If storage refuses a write or falls behind, or the kept
+ * captures outgrow `maxBytes`, what was stored is deleted and `onNotKept` is called; the capture
+ * goes on. Frames that arrive before it has begun wait for it.
  */
 export class CaptureKeeper implements HeldCapture {
   /** Called at most once, when the capture stops being kept. */
@@ -45,8 +50,14 @@ export class CaptureKeeper implements HeldCapture {
   private state: 'idle' | 'keeping' | 'stopped' | 'gone' = 'idle';
   private capture: KeptCapture | null = null;
   private release: () => void = () => {};
-  private budget = 0;
+  private beginning: Promise<void> = Promise.resolve();
+  /** What other tabs' captures stored when last looked at. */
+  private othersBytes = 0;
+  private sinceRecount = 0;
+  private trimmedBeforeNs: number | undefined;
   private parts: Uint8Array[] = [];
+  private partBytes = 0;
+  private overflowed = false;
   private partFrames = 0;
   private partLastNs = -Infinity;
   private nextSeq = 0;
@@ -70,22 +81,31 @@ export class CaptureKeeper implements HeldCapture {
   }
 
   /** Starts keeping the capture the core has just started. Never rejects. */
-  async begin(info: Pick<KeptCapture, 'name' | 'bus' | 'startedAtMs' | 'bitrate'>): Promise<void> {
+  begin(info: Pick<KeptCapture, 'name' | 'bus' | 'startedAtMs' | 'bitrate'>): Promise<void> {
+    this.beginning = this.start(info);
+    return this.beginning;
+  }
+
+  private async start(info: Pick<KeptCapture, 'name' | 'bus' | 'startedAtMs' | 'bitrate'>) {
     const replaced = this.replaces;
     this.replaces = null;
     await replaced?.forget();
-    if (this.state !== 'idle' || !canKeepCaptures()) return;
+    if (this.state !== 'idle') return;
     const id = crypto.randomUUID();
-    const release = await lockCapture(id);
-    if (!release) return;
+    const release = canKeepCaptures() ? await lockCapture(id) : null;
+    if (!release) {
+      if (this.state === 'idle') this.state = 'gone';
+      this.clearParts();
+      return;
+    }
     this.release = release;
-    const others = this.state === 'idle' ? await keptCaptures() : [];
-    // Stopped or forgotten meanwhile.
+    const othersBytes = this.state === 'idle' ? await this.countOthers(id) : 0;
+    // Stopped, forgotten or given up meanwhile.
     if (this.state !== 'idle') {
       release();
       return;
     }
-    this.budget = this.options.maxBytes - others.reduce((sum, c) => sum + c.bytes, 0);
+    this.othersBytes = othersBytes;
     this.capture = { id, ...info, layout: KEPT_CAPTURE_LAYOUT, frames: 0, bytes: 0 };
     this.state = 'keeping';
     this.timer = setInterval(() => void this.flush(), this.options.intervalMs);
@@ -94,15 +114,25 @@ export class CaptureKeeper implements HeldCapture {
 
   /** Notes `frames`, which the core has taken. */
   add(frames: CaptureFrame[]) {
-    if (this.state !== 'keeping' || frames.length === 0) return;
-    this.parts.push(packFrames(frames));
+    if ((this.state !== 'keeping' && this.state !== 'idle') || this.overflowed || frames.length === 0) return;
+    const packed = packFrames(frames);
+    this.parts.push(packed);
+    this.partBytes += packed.length;
     this.partFrames += frames.length;
     for (const frame of frames) this.partLastNs = Math.max(this.partLastNs, frame.timeNs);
-    if (this.partFrames >= this.options.maxFrames) void this.flush();
+    if (this.partBytes > this.options.maxWaitingBytes) {
+      this.overflowed = true;
+      this.clearParts();
+      // After the write under way, so the delete takes it too.
+      this.writing = this.writing.then(() => this.giveUp('failed'));
+    } else if (this.partFrames >= this.options.maxFrames) {
+      void this.flush();
+    }
   }
 
   /** For a rolling capture: the core dropped frames before `beforeNs`, so whole chunks of them go too. */
   trim(beforeNs: number) {
+    this.trimmedBeforeNs = beforeNs;
     while (this.chunks.length > 0 && this.chunks[0].lastNs < beforeNs) {
       const chunk = this.chunks.shift()!;
       this.dropBefore = chunk.seq + 1;
@@ -119,6 +149,7 @@ export class CaptureKeeper implements HeldCapture {
 
   /** Writes the last frames and stops writing, still holding the capture. */
   async stop(): Promise<void> {
+    await this.beginning;
     this.clearTimer();
     await this.flush();
     // Stopped before it began, it never will.
@@ -130,15 +161,15 @@ export class CaptureKeeper implements HeldCapture {
     const stored = this.kept;
     this.state = 'gone';
     this.clearTimer();
-    this.parts = [];
+    this.clearParts();
     // A write under way lands first, so the delete takes it too.
     await this.writing;
-    if (stored) await forgetCapture(this.capture!.id);
-    this.release();
+    // Held on to if the delete fails, so no other tab restores what was saved or replaced.
+    if (!stored || (await forgetCapture(this.capture!.id))) this.release();
   }
 
   async letGo(): Promise<void> {
-    if (this.state === 'keeping') await this.stop();
+    if (this.state === 'keeping' || this.state === 'idle') await this.stop();
     if (this.state === 'gone') return;
     this.state = 'gone';
     this.release();
@@ -151,18 +182,23 @@ export class CaptureKeeper implements HeldCapture {
     const lastNs = this.partLastNs;
     const dropBefore = this.dropBefore;
     if (parts.length === 0 && dropBefore === this.dropped && !always) return;
-    this.parts = [];
-    this.partFrames = 0;
-    this.partLastNs = -Infinity;
+    this.clearParts();
     const bytes = concat(parts);
-    if (this.bytes + bytes.length > this.budget) {
+    const id = this.capture.id;
+    const tooLarge = () => this.othersBytes + this.bytes + bytes.length > this.options.maxBytes;
+    // Other tabs' captures may have been saved, or begun, since last counted.
+    if (tooLarge() || (bytes.length > 0 && ++this.sinceRecount >= this.options.recountEvery)) {
+      this.othersBytes = await this.countOthers(id);
+      if (this.state !== 'keeping') return;
+    }
+    if (tooLarge()) {
       await this.giveUp('tooLarge');
       return;
     }
     const seq = this.nextSeq;
-    const capture = { ...this.capture, frames: this.frames + frames, bytes: this.bytes + bytes.length };
+    const capture: KeptCapture = { ...this.capture, frames: this.frames + frames, bytes: this.bytes + bytes.length, trimmedBeforeNs: this.trimmedBeforeNs };
     try {
-      await writeCaptureChunk(capture, bytes.length > 0 ? { seq, bytes: bytes.buffer as ArrayBuffer } : undefined, dropBefore);
+      await writeKeptCapture(capture, bytes.length > 0 ? { seq, bytes: bytes.buffer as ArrayBuffer } : undefined, dropBefore);
     } catch (e) {
       await this.giveUp((e as { name?: unknown } | null)?.name === 'QuotaExceededError' ? 'full' : 'failed');
       return;
@@ -176,13 +212,27 @@ export class CaptureKeeper implements HeldCapture {
   }
 
   private async giveUp(reason: NotKeptReason) {
-    if (this.state !== 'keeping') return;
+    if (this.state !== 'keeping' && this.state !== 'idle') return;
+    // Not begun yet, nothing is stored, and `start` lets go.
+    const stored = this.state === 'keeping';
     this.state = 'gone';
     this.clearTimer();
-    this.parts = [];
-    await forgetCapture(this.capture!.id);
-    this.release();
+    this.clearParts();
+    if (stored && (await forgetCapture(this.capture!.id))) this.release();
     this.onNotKept?.(reason);
+  }
+
+  private async countOthers(id: string): Promise<number> {
+    this.sinceRecount = 0;
+    const others = (await keptCaptures()).filter((c) => c.id !== id);
+    return others.reduce((sum, c) => sum + c.bytes, 0);
+  }
+
+  private clearParts() {
+    this.parts = [];
+    this.partBytes = 0;
+    this.partFrames = 0;
+    this.partLastNs = -Infinity;
   }
 
   private clearTimer() {

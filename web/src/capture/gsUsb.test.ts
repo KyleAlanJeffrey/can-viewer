@@ -268,6 +268,7 @@ describe('GsUsbAdapter', () => {
     for (const [hostS, deviceS] of [
       [1, 1],
       [2, 12],
+      [3, 13],
       [4, 14],
       [5, 15],
     ]) {
@@ -275,9 +276,9 @@ describe('GsUsbAdapter', () => {
       device.receive(hostFrame(0x123, 1, [1], { timestampUs: deviceS * 1e6 }));
       await tick();
     }
-    // Held to a second past the host clock, then timed from it again.
-    expect(frames.map((f) => f.timeNs)).toEqual([1e9, 3e9, 4e9, 5e9]);
-    expect(problems).toEqual(["The adapter's clock was 10.0 s ahead of the computer's, so frames are timed from the computer's clock again."]);
+    // Held to a second past the host clock, then anchored at the first held frame, just past the last held time.
+    expect(frames.map((f) => f.timeNs)).toEqual([1e9, 3e9, 4e9, 4e9 + 1, 5e9]);
+    expect(problems).toEqual(["The adapter's clock was 10.0 s ahead of the computer's, so it was anchored to the computer's clock again."]);
     await adapter.stop();
   });
 

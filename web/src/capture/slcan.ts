@@ -1,14 +1,17 @@
 /**
  * slcan (Lawicel) adapters over Web Serial: CANable and its clones with slcan firmware, USBtin,
- * Lawicel CANUSB and others. Commands and frames are ASCII lines ending in CR. Most adapters
- * answer a command with CR (done) or BEL (refused), but CANable's slcan firmware answers
- * nothing, so only a BEL or a failed write counts as a failure, as with slcand and python-can.
+ * Lawicel CANUSB and others. Commands and frames are ASCII lines ending in CR. Lawicel adapters
+ * answer every command with CR (done) or BEL (refused). CANable's slcan firmware answers only
+ * `V`, with a version line, and nothing else, so for it only a failed write counts as a failure,
+ * as with slcand and python-can.
  */
 
 import { FLAG_BRS, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
 import {
   errorText,
   ListenOnlyUnconfirmedError,
+  settleWithin,
+  START_CANCELLED,
   usbIds,
   type CaptureAdapter,
   type CaptureEvents,
@@ -48,7 +51,7 @@ export type SlcanEvent =
   | { kind: 'ok' }
   /** BEL: the last command was refused. */
   | { kind: 'error' }
-  /** Any other line, such as `V1013` in answer to `V`. */
+  /** Any other line that isn't a frame, such as `V1013` in answer to `V`, or an echo. */
   | { kind: 'reply'; text: string }
   | { kind: 'bad'; reason: string };
 
@@ -148,25 +151,28 @@ interface Waiter {
 }
 
 export interface SlcanTiming {
-  /** How long to wait for an answer from an adapter that answers commands. */
+  /** How long to wait for an answer to `S<n>`, and to later commands on an adapter that answers. */
   commandMs: number;
   /**
    * A pause after the first command, so a late answer to it can't be taken for the next one's;
-   * also how long to wait for a BEL from an adapter that answers nothing.
+   * also how long to wait between commands to an adapter that answers nothing.
    */
   settleMs: number;
 }
 
 const DEFAULT_TIMING: SlcanTiming = { commandMs: 1000, settleMs: 100 };
+/** How long a stop waits for the port to close; a hung device may never let it. */
+const CLOSE_WAIT_MS = 1000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Opens the CAN channel with `C` (in case it was left open), `V` (to learn whether the adapter
- * answers commands at all), `S<n>`, then `O`, or for listen only `L`, else `M1` (CANable's
- * silent mode) and `O`. Listen-only counts as confirmed only when an answering adapter accepts
- * `L` or `M1`. Frames are stamped with the host clock when their bytes arrive, not with the
- * adapter's `Z1` timestamps.
+ * Opens the CAN channel with `C` (in case it was left open), `S<n>`, then `O`, or for listen
+ * only `L`, else `M1` (CANable's silent mode, which it takes only while off the bus) and `O`.
+ * Whether the adapter answers commands at all is learnt from `S<n>`, which every Lawicel adapter
+ * answers. Listen-only counts as confirmed only when an adapter answers `L` with CR.
+ * Frames are stamped with the host clock when their bytes arrive, not with the adapter's `Z1`
+ * timestamps, and are read only once `O` or `L` has been sent.
  */
 export class SlcanAdapter implements CaptureAdapter {
   readonly label: string;
@@ -175,8 +181,19 @@ export class SlcanAdapter implements CaptureAdapter {
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private reading: Promise<void> | null = null;
   private stopping: Promise<void> | null = null;
+  /** The writer of the command being written, so a stop can abort a write that hangs. */
+  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  /** The start under way, until it settles; another isn't begun before then. */
+  private starting: Promise<StartedCapture> | null = null;
+  /** Set by `stop`, so a start still under way stops at its next step. */
+  private cancelled = false;
+  /** Resolves on `stop`, so a write that hangs stops being waited for. */
+  private stopped: Promise<void> = new Promise(() => {});
+  private signalStop = () => {};
   private events: CaptureEvents | null = null;
   private clock: () => number = () => 0;
+  /** Set as `O` or `L` is sent. Until then a line that looks like a frame is a reply or stale. */
+  private busOpen = false;
 
   constructor(
     private readonly port: SerialPortLike,
@@ -186,61 +203,125 @@ export class SlcanAdapter implements CaptureAdapter {
     this.label = ids ? `USB serial device ${ids}` : 'Serial port';
   }
 
-  async start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
+  start(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
+    if (this.starting) return Promise.reject(new Error('The adapter is still busy with the last try. Unplug it, plug it back in, then choose it again.'));
+    const starting = this.open(settings, events, clock);
+    this.starting = starting;
+    const settled = () => {
+      if (this.starting === starting) this.starting = null;
+    };
+    starting.then(settled, settled);
+    return starting;
+  }
+
+  private async open(settings: CaptureSettings, events: CaptureEvents, clock: () => number): Promise<StartedCapture> {
     const code = BITRATE_CODES.get(settings.bitrate);
     if (code === undefined) throw new Error(`slcan adapters can't run at ${settings.bitrate} bit/s.`);
     // The sheet keeps the chosen adapter, so it can be started again after a stop.
     this.parser = new SlcanParser();
     this.waiters = [];
     this.stopping = null;
+    this.cancelled = false;
+    this.stopped = new Promise((resolve) => (this.signalStop = resolve));
+    this.reader = null;
+    this.reading = null;
+    this.writer = null;
+    this.busOpen = false;
     this.events = events;
     this.clock = clock;
     try {
       await this.port.open({ baudRate: SERIAL_BAUD_RATE });
     } catch (e) {
+      if (this.cancelled) throw new Error(START_CANCELLED);
+      // As when an earlier try's open never finished.
+      if ((e as { name?: unknown } | null)?.name === 'InvalidStateError') {
+        throw new Error(`The adapter is still busy with an earlier try (${errorText(e)}). Unplug it, plug it back in, then choose it again.`);
+      }
       throw new Error(`The adapter couldn't be opened (${errorText(e)}). Close any other program or tab using it, then try again.`);
     }
-    this.reading = this.readLoop();
     try {
+      this.checkCancelled();
+      this.reading = this.readLoop();
       await this.expect('C', this.timing.settleMs, null);
       await sleep(this.timing.settleMs);
       this.answerAll('no answer');
-      const answers = (await this.expect('V', this.timing.commandMs, null)) !== 'no answer';
+      const bitrate = await this.expect(`S${code}`, this.timing.commandMs, 'The adapter refused the bitrate. Check that it runs slcan firmware.');
+      const answers = bitrate !== 'no answer';
       const wait = answers ? this.timing.commandMs : this.timing.settleMs;
-      await this.expect(`S${code}`, wait, 'The adapter refused the bitrate. Check that it runs slcan firmware.');
-      const open = () => this.expect('O', wait, 'The adapter refused to open the CAN channel.');
+      // Frames can follow the answer to O or L in the same chunk, so read them once the command is out.
+      const busOpened = () => {
+        this.busOpen = true;
+      };
+      const open = () => this.expect('O', wait, 'The adapter refused to open the CAN channel.', busOpened);
       if (!settings.listenOnly) {
         await open();
         return { listenOnly: false };
       }
-      if (answers && (await this.expect('L', wait, null)) === 'ok') return { listenOnly: true };
-      const confirmed = answers && (await this.expect('M1', wait, null)) === 'ok';
-      if (!confirmed && !settings.allowUnconfirmedListenOnly) {
+      // CANable ignores L, so a silent adapter gets only M1, which CANable takes as silent mode.
+      let listenOnly: Answer | null = null;
+      if (answers) {
+        listenOnly = await this.expect('L', wait, null, busOpened);
+        if (listenOnly === 'ok') return { listenOnly: true };
+        this.busOpen = false;
+      }
+      // Only L confirms listen-only: on Lawicel adapters M sets the acceptance code, so a CR for
+      // M1 proves nothing.
+      const silent = await this.expect('M1', wait, null);
+      if (!settings.allowUnconfirmedListenOnly) {
         throw new ListenOnlyUnconfirmedError(
-          answers
+          silent === 'refused' && listenOnly !== 'no answer'
             ? "This adapter can't listen only, so it would acknowledge frames on the bus."
-            : "This adapter can't confirm listen-only mode, so it may acknowledge frames on the bus.",
+            : "This adapter didn't confirm listen-only mode. Silent mode (M1) was sent, which CANable firmware follows, but another adapter may still acknowledge frames on the bus.",
         );
       }
-      // An adapter that answers nothing gets M1 too: CANable's firmware takes it as silent mode.
-      if (!answers) await this.expect('M1', wait, null);
       await open();
-      return { listenOnly: confirmed };
+      return { listenOnly: false };
     } catch (e) {
-      await this.stop();
-      throw e;
+      if (!this.cancelled) {
+        await this.stop();
+        throw e;
+      }
+      // After the stop's own teardown, which may have found the port not yet open.
+      await this.stopping;
+      if (this.port.readable) await this.teardown();
+      throw new Error(START_CANCELLED);
     }
   }
 
   stop(): Promise<void> {
-    this.stopping ??= (async () => {
-      // So the adapter stops sending. A lost device has no stream left, and nothing to tell.
-      if (this.port.readable) await this.command('C', this.timing.settleMs);
+    this.cancelled = true;
+    this.signalStop();
+    this.stopping ??= this.teardown();
+    return this.stopping;
+  }
+
+  /** Lets the port go. Never rejects, and doesn't wait long on a device that has hung. */
+  private async teardown(): Promise<void> {
+    try {
+      const hung = this.writer;
+      if (hung) {
+        // A write that hasn't finished holds the stream, so no C can follow it.
+        this.writer = null;
+        void hung.abort().catch(() => undefined);
+        hung.releaseLock();
+      } else if (this.port.readable && this.port.writable && !this.port.writable.locked) {
+        // So the adapter stops sending; closing the port could drop a C not yet written. A lost
+        // device has no stream left, and nothing to tell.
+        const writer = this.port.writable.getWriter();
+        await settleWithin(writer.write(new TextEncoder().encode('C\r')), this.timing.commandMs);
+        writer.releaseLock();
+        await sleep(this.timing.settleMs);
+      }
       await this.reader?.cancel().catch(() => undefined);
       await this.reading;
-      await this.port.close().catch(() => undefined);
-    })();
-    return this.stopping;
+      await settleWithin(this.port.close(), CLOSE_WAIT_MS);
+    } catch {
+      // Stopping never fails; what is left of the port goes with the page.
+    }
+  }
+
+  private checkCancelled() {
+    if (this.cancelled) throw new Error(START_CANCELLED);
   }
 
   release() {
@@ -254,14 +335,16 @@ export class SlcanAdapter implements CaptureAdapter {
    * Sends `command` and waits up to `waitMs` for an answer. A failed write always throws; a
    * BEL throws `refused` when given. No answer is fine: some adapters never answer.
    */
-  private async expect(command: string, waitMs: number, refused: string | null): Promise<Answer> {
-    const answer = await this.command(command, waitMs);
+  private async expect(command: string, waitMs: number, refused: string | null, onWritten?: () => void): Promise<Answer> {
+    this.checkCancelled();
+    const answer = await this.command(command, waitMs, onWritten);
+    this.checkCancelled();
     if (answer === 'write failed') throw new Error("The adapter stopped taking commands. Unplug it, plug it back in and try again.");
     if (answer === 'refused' && refused !== null) throw new Error(refused);
     return answer;
   }
 
-  private async command(command: string, waitMs = this.timing.commandMs): Promise<Answer> {
+  private async command(command: string, waitMs = this.timing.commandMs, onWritten?: () => void): Promise<Answer> {
     const writer = this.port.writable?.getWriter();
     if (!writer) return 'write failed';
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -278,13 +361,19 @@ export class SlcanAdapter implements CaptureAdapter {
         resolve('no answer');
       }, waitMs);
     });
-    try {
-      await writer.write(new TextEncoder().encode(`${command}\r`));
-    } catch {
-      this.answerAll('write failed');
-    } finally {
+    this.writer = writer;
+    const written = writer.write(new TextEncoder().encode(`${command}\r`)).then(
+      () => true,
+      () => false,
+    );
+    // Let go of the stream as soon as the write settles, so a stop then sees it free for C.
+    void written.then((ok) => {
+      if (ok) onWritten?.();
+      if (this.writer === writer) this.writer = null;
       writer.releaseLock();
-    }
+    });
+    const stopped = this.stopped.then(() => false);
+    if (!(await Promise.race([written, stopped]))) this.answerAll('write failed');
     return answered;
   }
 
@@ -333,17 +422,19 @@ export class SlcanAdapter implements CaptureAdapter {
     for (const event of this.parser.push(chunk)) {
       switch (event.kind) {
         case 'frame':
-          frames.push({ ...event.frame, timeNs });
+          if (this.busOpen) frames.push({ ...event.frame, timeNs });
           break;
         case 'ok':
-        case 'reply':
           this.answer('ok');
           break;
+        case 'reply':
+          break;
         case 'error':
-          if (!this.answer('refused')) this.events?.onProblem('The adapter reported an error.');
+          // A late BEL to a command no longer waited for, such as the opening C, is no problem.
+          if (!this.answer('refused') && this.busOpen) this.events?.onProblem('The adapter reported an error.');
           break;
         case 'bad':
-          this.events?.onProblem(`A line from the adapter wasn't a CAN frame (${event.reason}).`);
+          if (this.busOpen) this.events?.onProblem(`A line from the adapter wasn't a CAN frame (${event.reason}).`);
           break;
       }
     }

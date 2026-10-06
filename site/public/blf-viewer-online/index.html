@@ -14,7 +14,7 @@
   <meta property="og:image" content="https://freecanstudio.com/og-image.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="FreeCAN Studio: the CAN log viewer that lives in your browser.">
+  <meta property="og:image:alt" content="FreeCAN Studio: open a CAN log or capture a live bus.">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/site.css">
@@ -30,7 +30,17 @@
       <a href="/#privacy">Privacy</a>
       <a href="/#formats">Formats</a>
     </nav>
-    <a class="button" href="https://app.freecanstudio.com/">Open App</a>
+    <a class="button header-open" href="https://app.freecanstudio.com/">Open App</a>
+    <details class="site-menu">
+      <summary><svg class="icon-open" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><svg class="icon-close" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg><span class="visually-hidden">Menu</span></summary>
+      <nav aria-label="Menu">
+        <a href="/#features">Features</a>
+        <a href="/#capture">Live Capture</a>
+        <a href="/#privacy">Privacy</a>
+        <a href="/#formats">Formats</a>
+        <a href="https://app.freecanstudio.com/">Open FreeCAN Studio</a>
+      </nav>
+    </details>
   </div>
 </header>
 <main id="main">
@@ -38,9 +48,11 @@
     <div class="wrap">
       <h1 class="display">BLF viewer online</h1>
       <p class="lead">Open a Vector BLF log in your browser. Read every CAN frame, decode it with a DBC and plot signals, with nothing to install and nothing uploaded.</p>
-      <p class="trust">Free. No account.</p>
-      <a class="button primary large" href="https://app.freecanstudio.com/">Open a BLF file</a>
-      <p class="button-note">Opens FreeCAN Studio. Then choose Open Log&hellip; or drop the .blf file on the window.</p>
+      <div class="hero-actions">
+        <a class="button primary large" href="https://app.freecanstudio.com/">Open the viewer</a>
+        <a class="text-link" href="https://app.freecanstudio.com/?demo=1">Try the Demo <span aria-hidden="true">&rarr;</span></a>
+      </div>
+      <p class="button-note">Free. No account. In the app, choose Open Log&hellip; or drop the .blf file on the window.</p>
       <p class="privacy-line"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Files are processed on your computer and never uploaded.</p>
     </div>
   </section>
@@ -73,30 +85,34 @@
         <h2 id="faq-title">Questions</h2>
       </div>
       <div class="card faq">
-        <div class="faq-item">
-          <h3>Is my BLF file uploaded?</h3>
+        <details class="faq-item" open>
+          <summary><h3>Is my BLF file uploaded?</h3></summary>
           <p>No. FreeCAN Studio runs in your browser: a Rust core compiled to WebAssembly reads the file on your computer. The app loads nothing from third parties, and its Content-Security-Policy makes your browser enforce that. <a href="/#privacy">How to check it</a>.</p>
-        </div>
-        <div class="faq-item">
-          <h3>What does FreeCAN Studio read from a BLF file?</h3>
+        </details>
+        <details class="faq-item">
+          <summary><h3>What does FreeCAN Studio read from a BLF file?</h3></summary>
           <p>The CAN traffic: every classic CAN and CAN FD frame, remote frame and error frame, with its timestamp, channel, ID and data. FreeCAN Studio is a CAN tool, so it skips the other bus types and events a BLF file can hold, such as LIN, FlexRay and Ethernet.</p>
-        </div>
-        <div class="faq-item">
-          <h3>Do I need a DBC file?</h3>
+        </details>
+        <details class="faq-item">
+          <summary><h3>Do I need a DBC file?</h3></summary>
           <p>No. Without one you still see every ID with its count, period and bit activity, and the raw frames in Trace. Add a DBC to decode signals; you can load several, each for every bus or for one bus.</p>
-        </div>
-        <div class="faq-item">
-          <h3>How large a file can it open?</h3>
+        </details>
+        <details class="faq-item">
+          <summary><h3>How large a file can it open?</h3></summary>
           <p>The core is built for logs of hundreds of megabytes and millions of frames. The limit is the memory your browser gives a tab, so a very large file may not fit.</p>
-        </div>
-        <div class="faq-item">
-          <h3>Which browsers does it run in?</h3>
-          <p>Current desktop versions of Chrome, Edge, Firefox and Safari. Phones and tablets are not supported. <a href="/#capture">Live capture</a> from a CAN adapter needs Chrome or Edge.</p>
-        </div>
-        <div class="faq-item">
-          <h3>Is it free?</h3>
+        </details>
+        <details class="faq-item">
+          <summary><h3>Which browsers does it run in?</h3></summary>
+          <p>Current desktop versions of Chrome, Edge, Firefox and Safari. Phones and tablets are not supported. <a href="/#capture">Live capture</a> from a USB CAN adapter is experimental and needs Chrome or Edge on a desktop computer.</p>
+        </details>
+        <details class="faq-item">
+          <summary><h3>Is it free?</h3></summary>
           <p>Yes. FreeCAN Studio is free and needs no account.</p>
-        </div>
+        </details>
+        <details class="faq-item">
+          <summary><h3>Can I try it without a BLF file?</h3></summary>
+          <p>Yes. Try the Demo opens a 1,000,000-frame log with its DBC.</p>
+        </details>
       </div>
     </div>
   </section>
@@ -106,21 +122,12 @@
       <div class="section-head">
         <h2 id="more-title">More guides</h2>
       </div>
-      <ul class="guide-links">
-        <li class="card"><a href="/"><strong>FreeCAN Studio</strong><span>The CAN log viewer that lives in your browser.</span></a></li>
-        <li class="card"><a href="/mf4-viewer-online/"><strong>MF4 viewer online</strong><span>Open MF4 bus logging files.</span></a></li>
-        <li class="card"><a href="/dbc-viewer-online/"><strong>DBC viewer and editor</strong><span>View, edit and export DBC files.</span></a></li>
-        <li class="card"><a href="/canalyzer-alternative/"><strong>CANalyzer alternative</strong><span>A free tool for reading and decoding CAN logs.</span></a></li>
+      <ul class="guide-chips">
+        <li><a href="/blf-viewer-online/" aria-current="page">BLF viewer</a></li>
+        <li><a href="/mf4-viewer-online/">MF4 viewer</a></li>
+        <li><a href="/dbc-viewer-online/">DBC editor</a></li>
+        <li><a href="/canalyzer-alternative/">CANalyzer alternative</a></li>
       </ul>
-    </div>
-  </section>
-
-  <section class="section" aria-label="Demo">
-    <div class="wrap">
-      <div class="card closing">
-        <p>No log at hand? Try FreeCAN Studio on a 1,000,000-frame demo log and its DBC.</p>
-        <a class="button" href="https://app.freecanstudio.com/?demo=1">Try the Demo</a>
-      </div>
     </div>
   </section>
 </main>

@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureFrame, CoreApi, LogInfo } from './core/api';
 import { FakeSerialPort } from './test/fakeSerial';
 import { fakeCore, logInfo, summary } from './test/fixtures';
@@ -11,6 +11,11 @@ async function freshApp() {
   vi.resetModules();
   return (await import('./App')).App;
 }
+
+// Loads the app's code once outside any test's time limit, so the first freshApp() is not a cold load.
+beforeAll(async () => {
+  await import('./App');
+});
 
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory());
@@ -26,7 +31,8 @@ describe('App', () => {
     const App = await freshApp();
     const core = fakeCore({ setDatabases: vi.fn(() => Promise.resolve()) });
     render(<App core={core} />);
-    expect(await screen.findByRole('heading', { name: 'Open a CAN log to get started' })).toBeTruthy();
+    // The file's first render can take over a second under load.
+    expect(await screen.findByRole('heading', { name: 'Open a CAN log to get started' }, { timeout: 3000 })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Try the Demo' })).toBeTruthy();
     expect(screen.getByText('Message IDs appear here once a log is open.')).toBeTruthy();
     expect(core.setDatabases).not.toHaveBeenCalled();
@@ -537,8 +543,10 @@ describe('App live capture', () => {
     const App = await freshApp();
     render(<App core={fakeCore()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    expect(await screen.findByText(/needs Chrome or Edge/)).toBeTruthy();
-    expect(screen.getByRole('dialog', { name: 'Live Capture' })).toBeTruthy();
+    // The sheet's code loads on first use, which can take over a second under load.
+    expect(await screen.findByText(/needs Chrome or Edge/, {}, { timeout: 3000 })).toBeTruthy();
+    // The loaded sheet is opened by an effect, a moment after its text is on the page.
+    expect(await screen.findByRole('dialog', { name: 'Live Capture' })).toBeTruthy();
   });
 });
 

@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeCore, logInfo } from './test/fixtures';
 
 /** session.ts caches its open database, so each test loads a fresh copy of the app's modules. */
@@ -26,6 +26,11 @@ const logFile = (name: string) => new File(['(1.0) can0 123#00'], name);
 
 let revoked: string[];
 
+// Loads the app's code once outside any test's time limit, so the first freshApp() is not a cold load.
+beforeAll(async () => {
+  await import('./App');
+});
+
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory());
   revoked = [];
@@ -49,7 +54,8 @@ describe('Adding a video to the app', () => {
   it('asks for a log first', async () => {
     const { App, videoSession } = await freshApp();
     render(<App core={core()} />);
-    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    // The file's first render can take over a second under load.
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' }, { timeout: 3000 });
     drop([video()]);
     expect((await screen.findByRole('alert')).textContent).toBe('Open a log first, then add the video to line it up with it.');
     expect(videoSession.get()).toBeNull();

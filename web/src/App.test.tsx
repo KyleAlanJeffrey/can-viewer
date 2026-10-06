@@ -380,6 +380,47 @@ describe('App live capture', () => {
     expect(confirm.textContent).toMatch(/capture-\d{8}-\d{6}\.log hasn\u2019t been saved/);
   });
 
+  /** A capture core whose engine restart the test triggers with `reset()`. */
+  function resettingCore() {
+    const { core } = captureCore();
+    let listener: (() => void) | null = null;
+    core.onReset = (l) => {
+      listener = l;
+      return () => (listener = null);
+    };
+    return { core, reset: () => act(() => listener?.()) };
+  }
+
+  it('says a stopped, unsaved capture was lost when the engine restarts, closing the discard prompt', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core, reset } = resettingCore();
+    render(<App core={core} />);
+    await unsavedCapture(port, core);
+    await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
+    expect(screen.getByRole('dialog', { name: 'Discard the capture?' })).toBeTruthy();
+
+    reset();
+    expect((await screen.findByRole('alert')).textContent).toBe('The CAN core stopped and was restarted, so the capture was lost.');
+    expect(screen.queryByRole('dialog', { name: 'Discard the capture?' })).toBeNull();
+  });
+
+  it('asks for a saved capture to be opened again when the engine restarts', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core, reset } = resettingCore();
+    render(<App core={core} />);
+    await unsavedCapture(port, core);
+    stubSavePicker();
+    await userEvent.click(screen.getByRole('button', { name: 'Save Capture\u2026' }));
+    await waitFor(() => expect(screen.queryByText(/Not saved/)).toBeNull());
+
+    reset();
+    expect((await screen.findByRole('alert')).textContent).toBe('The CAN core stopped and was restarted. Open the log again.');
+  });
+
   it('keeps no log when no frames came, and says what to check', async () => {
     const App = await freshApp();
     const port = new FakeSerialPort();

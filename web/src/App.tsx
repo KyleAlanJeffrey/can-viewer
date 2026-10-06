@@ -700,7 +700,11 @@ export function App({ core }: { core: CoreApi }) {
           setLiveStatus(null);
         }
         showNoLog();
-        setError(capture ? 'The CAN core stopped and was restarted, so the capture was lost.' : 'The CAN core stopped and was restarted. Open the log again.');
+        setError(
+          capture || unsavedRef.current
+            ? 'The CAN core stopped and was restarted, so the capture was lost.'
+            : 'The CAN core stopped and was restarted. Open the log again.',
+        );
       }),
     [core, showNoLog],
   );

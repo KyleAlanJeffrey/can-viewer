@@ -53,7 +53,3 @@ export async function scanEach(
   if (signal?.aborted) throw cancelled();
   return found;
 }
-
-export function isAbort(e: unknown): boolean {
-  return e instanceof DOMException && e.name === 'AbortError';
-}

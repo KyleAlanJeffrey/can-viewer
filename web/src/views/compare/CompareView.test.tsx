@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ByteComparison, CompareOptions, CoreApi, IdComparison, LogInfo } from '../../core/api';
+import { LOG_SUPERSEDED, type ByteComparison, type CompareOptions, type CoreApi, type IdComparison, type LogInfo } from '../../core/api';
 import { fakeCore, lane, logInfo, makeRowBatch } from '../../test/fixtures';
 import { renderInShell } from '../../test/shell';
 import { CompareView } from './CompareView';
@@ -159,6 +159,19 @@ describe('choosing log B', () => {
     expect(await screen.findByText('Choose a second log')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'These logs look the same' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'Log B' })).toBeNull();
+    expect(session.forget).toHaveBeenCalledWith('compare');
+  });
+
+  it('shows no error when a log opened meanwhile supersedes the restored log B', async () => {
+    session.loadSaved.mockResolvedValueOnce({ name: 'door-lock.log', blob: new Blob(['x']) });
+    let supersede: (e: Error) => void = () => {};
+    const openCompareLog = vi.fn(() => new Promise<LogInfo>((_, reject) => (supersede = reject)));
+    const { state } = renderInShell(CompareView, { core: compareCore(RESULTS, { compareLogInfo: async () => null, openCompareLog }) });
+    expect(await screen.findByText(/^Reading/)).toBeTruthy();
+    supersede(new DOMException(LOG_SUPERSEDED, 'AbortError'));
+    expect(await screen.findByText('Choose a second log')).toBeTruthy();
+    await waitFor(() => expect(state.running).toBe(0));
+    expect(state.error).toBeNull();
     expect(session.forget).toHaveBeenCalledWith('compare');
   });
 

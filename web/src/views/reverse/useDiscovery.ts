@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DiscoveryHints, MessageSuggestions, Suggestion } from '../../core/api';
-import { isAbort } from '../../core/discovery';
+import { isAbort, type DiscoveryHints, type MessageSuggestions, type Suggestion } from '../../core/api';
 import { useViewState } from '../shared/viewState';
 import type { ViewContext } from '../types';
 import { errorText } from './bits';

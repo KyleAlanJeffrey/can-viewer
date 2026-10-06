@@ -511,7 +511,7 @@ const log = await core.startCapture('capture-20261005-143000.log', 'can0', Date.
 appendFrames(frames: CaptureFrame[]): Promise<LogInfo>
 ```
 
-Adds frames to the running capture, in the order received. Once it resolves, every other call sees them. `WebCore` packs the batch into one buffer and transfers it to the worker. Times are expected to rise, as a monotonic clock gives them; [`endCapture`](#endcapture) sorts the frames in case they do not.
+Adds frames to the running capture, in the order received, and those that match the trace filter to the rows of `FILTERED_ROWS` (see [`setTraceFilter`](#settracefilter)). Once it resolves, every other call sees them. `WebCore` packs the batch into one buffer and transfers it to the worker. Times are expected to rise, as a monotonic clock gives them; [`endCapture`](#endcapture) sorts the frames in case they do not.
 
 **Parameters**
 
@@ -519,7 +519,7 @@ Adds frames to the running capture, in the order received. Once it resolves, eve
 
 **Returns** the capture so far.
 
-**Errors** Rejects with `no capture is running` or `the capture has ended`, and with `a captured frame is longer than 64 bytes` or `a captured frame has no time` for a frame that cannot be stored; frames before it in the batch are kept. Rejects with `there is no memory left for more frames` when the engine can't grow its frame store for the batch; then none of the batch is kept, and the frames appended before stay intact.
+**Errors** Rejects with `no capture is running` or `the capture has ended`, and with `a captured frame is longer than 64 bytes` or `a captured frame has no time` for a frame that cannot be stored; frames before it in the batch are kept. Rejects with `there is no memory left for more frames` when the engine can't grow its frame store for the batch; then none of the batch is kept, and the frames appended before stay intact. Rejects with `there is no memory left to filter the new frames` when the batch was kept but its matches could not be added to the filtered rows, which then stay as they were.
 
 ```ts
 const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xde, 0xad) }]);
@@ -531,7 +531,7 @@ const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: f
 endCapture(): Promise<LogInfo>
 ```
 
-Ends the running capture and puts its frames in time order. The capture stays the current log, so it can be viewed and exported with [`exportLog`](#exportlog) (the web app's Save Capture... writes `'candump'`); `appendFrames` rejects from then on.
+Ends the running capture and puts its frames in time order, then finds the rows of the trace filter again, if one is set. The capture stays the current log, so it can be viewed and exported with [`exportLog`](#exportlog) (the web app's Save Capture... writes `'candump'`); `appendFrames` rejects from then on.
 
 **Returns** the finished capture.
 
@@ -692,7 +692,7 @@ const share = flips[0] / Math.max(1, frames - 1);
 setTraceFilter(filter: FrameFilter | null): Promise<number>
 ```
 
-Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, swapping logs with [`swapCompareLog`](#swapcomparelog), starting a capture or ending one (which may reorder its frames); until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames. The kept rows cost 4 bytes per matching frame. During a capture, frames appended after the call do not join the rows; the web app turns filters off while recording.
+Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, swapping logs with [`swapCompareLog`](#swapcomparelog) or starting a capture; until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames. The kept rows cost 4 bytes per matching frame. During a capture, [`appendFrames`](#appendframes) adds each new frame that matches to the rows, a pass over just the new frames, so call [`rowCount`](#rowcount) for the count so far; until the capture ends, "changes" rules compare frames in the order they came. [`endCapture`](#endcapture), which may reorder the frames, finds the rows again.
 
 **Parameters**
 

@@ -55,7 +55,13 @@ interface DraftErrors {
   to?: string;
 }
 
-type Preview = { state: 'counting' } | { state: 'counted'; count: number } | { state: 'failed'; message: string } | { state: 'invalid' };
+/** `of` is the total when the count was asked, which a capture grows meanwhile. `all` is no filter. */
+type Preview =
+  | { state: 'counting' }
+  | { state: 'counted'; count: number; of: number }
+  | { state: 'all' }
+  | { state: 'failed'; message: string }
+  | { state: 'invalid' };
 
 interface Props {
   open: boolean;
@@ -92,7 +98,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
       return;
     }
     if (query === null) {
-      setPreview({ state: 'counted', count: total });
+      setPreview({ state: 'all' });
       return;
     }
     let stale = false;
@@ -100,7 +106,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
     const timer = setTimeout(() => {
       core.countFilterMatches(JSON.parse(query)).then(
         (count) => {
-          if (!stale && count !== null) setPreview({ state: 'counted', count });
+          if (!stale && count !== null) setPreview({ state: 'counted', count, of: total });
         },
         (e) => {
           if (!stale) setPreview({ state: 'failed', message: e instanceof Error ? e.message : String(e) });
@@ -111,7 +117,8 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
       stale = true;
       clearTimeout(timer);
     };
-  }, [open, core, query, total, valid]);
+    // Not counted again for each frame a capture adds; `total` is read with the count.
+  }, [open, core, query, valid]);
 
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   /** Like `update`, marking `part` as edited last. */
@@ -342,11 +349,14 @@ function PreviewText({ preview, total }: { preview: Preview; total: number }) {
     case 'failed':
       return <>Couldn't count the matches: {preview.message}</>;
     case 'counted':
+    case 'all': {
+      const [count, of] = preview.state === 'all' ? [total, total] : [preview.count, preview.of];
       return (
         <>
-          Preview: <b className="num">{formatCount(preview.count)}</b> of <span className="num">{formatCount(total)}</span> frames match
+          Preview: <b className="num">{formatCount(count)}</b> of <span className="num">{formatCount(of)}</span> frames match
         </>
       );
+    }
   }
 }
 

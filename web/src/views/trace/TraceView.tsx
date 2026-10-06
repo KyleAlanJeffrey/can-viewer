@@ -34,9 +34,7 @@ let results = 0;
 /** Every frame (or one ID's, or the filtered ones) over the plot card, with the selected ID in the inspector. */
 export function TraceView({ ctx }: ViewProps) {
   const { core, log, ids, selected, plots, pinnedTime, setPinnedTime, setError, logVersion } = ctx;
-  const [storedFilters, setFilters] = useViewState<TraceFilters | null>('trace.filters', null, 'log');
-  // The filtered rows are found once, so a capture's new frames would never join them.
-  const filters = ctx.capturing ? null : storedFilters;
+  const [filters, setFilters] = useViewState<TraceFilters | null>('trace.filters', null, 'log');
   const [sheetOpen, setSheetOpen] = useState(false);
   // A new key per opening, so the sheet's draft starts from the applied filters.
   const [sheetKey, setSheetKey] = useState(0);
@@ -86,6 +84,26 @@ export function TraceView({ ctx }: ViewProps) {
 
   // The rows on screen are those of the last result, which may be for older filters.
   const result = filters && filtered && filtered.query === query && filtered.logVersion === logVersion ? filtered : null;
+
+  // The core adds a capture's new frames that match to the rows, and finds them again in time
+  // order when it ends, so the count follows each refresh of the capture.
+  const resultVersion = result?.version;
+  useEffect(() => {
+    if (resultVersion === undefined || log?.format !== 'capture') return;
+    let stale = false;
+    core.rowCount(FILTERED_ROWS).then((count) => {
+      if (stale) return;
+      setFiltered((f) => {
+        if (!f || f.version !== resultVersion || f.count === count) return f;
+        const next = { ...f, count };
+        if (held.get(core) === f) held.set(core, next);
+        return next;
+      });
+    });
+    return () => {
+      stale = true;
+    };
+  }, [core, log, resultVersion]);
   const shownQuery = result?.query;
   const highlight = useMemo(() => {
     const rules = shownQuery ? (JSON.parse(shownQuery) as FrameFilter).rules : [];
@@ -141,7 +159,6 @@ export function TraceView({ ctx }: ViewProps) {
         onEdit={openSheet}
         onRemove={(chip) => apply(chip.without)}
         onClear={() => apply(null)}
-        disabledReason={ctx.capturing ? 'Filters apply once the capture stops.' : undefined}
       />
       {sheetOpen && (
         <ChunkBoundary key={sheetKey} message="Couldn't load the filters.">

@@ -521,7 +521,8 @@ export interface CoreApi {
   /**
    * Keep the frames that match `filter`, in time order, as the rows of `FILTERED_ROWS` for
    * `rowCount`, `rows`, `frameData`, `rowBytes`, `rowAtTime` and `rowCountBetween`, and resolve to
-   * how many there are. Null drops them. Opening a log drops them too.
+   * how many there are. Null drops them. Opening a log drops them too. During a capture, each
+   * frame `appendFrames` adds that matches joins them, and `endCapture` finds them again.
    */
   setTraceFilter(filter: FrameFilter | null): Promise<number>;
   /**

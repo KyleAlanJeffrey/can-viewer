@@ -2,7 +2,7 @@
 
 use std::collections::TryReserveError;
 
-use crate::{flags, FrameStore, IdKey, IdStats};
+use crate::{flags, id_key, FrameStore, IdKey, IdStats};
 
 /// What kind of frame a stored frame is. Every frame is exactly one kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +141,51 @@ impl FrameStore {
             }
         }
         Ok(out)
+    }
+
+    /// Appends to `rows` the frames from index `from` on that match `filter`, in store order, so
+    /// the matches of [`FrameStore::filter`] can follow the frames stored after it. On an error
+    /// `rows` is as it was.
+    pub fn extend_matches(
+        &self,
+        filter: &FrameFilter,
+        from: usize,
+        rows: &mut Vec<u32>,
+    ) -> Result<(), TryReserveError> {
+        let kept = rows.len();
+        let keys = filter.keys.as_ref().map(|keys| {
+            let mut keys = keys.clone();
+            keys.sort_unstable();
+            keys
+        });
+        let wants_previous = filter.rules.contains(&DataRule::Changes);
+        for index in from..self.len() {
+            let frame = self.frame(index);
+            let wanted = (filter.t0_ns..=filter.t1_ns).contains(&frame.ts_ns)
+                && filter
+                    .channels
+                    .as_ref()
+                    .is_none_or(|c| c.contains(&frame.channel))
+                && keys
+                    .as_ref()
+                    .is_none_or(|k| k.binary_search(&id_key(frame.channel, frame.id)).is_ok())
+                && filter.keeps_kind(frame.flags);
+            if !wanted {
+                continue;
+            }
+            let previous = wants_previous
+                .then(|| self.previous_of_same_kind(index))
+                .flatten()
+                .map(|p| self.frame(p).data);
+            if filter.keeps_payload(frame.data, previous) {
+                if let Err(e) = rows.try_reserve(1) {
+                    rows.truncate(kept);
+                    return Err(e);
+                }
+                rows.push(index as u32);
+            }
+        }
+        Ok(())
     }
 
     /// How many frames match `filter`, without keeping them.
@@ -422,5 +467,44 @@ mod tests {
             ..changes
         };
         check(&s, &late, &[3, 5]);
+    }
+
+    #[test]
+    fn matches_extend_over_frames_stored_later_as_if_found_at_once() {
+        let whole = store();
+        let filters = [
+            FrameFilter::default(),
+            FrameFilter {
+                channels: Some(vec![0]),
+                keys: Some(vec![id_key(0, 0x200), id_key(0, 0x100)]),
+                kinds: Some(vec![FrameKind::Data]),
+                t0_ns: 10,
+                t1_ns: 60,
+                ..FrameFilter::default()
+            },
+            FrameFilter {
+                rules: vec![DataRule::Changes],
+                ..FrameFilter::default()
+            },
+            FrameFilter {
+                t0_ns: 40,
+                t1_ns: 10,
+                ..FrameFilter::default()
+            },
+        ];
+        for filter in &filters {
+            for split in 0..=whole.len() {
+                let mut growing = FrameStore::new();
+                for i in 0..split {
+                    growing.push(whole.frame(i));
+                }
+                let mut rows = growing.filter(filter).unwrap();
+                for i in split..whole.len() {
+                    growing.push(whole.frame(i));
+                }
+                growing.extend_matches(filter, split, &mut rows).unwrap();
+                assert_eq!(rows, whole.filter(filter).unwrap(), "{filter:?} at {split}");
+            }
+        }
     }
 }

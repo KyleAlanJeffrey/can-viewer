@@ -75,6 +75,19 @@ function Switcher(props: ViewProps) {
   );
 }
 
+/** The Trace view over a capture, with a button that adds 200 frames to it as a refresh would. */
+function GrowingCapture(props: ViewProps) {
+  const [log, setLog] = useState(() => logInfo({ format: 'capture', frames: FRAMES, channels: ['can0', 'can1'], durationS: 100 }));
+  return (
+    <>
+      <button type="button" onClick={() => setLog((l) => ({ ...l, frames: l.frames + 200 }))}>
+        More frames
+      </button>
+      <TraceView ctx={{ ...props.ctx, log, capturing: true }} />
+    </>
+  );
+}
+
 const sheet = () => screen.getByRole('dialog', { name: 'Trace filters' });
 const preview = () => within(sheet()).getByRole('status').textContent;
 const chips = () =>
@@ -239,6 +252,23 @@ describe('Trace filters', () => {
     await waitFor(() => expect(within(grid).getAllByRole('row').length).toBeGreaterThan(1));
     const dataCell = within(within(grid).getAllByRole('row')[1]).getAllByRole('gridcell').at(-1);
     expect(dataCell?.textContent).toMatch(/\u2026 \(100 bytes, filter matched past byte 63\)$/);
+  });
+
+  it('filters a capture while it records, the count following the frames that come', async () => {
+    const { user, core, setTraceFilter } = renderFilters(undefined, { view: GrowingCapture });
+    let kept = MATCHES;
+    const rowCount = vi.fn<CoreApi['rowCount']>(async (key) => (key === FILTERED_ROWS ? kept : 0));
+    core.rowCount = rowCount;
+    await addByteRule(user, '1F');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    await waitFor(() => expect(countLine()).toBe(`${MATCHES} of 1,000 frames match`));
+    expect(applied(setTraceFilter)).toHaveLength(1);
+
+    kept = MATCHES + 8;
+    await user.click(screen.getByRole('button', { name: 'More frames' }));
+    await waitFor(() => expect(countLine()).toBe(`${MATCHES + 8} of 1,200 frames match`));
+    // The core added the new matches itself; the log is not filtered again.
+    expect(applied(setTraceFilter)).toHaveLength(1);
   });
 
   it('narrows the filters to the ID picked in the sidebar', async () => {

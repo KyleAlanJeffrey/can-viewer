@@ -105,6 +105,30 @@ describe('Suggested signals on Byte Values', () => {
 
     await user.click(within(panel()).getByRole('button', { name: 'Hide Suggested signals' }));
     expect(screen.queryByRole('complementary', { name: 'Suggested signals' })).toBeNull();
+    // Focus goes to the switch that brings it back, not to the page.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('switch', { name: /^Suggested signals/ })));
+  });
+
+  it('resizes from the grip with the arrow, Home and End keys', async () => {
+    const { user } = await openByteValues([flag]);
+    const grip = within(panel()).getByRole('separator', { name: 'Resize Suggested signals' });
+    expect(grip.getAttribute('aria-valuenow')).toBe('360');
+    grip.focus();
+    await user.keyboard('{ArrowLeft}');
+    expect(grip.getAttribute('aria-valuenow')).toBe('376');
+    await user.keyboard('{End}');
+    expect(grip.getAttribute('aria-valuenow')).toBe('560');
+    await user.keyboard('{Home}');
+    expect(grip.getAttribute('aria-valuenow')).toBe('300');
+  });
+
+  it('says so when the picked suggestion\'s row is filtered out of the table', async () => {
+    const { user } = await openByteValues([flag]);
+    await user.click(card(1));
+    expect(screen.queryByText(/filtered out of the table/)).toBeNull();
+    await user.type(screen.getByRole('searchbox', { name: 'Search' }), '201');
+    expect(await screen.findByText('Its row is filtered out of the table.')).toBeTruthy();
+    expect(screen.getByText('200 \u00b7 Byte 1 \u00b7 bit 12')).toBeTruthy();
   });
 
   it('switches to the suggestions of every message and picks the most promising', async () => {
@@ -200,13 +224,15 @@ describe('Suggested signals on Byte Values', () => {
   });
 
   it('accepts through the New Signal form in Advanced, and dismisses', async () => {
-    const { user } = await openByteValues([flag, speed]);
+    const { user, state } = await openByteValues([flag, speed]);
     await user.click(within(panel()).getByRole('button', { name: 'Dismiss suggestion 1' }));
     expect(within(panel()).queryByRole('button', { name: /^1\. / })).toBeNull();
     expect(screen.getByRole('switch', { name: 'Suggested signals \u00b7 1' })).toBeTruthy();
 
+    expect(state.inspectorOpened).toBe(false);
     await user.click(within(panel()).getByRole('button', { name: 'Accept suggestion 2' }));
     expect(screen.getByRole('tab', { name: 'Advanced' }).getAttribute('aria-selected')).toBe('true');
+    expect(state.inspectorOpened).toBe(true);
     const inspector = screen.getByRole('complementary', { name: 'Inspector' });
     const name = within(inspector).getByRole('textbox', { name: 'Name' }) as HTMLInputElement;
     await waitFor(() => expect(document.activeElement).toBe(name));

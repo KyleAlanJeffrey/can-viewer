@@ -270,13 +270,20 @@ export function Workspace(props: Props) {
   const plotted = new Set(shown.filter((s) => pinned.has(pinId(suggestionPin(summary.key, s)))).map((s) => s.id));
 
   const selectSuggestion = (s: ShownSuggestion, extra: Partial<FormState> = {}) => patch({ ...suggestionForm(s.suggestion), ...extra });
-  const focusNameField = () =>
+  // The inspector may take a frame or two to show, and a hidden field can't take focus.
+  const focusNameField = (tries = 3) =>
     requestAnimationFrame(() => {
-      nameRef.current?.focus();
-      nameRef.current?.select();
+      const field = nameRef.current;
+      if (field && field.offsetParent === null && tries > 0) {
+        focusNameField(tries - 1);
+        return;
+      }
+      field?.focus();
+      field?.select();
     });
   const acceptSuggestion = (s: ShownSuggestion, name: string) => {
     selectSuggestion(s, { name });
+    ctx.openInspector();
     focusNameField();
   };
   useEffect(() => {

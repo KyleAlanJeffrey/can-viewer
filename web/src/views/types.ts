@@ -62,6 +62,8 @@ export interface ViewContext {
   setView(view: ViewId): void;
   /** Hide the inspector pane for a mode of the view that has none; the shell resets it on a view change. */
   setInspectorHidden(hidden: boolean): void;
+  /** Show the inspector pane, as its toolbar toggle does, when the view puts something there to act on. */
+  openInspector(): void;
   /** Open `file` as the log, as Open Log... does but staying in this view. Resolves false if it failed. */
   openLog(file: Blob, name: string): Promise<boolean>;
   /** Make the Compare view's second log the open log, and the open log the second log. Resolves false if it failed. */

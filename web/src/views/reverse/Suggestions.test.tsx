@@ -249,7 +249,9 @@ describe('Suggested signals', () => {
     });
     await waitFor(() => expect(within(panel()).queryByRole('progressbar')).toBeNull());
 
+    expect(state.inspectorOpened).toBe(false);
     await user.click(within(row(2)).getByRole('button', { name: 'Accept suggestion 2' }));
+    expect(state.inspectorOpened).toBe(true);
     const inspector = screen.getByRole('complementary', { name: 'Inspector' });
     const name = within(inspector).getByRole('textbox', { name: 'Name' }) as HTMLInputElement;
     await waitFor(() => expect(document.activeElement).toBe(name));

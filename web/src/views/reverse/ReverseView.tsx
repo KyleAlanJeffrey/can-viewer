@@ -68,6 +68,7 @@ export function ReverseView({ ctx }: ViewProps) {
   const nameFocused = useCallback(() => setFocusName(false), []);
   const [, setForms] = useCandidateForms();
   const scroller = useRef<HTMLDivElement>(null);
+  const panelSwitch = useRef<HTMLInputElement>(null);
   const references = useReferences(ctx, pins);
 
   useEffect(() => {
@@ -157,6 +158,7 @@ export function ReverseView({ ctx }: ViewProps) {
     setForms((all) => ({ ...all, [key]: { ...(all[key] ?? initialForm(null)), ...suggestionForm(s.suggestion), name } }));
     if (key !== selected) ctx.select(key);
     setFocusName(true);
+    ctx.openInspector();
     setMode('advanced');
   };
 
@@ -217,7 +219,7 @@ export function ReverseView({ ctx }: ViewProps) {
             <>
               <span className="re-scope-note">{scope}</span>
               <label className="re-sug-toggle">
-                <input type="checkbox" role="switch" className="switch" checked={panelOpen} onChange={(e) => setPanelOpen(e.target.checked)} />
+                <input ref={panelSwitch} type="checkbox" role="switch" className="switch" checked={panelOpen} onChange={(e) => setPanelOpen(e.target.checked)} />
                 Suggested signals{suggestionCount !== null && ` \u00b7 ${formatCount(suggestionCount)}`}
               </label>
             </>
@@ -303,7 +305,11 @@ export function ReverseView({ ctx }: ViewProps) {
                     pins={pins}
                     onPlot={(key, s) => togglePin(suggestionPin(key, s))}
                     onPick={selectRow}
-                    onHide={() => setPanelOpen(false)}
+                    onHide={() => {
+                      setPanelOpen(false);
+                      // The panel took its focused button with it.
+                      requestAnimationFrame(() => panelSwitch.current?.focus());
+                    }}
                     width={panelWidth}
                     onWidth={setPanelWidth}
                   />

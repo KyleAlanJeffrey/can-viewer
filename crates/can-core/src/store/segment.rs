@@ -6,8 +6,9 @@
 //! between the last frame of each kind before the part and the first in it, each a pair of
 //! frames compared over their bytes in common, and the gaps between frames, redone frame by
 //! frame so their floating-point sums come out the same. J1939 transfers are reassembled as
-//! the part is joined, since their packets may span parts; a part that completes one has its
-//! statistics worked out again frame by frame instead.
+//! the part is joined, since their packets may span parts. Each is stored right after the
+//! packet that completed it, so the part's later frames move down a row per transfer, and the
+//! IDs the transfers are reassembled to have their statistics worked out again frame by frame.
 //!
 //! A part whose times count on from the parts before it (an ASC file's relative times) is
 //! joined with a [`TimeShift`] added to the times of its first frames. The integer gaps between
@@ -16,11 +17,11 @@
 
 use std::fmt;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{flags, id_key, FrameKind, FrameRef, FrameSink, MAX_PAYLOAD};
 
-use super::{count_flips, count_pair, set_last_data, FrameStore, IdStats};
+use super::{count_flips, count_pair, set_last_data, FrameStore, IdKey, IdStats};
 
 const MAGIC: &[u8; 4] = b"FCS2";
 
@@ -163,44 +164,125 @@ impl FrameStore {
         let distinct_buses = sorted.len() == buses.len();
 
         let first = self.len();
-        let mut reassembled = false;
+        // The segment's frames that completed a transfer, each followed in the store by it.
+        let mut completions = Vec::new();
         for j in 0..segment.len() {
             let (frame, stored) = segment.frame(j, &buses);
             self.append_row(&frame, stored);
-            reassembled |= self.reassemble(&frame, false);
+            if self.reassemble(&frame, false) {
+                completions.push(j);
+            }
         }
-        if reassembled || !distinct_buses || segment.shifted_in_part() {
-            // Transfers come between the segment's frames, buses that share a number mix
-            // their IDs' frames, and a shift that stops partway changes the gaps where it
-            // stops, so the statistics are worked out frame by frame.
-            let mut index = std::mem::take(&mut self.index);
+        let mut index = std::mem::take(&mut self.index);
+        if !distinct_buses || segment.shifted_in_part() {
+            // Buses that share a number mix their IDs' frames, and a shift that stops partway
+            // changes the gaps where it stops, so the statistics are worked out frame by frame.
             for i in first..self.len() {
                 index.observe(i as u32, &self.frame(i));
             }
             self.index = index;
             return Ok(());
         }
-        let index = &mut self.index;
-        for part in &segment.ids {
+        let rows = Rows::new(first, &completions, segment.len());
+        // The IDs of the transfers have frames among the segment's, so they are counted frame by
+        // frame; every other ID's frames in the store are the segment's, in its order.
+        let mut touched: FxHashMap<IdKey, Touched> = FxHashMap::default();
+        for &j in &completions {
+            let row = rows.row(j) + 1;
+            let key = id_key(self.channel[row], self.id[row]);
+            touched.entry(key).or_default().transfers.push(row as u32);
+        }
+        // With the row of their first frame, to be numbered in order of first appearance.
+        let mut new_ids: Vec<(u32, IdStats)> = Vec::new();
+        for (k, part) in segment.ids.iter().enumerate() {
             let channel = buses[part.channel];
-            match index.by_key.get(&id_key(channel, part.id)) {
-                Some(&i) => index.ids[i].join(part, &segment, first),
+            let key = id_key(channel, part.id);
+            if let Some(touched) = touched.get_mut(&key) {
+                touched.part = Some(k);
+                continue;
+            }
+            match index.by_key.get(&key) {
+                Some(&i) => index.ids[i].join(part, &segment, &rows),
                 None => {
-                    index
-                        .by_key
-                        .insert(id_key(channel, part.id), index.ids.len());
-                    index.ids.push(part.stats(channel, first, segment.shift_ns));
+                    let stats = part.stats(channel, &rows, segment.shift_ns);
+                    new_ids.push((stats.frames[0], stats));
                 }
             }
         }
+        for (key, touched) in &touched {
+            let mut id_rows = touched.transfers.clone();
+            if let Some(k) = touched.part {
+                id_rows.extend(segment.ids[k].frames().map(|j| rows.row(j) as u32));
+                id_rows.sort_unstable();
+            }
+            let stats = match index.by_key.get(key) {
+                Some(&i) => &mut index.ids[i],
+                None => {
+                    let frame = self.frame(id_rows[0] as usize);
+                    let stats = IdStats::new(frame.channel, frame.id, frame.ts_ns);
+                    new_ids.push((id_rows[0], stats));
+                    &mut new_ids.last_mut().unwrap().1
+                }
+            };
+            for &row in &id_rows {
+                stats.observe(row, &self.frame(row as usize));
+            }
+        }
+        new_ids.sort_unstable_by_key(|&(first_row, _)| first_row);
+        for (_, stats) in new_ids {
+            index.by_key.insert(stats.key(), index.ids.len());
+            index.ids.push(stats);
+        }
+        self.index = index;
         Ok(())
     }
 }
 
+/// An ID that transfers completed in a segment are reassembled to.
+#[derive(Default)]
+struct Touched {
+    /// The ID's entry among the segment's, if it has frames there too.
+    part: Option<usize>,
+    /// The rows of the transfers, in order.
+    transfers: Vec<u32>,
+}
+
+/// Where a segment's frames land in the store: from `first` on, each after the transfers the
+/// frames before it completed.
+enum Rows {
+    InOrder { first: usize },
+    AfterTransfers(Vec<u32>),
+}
+
+impl Rows {
+    /// `completions` are the frames that completed a transfer, in order.
+    fn new(first: usize, completions: &[usize], len: usize) -> Self {
+        if completions.is_empty() {
+            return Self::InOrder { first };
+        }
+        let mut rows = Vec::with_capacity(len);
+        let mut before = 0;
+        for j in 0..len {
+            rows.push((first + j + before) as u32);
+            if completions.get(before) == Some(&j) {
+                before += 1;
+            }
+        }
+        Self::AfterTransfers(rows)
+    }
+
+    fn row(&self, j: usize) -> usize {
+        match self {
+            Self::InOrder { first } => first + j,
+            Self::AfterTransfers(rows) => rows[j] as usize,
+        }
+    }
+}
+
 impl IdStats {
-    /// Carries on with the frames of `part`, the same ID's frames in a segment whose first frame
-    /// is now at `first`, as [`IdStats::observe`] would frame by frame.
-    fn join(&mut self, part: &SegmentId<'_>, segment: &Segment<'_>, first: usize) {
+    /// Carries on with the frames of `part`, the same ID's frames in a segment whose frames are
+    /// now at `rows`, as [`IdStats::observe`] would frame by frame.
+    fn join(&mut self, part: &SegmentId<'_>, segment: &Segment<'_>, rows: &Rows) {
         grow_to(&mut self.bit_flips, part.bit_flips.len() / 4);
         for (kind, last_of_part) in part.last_data.iter().enumerate() {
             let Some(last_of_part) = last_of_part else {
@@ -225,7 +307,7 @@ impl IdStats {
             *count += pairs;
         }
         for j in part.frames() {
-            self.observe_time((first + j) as u32, segment.ts(j));
+            self.observe_time(rows.row(j) as u32, segment.ts(j));
         }
         self.flags |= part.flags;
         self.min_len = self.min_len.min(part.min_len);
@@ -466,13 +548,13 @@ impl SegmentId<'_> {
     }
 
     /// The statistics of an ID first seen in this segment, on bus `channel`, with the segment's
-    /// first frame at `first` and every frame's time shifted by `shift_ns`.
-    fn stats(&self, channel: u8, first: usize, shift_ns: i64) -> IdStats {
+    /// frames at `rows` and every frame's time shifted by `shift_ns`.
+    fn stats(&self, channel: u8, rows: &Rows, shift_ns: i64) -> IdStats {
         IdStats {
             channel,
             id: self.id,
             flags: self.flags,
-            frames: self.frames().map(|j| (first + j) as u32).collect(),
+            frames: self.frames().map(|j| rows.row(j) as u32).collect(),
             first_ts_ns: self.first_ts_ns.saturating_add(shift_ns),
             last_ts_ns: self.last_ts_ns.saturating_add(shift_ns),
             min_len: self.min_len,
@@ -849,6 +931,132 @@ mod tests {
             whole.shrink_to_fit();
             assert_same(&store, &whole, &format!("cut at {cut}"));
         }
+    }
+
+    /// The TP.CM announcement of `data` as PGN `pgn` from `source` to `destination` (a BAM
+    /// to 0xFF, an RTS otherwise), then its TP.DT packets, as IDs and payloads.
+    fn transfer(source: u32, destination: u32, pgn: u32, data: &[u8]) -> Vec<(u32, Vec<u8>)> {
+        let control = if destination == 0xFF { 32 } else { 16 };
+        let packets = data.len().div_ceil(7) as u8;
+        let size = (data.len() as u16).to_le_bytes();
+        let [pgn_lo, pgn_mid, pgn_hi, _] = pgn.to_le_bytes();
+        let addresses = (destination << 8) | source;
+        let mut frames = vec![(
+            EXT_FLAG | 0x18EC_0000 | addresses,
+            vec![
+                control, size[0], size[1], packets, 0xFF, pgn_lo, pgn_mid, pgn_hi,
+            ],
+        )];
+        for (n, chunk) in data.chunks(7).enumerate() {
+            let mut packet = vec![n as u8 + 1];
+            packet.extend_from_slice(chunk);
+            packet.resize(8, 0xFF);
+            frames.push((EXT_FLAG | 0x18EB_0000 | addresses, packet));
+        }
+        frames
+    }
+
+    /// The frames of each stream in turn, one from each until all are done.
+    fn interleave(streams: Vec<Vec<(u32, Vec<u8>)>>) -> Vec<(u32, Vec<u8>)> {
+        let longest = streams.iter().map(Vec::len).max().unwrap_or(0);
+        (0..longest)
+            .flat_map(|n| streams.iter().filter_map(move |s| s.get(n).cloned()))
+            .collect()
+    }
+
+    /// A log that is mostly J1939 transfers: BAMs from several sources at once with their
+    /// packets interleaved, one aborted and one announced again before it was done, an RTS, a
+    /// transfer on a second bus, DM1 single frames on the ID a DM1 transfer is reassembled to,
+    /// a transfer onto the ID of its own packets, and plain frames, some of IDs first seen after
+    /// the first transfers.
+    fn j1939_log() -> Vec<Pushed> {
+        let single_dm1 = |lamp: u8| {
+            (
+                EXT_FLAG | 0x18FE_CA21,
+                vec![lamp, 0xFF, 0x61, 0x02, 0x13, 0x01, 0xFF, 0xFF],
+            )
+        };
+        let plain = |id: u32, n: u8| (id, vec![n, n.wrapping_mul(3), 0x80]);
+        let bytes = |len: usize, seed: u8| -> Vec<u8> {
+            (0..len)
+                .map(|i| seed.wrapping_mul(i as u8 + 1) ^ 0x5A)
+                .collect()
+        };
+        let mut aborted = transfer(0x23, 0xFF, 0xFECA, &bytes(16, 3));
+        aborted.truncate(2);
+        aborted.push((
+            EXT_FLAG | 0x18EC_FF23,
+            vec![255, 3, 0xFF, 0xFF, 0xFF, 0xCA, 0xFE, 0x00],
+        ));
+        let mut announced_again = transfer(0x24, 0xFF, 0xFEE3, &bytes(13, 4));
+        announced_again.truncate(2);
+        announced_again.extend(transfer(0x24, 0xFF, 0xFEE3, &bytes(13, 5)));
+
+        let mut rows = vec![plain(0x100, 0), single_dm1(0x04)];
+        rows.extend(interleave(vec![
+            transfer(0x21, 0xFF, 0xFECA, &bytes(10, 1)),
+            transfer(0x22, 0xFF, 0xFEE3, &bytes(20, 2)),
+            aborted,
+            (1..4).map(|n| plain(0x100, n)).collect(),
+        ]));
+        rows.push(plain(0x300, 0));
+        rows.push(single_dm1(0x44));
+        rows.extend(interleave(vec![
+            transfer(0x21, 0xFF, 0xFECA, &bytes(10, 6)),
+            announced_again,
+            transfer(0x25, 0x00, 0xFEDA, &bytes(9, 7)),
+            vec![single_dm1(0x40), plain(0x300, 1), plain(0x100, 4)],
+        ]));
+        // PGN 0xEB00 to everyone from 0x26 is reassembled onto the ID of its own packets.
+        rows.extend(transfer(0x26, 0xFF, 0xEB00, &bytes(8, 8)));
+        rows.push(plain(0x100, 5));
+        let mut frames: Vec<Pushed> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(n, (id, data))| frame("can1", 1_000 + 10 * n as i64, id, &data))
+            .collect();
+        // The same transfer from 0x21 on another bus, among the frames above.
+        let other_bus = transfer(0x21, 0xFF, 0xFECA, &bytes(10, 9));
+        for (k, (id, data)) in other_bus.into_iter().enumerate() {
+            let at = 5 + 7 * k;
+            let ts_ns = frames[at].ts_ns;
+            frames.insert(at, frame("can2", ts_ns, id, &data));
+        }
+        frames
+    }
+
+    #[test]
+    fn a_j1939_log_reads_the_same_in_parts_wherever_it_is_cut() {
+        let frames = j1939_log();
+        let mut whole = FrameStore::new();
+        push_into(&mut whole, &frames);
+        // Both DM1 transfers from 0x21 on can1, the one from 0x22, the second from 0x24, the
+        // RTS, the transfer onto its own packets' ID, and the one on can2.
+        assert_eq!(whole.reassembled_frames(), 7);
+        let dm1 = whole.id_stats(id_key(0, EXT_FLAG | 0x18FE_CA21)).unwrap();
+        assert_eq!(dm1.frames.len(), 5, "three single frames and two transfers");
+
+        for a in 0..=frames.len() {
+            for b in a..=frames.len() {
+                assert_parts_read_as_whole(&frames, &[a, b]);
+            }
+        }
+        let every_frame: Vec<usize> = (1..frames.len()).collect();
+        assert_parts_read_as_whole(&frames, &every_frame);
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        for _ in 0..200 {
+            let mut cuts: Vec<usize> = (0..1 + seed % 8)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    (seed % (frames.len() as u64 + 1)) as usize
+                })
+                .collect();
+            cuts.sort_unstable();
+            assert_parts_read_as_whole(&frames, &cuts);
+        }
+        assert_shifted_parts_read_as_whole(&frames);
     }
 
     #[test]

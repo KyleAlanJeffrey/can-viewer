@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { FrameFilter, ScopedDatabase } from './api';
+import type { FrameFilter, MessageSuggestions, ScopedDatabase } from './api';
 import { WebCore } from './webCore';
 import type { Request } from './worker';
 
@@ -144,6 +144,52 @@ describe('WebCore', () => {
     await expect(core.rowCount(1)).rejects.toThrow('Failed to fetch the wasm module');
     expect(FakeWorker.all).toHaveLength(1);
     expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('scans messages one at a time with progress, and stops between them when cancelled', async () => {
+    const core = new WebCore();
+    const worker = FakeWorker.all[0];
+    const found = (key: number): MessageSuggestions => ({ key, frames: 10, sampledFrames: 10, suggestions: [] });
+    const progress = vi.fn();
+    const hints = { markers: [{ t: 3 }] };
+    const scan = core.scanSignals([1, 2], hints, progress);
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(1));
+    expect(worker.requests[0]).toEqual(expect.objectContaining({ method: 'suggestSignals', args: [1, hints] }));
+    worker.reply('suggestSignals', { result: found(1) });
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(2));
+    expect(progress).toHaveBeenLastCalledWith(1, 2, found(1));
+    worker.requests.shift();
+    worker.reply('suggestSignals', { result: found(2) });
+    await expect(scan).resolves.toEqual([found(1), found(2)]);
+    expect(progress).toHaveBeenLastCalledWith(2, 2, found(2));
+
+    const controller = new AbortController();
+    worker.requests.length = 0;
+    const cancelled = core.scanSignals([3, 4, 5], {}, () => {}, controller.signal);
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(1));
+    controller.abort();
+    worker.reply('suggestSignals', { result: found(3) });
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    expect(worker.requests).toHaveLength(1);
+  });
+
+  it('passes over messages a scan finds already suggested for when their turn comes', async () => {
+    const core = new WebCore();
+    const worker = FakeWorker.all[0];
+    const found = (key: number): MessageSuggestions => ({ key, frames: 10, sampledFrames: 10, suggestions: [] });
+    const known = new Set([2]);
+    const progress = vi.fn();
+    const scan = core.scanSignals([1, 2, 3], {}, progress, undefined, (key) => known.has(key));
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(1));
+    known.add(3);
+    worker.reply('suggestSignals', { result: found(1) });
+    await expect(scan).resolves.toEqual([found(1)]);
+    expect(worker.requests.map((r) => r.args[0])).toEqual([1]);
+    expect(progress.mock.calls).toEqual([
+      [1, 3, found(1)],
+      [2, 3, null],
+      [3, 3, null],
+    ]);
   });
 
   it('passes a capture its name, and its frames packed and transferred', async () => {

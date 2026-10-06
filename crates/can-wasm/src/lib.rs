@@ -3,11 +3,14 @@
 //!
 //! Bulk data crosses the boundary as typed arrays; small structured results as JSON strings.
 
+mod checksum;
 mod clock;
 mod compare;
+mod discover;
 mod export;
 mod find;
 mod series;
+mod suggest;
 
 use std::collections::VecDeque;
 
@@ -514,6 +517,7 @@ impl Session {
         self.input = LogInput::default();
         self.series.clear();
         self.filtered = None;
+        self.export = VecDeque::new();
         // Compared against a capture still growing, log B would show differences that aren't.
         self.log_b = None;
         let channel = self.store.channel_index(channel.as_bytes());

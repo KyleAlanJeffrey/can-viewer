@@ -57,7 +57,7 @@ fn parse_line<S: FrameSink>(line: &[u8], sink: &mut S) -> Result<(), &'static st
         .strip_prefix(b"(")
         .ok_or("expected '(' before timestamp")?;
     let close = memchr::memchr(b')', rest).ok_or("unterminated timestamp")?;
-    let ts_ns = parse_decimal_ns(&rest[..close], 9).ok_or("bad timestamp")?;
+    let ts_ns = parse_timestamp(&rest[..close]).ok_or("bad timestamp")?;
     let mut fields = rest[close + 1..]
         .split(|&b| b == b' ')
         .filter(|f| !f.is_empty());
@@ -78,6 +78,15 @@ fn parse_line<S: FrameSink>(line: &[u8], sink: &mut S) -> Result<(), &'static st
         data: &data[..len],
     });
     Ok(())
+}
+
+/// Seconds with up to nine decimals, negative for times before the epoch (as the candump
+/// writer writes them for a log that has some).
+fn parse_timestamp(s: &[u8]) -> Option<i64> {
+    match s.strip_prefix(b"-") {
+        Some(magnitude) => parse_decimal_ns(magnitude, 9).map(|ns| -ns),
+        None => parse_decimal_ns(s, 9),
+    }
 }
 
 fn parse_frame(
@@ -263,6 +272,15 @@ mod tests {
             (1, 1),
             "unterminated at the end"
         );
+    }
+
+    #[test]
+    fn negative_timestamps() {
+        let (sink, stats) =
+            parse("(-1.500000) can0 123#01\n(-0.25) can0 123#02\n(-) can0 123#03\n");
+        assert_eq!(stats.rejected, 1);
+        assert_eq!(sink.frames[0].0, -1_500_000_000);
+        assert_eq!(sink.frames[1].0, -250_000_000);
     }
 
     #[test]

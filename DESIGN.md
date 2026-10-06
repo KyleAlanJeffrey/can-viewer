@@ -430,10 +430,14 @@ Virtualised and canvas-drawn for 10M+ frames, with a custom 10px scrollbar (Grap
 - **Signal outlines:** each DBC signal's bit range gets a rounded outline in its series colour, 2px, or 3px while its signal row is hovered. The outline sits on a Paper White halo 4px wider than the stroke, so the ochre series 1 stays readable against ochre cells.
 - **Legend:** "Rarely -> Every frame" in 12px Slate, with an Unset Cell swatch and six 14px ramp swatches.
 - **Tooltip:** hover shows a Paper tooltip with the Float shadow.
+- **Suggested regions** (Reverse Engineer Advanced): each suggested signal gets a solid 1.5px Slate outline on a Paper halo with its number in a small Paper badge at its top-left cell, matching the number in the Suggested signals list. Hovering or focusing it, on the grid or in the list, draws it 3px Graphite with the badge inverted, so the link never relies on colour. The dashed selection draws on top.
 - **Selection** (Reverse Engineer): dragging across cells selects a bit range, outlined as one shape by a 2px dashed Graphite line in the gutters, on a Paper halo. Arrow keys move a focus cell and Shift extends. In bit history, 1-bits are Graphite, 0-bits Unset Cell, and the selected bits sit on a pale amber band with a dashed bracket so the selection never relies on colour.
 
 ### Signals List
 36px rows, inset by an 8px negative margin, with 8px corners and Hover Wash. Each row has a 10px series dot, the name at 500 with the unit in Slate, the mono 12px Slate layout (`0|16@1+`), and a Plot checkbox under a 12px Slate "Plot" column label. Defining a signal from a bit selection lives in Reverse Engineer, not here.
+
+### Suggested Signals List
+Beside the bit grid in Reverse Engineer Advanced, wrapping below it when narrow. Each suggestion is a Paper row with a Hairline border and 8px corners: a Graphite-outlined number badge, the kind at 600, the bits and byte order in 12px Slate, the confidence as a word and a percentage in Graphite (never a colour alone), a graphite sparkline and the reason. Its actions (Accept, Dismiss, Plot it) are outlined buttons; the view's one amber button stays Add to Database in the inspector. The hovered row takes a Graphite border; the selected one Selected Row. An accepted row swaps its actions for a Graphite check, "Accepted", Review in Database and Undo. The panel opens with "Suggestions are guesses. Check them against the log before accepting." While a live capture records, it holds only "Suggestions are made once the capture stops." The scan's progress bar is a plain Slate fill with no animation.
 
 ### Banner and Empty State
 - **Banner:** Paper White, Hairline, 8px corners, with a Rust warning icon and a Slate detail line. The update banner ("A new version of FreeCAN Studio is ready", or "This tab is out of date. Reload to keep working." once another tab has moved to it, with an outline Reload button) is news, not a warning, so its icon is a Slate refresh icon.

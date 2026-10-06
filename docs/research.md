@@ -176,6 +176,7 @@ There are effectively no real CAN log parsers on npm.
 - Drag bits to define a signal and see it plotted instantly, with byte-order and signed toggles.
 - Notching and suppression.
 - A manual "Find Signal" constraint search.
+- Automated signal discovery (shipped as Suggested signals): boundary detection, labels for counters, checksums and CRCs, and correlation against a reference signal.
 - Full CAN-FD support.
 - Privacy: files are never uploaded.
 
@@ -185,7 +186,7 @@ There are effectively no real CAN log parsers on npm.
 - UDS and ISO-TP scanning.
 - Multi-camera video sync.
 - Multi-GB files.
-- Automated discovery: boundary detection, auto-labels for counters and CRCs, correlation against OBD/GPS references, the CRC solver, opendbc fingerprinting.
+- Deeper discovery on top of the free Suggested signals: correlation against OBD/GPS references, the CRC solver, opendbc fingerprinting.
 - Scripting and CLI automation.
 - Multi-bus work.
 - Advanced formats: ARXML, KME, CANedge MFC/MFE, VSB, LIN/Ethernet/FlexRay objects.

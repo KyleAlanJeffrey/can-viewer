@@ -6,18 +6,21 @@ import type {
   CompareOptions,
   CoreApi,
   Database,
+  DiscoveryHints,
   ExportFormat,
   FindRule,
   FrameFilter,
   IdComparison,
   IdSummary,
   LogInfo,
+  MessageSuggestions,
   Progress,
   RawSignalSpec,
   ScopedDatabase,
   SeriesInfo,
 } from './api';
 import { packFrames } from './captureFrames';
+import { scanEach } from './discovery';
 import { RowBatch } from './rows';
 import type { Request } from './worker';
 
@@ -180,6 +183,18 @@ export class WebCore implements CoreApi {
 
   findSignal(rules: FindRule[], keys: number[], limit: number) {
     return this.call<Candidate[]>('findSignal', rules, keys, limit);
+  }
+
+  suggestSignals = (key: number, hints: DiscoveryHints = {}) => this.call<MessageSuggestions>('suggestSignals', key, hints);
+
+  scanSignals(
+    keys: number[],
+    hints: DiscoveryHints,
+    onProgress: (done: number, total: number, latest: MessageSuggestions | null) => void,
+    signal?: AbortSignal,
+    skip?: (key: number) => boolean,
+  ) {
+    return scanEach(this.suggestSignals, keys, hints, onProgress, signal, skip);
   }
 
   openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Promise<LogInfo> {

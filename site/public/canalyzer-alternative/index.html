@@ -26,6 +26,7 @@
     <a class="brand" href="/"><img src="/logo.svg" alt="" width="30" height="32"><span><strong>FreeCAN</strong> Studio</span></a>
     <nav class="site-nav" aria-label="Main">
       <a href="/#features">Features</a>
+      <a href="/#capture">Live Capture</a>
       <a href="/#privacy">Privacy</a>
       <a href="/#formats">Formats</a>
     </nav>
@@ -96,6 +97,10 @@
           <p>For reading and decoding recorded logs it may be all you need, and it can record a bus with an slcan or candleLight adapter, though live capture is still experimental. It does not work with Vector, PEAK or Kvaser interfaces, it cannot transmit or replay traffic, and it has no scripting. If you need those, use a tool made for your hardware.</p>
         </div>
         <div class="faq-item">
+          <h3>Can it record from a CAN adapter?</h3>
+          <p>Yes, in Chrome or Edge on a desktop computer: plug in an slcan adapter, such as a CANable or USBtin, or a candleLight (gs_usb) adapter, and Overview, Trace and Plot follow the bus as it records. It only receives, and Save Capture&hellip; writes the recording as a candump log. Live capture is experimental and not yet tested with real hardware. <a href="/#capture">More about live capture</a>.</p>
+        </div>
+        <div class="faq-item">
           <h3>Which files from my existing setup can I open?</h3>
           <p>BLF and ASC logs and DBC databases, as well as MF4, PEAK TRC, CSV and candump logs. FreeCAN Studio reads the CAN frames in a log; LIN, FlexRay and Ethernet traffic is skipped. Other file types, such as tool configurations, are not read.</p>
         </div>
@@ -109,7 +114,7 @@
         </div>
         <div class="faq-item">
           <h3>Which browsers does it run in?</h3>
-          <p>Current desktop versions of Chrome, Edge, Firefox and Safari. Phones and tablets are not supported.</p>
+          <p>Current desktop versions of Chrome, Edge, Firefox and Safari. Phones and tablets are not supported. <a href="/#capture">Live capture</a> from a CAN adapter needs Chrome or Edge.</p>
         </div>
         <div class="faq-item">
           <h3>Is it free?</h3>

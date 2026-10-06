@@ -15,6 +15,7 @@ It is plain static HTML with one shared stylesheet. There is no build step and n
 | `public/fonts/` | IBM Plex Sans 400/500/600 and Mono 400/600, Latin subset, copied from `web/node_modules/@fontsource`, with their OFL licences |
 | `public/logo.svg`, `public/favicon.svg` | The Twisted F, exported from `web/src/components/Logo.tsx` with the gaps painted Warm White |
 | `public/og-image.png` | The 1200 x 630 social preview image |
+| `public/capture-sheet.webp` | Screenshot of the app's Live Capture sheet for the home page's live capture section, 560 x 607 at 2x. Retake it if the sheet changes |
 | `public/_headers` | Content-Security-Policy and caching |
 | `public/robots.txt`, `public/sitemap.xml` | For search engines. Add new pages to the sitemap |
 | `wrangler.jsonc` | The `freecan-site` Workers static-assets project |

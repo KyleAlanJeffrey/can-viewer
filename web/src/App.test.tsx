@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CaptureFrame, CoreApi } from './core/api';
+import type { CaptureFrame, CoreApi, LogInfo } from './core/api';
 import { FakeSerialPort } from './test/fakeSerial';
 import { fakeCore, logInfo, summary } from './test/fixtures';
 
@@ -372,5 +372,80 @@ describe('App live capture', () => {
     render(<App core={fakeCore()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
     expect(within(await screen.findByRole('dialog', { name: 'Live Capture' })).getByText(/needs Chrome or Edge/)).toBeTruthy();
+  });
+});
+
+describe('Compare in the app', () => {
+  /** A core that reads logs by name and holds a log B beside the open log, as the real one does. */
+  function compareApp(openCompareLog?: CoreApi['openCompareLog']) {
+    const held = { a: null as string | null, b: null as string | null };
+    const core = fakeCore({
+      openLog: async (_file, name) => {
+        held.a = name;
+        held.b = null;
+        return logInfo({ name });
+      },
+      idSummary: async () => [],
+      openCompareLog:
+        openCompareLog ??
+        (async (_file, name) => {
+          held.b = name;
+          return logInfo({ name });
+        }),
+      compareLogInfo: async () => (held.b ? logInfo({ name: held.b }) : null),
+      compareLogs: async () => [],
+      swapCompareLog: async () => {
+        [held.a, held.b] = [held.b, held.a];
+        return logInfo({ name: held.a! });
+      },
+    });
+    return core;
+  }
+
+  async function savedSession(log: string, compare: string) {
+    const session = await import('./session');
+    await session.save('log', { name: log, blob: new Blob([log]) });
+    await session.save('compare', { name: compare, blob: new Blob([compare]) });
+    await session.save('ui', { view: 'compare', selected: -1, pinnedTime: null, plots: [] });
+    return session;
+  }
+
+  it('trades the saved copies on Swap', async () => {
+    const App = await freshApp();
+    const session = await savedSession('a.log', 'b.log');
+    render(<App core={compareApp()} />);
+    const swap = await screen.findByRole('button', { name: 'Swap logs A and B' });
+    await waitFor(() => expect((swap as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(swap);
+    await waitFor(async () => expect((await session.loadSaved<{ name: string }>('log'))?.name).toBe('b.log'));
+    expect((await session.loadSaved<{ name: string }>('compare'))?.name).toBe('a.log');
+  });
+
+  it('forgets a saved copy that is not of the log being swapped', async () => {
+    const App = await freshApp();
+    const session = await savedSession('a.log', 'b.log');
+    render(<App core={compareApp()} />);
+    const swap = await screen.findByRole('button', { name: 'Swap logs A and B' });
+    await waitFor(() => expect((swap as HTMLButtonElement).disabled).toBe(false));
+    // As if the copies of the open logs never landed, leaving older logs under both keys.
+    await session.save('log', { name: 'older.log', blob: new Blob(['o']) });
+    await session.save('compare', { name: 'older-b.log', blob: new Blob(['p']) });
+    await userEvent.click(swap);
+    await waitFor(async () => expect(await session.loadSaved('log')).toBeUndefined());
+    expect(await session.loadSaved('compare')).toBeUndefined();
+    expect(await screen.findByText(/couldn.t keep a copy of b\.log/)).toBeTruthy();
+  });
+
+  it('stays busy while log B is read after the open log is', async () => {
+    const App = await freshApp();
+    await savedSession('a.log', 'b.log');
+    let finish: (info: LogInfo) => void = () => {};
+    const core = compareApp(() => new Promise<LogInfo>((resolve) => (finish = resolve)));
+    render(<App core={core} />);
+    expect(await screen.findByText(/^Reading\u2026/)).toBeTruthy();
+    expect(screen.getAllByRole('status').map((s) => s.textContent)).toContain('Reading b.log\u2026');
+    expect((screen.getByRole('button', { name: 'Open Log\u2026' }) as HTMLButtonElement).disabled).toBe(true);
+    finish(logInfo({ name: 'b.log' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Open Log\u2026' }) as HTMLButtonElement).disabled).toBe(false));
   });
 });

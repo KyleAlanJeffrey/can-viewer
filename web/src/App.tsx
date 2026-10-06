@@ -185,8 +185,14 @@ export function App({ core }: { core: CoreApi }) {
   const messageOf = useCallback((key: number) => resolved.get(key)?.message ?? null, [resolved]);
   const dbcOf = useCallback((key: number) => resolved.get(key)?.dbc ?? null, [resolved]);
 
+  /** Tasks under way, latest last: the app stays busy until every one has ended. */
+  const tasks = useRef<Busy[]>([]);
   const run = useCallback(async (label: string, task: () => Promise<void>) => {
-    setBusy({ label, fraction: null });
+    const mine: Busy = { label, fraction: null };
+    tasks.current.push(mine);
+    // Set now, not on the next render, so a file dropped meanwhile is turned away.
+    busyRef.current = mine;
+    setBusy(mine);
     setError(null);
     try {
       await task();
@@ -195,7 +201,10 @@ export function App({ core }: { core: CoreApi }) {
       setError(e instanceof Error ? e.message : String(e));
       return false;
     } finally {
-      setBusy(null);
+      tasks.current = tasks.current.filter((t) => t !== mine);
+      const still = tasks.current[tasks.current.length - 1] ?? null;
+      busyRef.current = still;
+      setBusy(still);
     }
   }, []);
 
@@ -386,13 +395,18 @@ export function App({ core }: { core: CoreApi }) {
     () =>
       run('Swapping the logs\u2026', () =>
         serially(async () => {
+          const outgoing = logRef.current?.name;
           const info = await core.swapCompareLog();
           await showOpenedLog(info);
           viewState.clearScope('log');
           // A video lines up with the log it was added to.
           videoSession.close();
-          // The saved copies trade places too, so a reload reopens each log where it now is.
-          const [a, b] = await Promise.all([loadSaved<SavedLog>('log'), loadSaved<SavedLog>('compare')]);
+          // The saved copies trade places too, so a reload reopens each log where it now is. A
+          // copy that never landed, or failed to, leaves an older log under its key, which must
+          // not come back as the other log.
+          const [savedA, savedB] = await Promise.all([loadSaved<SavedLog>('log'), loadSaved<SavedLog>('compare')]);
+          const a = savedA?.name === outgoing ? savedA : undefined;
+          const b = savedB?.name === info.name ? savedB : undefined;
           if (!b || !(await save('log', b))) {
             setNotKept(info.name);
             await forget('log');
@@ -911,6 +925,7 @@ export function App({ core }: { core: CoreApi }) {
     pinnedTime,
     setPinnedTime,
     run,
+    busyLabel: () => busyRef.current?.label ?? null,
     setError,
     setView,
     // Left unsettled if the discard prompt is cancelled, so the caller goes no further.

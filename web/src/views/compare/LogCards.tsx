@@ -14,6 +14,8 @@ interface Props {
   /** Undefined while the view checks whether the core still holds one. */
   logB: LogInfo | null | undefined;
   reading: Reading | null;
+  /** Another task is under way: no log can be opened until it ends. */
+  busy: boolean;
   /** This browser couldn't keep a copy of log B, so it won't come back after a reload. */
   notKept: boolean;
   onReplaceA: () => void;
@@ -23,9 +25,10 @@ interface Props {
 }
 
 /** Logs A and B side by side, with Replace... for each and Swap between them. */
-export function LogCards({ logA, logB, reading, notKept, onReplaceA, onPickB, onDropB, onSwap }: Props) {
+export function LogCards({ logA, logB, reading, busy, notKept, onReplaceA, onPickB, onDropB, onSwap }: Props) {
   const [dragging, setDragging] = useState(false);
   const capture = logA.format === 'capture';
+  const blocked = !!reading || busy;
 
   // The shell opens anything dropped elsewhere as log A; a drop here is log B.
   const onDragOver = (e: DragEvent) => {
@@ -44,12 +47,12 @@ export function LogCards({ logA, logB, reading, notKept, onReplaceA, onPickB, on
 
   return (
     <header className="content-header cmp-files">
-      <LogCard letter="A" log={logA} action={<button type="button" className="button" onClick={onReplaceA} disabled={!!reading} aria-label={'Replace log A\u2026'}>Replace&hellip;</button>} />
+      <LogCard letter="A" log={logA} action={<button type="button" className="button" onClick={onReplaceA} disabled={blocked} aria-label={'Replace log A\u2026'}>Replace&hellip;</button>} />
       <button
         type="button"
         className="cmp-swap"
         onClick={onSwap}
-        disabled={!logB || !!reading || capture}
+        disabled={!logB || blocked || capture}
         aria-label="Swap logs A and B"
         title={capture ? "A capture can't be swapped. Save it, then open the saved file to swap it." : undefined}
       >
@@ -80,7 +83,7 @@ export function LogCards({ logA, logB, reading, notKept, onReplaceA, onPickB, on
           dropProps={dropProps}
           dragging={dragging}
           action={
-            <button type="button" className="button" onClick={onPickB} aria-label={'Replace log B\u2026'}>
+            <button type="button" className="button" onClick={onPickB} disabled={blocked} aria-label={'Replace log B\u2026'}>
               Replace&hellip;
             </button>
           }
@@ -92,7 +95,7 @@ export function LogCards({ logA, logB, reading, notKept, onReplaceA, onPickB, on
             <p className="cmp-log-name">Choose a second log</p>
             <p className="cmp-log-sub">Drop a CAN log here, or open one in any format the app reads.</p>
           </div>
-          <button type="button" className="primary" onClick={onPickB}>
+          <button type="button" className="primary" onClick={onPickB} disabled={blocked}>
             Open log B&hellip;
           </button>
         </div>

@@ -193,8 +193,10 @@ export interface KeptCapture {
   bytes: number;
   /** For a rolling capture, where the core last dropped frames before, in ns; chunks may hold some. */
   trimmedBeforeNs?: number;
-  /** Page loads that began restoring it and didn't finish. */
+  /** Restores begun since it last restored that failed, or ended with the page crashing or killed. */
   failedRestores?: number;
+  /** Why the last restore failed, if it failed rather than went away with the page. */
+  lastRestoreError?: string;
 }
 
 /** An unsaved capture this tab keeps, which no other tab will restore or delete meanwhile. */
@@ -261,20 +263,68 @@ export function writeKeptCapture(capture: KeptCapture, chunk?: { seq: number; by
   );
 }
 
-/** Deletes a kept capture and its chunks, trying twice. Resolves false if storage refused. */
+const FORGOTTEN_KEY = 'freecan-studio.forgotten-captures';
+
+/** Kept captures meant to be deleted, in case a delete fails or the page goes first. */
+function forgottenCaptures(): string[] {
+  try {
+    const ids: unknown = JSON.parse(localStorage.getItem(FORGOTTEN_KEY) ?? '[]');
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function setForgottenCaptures(ids: string[]) {
+  try {
+    if (ids.length > 0) localStorage.setItem(FORGOTTEN_KEY, JSON.stringify(ids));
+    else localStorage.removeItem(FORGOTTEN_KEY);
+  } catch {
+    // Without localStorage, a delete that fails is retried only by the tab holding the capture.
+  }
+}
+
+/**
+ * Deletes a kept capture and its chunks, trying twice. Resolves false if storage refused; it
+ * stays marked as forgotten, so no page load restores it, and the next claim deletes it.
+ */
 export async function forgetCapture(id: string): Promise<boolean> {
+  setForgottenCaptures([...forgottenCaptures().filter((other) => other !== id), id]);
   for (let tries = 0; tries < 2; tries++) {
     try {
       await transaction('readwrite', (store) => {
         store.delete(chunksRange(id));
         store.delete(['capture', id]);
       });
+      setForgottenCaptures(forgottenCaptures().filter((other) => other !== id));
       return true;
     } catch {
-      // Tried again, then left to the next page load.
+      // Tried again, then left to the next claim.
     }
   }
   return false;
+}
+
+const RESTORE_LEFT_KEY = 'freecan-studio.restore-interrupted';
+
+/** Notes, as the page goes away, that its restore of capture `id` was cut short by a reload or a close, not a crash. */
+export function markRestoreLeft(id: string) {
+  try {
+    localStorage.setItem(RESTORE_LEFT_KEY, id);
+  } catch {
+    // The restore then counts as failed.
+  }
+}
+
+/** Whether the last restore of capture `id` was cut short by the page going away, forgetting the note. */
+export function takeRestoreLeft(id: string): boolean {
+  try {
+    if (localStorage.getItem(RESTORE_LEFT_KEY) !== id) return false;
+    localStorage.removeItem(RESTORE_LEFT_KEY);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Calls `each` with each chunk of a kept capture in order, reading a few at a time. */
@@ -323,14 +373,21 @@ export const canKeepCaptures = () => typeof navigator !== 'undefined' && !!navig
 
 /**
  * The most recent kept capture no tab holds, now held by this one, to restore after a reload or
- * a crash. Captures held by no tab that can't be restored (no frames, an older layout) are deleted.
+ * a crash. Captures held by no tab that can't be restored (no frames, an older layout), or whose
+ * delete failed, are deleted.
  */
 export async function claimKeptCapture(): Promise<{ capture: KeptCapture; held: HeldCapture } | undefined> {
   if (!canKeepCaptures()) return undefined;
   const kept = (await keptCaptures()).sort((a, b) => b.startedAtMs - a.startedAtMs);
+  const forgotten = forgottenCaptures();
   for (const listed of kept) {
     const release = await lockCapture(listed.id);
     if (!release) continue;
+    if (forgotten.includes(listed.id)) {
+      await forgetCapture(listed.id);
+      release();
+      continue;
+    }
     // Its tab may have deleted it, or written more, before letting go.
     const capture = await keptCapture(listed.id);
     if (capture?.layout === KEPT_CAPTURE_LAYOUT && capture.frames > 0) return { capture, held: heldCapture(capture.id, release) };

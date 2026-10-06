@@ -6,7 +6,7 @@ import { claimKeptCapture, forgetCapture, keptCaptures, readCaptureChunks, write
 import { installLocks, removeLocks, type FakeLocks } from '../test/fakeLocks';
 import { CaptureKeeper, KEEPER_DEFAULTS, notKeptDetail } from './keeper';
 
-const failure = vi.hoisted(() => ({ next: null as unknown, forget: false }));
+const failure = vi.hoisted(() => ({ next: null as unknown, forget: false, hang: false }));
 vi.mock('../session', async (importOriginal) => {
   const real = await importOriginal<typeof import('../session')>();
   return {
@@ -14,6 +14,7 @@ vi.mock('../session', async (importOriginal) => {
     writeKeptCapture: (...args: Parameters<typeof real.writeKeptCapture>) => {
       const error = failure.next;
       failure.next = null;
+      if (failure.hang) return new Promise<void>(() => {});
       return error ? Promise.reject(error) : real.writeKeptCapture(...args);
     },
     forgetCapture: (id: string) => (failure.forget ? Promise.resolve(false) : real.forgetCapture(id)),
@@ -41,6 +42,8 @@ async function onlyKept() {
 let locks: FakeLocks;
 beforeEach(async () => {
   failure.forget = false;
+  failure.hang = false;
+  localStorage.clear();
   vi.stubGlobal('indexedDB', new IDBFactory());
   locks = installLocks();
   // session.ts keeps the database it opened first, so what a test stored is deleted here.
@@ -203,7 +206,8 @@ describe('CaptureKeeper', () => {
     keeper.add(frames(0, 5));
     keeper.add(frames(5, 1));
     await keeper.flush();
-    expect(notKept).toHaveBeenCalledWith('failed');
+    expect(notKept).toHaveBeenCalledWith('slow');
+    expect(notKeptDetail('slow')).toBe("Its storage couldn't keep up with the capture.");
     expect(await keptCaptures()).toEqual([]);
     expect(locks.holds(`freecan-studio-capture-${id}`)).toBe(false);
   });
@@ -217,6 +221,31 @@ describe('CaptureKeeper', () => {
     await keeper.stop();
     expect(await storedTimes((await onlyKept()).id)).toEqual([0, 1, 2, 3, 4]);
     await keeper.forget();
+  });
+
+  it('keeps the frames of a capture stopped before it has begun', async () => {
+    const keeper = new CaptureKeeper();
+    void keeper.begin(info);
+    keeper.add(frames(0, 3));
+    await keeper.stop();
+    expect(keeper.kept).toBe(true);
+    expect(await storedTimes((await onlyKept()).id)).toEqual([0, 1, 2]);
+    keeper.add(frames(3, 1));
+    await keeper.flush();
+    expect(await storedTimes((await onlyKept()).id)).toEqual([0, 1, 2]);
+    await keeper.forget();
+  });
+
+  it('finishes a stop when storage hangs, giving up keeping the capture', async () => {
+    const keeper = new CaptureKeeper({ stopWaitMs: 50 });
+    const notKept = vi.fn();
+    keeper.onNotKept = notKept;
+    await keeper.begin(info);
+    failure.hang = true;
+    keeper.add(frames(0, 3));
+    await keeper.stop();
+    expect(notKept).toHaveBeenCalledWith('slow');
+    expect(keeper.kept).toBe(false);
   });
 
   it('holds on to a capture it could not delete, so no other tab restores it', async () => {

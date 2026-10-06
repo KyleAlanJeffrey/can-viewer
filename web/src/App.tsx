@@ -14,7 +14,21 @@ import { ChunkBoundary } from './components/ChunkBoundary';
 import { Sheet } from './components/Sheet';
 import { UpdateBanner } from './components/UpdateBanner';
 import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
-import { claimKeptCapture, forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, readCaptureChunks, save, saveDbcs, writeKeptCapture, type HeldCapture, type KeptCapture } from './session';
+import {
+  claimKeptCapture,
+  forget,
+  loadSaved,
+  loadSavedDbcs,
+  markRestoreLeft,
+  onDbcsChangedElsewhere,
+  readCaptureChunks,
+  save,
+  saveDbcs,
+  takeRestoreLeft,
+  writeKeptCapture,
+  type HeldCapture,
+  type KeptCapture,
+} from './session';
 import { VIEWS, viewMeta } from './views';
 import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { chooseBlobFile } from './views/shared/saveFile';
@@ -101,7 +115,7 @@ const LIVE_PLOT_REFRESHES = 4;
 /** Save Capture writes candump, which keeps every frame, bus name and error class. */
 const CANDUMP_FILE = EXPORT_FORMATS.find((f) => f.format === 'candump')!.kind;
 
-/** Page loads that may try to restore an unsaved capture before it is deleted. */
+/** Restores of an unsaved capture that may fail, or crash the page, before it is restored only when asked. */
 const MAX_CAPTURE_RESTORES = 2;
 
 /** An unsaved capture whose stored frames can't be restored, however often it is tried. */
@@ -201,6 +215,9 @@ export function App({ core }: { core: CoreApi }) {
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   /** Why the open capture is no longer kept for a reload, once storage refused it. */
   const [captureNotKept, setCaptureNotKept] = useState<{ name: string; detail: string } | null>(null);
+  /** An unsaved capture that failed to restore too often to be tried again without asking. */
+  const [stuckCapture, setStuckCapture] = useState<{ capture: KeptCapture; held: HeldCapture } | null>(null);
+  const [deletingStuckCapture, setDeletingStuckCapture] = useState(false);
   /** What screen readers are told while recording: the start, the first problem, the size warning. */
   const [liveAnnouncement, setLiveAnnouncement] = useState('');
   /** What to do once the user agrees to discard an unsaved capture. */
@@ -575,19 +592,30 @@ export function App({ core }: { core: CoreApi }) {
 
   /**
    * Reopens an unsaved capture kept as it ran, after a reload or a crash, as a stopped capture
-   * still to be saved. Its stored copy is deleted only if it is damaged or fails to restore
-   * `MAX_CAPTURE_RESTORES` times, since it exists nowhere else.
+   * still to be saved. Resolves whether it did. Only a damaged copy is deleted, since it exists
+   * nowhere else; one that failed `MAX_CAPTURE_RESTORES` times is restored only when `asked`.
    */
   const restoreKeptCapture = useCallback(
-    (capture: KeptCapture, held: HeldCapture, ui: SavedUi) =>
-      run(`Restoring ${capture.name}\u2026`, (report) =>
+    async (capture: KeptCapture, held: HeldCapture, ui: SavedUi, asked = false) => {
+      // A restore cut short by a reload or a close doesn't count; one cut short by a crash does.
+      const left = takeRestoreLeft(capture.id);
+      const failed = Math.max(0, (capture.failedRestores ?? 0) - (left ? 1 : 0));
+      if (failed >= MAX_CAPTURE_RESTORES && !asked) {
+        setStuckCapture({ capture: { ...capture, failedRestores: failed }, held });
+        return false;
+      }
+      let restored = false;
+      const noteLeaving = () => markRestoreLeft(capture.id);
+      await run(`Restoring ${capture.name}\u2026`, (report) =>
         serially(async () => {
-          const tries = (capture.failedRestores ?? 0) + 1;
+          const tries = failed + 1;
           let info: LogInfo;
+          window.addEventListener('pagehide', noteLeaving);
+          // Chrome may discard a frozen background tab without a pagehide.
+          document.addEventListener('freeze', noteLeaving);
           try {
-            if (tries > MAX_CAPTURE_RESTORES) throw new DamagedCapture(`the last ${MAX_CAPTURE_RESTORES} tries didn't finish`);
-            // Counted first, so a restore that takes the page down isn't tried forever.
-            await writeKeptCapture({ ...capture, failedRestores: tries }).catch(() => undefined);
+            // Counted first, so a restore that takes the page down counts too.
+            await writeKeptCapture({ ...capture, failedRestores: tries, lastRestoreError: undefined }).catch(() => undefined);
             await core.startCapture(capture.name, capture.bus, capture.startedAtMs);
             let read = 0;
             await readCaptureChunks(capture.id, async (chunk) => {
@@ -608,13 +636,28 @@ export function App({ core }: { core: CoreApi }) {
           } catch (e) {
             // As Close does, so the core holds no half-restored capture.
             await core.openLog(new Blob([]), '', () => {}).catch(() => undefined);
-            const damaged = e instanceof DamagedCapture || tries >= MAX_CAPTURE_RESTORES;
-            await (damaged ? held.forget() : held.letGo());
             showNoLog();
-            const failed = `The unsaved capture ${capture.name} couldn't be restored`;
-            throw new Error(damaged ? `${failed}, so it was deleted: ${errorText(e)}` : `${failed}: ${sentence(errorText(e))} Reload the page to try again.`);
+            const why = errorText(e);
+            if (e instanceof DamagedCapture) {
+              await held.forget();
+              throw new Error(`The unsaved capture ${capture.name} couldn't be restored, so it was deleted: ${why}`);
+            }
+            const failing = { ...capture, failedRestores: tries, lastRestoreError: why };
+            void writeKeptCapture(failing).catch(() => undefined);
+            if (tries >= MAX_CAPTURE_RESTORES) {
+              setStuckCapture({ capture: failing, held });
+              return;
+            }
+            await held.letGo();
+            throw new Error(`The unsaved capture ${capture.name} couldn't be restored: ${sentence(why)} Reload the page to try again.`);
+          } finally {
+            window.removeEventListener('pagehide', noteLeaving);
+            document.removeEventListener('freeze', noteLeaving);
+            // A frozen page that came back finished the restore after all.
+            takeRestoreLeft(capture.id);
           }
-          void writeKeptCapture({ ...capture, failedRestores: 0 }).catch(() => undefined);
+          void writeKeptCapture({ ...capture, failedRestores: 0, lastRestoreError: undefined }).catch(() => undefined);
+          restored = true;
           const nextIds = await core.idSummary();
           showOpenedLog(info, nextIds);
           keptRef.current = held;
@@ -625,7 +668,9 @@ export function App({ core }: { core: CoreApi }) {
           // As for a saved log, the saved copies stay: log B, if any, was opened beside this capture.
           await restoreUi(ui, nextIds);
         }),
-      ),
+      );
+      return restored;
+    },
     [core, run, serially, showNoLog, showOpenedLog, restoreUi, viewState],
   );
 
@@ -909,6 +954,25 @@ export function App({ core }: { core: CoreApi }) {
   const unlessUnsavedCapture = (action: () => void) => {
     if (unsavedRef.current) setDiscardThen(() => action);
     else action();
+  };
+
+  /** Try Again on a capture that failed to restore: restores it in place of the open log, or else reopens that log's saved copy. */
+  const retryStuckCapture = () => {
+    const stuck = stuckCapture;
+    if (!stuck) return;
+    unlessUnsavedCapture(() => {
+      setStuckCapture(null);
+      stopReading();
+      // The core drops the open log, and any capture, for this one.
+      unsavedRef.current = false;
+      void forgetKeptCapture();
+      const ui = currentUi.current();
+      void (async () => {
+        if (await restoreKeptCapture(stuck.capture, stuck.held, ui, true)) return;
+        const saved = await loadSaved<SavedLog>('log');
+        if (saved) await openLog(saved.blob, saved.name, { restore: ui });
+      })();
+    });
   };
 
   const loadDemo = () => {
@@ -1525,6 +1589,25 @@ export function App({ core }: { core: CoreApi }) {
                 </button>
               </div>
             )}
+            {stuckCapture && (
+              <div className="banner">
+                <AlertTriangle size={16} strokeWidth={1.75} />
+                <p>
+                  {stuckCapture.capture.name} couldn&rsquo;t be restored after {MAX_CAPTURE_RESTORES} tries.
+                  <span className="detail">
+                    {' '}
+                    {stuckCapture.capture.lastRestoreError ? sentence(stuckCapture.capture.lastRestoreError) : 'The page stopped while restoring it.'} It&rsquo;s still kept in this
+                    browser, unsaved.
+                  </span>
+                </p>
+                <button className="button" onClick={retryStuckCapture} disabled={!!busy || !!live || stopping}>
+                  Try Again
+                </button>
+                <button className="button" onClick={() => setDeletingStuckCapture(true)}>
+                  Delete&hellip;
+                </button>
+              </div>
+            )}
             {notKept && (
               <div className="banner">
                 <AlertTriangle size={16} strokeWidth={1.75} />
@@ -1607,6 +1690,31 @@ export function App({ core }: { core: CoreApi }) {
           </Suspense>
         </ChunkBoundary>
       )}
+      <Sheet
+        open={deletingStuckCapture && stuckCapture !== null}
+        onClose={() => setDeletingStuckCapture(false)}
+        title="Delete the capture?"
+        footer={
+          <>
+            <button type="button" className="button" onClick={() => setDeletingStuckCapture(false)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                setDeletingStuckCapture(false);
+                setStuckCapture(null);
+                void stuckCapture?.held.forget();
+              }}
+            >
+              Delete Capture
+            </button>
+          </>
+        }
+      >
+        <p>{stuckCapture?.capture.name} hasn&rsquo;t been saved, and once deleted it can&rsquo;t be restored.</p>
+      </Sheet>
       <Sheet
         open={discardThen !== null}
         onClose={() => setDiscardThen(null)}

@@ -154,6 +154,7 @@ describe('kept captures', () => {
   let locks: FakeLocks;
   beforeEach(() => {
     locks = installLocks();
+    localStorage.clear();
   });
   afterEach(() => removeLocks());
 
@@ -268,6 +269,21 @@ describe('kept captures', () => {
     vi.restoreAllMocks();
     expect(locks.holds('freecan-studio-capture-b')).toBe(true);
     expect(await session.keptCaptures()).toHaveLength(1);
+
+    // The tab closes; the next page load deletes it rather than bringing it back unsaved.
+    locks.dropAll();
+    expect(await (await openTab()).claimKeptCapture()).toBeUndefined();
+    expect(await session.keptCaptures()).toEqual([]);
+    expect(localStorage.getItem('freecan-studio.forgotten-captures')).toBeNull();
+  });
+
+  it('tells a restore cut short by the page going away from one that crashed, once', async () => {
+    const session = await openTab();
+    expect(session.takeRestoreLeft('a')).toBe(false);
+    session.markRestoreLeft('a');
+    expect(session.takeRestoreLeft('b')).toBe(false);
+    expect(session.takeRestoreLeft('a')).toBe(true);
+    expect(session.takeRestoreLeft('a')).toBe(false);
   });
 
   it('claims nothing without Web Locks, as it could not tell whether another tab has the capture', async () => {

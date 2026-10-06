@@ -13,17 +13,20 @@ export interface KeeperOptions {
   recountEvery: number;
   /** Give up once this many packed bytes wait for storage that doesn't keep up. */
   maxWaitingBytes: number;
+  /** How long a stop waits for the last write before giving up keeping, so it always finishes. */
+  stopWaitMs: number;
 }
 
 /** 512 MB holds about 24 million classic frames, about what a capture holds when it stops by itself. */
-export const KEEPER_DEFAULTS: KeeperOptions = { intervalMs: 1000, maxFrames: 20_000, maxBytes: 512 * 1024 ** 2, recountEvery: 30, maxWaitingBytes: 8 * 1024 ** 2 };
+export const KEEPER_DEFAULTS: KeeperOptions = { intervalMs: 1000, maxFrames: 20_000, maxBytes: 512 * 1024 ** 2, recountEvery: 30, maxWaitingBytes: 8 * 1024 ** 2, stopWaitMs: 3000 };
 
-/** Why a capture stopped being kept: storage full, over `maxBytes`, or storage refused otherwise. */
-export type NotKeptReason = 'full' | 'tooLarge' | 'failed';
+/** Why a capture stopped being kept: storage full, over `maxBytes`, too slow, or refused otherwise. */
+export type NotKeptReason = 'full' | 'tooLarge' | 'slow' | 'failed';
 
 /** What the app says, after naming the capture, when it stopped being kept. */
 export function notKeptDetail(reason: NotKeptReason, options: KeeperOptions = KEEPER_DEFAULTS): string {
   if (reason === 'full') return 'Its storage is full.';
+  if (reason === 'slow') return "Its storage couldn't keep up with the capture.";
   if (reason === 'tooLarge') return `The unsaved captures kept in this browser would need more than ${Math.round(options.maxBytes / 1024 ** 2)} MB.`;
   return 'Its storage may be full or turned off.';
 }
@@ -124,7 +127,7 @@ export class CaptureKeeper implements HeldCapture {
       this.overflowed = true;
       this.clearParts();
       // After the write under way, so the delete takes it too.
-      this.writing = this.writing.then(() => this.giveUp('failed'));
+      this.writing = this.writing.then(() => this.giveUp('slow'));
     } else if (this.partFrames >= this.options.maxFrames) {
       void this.flush();
     }
@@ -147,11 +150,24 @@ export class CaptureKeeper implements HeldCapture {
     return this.writing;
   }
 
-  /** Writes the last frames and stops writing, still holding the capture. */
+  /**
+   * Writes the last frames and stops writing, still holding the capture. Gives up keeping it
+   * if storage takes longer than `stopWaitMs`.
+   */
   async stop(): Promise<void> {
-    await this.beginning;
-    this.clearTimer();
-    await this.flush();
+    const stopping = (async () => {
+      await this.beginning;
+      this.clearTimer();
+      await this.flush();
+    })();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<'late'>((resolve) => (timer = setTimeout(() => resolve('late'), this.options.stopWaitMs)));
+    const outcome = await Promise.race([stopping, late]);
+    clearTimeout(timer);
+    if (outcome === 'late') {
+      this.clearTimer();
+      void this.giveUp('slow');
+    }
     // Stopped before it began, it never will.
     if (this.state === 'keeping' || this.state === 'idle') this.state = 'stopped';
   }
@@ -181,6 +197,7 @@ export class CaptureKeeper implements HeldCapture {
     const frames = this.partFrames;
     const lastNs = this.partLastNs;
     const dropBefore = this.dropBefore;
+    const trimmedBeforeNs = this.trimmedBeforeNs;
     if (parts.length === 0 && dropBefore === this.dropped && !always) return;
     this.clearParts();
     const bytes = concat(parts);
@@ -196,7 +213,7 @@ export class CaptureKeeper implements HeldCapture {
       return;
     }
     const seq = this.nextSeq;
-    const capture: KeptCapture = { ...this.capture, frames: this.frames + frames, bytes: this.bytes + bytes.length, trimmedBeforeNs: this.trimmedBeforeNs };
+    const capture: KeptCapture = { ...this.capture, frames: this.frames + frames, bytes: this.bytes + bytes.length, trimmedBeforeNs };
     try {
       await writeKeptCapture(capture, bytes.length > 0 ? { seq, bytes: bytes.buffer as ArrayBuffer } : undefined, dropBefore);
     } catch (e) {
@@ -218,8 +235,9 @@ export class CaptureKeeper implements HeldCapture {
     this.state = 'gone';
     this.clearTimer();
     this.clearParts();
-    if (stored && (await forgetCapture(this.capture!.id))) this.release();
+    // Said at once: storage that is too slow may take a long time to delete too.
     this.onNotKept?.(reason);
+    if (stored && (await forgetCapture(this.capture!.id))) this.release();
   }
 
   private async countOthers(id: string): Promise<number> {

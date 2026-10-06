@@ -357,7 +357,58 @@ describe('App unsaved capture across a reload', () => {
     }
   });
 
-  it('keeps a capture that fails to restore for a reload to try again, and deletes it after a second failure', async () => {
+  /** Loads the app over a core whose `appendFrames` never finishes, as during a long restore. Resolves once it is restoring. */
+  async function loadRestoring() {
+    const App = await freshApp();
+    const { core } = captureCore();
+    core.appendFrames = vi.fn(() => new Promise<never>(() => {}));
+    const page = render(<App core={core} />);
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+    return page;
+  }
+
+  /** The page goes away mid-restore: reloaded or closed if `left`, or else crashed or killed. */
+  function pageGone(page: { unmount: () => void }, left: boolean) {
+    if (left) window.dispatchEvent(new Event('pagehide'));
+    page.unmount();
+    locks.dropAll();
+  }
+
+  it('still restores a capture whose restore two reloads cut short', async () => {
+    const { session } = await storedCapture();
+    pageGone(await loadRestoring(), true);
+    pageGone(await loadRestoring(), true);
+    const App = await freshApp();
+    const { core } = captureCore();
+    render(<App core={core} />);
+    expect(await screen.findByText(/Not saved \u00b7 1 frame/)).toBeTruthy();
+    await waitFor(async () => expect(await session.keptCaptures()).toMatchObject([{ failedRestores: 0 }]));
+  });
+
+  it('asks before restoring again a capture whose restore crashed the page twice, keeping it meanwhile', async () => {
+    const { session, capture } = await storedCapture();
+    await session.save('log', { name: 'p.log', blob: blobOf(10) });
+    pageGone(await loadRestoring(), false);
+    pageGone(await loadRestoring(), false);
+    const App = await freshApp();
+    const { core } = captureCore();
+    render(<App core={core} />);
+    expect(await screen.findByText(`${capture.name} couldn\u2019t be restored after 2 tries.`, { exact: false })).toBeTruthy();
+    expect(screen.getByText(/The page stopped while restoring it\. It\u2019s still kept in this browser, unsaved\./)).toBeTruthy();
+    // Meanwhile the saved log opens, as it would have without the capture.
+    await waitFor(() => expect(document.querySelector('.doc-title')?.textContent).toBe('p.log'));
+    expect(core.startCapture).not.toHaveBeenCalled();
+    expect(await session.keptCaptures()).toHaveLength(1);
+    expect(locks.holds(`freecan-studio-capture-${capture.id}`)).toBe(true);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Try Again' }));
+    expect(await screen.findByText(/Not saved \u00b7 1 frame/)).toBeTruthy();
+    expect(document.querySelector('.doc-title')?.textContent).toBe(capture.name);
+    expect(screen.queryByText(/couldn\u2019t be restored after/)).toBeNull();
+    await waitFor(async () => expect(await session.keptCaptures()).toMatchObject([{ failedRestores: 0 }]));
+  });
+
+  it('keeps a capture that fails to restore for a reload to try again, then asks, and deletes it only when told', async () => {
     const { session, capture } = await storedCapture();
     const brokenCore = () => {
       const { core } = captureCore();
@@ -374,22 +425,26 @@ describe('App unsaved capture across a reload', () => {
     first.unmount();
     App = await freshApp();
     const second = render(<App core={brokenCore()} />);
-    expect(await alertText()).toBe(`The unsaved capture ${capture.name} couldn't be restored, so it was deleted: There isn\u2019t enough memory`);
+    expect(await screen.findByText(/There isn\u2019t enough memory\. It\u2019s still kept in this browser/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    // Try Again that fails again asks again.
+    await userEvent.click(screen.getByRole('button', { name: 'Try Again' }));
+    await waitFor(async () => expect(await session.keptCaptures()).toMatchObject([{ failedRestores: 3 }]));
+    expect(await screen.findByText(/couldn\u2019t be restored after 2 tries/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete\u2026' }));
+    const confirm = screen.getByRole('dialog', { name: 'Delete the capture?' });
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    expect(await session.keptCaptures()).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Delete\u2026' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Delete the capture?' })).getByRole('button', { name: 'Delete Capture' }));
+    expect(screen.queryByText(/couldn\u2019t be restored after/)).toBeNull();
     await waitFor(async () => expect(await session.keptCaptures()).toEqual([]));
 
     const reloaded = await reload(second.unmount);
     expect(await emptyState()).toBeTruthy();
     expect(reloaded.core.startCapture).not.toHaveBeenCalled();
-  });
-
-  it('deletes a capture whose restore never finished twice, without trying again', async () => {
-    const { session } = await storedCapture({ failedRestores: 2 });
-    const App = await freshApp();
-    const { core } = captureCore();
-    render(<App core={core} />);
-    expect(await alertText()).toMatch(/couldn't be restored, so it was deleted: the last 2 tries didn't finish$/);
-    await waitFor(async () => expect(await session.keptCaptures()).toEqual([]));
-    expect(core.startCapture).not.toHaveBeenCalled();
   });
 
   it('counts a restore as done once it is', async () => {

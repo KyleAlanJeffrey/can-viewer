@@ -51,6 +51,11 @@ impl Series {
         }
     }
 
+    /// Undo [`Series::without_pyramid`], for a series that will be viewed again and again.
+    pub fn allow_pyramid(&mut self) {
+        self.pyramid = OnceCell::new();
+    }
+
     #[cfg(test)]
     pub fn has_pyramid(&self) -> bool {
         matches!(self.pyramid.get(), Some(Some(_)))
@@ -83,11 +88,11 @@ impl Series {
         if lo >= hi {
             return Vec::new();
         }
-        if hi - lo <= buckets * 2 || t1 <= t0 || buckets == 0 {
+        if hi - lo <= buckets.saturating_mul(2) || t1 <= t0 || buckets == 0 {
             return [&self.t[lo..hi], &self.v[lo..hi]].concat();
         }
 
-        let pyramid = if hi - lo >= buckets * PYRAMID_MIN_BUCKET_POINTS {
+        let pyramid = if hi - lo >= buckets.saturating_mul(PYRAMID_MIN_BUCKET_POINTS) {
             self.pyramid
                 .get_or_init(|| self.t.is_sorted().then(|| Pyramid::new(&self.v)))
                 .as_ref()

@@ -678,6 +678,10 @@ impl Session {
         if let Some(filtered) = self.filtered.take() {
             self.filtered = filtered.refind(&self.store).ok();
         }
+        // Not every view decodes its series again when the capture ends.
+        for series in self.series.iter_mut().flatten() {
+            series.allow_pyramid();
+        }
         Ok(self.log_info())
     }
 
@@ -1595,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn only_series_decoded_outside_a_running_capture_get_a_pyramid() {
+    fn series_get_a_pyramid_only_once_the_capture_ends() {
         let mut s = Session::new();
         s.start_capture("can0", 0.0);
         let batch: Vec<u8> = (0..2000u16)
@@ -1613,6 +1617,9 @@ mod tests {
         };
         assert!(!decode(&mut s));
         s.finish_capture().unwrap();
+        // The series decoded during the capture can build one now too.
+        assert_eq!(s.series_view(0, 0.0, 2.0, 10).len(), 40);
+        assert!(s.series[0].as_ref().unwrap().has_pyramid());
         assert!(decode(&mut s));
     }
 

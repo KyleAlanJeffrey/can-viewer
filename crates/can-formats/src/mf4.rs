@@ -7,7 +7,8 @@
 //! or `CAN_ErrorFrame`, with members such as `ID`, `DLC`, `DataBytes` and `BusChannel`.
 //! Because the links point anywhere in the file, the file is buffered whole and read when
 //! it ends. Each data group's records are then read a data block at a time, and the frames
-//! of the data groups are merged by time as they are delivered.
+//! of the data groups are merged by time as they are delivered. A large file's records can
+//! instead be read in parts by other workers and merged here (see [`parts`]).
 
 use std::borrow::Cow;
 use std::cmp::Reverse;
@@ -17,6 +18,12 @@ use can_core::{flags, FrameRef, FrameSink, ERR_FLAG, EXT_FLAG, MAX_PAYLOAD};
 
 use crate::text::{dlc_to_len, ChannelName};
 use crate::{push_frame, LogParser, ParseStats};
+
+mod parts;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_file;
+
+pub use parts::{read_part, Joined, PartTask};
 
 /// The largest file read; a larger one rejects a record and gives no frames.
 pub const MAX_FILE: usize = 1 << 30;
@@ -89,6 +96,10 @@ pub struct Mf4Parser {
     stats: ParseStats,
     file: Vec<u8>,
     too_large: bool,
+    /// The frames, once the file is planned to be read in parts, until they are all joined.
+    join: Option<Box<parts::Join>>,
+    /// Every part is joined, so `finish` reads nothing.
+    joined: bool,
 }
 
 impl Mf4Parser {
@@ -110,6 +121,60 @@ impl Mf4Parser {
         let missing = total_bytes.saturating_sub(self.file.len());
         let _ = self.file.try_reserve_exact(missing);
     }
+
+    /// Plans reading the frames of the file pushed so far in parts of about `part_bytes` of
+    /// its data each, by [`read_part`] in other workers, and returns how many parts there are.
+    /// The parser then lets the file go and takes the parts through [`Mf4Parser::join_part`]
+    /// instead of reading it in `finish`. None, the parser left as it was, for a file that
+    /// must be read whole: see [`parts`].
+    pub fn plan_parts(&mut self, part_bytes: u64) -> Option<usize> {
+        if self.too_large || self.reads_in_parts() {
+            return None;
+        }
+        let mut stats = self.stats.clone();
+        let join = parts::plan(&self.file, &mut stats, part_bytes)?;
+        let count = join.tasks.len();
+        self.stats = stats;
+        self.file = Vec::new();
+        self.join = Some(Box::new(join));
+        Some(count)
+    }
+
+    /// Part `index` of the plan, for [`read_part`].
+    #[must_use]
+    pub fn part_task(&self, index: usize) -> Option<&PartTask> {
+        self.join.as_ref()?.tasks.get(index)
+    }
+
+    /// Merges the frames of part `index`, read by [`read_part`], with those of the parts
+    /// joined before it, as far as they go, and says which part to join next. Parts must be
+    /// joined in the order asked for, starting with part 0. None when the part can't be
+    /// joined, and the file must be read again whole in a new parser.
+    pub fn join_part<S: FrameSink>(
+        &mut self,
+        index: usize,
+        part: &[u8],
+        sink: &mut S,
+    ) -> Option<Joined> {
+        let joined = self
+            .join
+            .as_mut()?
+            .join(index, part, &mut self.stats, sink)
+            .ok()?;
+        if joined == Joined::Done {
+            // Its windows, reads and variable length data would otherwise live as long as
+            // the parser, which is kept for its stats.
+            self.join = None;
+            self.joined = true;
+        }
+        Some(joined)
+    }
+
+    /// Whether the frames are read in parts, so `finish` reads none.
+    #[must_use]
+    pub fn reads_in_parts(&self) -> bool {
+        self.join.is_some() || self.joined
+    }
 }
 
 impl LogParser for Mf4Parser {
@@ -130,7 +195,7 @@ impl LogParser for Mf4Parser {
 
     fn finish<S: FrameSink>(&mut self, sink: &mut S) {
         let file = std::mem::take(&mut self.file);
-        if self.too_large {
+        if self.too_large || self.reads_in_parts() {
             return;
         }
         if let Err(reason) = read_file(&file, &mut self.stats, sink) {
@@ -234,6 +299,9 @@ struct Walk {
     /// Data lists read and the block links they list, charged each time a list is read,
     /// since data groups may all link the same list.
     listed_left: usize,
+    /// Each charge of data, in order, kept when a part's charges are made in the core
+    /// worker instead (see [`parts`]).
+    charges: Option<Vec<u64>>,
 }
 
 impl Walk {
@@ -248,6 +316,19 @@ impl Walk {
             linked: HashSet::new(),
             links_left: file_len / 8,
             listed_left: file_len / 8,
+            charges: None,
+        }
+    }
+
+    /// A walk that never runs out.
+    fn unlimited(repairs: Repairs) -> Self {
+        Walk {
+            channels_left: usize::MAX,
+            data_left: u64::MAX,
+            frames_left: usize::MAX,
+            links_left: usize::MAX,
+            listed_left: usize::MAX,
+            ..Walk::new(0, repairs)
         }
     }
 
@@ -292,6 +373,9 @@ impl Walk {
     }
 
     fn take_data(&mut self, len: usize) -> Result<(), &'static str> {
+        if let Some(charges) = &mut self.charges {
+            charges.push(len as u64);
+        }
         self.data_left = self
             .data_left
             .checked_sub(len as u64)
@@ -313,6 +397,29 @@ fn read_file<S: FrameSink>(
     stats: &mut ParseStats,
     sink: &mut S,
 ) -> Result<(), &'static str> {
+    let Prepared {
+        start_ns,
+        mut walk,
+        sources,
+    } = prepare(file, stats, false)?;
+    merge(sources, start_ns, &mut walk, stats, sink);
+    Ok(())
+}
+
+/// A file read up to its frames: the data groups that have CAN frames, ready to be read.
+struct Prepared<'a> {
+    start_ns: i64,
+    walk: Walk,
+    sources: Vec<Source<'a>>,
+}
+
+/// When `for_parts`, a file whose records can't be read in parts ends with an error before
+/// its variable length data is read (see [`parts::splittable`]).
+fn prepare<'a>(
+    file: &'a [u8],
+    stats: &mut ParseStats,
+    for_parts: bool,
+) -> Result<Prepared<'a>, &'static str> {
     let repairs = check_identification(file)?;
     let header = Block::typed(file, 64, b"##HD").ok_or("MF4 header block missing")?;
     let start_ns = header
@@ -355,22 +462,35 @@ fn read_file<S: FrameSink>(
     // all the data groups.
     walk.starts.sort_unstable();
     walk.starts.dedup();
-    for source in &mut sources {
-        if repairs.last_data_block {
-            source.records.run_on_last_block(&walk.starts);
+    if repairs.last_data_block {
+        for source in &mut sources {
+            source.reader.records.run_on_last_block(&walk.starts);
         }
-        if source.record_id_size != 0 {
-            source.variable = variable_data(
-                &source.records,
-                source.record_id_size,
-                &source.groups,
+    }
+    if for_parts
+        && !sources
+            .iter()
+            .all(|source| parts::splittable(file, &source.reader, repairs))
+    {
+        return Err(parts::NOT_SPLITTABLE);
+    }
+    for source in &mut sources {
+        let reader = &mut source.reader;
+        if reader.record_id_size != 0 {
+            reader.variable = variable_data(
+                &reader.records,
+                reader.record_id_size,
+                &reader.groups,
                 &mut variable_walk,
             );
         }
     }
     share_reorder_window(&mut sources);
-    merge(sources, start_ns, &mut walk, stats, sink);
-    Ok(())
+    Ok(Prepared {
+        start_ns,
+        walk,
+        sources,
+    })
 }
 
 fn check_identification(file: &[u8]) -> Result<Repairs, &'static str> {
@@ -400,10 +520,10 @@ fn check_identification(file: &[u8]) -> Result<Repairs, &'static str> {
 /// Splits the reorder window between the data groups that need one, since data groups may
 /// all link the same data and would otherwise each hold a full window.
 fn share_reorder_window(sources: &mut [Source<'_>]) {
-    let reordering = sources.iter().filter(|s| s.window_len > 1).count();
+    let reordering = sources.iter().filter(|s| s.window.len > 1).count();
     let share = (REORDER_WINDOW / reordering.max(1)).max(1);
-    for source in sources.iter_mut().filter(|s| s.window_len > 1) {
-        source.window_len = share;
+    for source in sources.iter_mut().filter(|s| s.window.len > 1) {
+        source.window.len = share;
     }
 }
 
@@ -417,6 +537,7 @@ fn merge<S: FrameSink>(
 ) {
     // Ties go to the earlier data group, as a stable sort would order them.
     let mut next = BinaryHeap::new();
+    let mut buses = Buses::default();
     for (index, source) in sources.iter_mut().enumerate() {
         if let Some(ts_ns) = source.next_time(start_ns, walk, stats) {
             next.push(Reverse((ts_ns, index)));
@@ -424,20 +545,43 @@ fn merge<S: FrameSink>(
     }
     while let Some(Reverse((_, index))) = next.pop() {
         let source = &mut sources[index];
-        if let Some(frame) = source.take() {
-            let channel = sink.channel_index(ChannelName::new(u64::from(frame.bus)).as_bytes());
-            let frame_ref = FrameRef {
-                ts_ns: frame.ts_ns,
-                channel,
-                id: frame.id,
-                flags: frame.flags,
-                data: &frame.data[..usize::from(frame.len)],
-            };
-            push_frame(sink, frame_ref, frame.remote_dlc);
+        if let Some(frame) = source.window.take() {
+            deliver(frame, &mut buses, sink);
         }
         if let Some(ts_ns) = source.next_time(start_ns, walk, stats) {
             next.push(Reverse((ts_ns, index)));
         }
+    }
+}
+
+fn deliver<S: FrameSink>(frame: &Frame, buses: &mut Buses, sink: &mut S) {
+    let frame_ref = FrameRef {
+        ts_ns: frame.ts_ns,
+        channel: buses.channel(frame.bus, sink),
+        id: frame.id,
+        flags: frame.flags,
+        data: &frame.data[..usize::from(frame.len)],
+    };
+    push_frame(sink, frame_ref, frame.remote_dlc);
+}
+
+/// The sink's channel for each of the first few bus numbers met, so that a frame's bus name
+/// is made and looked up once per bus rather than once per frame.
+#[derive(Default)]
+struct Buses(Vec<(u32, u8)>);
+
+impl Buses {
+    const KEPT: usize = 16;
+
+    fn channel<S: FrameSink>(&mut self, bus: u32, sink: &mut S) -> u8 {
+        if let Some(&(_, channel)) = self.0.iter().find(|(known, _)| *known == bus) {
+            return channel;
+        }
+        let channel = sink.channel_index(ChannelName::new(u64::from(bus)).as_bytes());
+        if self.0.len() < Self::KEPT {
+            self.0.push((bus, channel));
+        }
+        channel
     }
 }
 
@@ -518,6 +662,13 @@ struct Channel {
 
 /// The CAN frames of one data group, read a record at a time.
 struct Source<'a> {
+    reader: RecordReader<'a>,
+    window: Window,
+    ended: bool,
+}
+
+/// Reads the records of a data group's stream, making frames of those of CAN frame groups.
+struct RecordReader<'a> {
     groups: Vec<Group<'a>>,
     record_id_size: usize,
     records: BlockReader<'a>,
@@ -525,17 +676,112 @@ struct Source<'a> {
     variable: Vec<VariableGroup>,
     /// Records read so far in each channel group, for virtual time channels.
     indexes: Vec<usize>,
-    /// Frames read and not yet delivered, earliest first, ties in record order: their time,
-    /// record number and slot in `held`.
-    window: BinaryHeap<Reverse<(i64, u64, usize)>>,
+    /// Leaves payloads in variable length data for the core worker to find (see [`parts`]).
+    defer_variable: bool,
+}
+
+/// Frames read and not yet delivered, earliest first, ties in record order.
+struct Window {
+    /// Each frame's time, record number and slot in `held`.
+    order: BinaryHeap<Reverse<(i64, u64, usize)>>,
     /// How many frames to read ahead before delivering the earliest. MDF has the times of a
     /// channel group never decrease, so with one CAN frame channel group that is one frame;
     /// with several, their records interleave, as loggers write them when they arrive.
-    window_len: usize,
+    len: usize,
     held: Vec<Frame>,
     free: Vec<usize>,
     records_read: u64,
-    ended: bool,
+}
+
+impl Window {
+    fn new(len: usize) -> Self {
+        Window {
+            order: BinaryHeap::new(),
+            len,
+            held: Vec::new(),
+            free: Vec::new(),
+            records_read: 0,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.order.len() >= self.len
+    }
+
+    fn hold(&mut self, frame: Frame) {
+        let ts_ns = frame.ts_ns;
+        let slot = match self.free.pop() {
+            Some(slot) => {
+                self.held[slot] = frame;
+                slot
+            }
+            None => {
+                self.held.push(frame);
+                self.held.len() - 1
+            }
+        };
+        self.order.push(Reverse((ts_ns, self.records_read, slot)));
+        self.records_read += 1;
+    }
+
+    fn earliest(&self) -> Option<i64> {
+        self.order.peek().map(|Reverse((ts_ns, _, _))| *ts_ns)
+    }
+
+    /// The earliest frame held. Its slot is reused by the next frame held.
+    fn take(&mut self) -> Option<&Frame> {
+        let Reverse((_, _, slot)) = self.order.pop()?;
+        self.free.push(slot);
+        Some(&self.held[slot])
+    }
+}
+
+/// What reading up to the next frame record of a data group came to.
+enum Outcome {
+    /// The data group has no more records.
+    End,
+    /// An error that ends the data group.
+    Failed(&'static str),
+    Frame(Frame),
+    /// A frame record that makes no frame.
+    Rejected(&'static str),
+    /// A frame record whose payload is still to be found in variable length data.
+    Pending(PendingFrame),
+}
+
+struct PendingFrame {
+    /// The record's channel group.
+    group: usize,
+    offset: u64,
+    fields: RecordFields,
+}
+
+/// Counts `outcome` and holds its frame. Returns whether it ends the data group.
+fn account(outcome: Outcome, window: &mut Window, walk: &mut Walk, stats: &mut ParseStats) -> bool {
+    match outcome {
+        Outcome::End => true,
+        Outcome::Failed(reason) => {
+            stats.lines += 1;
+            stats.reject(reason);
+            true
+        }
+        Outcome::Frame(_) | Outcome::Rejected(_) | Outcome::Pending(_) => {
+            stats.lines += 1;
+            if let Err(reason) = walk.take_frame() {
+                stats.reject(reason);
+                return true;
+            }
+            match outcome {
+                Outcome::Frame(frame) => {
+                    stats.frames += 1;
+                    window.hold(frame);
+                }
+                Outcome::Rejected(reason) => stats.reject(reason),
+                Outcome::End | Outcome::Failed(_) | Outcome::Pending(_) => {}
+            }
+            false
+        }
+    }
 }
 
 /// The values of a VLSD channel group, each after its length as in an SD block.
@@ -596,16 +842,15 @@ fn read_data_group<'a>(
     let frame_groups = groups.iter().filter(|g| g.bus.is_some() && !g.vlsd).count();
     let blocks = data_blocks(file, group.link(2), walk)?;
     Ok(Some(Source {
-        indexes: vec![0; groups.len()],
-        window: BinaryHeap::new(),
-        window_len: if frame_groups > 1 { REORDER_WINDOW } else { 1 },
-        held: Vec::new(),
-        free: Vec::new(),
-        records_read: 0,
-        groups,
-        record_id_size,
-        records: BlockReader::new(file, blocks),
-        variable: Vec::new(),
+        reader: RecordReader {
+            indexes: vec![0; groups.len()],
+            groups,
+            record_id_size,
+            records: BlockReader::new(file, blocks),
+            variable: Vec::new(),
+            defer_variable: false,
+        },
+        window: Window::new(if frame_groups > 1 { REORDER_WINDOW } else { 1 }),
         ended: false,
     }))
 }
@@ -678,21 +923,17 @@ impl Source<'_> {
     /// The time of the next frame to deliver, reading ahead as far as the window asks, or
     /// `None` once the data group has no more.
     fn next_time(&mut self, start_ns: i64, walk: &mut Walk, stats: &mut ParseStats) -> Option<i64> {
-        while !self.ended && self.window.len() < self.window_len {
-            self.read_frame(start_ns, walk, stats);
+        while !self.ended && !self.window.is_full() {
+            let outcome = self.reader.next_outcome(start_ns, walk);
+            self.ended = account(outcome, &mut self.window, walk, stats);
         }
-        self.window.peek().map(|Reverse((ts_ns, _, _))| *ts_ns)
+        self.window.earliest()
     }
+}
 
-    /// The earliest frame read ahead. Its slot is reused by the next read.
-    fn take(&mut self) -> Option<&Frame> {
-        let Reverse((_, _, slot)) = self.window.pop()?;
-        self.free.push(slot);
-        Some(&self.held[slot])
-    }
-
-    /// Reads up to the next frame record and holds its frame, or marks the end.
-    fn read_frame(&mut self, start_ns: i64, walk: &mut Walk, stats: &mut ParseStats) {
+impl RecordReader<'_> {
+    /// Reads up to the next frame record and makes its frame.
+    fn next_outcome(&mut self, start_ns: i64, walk: &mut Walk) -> Outcome {
         let groups = &self.groups;
         let is_frame = |index: usize| groups[index].bus.is_some() && !groups[index].vlsd;
         let next = next_record(
@@ -704,64 +945,37 @@ impl Source<'_> {
         );
         let (group_index, record) = match next {
             Ok(Some(found)) => found,
-            Ok(None) => {
-                self.ended = true;
-                return;
-            }
-            Err(reason) => {
-                stats.lines += 1;
-                stats.reject(reason);
-                self.ended = true;
-                return;
-            }
+            Ok(None) => return Outcome::End,
+            Err(reason) => return Outcome::Failed(reason),
         };
         let Some(bus) = &groups[group_index].bus else {
-            return;
+            return Outcome::End;
         };
-        stats.lines += 1;
-        if let Err(reason) = walk.take_frame() {
-            stats.reject(reason);
-            self.ended = true;
-            return;
-        }
         let record_index = self.indexes[group_index];
         self.indexes[group_index] += 1;
         let offsets_unwritten = walk.repairs.vlsd_offsets;
-        match frame_of(
-            bus,
-            record,
-            record_index,
-            &self.variable,
-            offsets_unwritten,
-            start_ns,
-        ) {
-            Ok((ts_ns, bus, id, frame_flags, data, remote_dlc)) => {
-                stats.frames += 1;
-                let mut frame = Frame {
-                    ts_ns,
-                    bus,
-                    id,
-                    flags: frame_flags,
-                    len: data.len() as u8,
-                    data: [0; MAX_PAYLOAD],
-                    remote_dlc,
-                };
-                frame.data[..data.len()].copy_from_slice(data);
-                let slot = match self.free.pop() {
-                    Some(slot) => {
-                        self.held[slot] = frame;
-                        slot
-                    }
-                    None => {
-                        self.held.push(frame);
-                        self.held.len() - 1
-                    }
-                };
-                self.window.push(Reverse((ts_ns, self.records_read, slot)));
-                self.records_read += 1;
+        let outcome = match record_fields(bus, record, record_index, start_ns) {
+            Err(reason) => Outcome::Rejected(reason),
+            Ok((fields, Payload::Bytes(data))) => {
+                Outcome::Frame(frame_from(bus.kind, &fields, data))
             }
-            Err(reason) => stats.reject(reason),
-        }
+            Ok((fields, Payload::Variable(offset))) if self.defer_variable => {
+                Outcome::Pending(PendingFrame {
+                    group: group_index,
+                    offset,
+                    fields,
+                })
+            }
+            Ok((fields, Payload::Variable(offset))) => {
+                let Some(DataBytes::Variable { store, .. }) = &bus.data_bytes else {
+                    return Outcome::End;
+                };
+                match variable_payload(store, &self.variable, offsets_unwritten, offset) {
+                    Ok(data) => Outcome::Frame(frame_from(bus.kind, &fields, data)),
+                    Err(reason) => Outcome::Rejected(reason),
+                }
+            }
+        };
         if offsets_unwritten {
             if let Some(DataBytes::Variable {
                 store: VariableStore::Group(at),
@@ -775,6 +989,7 @@ impl Source<'_> {
                 }
             }
         }
+        outcome
     }
 }
 
@@ -837,6 +1052,8 @@ struct BlockReader<'a> {
     blocks: std::vec::IntoIter<u64>,
     block: Cow<'a, [u8]>,
     pos: usize,
+    /// Where `block` starts in the stream.
+    block_start: u64,
     /// A record that continues from one block into the next, put back together.
     joined: Vec<u8>,
     /// Where the last block ends when it is a DT block whose length was not updated
@@ -852,6 +1069,7 @@ impl<'a> BlockReader<'a> {
             blocks: blocks.into_iter(),
             block: Cow::Borrowed(&[]),
             pos: 0,
+            block_start: 0,
             joined: Vec::new(),
             open_end: None,
         }
@@ -864,6 +1082,7 @@ impl<'a> BlockReader<'a> {
             blocks: self.blocks.clone(),
             block: Cow::Borrowed(&[]),
             pos: 0,
+            block_start: 0,
             joined: Vec::new(),
             open_end: self.open_end,
         }
@@ -909,6 +1128,11 @@ impl<'a> BlockReader<'a> {
         self.open_end.is_some()
     }
 
+    /// The stream bytes read so far.
+    fn position(&self) -> u64 {
+        self.block_start + self.pos as u64
+    }
+
     /// Whether the next byte read is in a last block that runs on.
     fn next_starts_in_open_block(&mut self, walk: &mut Walk) -> Result<bool, &'static str> {
         if !self.ends_open() || (self.pos == self.block.len() && !self.next_block(walk)?) {
@@ -919,6 +1143,7 @@ impl<'a> BlockReader<'a> {
 
     /// Moves to the next block that is not empty, if there is one.
     fn next_block(&mut self, walk: &mut Walk) -> Result<bool, &'static str> {
+        self.block_start += self.block.len() as u64;
         self.block = Cow::Borrowed(&[]);
         self.pos = 0;
         while let Some(at) = self.blocks.next() {
@@ -1176,17 +1401,31 @@ fn linear_conversion(file: &[u8], at: u64) -> (f64, f64) {
     }
 }
 
-/// A frame record's time, bus, ID, flags, payload and, for a remote frame, its DLC.
-type RecordFrame<'r> = (i64, u32, u32, u8, &'r [u8], Option<u8>);
+/// A frame record's fields, up to its payload.
+#[derive(Clone, Copy)]
+struct RecordFields {
+    ts_ns: i64,
+    bus: u32,
+    raw_id: u64,
+    extended: bool,
+    flags: u8,
+    dlc: Option<u64>,
+    data_length: Option<u64>,
+}
 
-fn frame_of<'r>(
-    bus: &'r BusGroup<'_>,
+/// Where a frame record's payload is.
+enum Payload<'r> {
+    Bytes(&'r [u8]),
+    /// At this offset in the channel group's variable length data.
+    Variable(u64),
+}
+
+fn record_fields<'r>(
+    bus: &BusGroup<'_>,
     record: &'r [u8],
     index: usize,
-    variable_groups: &'r [VariableGroup],
-    offsets_unwritten: bool,
     start_ns: i64,
-) -> Result<RecordFrame<'r>, &'static str> {
+) -> Result<(RecordFields, Payload<'r>), &'static str> {
     let seconds = match &bus.time {
         Time::None => 0.0,
         Time::Virtual { offset, factor } => offset + factor * index as f64,
@@ -1235,34 +1474,60 @@ fn frame_of<'r>(
     let dlc = number(&bus.dlc)?;
     let data_length = number(&bus.data_length)?;
 
-    let data: &[u8] = match (&bus.kind, &bus.data_bytes) {
-        (FrameKind::Remote, _) | (_, None) => &[],
-        (_, Some(DataBytes::Fixed(field))) => field_bytes(record, field).ok_or("bad data bytes")?,
-        (_, Some(DataBytes::Variable { field, store })) => {
+    let payload = match (&bus.kind, &bus.data_bytes) {
+        (FrameKind::Remote, _) | (_, None) => Payload::Bytes(&[]),
+        (_, Some(DataBytes::Fixed(field))) => {
+            Payload::Bytes(field_bytes(record, field).ok_or("bad data bytes")?)
+        }
+        (_, Some(DataBytes::Variable { field, .. })) => {
             // The record holds a little-endian offset whatever the value's data type.
             let offset_field = Field {
                 data_type: 0,
                 ..*field
             };
-            let offset = field_bits(record, &offset_field).ok_or("bad data offset")?;
-            let (store, offset): (&[u8], u64) = match store {
-                VariableStore::Block(block) => (block, offset),
-                VariableStore::Group(at) => {
-                    let group = variable_groups
-                        .iter()
-                        .find(|group| group.at == *at)
-                        .ok_or("data bytes refer to a missing group")?;
-                    if offsets_unwritten {
-                        (&group.data, group.next as u64)
-                    } else {
-                        (&group.data, offset)
-                    }
-                }
-            };
-            variable_value(store, offset).ok_or("data offset outside the data")?
+            Payload::Variable(field_bits(record, &offset_field).ok_or("bad data offset")?)
         }
     };
-    let len = match (data_length, dlc) {
+    let fields = RecordFields {
+        ts_ns,
+        bus: channel,
+        raw_id,
+        extended,
+        flags: frame_flags,
+        dlc,
+        data_length,
+    };
+    Ok((fields, payload))
+}
+
+/// The payload a frame record's offset points at in variable length data.
+fn variable_payload<'v>(
+    store: &'v VariableStore<'_>,
+    variable_groups: &'v [VariableGroup],
+    offsets_unwritten: bool,
+    offset: u64,
+) -> Result<&'v [u8], &'static str> {
+    let (store, offset): (&[u8], u64) = match store {
+        VariableStore::Block(block) => (block, offset),
+        VariableStore::Group(at) => {
+            let group = variable_groups
+                .iter()
+                .find(|group| group.at == *at)
+                .ok_or("data bytes refer to a missing group")?;
+            if offsets_unwritten {
+                (&group.data, group.next as u64)
+            } else {
+                (&group.data, offset)
+            }
+        }
+    };
+    variable_value(store, offset).ok_or("data offset outside the data")
+}
+
+/// The frame of a record of `kind` with `fields` and the payload `data`.
+fn frame_from(kind: FrameKind, fields: &RecordFields, data: &[u8]) -> Frame {
+    let mut frame_flags = fields.flags;
+    let len = match (fields.data_length, fields.dlc) {
         (Some(length), _) => usize::try_from(length).unwrap_or(usize::MAX),
         (None, Some(dlc)) if frame_flags & flags::FD != 0 => dlc_to_len(dlc.min(15) as u8),
         (None, Some(dlc)) => dlc.min(8) as usize,
@@ -1274,19 +1539,29 @@ fn frame_of<'r>(
         frame_flags |= flags::FD;
     }
     let mut remote_dlc = None;
-    let id = match bus.kind {
+    let id = match kind {
         FrameKind::Error => {
             frame_flags |= flags::ERROR;
             ERR_FLAG
         }
         FrameKind::Remote => {
             frame_flags |= flags::RTR;
-            remote_dlc = dlc.map(|dlc| dlc.min(15) as u8);
-            can_id(raw_id, extended)
+            remote_dlc = fields.dlc.map(|dlc| dlc.min(15) as u8);
+            can_id(fields.raw_id, fields.extended)
         }
-        FrameKind::Data => can_id(raw_id, extended),
+        FrameKind::Data => can_id(fields.raw_id, fields.extended),
     };
-    Ok((ts_ns, channel, id, frame_flags, &data[..len], remote_dlc))
+    let mut frame = Frame {
+        ts_ns: fields.ts_ns,
+        bus: fields.bus,
+        id,
+        flags: frame_flags,
+        len: len as u8,
+        data: [0; MAX_PAYLOAD],
+        remote_dlc,
+    };
+    frame.data[..len].copy_from_slice(&data[..len]);
+    frame
 }
 
 fn can_id(raw: u64, extended: bool) -> u32 {
@@ -1318,12 +1593,21 @@ fn field_bits(record: &[u8], field: &Field) -> Option<u64> {
     let bytes = record.get(field.byte_offset..field.byte_offset.checked_add(byte_count)?)?;
     let mut buffer = [0u8; 8];
     let big_endian = matches!(field.data_type, 1 | 3 | 5);
-    let value = if big_endian {
-        buffer[8 - byte_count..].copy_from_slice(bytes);
-        u64::from_be_bytes(buffer)
-    } else {
-        buffer[..byte_count].copy_from_slice(bytes);
-        u64::from_le_bytes(buffer)
+    // Bytes read past the field's own are masked off below.
+    let word = field
+        .byte_offset
+        .checked_add(8)
+        .and_then(|end| record.get(field.byte_offset..end));
+    let value = match word {
+        _ if big_endian => {
+            buffer[8 - byte_count..].copy_from_slice(bytes);
+            u64::from_be_bytes(buffer)
+        }
+        Some(word) => u64_at(word, 0),
+        None => {
+            buffer[..byte_count].copy_from_slice(bytes);
+            u64::from_le_bytes(buffer)
+        }
     };
     let value = value >> field.bit_offset;
     Some(if field.bit_count == 64 {
@@ -1534,14 +1818,23 @@ fn untranspose(data: &[u8], columns: usize) -> Vec<u8> {
     if columns == 0 || columns >= data.len() {
         return data.to_vec();
     }
+    // Rows are rebuilt a band at a time, so that the bytes of each column for a band are read
+    // from a cache line or two rather than one line per row.
+    const BAND_ROWS: usize = 64;
     let rows = data.len() / columns;
     let mut out = vec![0u8; data.len()];
-    for column in 0..columns {
-        for row in 0..rows {
-            out[row * columns + column] = data[column * rows + row];
+    let (records, rest) = out.split_at_mut(rows * columns);
+    for (band_index, band) in records.chunks_mut(BAND_ROWS * columns).enumerate() {
+        let first_row = band_index * BAND_ROWS;
+        let band_rows = band.len() / columns;
+        for (column, column_bytes) in data.chunks_exact(rows).take(columns).enumerate() {
+            let column_bytes = &column_bytes[first_row..first_row + band_rows];
+            for (record, &byte) in band.chunks_exact_mut(columns).zip(column_bytes) {
+                record[column] = byte;
+            }
         }
     }
-    out[rows * columns..].copy_from_slice(&data[rows * columns..]);
+    rest.copy_from_slice(&data[rows * columns..]);
     out
 }
 
@@ -1563,281 +1856,73 @@ fn f64_at(bytes: &[u8], at: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::parts::MAX_PARTS;
+    use super::test_file::*;
     use super::*;
     use crate::testing::{assert_chunking_does_not_matter, parse_chunked, VecSink};
 
-    /// Builds a file block by block; links to blocks not yet written are patched later.
-    struct Builder {
-        bytes: Vec<u8>,
-    }
-
-    const UNSIGNED: u8 = 0;
-    const UNSIGNED_BE: u8 = 1;
-    const FLOAT: u8 = 4;
-    const BYTES: u8 = 10;
-
-    /// How a channel is laid out in a record, with its name and type.
-    struct Member {
-        name: &'static str,
-        cn_type: u8,
-        data_type: u8,
-        byte_offset: u32,
-        bit_count: u32,
-        conversion: u64,
-        data: u64,
-    }
-
-    fn member(name: &'static str, data_type: u8, byte_offset: u32, bit_count: u32) -> Member {
-        Member {
-            name,
-            cn_type: 0,
-            data_type,
-            byte_offset,
-            bit_count,
-            conversion: 0,
-            data: 0,
-        }
-    }
-
-    impl Builder {
-        fn new() -> Self {
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(b"MDF     4.10    FreeCAN ");
-            bytes.extend_from_slice(&[0; 4]);
-            bytes.extend_from_slice(&0u16.to_le_bytes());
-            bytes.extend_from_slice(&0u16.to_le_bytes());
-            bytes.extend_from_slice(&410u16.to_le_bytes());
-            bytes.resize(64, 0);
-            Builder { bytes }
-        }
-
-        fn block(&mut self, id: &[u8; 4], links: &[u64], data: &[u8]) -> u64 {
-            while !self.bytes.len().is_multiple_of(8) {
-                self.bytes.push(0);
-            }
-            let at = self.bytes.len() as u64;
-            self.bytes.extend_from_slice(id);
-            self.bytes.extend_from_slice(&[0; 4]);
-            let length = 24 + links.len() * 8 + data.len();
-            self.bytes.extend_from_slice(&(length as u64).to_le_bytes());
-            self.bytes
-                .extend_from_slice(&(links.len() as u64).to_le_bytes());
-            for link in links {
-                self.bytes.extend_from_slice(&link.to_le_bytes());
-            }
-            self.bytes.extend_from_slice(data);
-            at
-        }
-
-        fn set_link(&mut self, block_at: u64, index: usize, target: u64) {
-            let at = block_at as usize + 24 + index * 8;
-            self.bytes[at..at + 8].copy_from_slice(&target.to_le_bytes());
-        }
-
-        fn link(&self, block_at: u64, index: usize) -> u64 {
-            let at = block_at as usize + 24 + index * 8;
-            u64::from_le_bytes(self.bytes[at..at + 8].try_into().unwrap())
-        }
-
-        fn text(&mut self, text: &str) -> u64 {
-            let mut data = text.as_bytes().to_vec();
-            data.push(0);
-            self.block(b"##TX", &[], &data)
-        }
-
-        fn header(&mut self, start_ns: u64) -> u64 {
-            let mut data = Vec::new();
-            data.extend_from_slice(&start_ns.to_le_bytes());
-            data.resize(32, 0);
-            self.block(b"##HD", &[0; 6], &data)
-        }
-
-        fn linear(&mut self, offset: f64, factor: f64) -> u64 {
-            let mut data = vec![1u8, 0];
-            data.extend_from_slice(&0u16.to_le_bytes());
-            data.extend_from_slice(&0u16.to_le_bytes());
-            data.extend_from_slice(&2u16.to_le_bytes());
-            data.extend_from_slice(&0f64.to_le_bytes());
-            data.extend_from_slice(&0f64.to_le_bytes());
-            data.extend_from_slice(&offset.to_le_bytes());
-            data.extend_from_slice(&factor.to_le_bytes());
-            self.block(b"##CC", &[0; 4], &data)
-        }
-
-        fn channel(&mut self, member: &Member, next: u64, composition: u64) -> u64 {
-            let name = self.text(member.name);
-            let mut data = vec![member.cn_type, 1, member.data_type, 0];
-            data.extend_from_slice(&member.byte_offset.to_le_bytes());
-            data.extend_from_slice(&member.bit_count.to_le_bytes());
-            data.resize(72, 0);
-            self.block(
-                b"##CN",
-                &[
-                    next,
-                    composition,
-                    name,
-                    0,
-                    member.conversion,
-                    member.data,
-                    0,
-                    0,
-                ],
-                &data,
-            )
-        }
-
-        /// A chain of channels, the first returned.
-        fn channels(&mut self, members: &[Member], composition_of_first: u64) -> u64 {
-            let mut next = 0;
-            for (index, member) in members.iter().enumerate().rev() {
-                let composition = if index == 0 { composition_of_first } else { 0 };
-                next = self.channel(member, next, composition);
-            }
-            next
-        }
-
-        /// A structure channel whose members form its composition.
-        fn structure(&mut self, name: &'static str, members: &[Member]) -> u64 {
-            let composition = self.channels(members, 0);
-            let structure = member(name, BYTES, 0, 0);
-            self.channel(&structure, 0, composition)
-        }
-
-        fn channel_group(
-            &mut self,
-            record_id: u64,
-            flags: u16,
-            record_len: u32,
-            cn_first: u64,
-            next: u64,
-        ) -> u64 {
-            let mut data = Vec::new();
-            data.extend_from_slice(&record_id.to_le_bytes());
-            data.extend_from_slice(&0u64.to_le_bytes());
-            data.extend_from_slice(&flags.to_le_bytes());
-            data.extend_from_slice(&0u16.to_le_bytes());
-            data.extend_from_slice(&0u32.to_le_bytes());
-            data.extend_from_slice(&record_len.to_le_bytes());
-            data.extend_from_slice(&0u32.to_le_bytes());
-            self.block(b"##CG", &[next, cn_first, 0, 0, 0, 0], &data)
-        }
-
-        fn data_group(&mut self, record_id_size: u8, cg_first: u64, data: u64) -> u64 {
-            let mut body = vec![record_id_size];
-            body.resize(8, 0);
-            self.block(b"##DG", &[0, cg_first, data, 0], &body)
-        }
-
-        fn data_block(&mut self, records: &[u8]) -> u64 {
-            self.block(b"##DT", &[], records)
-        }
-
-        fn compressed_block(&mut self, kind: &[u8; 2], records: &[u8], columns: u32) -> u64 {
-            let transposed = transpose(records, columns as usize);
-            let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&transposed, 6);
-            let mut data = kind.to_vec();
-            data.push(if columns == 0 { 0 } else { 1 });
-            data.push(0);
-            data.extend_from_slice(&columns.to_le_bytes());
-            data.extend_from_slice(&(records.len() as u64).to_le_bytes());
-            data.extend_from_slice(&(compressed.len() as u64).to_le_bytes());
-            data.extend_from_slice(&compressed);
-            self.block(b"##DZ", &[], &data)
-        }
-
-        fn data_list(&mut self, blocks: &[u64]) -> u64 {
-            let mut links = vec![0u64];
-            links.extend_from_slice(blocks);
-            let mut data = vec![0u8, 0, 0, 0];
-            data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
-            for index in 0..blocks.len() {
-                data.extend_from_slice(&(index as u64 * 1000).to_le_bytes());
-            }
-            self.block(b"##DL", &links, &data)
-        }
-
-        fn variable_data(&mut self, values: &[&[u8]]) -> u64 {
-            self.block(b"##SD", &[], &variable_records(values))
-        }
-    }
-
-    fn transpose(data: &[u8], columns: usize) -> Vec<u8> {
-        if columns == 0 || columns >= data.len() {
-            return data.to_vec();
-        }
-        let rows = data.len() / columns;
-        let mut out = vec![0u8; data.len()];
-        for row in 0..rows {
-            for column in 0..columns {
-                out[column * rows + row] = data[row * columns + column];
-            }
-        }
-        out[rows * columns..].copy_from_slice(&data[rows * columns..]);
-        out
-    }
-
-    fn variable_records(values: &[&[u8]]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for value in values {
-            out.extend_from_slice(&(value.len() as u32).to_le_bytes());
-            out.extend_from_slice(value);
-        }
-        out
-    }
-
-    fn master(name: &'static str, data_type: u8, byte_offset: u32, bit_count: u32) -> Member {
-        Member {
-            cn_type: 2,
-            ..member(name, data_type, byte_offset, bit_count)
-        }
-    }
-
-    /// A data frame record: t (f64 s), bus u8, id u32, ide u8, dlc u8, length u8,
-    /// data offset u64, dir u8, edl u8, brs u8, esi u8.
-    fn data_record(
-        t: f64,
-        bus: u8,
-        id: u32,
-        ide: bool,
-        (dlc, length): (u8, u8),
-        data_offset: u64,
-        flags: [bool; 4],
-    ) -> Vec<u8> {
-        let mut record = Vec::new();
-        record.extend_from_slice(&t.to_le_bytes());
-        record.push(bus);
-        record.extend_from_slice(&id.to_le_bytes());
-        record.push(u8::from(ide));
-        record.push(dlc);
-        record.push(length);
-        record.extend_from_slice(&data_offset.to_le_bytes());
-        record.extend(flags.iter().map(|&f| u8::from(f)));
-        record
-    }
-
-    const DATA_RECORD_LEN: u32 = 28;
-
-    fn data_frame_members(data_bytes_at: u64) -> Vec<Member> {
-        vec![
-            member("CAN_DataFrame.BusChannel", UNSIGNED, 8, 8),
-            member("CAN_DataFrame.ID", UNSIGNED, 9, 32),
-            member("CAN_DataFrame.IDE", UNSIGNED, 13, 8),
-            member("CAN_DataFrame.DLC", UNSIGNED, 14, 8),
-            member("CAN_DataFrame.DataLength", UNSIGNED, 15, 8),
-            Member {
-                cn_type: 1,
-                data: data_bytes_at,
-                ..member("CAN_DataFrame.DataBytes", BYTES, 16, 64)
-            },
-            member("CAN_DataFrame.Dir", UNSIGNED, 24, 8),
-            member("CAN_DataFrame.EDL", UNSIGNED, 25, 8),
-            member("CAN_DataFrame.BRS", UNSIGNED, 26, 8),
-            member("CAN_DataFrame.ESI", UNSIGNED, 27, 8),
-        ]
-    }
-
+    /// Parses `input` whole, checking that it reads the same in parts of any size.
     fn parse(input: &[u8]) -> (VecSink, ParseStats) {
-        parse_chunked(Mf4Parser::new(), input, usize::MAX)
+        let (whole, stats) = parse_chunked(Mf4Parser::new(), input, usize::MAX);
+        assert_parts_read_as_whole(input, &whole, &stats);
+        (whole, stats)
+    }
+
+    /// Parts more than this take long to read in a debug build.
+    const MAX_TEST_PARTS: usize = 3000;
+
+    /// Reads `input` in parts of `part_bytes` of stream, as the web app's workers do. None for
+    /// a file read whole, or in more than [`MAX_TEST_PARTS`] parts.
+    pub(super) fn parse_in_parts(input: &[u8], part_bytes: u64) -> Option<(VecSink, ParseStats)> {
+        let mut parser = Mf4Parser::new();
+        let mut sink = VecSink::default();
+        parser.push(input, &mut sink);
+        let count = parser.plan_parts(part_bytes)?;
+        if count > MAX_TEST_PARTS {
+            return None;
+        }
+        let reads: Vec<Vec<u8>> = (0..count)
+            .map(|index| {
+                let task = parser.part_task(index).unwrap();
+                let fetched: Vec<u8> = task
+                    .ranges
+                    .iter()
+                    .flat_map(|&(at, end)| input[at as usize..end as usize].iter().copied())
+                    .collect();
+                read_part(&task.task, &fetched).expect("part read")
+            })
+            .collect();
+        let mut needs = 0;
+        while let Joined::Needs(next) = parser
+            .join_part(needs, &reads[needs], &mut sink)
+            .expect("part joined")
+        {
+            needs = next;
+        }
+        assert!(parser.join.is_none(), "the join is dropped once done");
+        assert!(parser.part_task(0).is_none() && parser.reads_in_parts());
+        parser.finish(&mut sink);
+        Some((sink, parser.stats().clone()))
+    }
+
+    /// Checks that `input` reads as `whole` and `stats` in parts of many sizes, and returns how
+    /// many of the sizes it was read in parts at.
+    fn assert_parts_read_as_whole(input: &[u8], whole: &VecSink, stats: &ParseStats) -> usize {
+        let mut in_parts = 0;
+        for part_bytes in [1, 2, 3, 5, 8, 13, 40, 100, 333, 1000, 4096, 1 << 20] {
+            let Some((parts, parts_stats)) = parse_in_parts(input, part_bytes) else {
+                continue;
+            };
+            in_parts += 1;
+            assert_eq!(parts.frames, whole.frames, "parts of {part_bytes}");
+            assert_eq!(
+                parts.remote_dlcs, whole.remote_dlcs,
+                "parts of {part_bytes}"
+            );
+            assert_eq!(parts.channels, whole.channels, "parts of {part_bytes}");
+            assert_eq!(&parts_stats, stats, "parts of {part_bytes}");
+        }
+        in_parts
     }
 
     #[test]
@@ -1868,6 +1953,7 @@ mod tests {
         b.set_link(hd, 0, dg);
 
         let (sink, stats) = assert_chunking_does_not_matter(Mf4Parser::new, &b.bytes);
+        assert!(assert_parts_read_as_whole(&b.bytes, &sink, &stats) > 0);
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!((stats.lines, stats.frames), (3, 3));
         assert_eq!(sink.channels, [b"can1".to_vec(), b"can2".to_vec()]);
@@ -1885,6 +1971,38 @@ mod tests {
                 (1_001_000_000_000, 0, 0x7FF, 0, vec![]),
             ]
         );
+    }
+
+    #[test]
+    fn fields_that_start_inside_a_byte_are_read_from_their_bit_offset() {
+        // The ID's 29 bits start 3 bits into its first byte, below 3 bits of other data.
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let sd = b.variable_data(&[&[5]]);
+        let records: Vec<u8> = (0..300u32)
+            .flat_map(|i| {
+                let id = ((0x7F0 + i % 16) << 3) | (i % 8);
+                data_record(f64::from(i) / 1e3, 1, id, false, (1, 1), 0, [false; 4])
+            })
+            .collect();
+        let mut members = data_frame_members(sd);
+        members[1] = Member {
+            bit_offset: 3,
+            ..member("CAN_DataFrame.ID", UNSIGNED, 9, 29)
+        };
+        let dt = b.data_block(&records);
+        let structure = b.structure("CAN_DataFrame", &members);
+        let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+        let cg = b.channel_group(0, 0, DATA_RECORD_LEN, time, 0);
+        let dg = b.data_group(0, cg, dt);
+        b.set_link(hd, 0, dg);
+
+        let (sink, stats) = parse(&b.bytes);
+        assert!(parse_in_parts(&b.bytes, 1000).is_some(), "read in parts");
+        assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
+        let ids: Vec<u32> = sink.frames.iter().map(|frame| frame.2).collect();
+        let expected: Vec<u32> = (0..300).map(|i| 0x7F0 + i % 16).collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]
@@ -2168,7 +2286,7 @@ mod tests {
         let mut stats = ParseStats::default();
         assert_eq!(source.next_time(0, &mut walk, &mut stats), Some(0));
         assert_eq!(
-            source.held.len(),
+            source.window.held.len(),
             REORDER_WINDOW,
             "read no further than the window"
         );
@@ -2229,7 +2347,7 @@ mod tests {
         let mut stats = ParseStats::default();
         for source in &mut sources {
             assert_eq!(source.next_time(0, &mut walk, &mut stats), Some(0));
-            assert_eq!(source.held.len(), REORDER_WINDOW / 4);
+            assert_eq!(source.window.held.len(), REORDER_WINDOW / 4);
         }
 
         let (sink, stats) = parse(&b.bytes);
@@ -2274,6 +2392,10 @@ mod tests {
         b.set_link(hd, 0, dg);
 
         let (sink, stats) = parse(&b.bytes);
+        assert!(
+            parse_in_parts(&b.bytes, 1 << 14).is_some(),
+            "the window spans parts"
+        );
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(sink.frames.len(), count as usize + 1);
         let remote = sink.frames.iter().position(|frame| frame.0 == 0).unwrap();
@@ -2306,6 +2428,143 @@ mod tests {
             Some("more frames than the file's size allows")
         );
         assert_eq!(sink.frames.len(), b.bytes.len() / FILE_BYTES_PER_FRAME);
+    }
+
+    /// Plans `input` in parts of `part_bytes`, checking that the plan is small and quick to
+    /// make, and returns how many parts it has (0 for a file read whole).
+    fn plan_of(input: &[u8], part_bytes: u64, max_parts: usize) -> usize {
+        let mut parser = Mf4Parser::new();
+        parser.push(input, &mut VecSink::default());
+        let started = std::time::Instant::now();
+        let Some(count) = parser.plan_parts(part_bytes) else {
+            return 0;
+        };
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(count <= max_parts, "{count} parts");
+        let task_bytes: usize = (0..count)
+            .map(|index| parser.part_task(index).unwrap().task.len())
+            .sum();
+        assert!(task_bytes < 1 << 20, "{task_bytes} bytes of tasks");
+        count
+    }
+
+    /// A file whose data list links `block` `links` times, in one data group of `members`
+    /// with records of `record_len` (and record IDs of 1 byte when `record_id`).
+    fn fan_out(block: &[u8], links: usize, record_len: u32, record_id: bool) -> Vec<u8> {
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let dt = b.data_block(block);
+        let dl = b.data_list(&vec![dt; links]);
+        let mut members = data_frame_members(0);
+        members[5].cn_type = 0;
+        let structure = b.structure("CAN_DataFrame", &members);
+        let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+        let id = u64::from(record_id);
+        let cg = b.channel_group(id, 0, record_len, time, 0);
+        let dg = b.data_group(u8::from(record_id), cg, dl);
+        b.set_link(hd, 0, dg);
+        b.bytes
+    }
+
+    #[test]
+    fn data_lists_that_fan_out_are_planned_only_as_far_as_the_budgets_allow() {
+        // A sorted group whose data list links one block 20,000 times: a read stops at the
+        // frame budget, a tenth of the way into the stream.
+        let records: Vec<u8> = (0..2000)
+            .flat_map(|i| data_record(f64::from(i) / 1e3, 1, 0x100, false, (8, 8), 7, [false; 4]))
+            .collect();
+        let sorted = fan_out(&records, 20_000, DATA_RECORD_LEN, false);
+        // An unsorted one whose records hold 1,000 bytes after their ID, from a block of 1 MiB
+        // linked 2,000 times: a read stops at the data budget.
+        let record: Vec<u8> = [
+            &[1u8][..],
+            &data_record(0.5, 1, 0x100, false, (8, 8), 7, [false; 4]),
+        ]
+        .concat();
+        let mut block = Vec::new();
+        while block.len() + record.len() + 1000 - DATA_RECORD_LEN as usize <= 1 << 20 {
+            block.extend_from_slice(&record);
+            block.resize(block.len() + 1000 - DATA_RECORD_LEN as usize, 0);
+        }
+        let unsorted = fan_out(&block, 2000, 1000, true);
+        // Records of nothing but an ID, each rejected, until a read stops at the frame budget.
+        let ids = fan_out(&[1; 1 << 20], 2000, 0, true);
+        for (input, reason, part_bytes) in [
+            (&sorted, "more frames than the file's size allows", 4 << 20),
+            (&unsorted, "more data than the file's size allows", 4 << 20),
+            (&ids, "bad time value", 1 << 18),
+        ] {
+            let (whole, stats) = parse_chunked(Mf4Parser::new(), input, usize::MAX);
+            assert_eq!(
+                stats.first_rejection.map(|(_, reason)| reason),
+                Some(reason)
+            );
+            assert!(
+                stats.lines < input.len() as u64 + 2,
+                "{reason}: stopped by a budget"
+            );
+            let parts = plan_of(input, part_bytes, 64);
+            assert!(parts > 1, "{reason}: read whole");
+            plan_of(input, 1 << 16, MAX_PARTS);
+            // Parts so small that there would be too many are read whole.
+            assert_eq!(plan_of(input, 1, MAX_PARTS), 0);
+            for part_bytes in [part_bytes, 1 << 17] {
+                let (joined, joined_stats) = parse_in_parts(input, part_bytes).unwrap();
+                assert_eq!(joined.frames, whole.frames, "{reason}");
+                assert_eq!(joined_stats, stats, "{reason}");
+            }
+        }
+    }
+
+    /// A file of `groups` data groups, each with records of a 1-byte ID and nothing else
+    /// from one block of `records` they all link.
+    fn groups_sharing_a_block(records: usize, groups: usize) -> Vec<u8> {
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let dt = b.data_block(&vec![1; records]);
+        let mut previous = None;
+        for _ in 0..groups {
+            let mut members = data_frame_members(0);
+            members[5].cn_type = 0;
+            let structure = b.structure("CAN_DataFrame", &members);
+            let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+            let cg = b.channel_group(1, 0, 0, time, 0);
+            let dg = b.data_group(1, cg, dt);
+            match previous {
+                None => b.set_link(hd, 0, dg),
+                Some(previous) => b.set_link(previous, 0, dg),
+            }
+            previous = Some(dg);
+        }
+        b.bytes
+    }
+
+    #[test]
+    fn planning_many_data_groups_walks_no_more_than_two_reads_would() {
+        for (groups, planned) in [(2, true), (64, false)] {
+            let input = groups_sharing_a_block(1 << 18, groups);
+            let (whole, stats) = parse_chunked(Mf4Parser::new(), &input, usize::MAX);
+            assert_eq!(
+                stats.first_rejection.map(|(_, reason)| reason),
+                Some("bad time value")
+            );
+            parts::WALKED.with(|walked| walked.set(0));
+            assert_eq!(plan_of(&input, 1 << 16, MAX_PARTS) > 0, planned, "{groups}");
+            let walked = parts::WALKED.with(|walked| walked.get());
+            assert!(
+                walked <= 2 * input.len() as u64 + 2,
+                "{groups} groups: walked {walked} records for {} bytes",
+                input.len()
+            );
+            match parse_in_parts(&input, 1 << 16) {
+                Some((joined, joined_stats)) => {
+                    assert!(planned);
+                    assert_eq!(joined.frames, whole.frames, "{groups}");
+                    assert_eq!(joined_stats, stats, "{groups}");
+                }
+                None => assert!(!planned),
+            }
+        }
     }
 
     /// A zlib stream of `data` in a stored block, after `empty` empty stored blocks.
@@ -2525,22 +2784,6 @@ mod tests {
         let (sink, stats) = parse(&b.bytes);
         assert_eq!(stats.rejected, 0, "{:?}", stats.first_rejection);
         assert_eq!(sink.frames.len(), 2 * DATA_GROUPS);
-    }
-
-    fn unfinalize(b: &mut Builder, flags: u16, custom_flags: u16) {
-        b.bytes[..8].copy_from_slice(UNFINALIZED);
-        b.bytes[60..62].copy_from_slice(&flags.to_le_bytes());
-        b.bytes[62..64].copy_from_slice(&custom_flags.to_le_bytes());
-    }
-
-    fn set_length(b: &mut Builder, block_at: u64, length: u64) {
-        let at = block_at as usize + 8;
-        b.bytes[at..at + 8].copy_from_slice(&length.to_le_bytes());
-    }
-
-    fn set_count(b: &mut Builder, list_at: u64, links: usize, count: u32) {
-        let at = list_at as usize + 24 + links * 8 + 4;
-        b.bytes[at..at + 4].copy_from_slice(&count.to_le_bytes());
     }
 
     #[test]
@@ -2867,5 +3110,13 @@ mod tests {
         assert_eq!(untranspose(&transpose(&records, 5), 5), records);
         assert_eq!(untranspose(&transpose(&records, 23), 23), records);
         assert_eq!(untranspose(&records, 0), records);
+        // Bands of rows, and the rows past the last full band, with bytes left over.
+        for rows in [63, 64, 65, 128, 130, 200] {
+            for columns in [1, 3, 7, 28] {
+                let records: Vec<u8> = (0..rows * columns + 5).map(|i| (i * 7) as u8).collect();
+                let restored = untranspose(&transpose(&records, columns), columns);
+                assert_eq!(restored, records, "{rows} rows of {columns}");
+            }
+        }
     }
 }

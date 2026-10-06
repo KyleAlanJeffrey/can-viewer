@@ -1479,6 +1479,32 @@ impl Session {
         self.push_segment_of_b(segment).map_err(js_err)
     }
 
+    /// Like [`Session::plan_parts`], for log B.
+    pub fn compare_plan_parts(&mut self, part_bytes: f64) -> Option<u32> {
+        let log = self.log_b.as_mut()?;
+        log.input.plan_parts(part_bytes, &mut log.store)
+    }
+
+    /// Like [`Session::part_task`], for log B.
+    #[must_use]
+    pub fn compare_part_task(&self, index: u32) -> Option<Vec<u8>> {
+        Some(self.log_b.as_ref()?.input.part_task(index)?.task.clone())
+    }
+
+    /// Like [`Session::part_ranges`], for log B.
+    #[must_use]
+    pub fn compare_part_ranges(&self, index: u32) -> Option<Vec<f64>> {
+        Some(crate::parts::part_ranges(
+            self.log_b.as_ref()?.input.part_task(index)?,
+        ))
+    }
+
+    /// Like [`Session::join_part`], for log B. Fails as [`Session::compare_push_chunk`] does
+    /// once log B outgrows its memory budget.
+    pub fn compare_join_part(&mut self, index: u32, part: &[u8]) -> Result<i32, JsError> {
+        self.join_part_of_b(index, part).map_err(js_err)
+    }
+
     /// Flush log B's parser and return its JSON `LogInfo`.
     pub fn compare_finish(&mut self) -> Result<String, JsError> {
         let log = self
@@ -1620,6 +1646,18 @@ impl Session {
             return Err(too_large(&log.input.file_name));
         }
         Ok(joined)
+    }
+
+    fn join_part_of_b(&mut self, index: u32, part: &[u8]) -> Result<i32, String> {
+        let Some(log) = &mut self.log_b else {
+            return Ok(-2);
+        };
+        let next = log.input.join_mf4_part(index, part, &mut log.store);
+        if log.input.refused {
+            log.store = FrameStore::default();
+            return Err(too_large(&log.input.file_name));
+        }
+        Ok(next)
     }
 
     fn finished_b(&self) -> Option<&LogB> {
@@ -2482,6 +2520,81 @@ mod tests {
         assert!(!input.refused, "its size suggests it fits");
         input.finish(&mut store);
         assert!(input.refused);
+    }
+
+    #[test]
+    fn an_mf4_log_b_read_in_parts_is_refused_once_it_outgrows_its_budget() {
+        use can_formats::mf4::test_file::*;
+
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let records: Vec<u8> = (0..20_000u32)
+            .flat_map(|i| {
+                let t = f64::from(i) / 1000.0;
+                data_record(
+                    t,
+                    1,
+                    0x100 + i % 50,
+                    false,
+                    (8, 8),
+                    u64::from(i),
+                    [false; 4],
+                )
+            })
+            .collect();
+        let dt = b.data_block(&records);
+        let mut members = data_frame_members(0);
+        // The payload is the record's 8 bytes at the offset field.
+        members[5].cn_type = 0;
+        let structure = b.structure("CAN_DataFrame", &members);
+        let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+        let cg = b.channel_group(0, 0, DATA_RECORD_LEN, time, 0);
+        let dg = b.data_group(0, cg, dt);
+        b.set_link(hd, 0, dg);
+        let file = b.bytes;
+
+        let mut s = session();
+        // Its size suggests it fits.
+        s.compare_begin("drive.mf4", 0.0);
+        s.log_b.as_mut().unwrap().input.limit = Some(256 << 10);
+        assert!(s.compare_push_chunk(&file).is_ok());
+        let count = s.compare_plan_parts(4096.0).expect("read in parts");
+        let parts: Vec<Vec<u8>> = (0..count)
+            .map(|index| {
+                let task = s.compare_part_task(index).unwrap();
+                let fetched: Vec<u8> = s
+                    .compare_part_ranges(index)
+                    .unwrap()
+                    .chunks(2)
+                    .flat_map(|range| &file[range[0] as usize..range[1] as usize])
+                    .copied()
+                    .collect();
+                can_formats::mf4::read_part(&task, &fetched).unwrap()
+            })
+            .collect();
+        let mut needs = 0;
+        let mut joined = 0;
+        let refused = loop {
+            match s.join_part_of_b(needs, &parts[needs as usize]) {
+                Ok(next) => {
+                    assert!(next >= 0, "never refused");
+                    needs = next as u32;
+                    joined += 1;
+                }
+                Err(message) => break message,
+            }
+        };
+        assert!(joined > 0);
+        assert_eq!(refused, too_large("drive.mf4"));
+        assert!(
+            s.log_b.as_ref().unwrap().store.is_empty(),
+            "its frames are dropped"
+        );
+        assert_eq!(
+            s.join_part_of_b(needs, &parts[needs as usize]),
+            Err(too_large("drive.mf4"))
+        );
+        assert_eq!(s.store.len(), 11, "log A stays");
     }
 
     /// A 16-bit little-endian value from `from` to `to` over a minute at 10 Hz.

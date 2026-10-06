@@ -4,7 +4,7 @@
 
 import { LOG_SUPERSEDED, isAbort, type BitFlips, type CompareOptions, type Database, type DiscoveryHints, type ExportFormat, type FindRule, type FrameFilter, type LogInfo, type RawSignalSpec, type ScopedDatabase } from './api';
 import init, { Session, export_dbc, parse_dbc } from './pkg/can_wasm.js';
-import { readChunks, readInParts, type PartTask, type PartWorker, type ReadSession } from './readInParts';
+import { readChunks, readInParts, type FramePartTask, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 /** Smaller logs are read in this worker alone: starting part workers would cost more than they save. */
 const PARTS_MIN_BYTES = 32 << 20;
@@ -149,7 +149,7 @@ function startPartWorker(): PartWorker {
   worker.onmessageerror = () => fail("a part worker's reply couldn't be read");
   return {
     ready,
-    read(task: PartTask) {
+    read(task: PartTask | FramePartTask) {
       return new Promise<Uint8Array>((resolve, reject) => {
         pending = { resolve, reject };
         worker.postMessage(task);
@@ -183,6 +183,10 @@ const openLogInput: ReadSession = {
   segment_format: () => session.segment_format(),
   push_segment: (segment) => session.push_segment(segment),
   object_cuts: (chunk, partBytes) => session.object_cuts(chunk, partBytes),
+  plan_parts: (partBytes) => session.plan_parts(partBytes),
+  part_task: (index) => session.part_task(index),
+  part_ranges: (index) => session.part_ranges(index),
+  join_part: (index, part) => session.join_part(index, part),
 };
 
 const logBInput: ReadSession = {
@@ -190,6 +194,10 @@ const logBInput: ReadSession = {
   segment_format: () => session.compare_segment_format(),
   push_segment: (segment) => session.compare_push_segment(segment),
   object_cuts: (chunk, partBytes) => session.compare_object_cuts(chunk, partBytes),
+  plan_parts: (partBytes) => session.compare_plan_parts(partBytes),
+  part_task: (index) => session.compare_part_task(index),
+  part_ranges: (index) => session.compare_part_ranges(index),
+  join_part: (index, part) => session.compare_join_part(index, part),
 };
 
 function freshSession(): Session {

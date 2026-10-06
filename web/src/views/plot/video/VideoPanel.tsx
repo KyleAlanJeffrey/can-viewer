@@ -74,7 +74,7 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
   /** The video's span, for working out what the log covers; open-ended while unknown. */
   const span = end ?? Infinity;
   const syncButton = useRef<HTMLButtonElement>(null);
-  /** Whether the current mouse press started on the video, for telling a click on it from a stray one. */
+  /** Whether the current primary-button press started on the video, for telling a click on it from a stray one. */
   const pressedOnVideo = useRef(false);
   /** Set when the sync step closes, so focus goes back to the button that opened it. */
   const refocusSync = useRef(false);
@@ -298,6 +298,13 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
           aria-label={`Video ${video.name}`}
           onPointerDown={(e) => {
             pressedOnVideo.current = e.button === 0;
+          }}
+          onPointerCancel={() => {
+            pressedOnVideo.current = false;
+          }}
+          // A mouse dragged off the video won't click it. Touch and pen leave before their click, so they keep the press.
+          onPointerLeave={(e) => {
+            if (e.pointerType === 'mouse') pressedOnVideo.current = false;
           }}
           onClick={onVideoClick}
           onLoadedMetadata={onLoadedMetadata}

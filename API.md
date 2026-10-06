@@ -1225,6 +1225,7 @@ How it works (see `suggest` in `crates/can-wasm/src/discover.rs`):
 - 32-bit words that read as smoothly changing floats, across more than one exponent, get no suggestions, since a `RawSignalSpec` can't describe a float. A word that overlaps a counter or checksum is not a float.
 - When a counter with at most 8 values looks like a multiplexer selector, bytes that change much more from frame to frame than from one frame of a page to the next one of that page get no suggestions.
 - The best-scoring candidates are kept, with no two overlapping. A candidate that straddles two others gives way when they and a range inside it score about as well.
+- An unsigned value whose next more significant bits are 0 in every frame, and taken by no other suggestion, is widened over them to the end of a nibble, or of a byte when the value starts on one: a value that never reaches its top bits in the log would otherwise read narrower than its field. Its `reason` then says the width was inferred. Constant bits that aren't 0 are left alone, as they may be another field.
 
 **Parameters**
 

@@ -8,7 +8,8 @@
 //! over a sample of frames and tested in turn as a counter, a signed or unsigned value or an
 //! enum; single bits that change rarely are flags, or toggles when they change more often, and
 //! whole bytes are tested against checksum rules. The best-scoring candidates that don't overlap
-//! are kept. Words that read as IEEE 754 floats get no suggestions, since a raw bit range can't
+//! are kept, and an unsigned value is widened over never-set bits above it to an aligned field.
+//! Words that read as IEEE 754 floats get no suggestions, since a raw bit range can't
 //! describe them, and nor do the bytes of a multiplexed message that take turns with its
 //! selector.
 
@@ -1523,6 +1524,60 @@ fn read_as(raw: u64, size: u16, signed: bool) -> f64 {
     }
 }
 
+/// An unsigned value's range grown over the bits above it that are 0 in every frame and in no
+/// `claimed` range, up to a nibble boundary, and on to a byte boundary when the value starts on
+/// one: a value that never reaches its top bits in the log reads narrower than its field. A range
+/// inside one byte is never grown past that byte, as either byte order would read it the same.
+fn widened(range: Range, rates: &[f64], first: &[u8], claimed: &[u64]) -> Option<Range> {
+    let size = usize::from(range.size);
+    let start = usize::from(range.start_bit);
+    let position = |bit: usize| bit / 8 * 8 + 7 - bit % 8;
+    let (lsb, mut msb) = match range.byte_order {
+        ByteOrder::Intel => (start, start + size - 1),
+        ByteOrder::Motorola => (bit_at_msb_position(position(start) + size - 1), start),
+    };
+    if !lsb.is_multiple_of(4) {
+        return None;
+    }
+    let one_byte = lsb / 8 == msb / 8;
+    let mut goal = size.next_multiple_of(4);
+    if lsb.is_multiple_of(8) {
+        goal = goal.next_multiple_of(8);
+    }
+    let (mut width, mut best) = (size, None);
+    while width < goal.min(64) {
+        let next = match range.byte_order {
+            ByteOrder::Intel => msb + 1,
+            ByteOrder::Motorola => match position(msb).checked_sub(1) {
+                Some(m) => bit_at_msb_position(m),
+                None => break,
+            },
+        };
+        let usable = next < rates.len()
+            && rates[next] == 0.0
+            && first[next / 8] >> (next % 8) & 1 == 0
+            && claimed[next / 64] >> (next % 64) & 1 == 0
+            && !(one_byte && next / 8 != lsb / 8);
+        if !usable {
+            break;
+        }
+        msb = next;
+        width += 1;
+        if width.is_multiple_of(4) {
+            best = Some((width, msb));
+        }
+    }
+    let (width, msb) = best?;
+    Some(Range {
+        start_bit: match range.byte_order {
+            ByteOrder::Intel => range.start_bit,
+            ByteOrder::Motorola => msb as u16,
+        },
+        size: width as u16,
+        byte_order: range.byte_order,
+    })
+}
+
 /// The reasons for unsigned values judged from a sample, with their ranges over the whole log.
 fn whole_log_value_reasons(log: &Log, ranges: &[Range]) -> Vec<String> {
     let n = log.frames.list.len();
@@ -1746,6 +1801,27 @@ pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
             .find("; changes near")
             .map_or(String::new(), |at| scored[i].reason[at..].to_string());
         scored[i].reason = reason + &marker_note;
+    }
+    let first = frames.data(store, 0);
+    for &i in &chosen {
+        if scored[i].kind != Kind::Continuous {
+            continue;
+        }
+        let mut claimed = [0u64; MAX_PAYLOAD / 8];
+        for &j in chosen.iter().filter(|&&j| j != i) {
+            for (c, m) in claimed.iter_mut().zip(scored[j].range.mask()) {
+                *c |= m;
+            }
+        }
+        if let Some(range) = widened(scored[i].range, &rates, first, &claimed) {
+            let added = range.size - scored[i].range.size;
+            scored[i].range = range;
+            scored[i].reason += &if added == 1 {
+                "; width inferred: its top bit is 0 throughout".to_string()
+            } else {
+                format!("; width inferred: its top {added} bits are 0 throughout")
+            };
+        }
     }
     let suggestions = chosen
         .into_iter()
@@ -2206,6 +2282,55 @@ mod tests {
                 (Kind::Signed, 48, 10, ByteOrder::Intel, true),
             ]
         );
+    }
+
+    #[test]
+    fn unsigned_values_that_never_reach_their_top_bits_widen_to_their_field() {
+        // Values using 11 bits of 4|12 and 10 of 32|16, and a whole byte at 56.
+        let s = store(6000, |i, _| {
+            let speed = (wave(i) * 1100.0) as i64;
+            let level = (wave(i + 1500) * 1000.0) as i64;
+            let byte = (wave(i + 700) * 200.0) as i64;
+            intel(&[(0, 4, 3), (4, 12, speed), (32, 16, level), (56, 8, byte)])
+        });
+        let all = run(&s, &Hints::default());
+        let mut ranges: Vec<(Kind, Range)> = all.iter().map(|s| (s.kind, s.range)).collect();
+        ranges.sort_by_key(|r| r.1.sort_key());
+        assert_eq!(
+            ranges,
+            [
+                (Kind::Continuous, Range::intel(4, 12)),
+                (Kind::Continuous, Range::intel(32, 16)),
+                (Kind::Continuous, Range::intel(56, 8)),
+            ]
+        );
+        let reason = |start: u16| {
+            &all.iter()
+                .find(|s| s.range.start_bit == start)
+                .unwrap()
+                .reason
+        };
+        assert!(reason(4).ends_with("; width inferred: its top bit is 0 throughout"));
+        assert!(!reason(56).contains("width inferred"));
+
+        // Big-endian: 11 bits used of 7|12@0, whose low nibble is the high half of byte 1.
+        let s = store(6000, |i, _| {
+            let speed = (wave(i) * 1100.0) as u16;
+            [(speed >> 4) as u8, (speed << 4) as u8, 0, 0, 0, 0, 0, 0]
+        });
+        let all = run(&s, &Hints::default());
+        assert_eq!(
+            all.iter().map(|s| (s.kind, s.range)).collect::<Vec<_>>(),
+            [(
+                Kind::Continuous,
+                Range {
+                    start_bit: 7,
+                    size: 12,
+                    byte_order: ByteOrder::Motorola
+                }
+            )]
+        );
+        assert!(all[0].reason.ends_with("its top bit is 0 throughout"));
     }
 
     #[test]

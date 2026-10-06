@@ -210,7 +210,8 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
           setProgress(null);
           const open = leftToScan.current;
           leftToScan.current = null;
-          if (open !== null) rescan(open);
+          // A hint or Scan again may have asked for it on its own meanwhile.
+          if (open !== null && !inFlight.current.has(open) && !latest.current.saved.results[open]) rescan(open);
         });
     },
     [core, setSaved, store, rescan],

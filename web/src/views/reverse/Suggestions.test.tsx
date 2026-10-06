@@ -170,6 +170,22 @@ describe('Suggested signals', () => {
     expect(suggestSignals).toHaveBeenCalledWith(first.key, { markers: [], reference: null });
   });
 
+  it('does not ask again for the open message at the end of the scan when a hint already did', async () => {
+    const suggestSignals = vi.fn(() => new Promise<MessageSuggestions>(() => {}));
+    const { core, scan } = discoveryCore({ suggestSignals });
+    const { user } = await openAdvanced(core);
+    expect(scan.keys[0]).toBe(first.key);
+
+    await user.click(within(panel()).getByRole('button', { name: 'Add a hint\u2026' }));
+    await user.type(within(panel()).getByRole('textbox', { name: 'Something happened at' }), '12 s{Enter}');
+    expect(suggestSignals).toHaveBeenCalledTimes(1);
+
+    await user.click(within(panel()).getByRole('button', { name: 'Cancel' }));
+    act(() => scan.fail(new DOMException('The scan was cancelled.', 'AbortError')));
+    await waitFor(() => expect(within(panel()).queryByRole('progressbar')).toBeNull());
+    expect(suggestSignals).toHaveBeenCalledTimes(1);
+  });
+
   it('stops the scan on Cancel and offers to scan the rest', async () => {
     const { core, scan } = discoveryCore();
     const { user } = await openAdvanced(core);

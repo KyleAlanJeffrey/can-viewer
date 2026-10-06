@@ -200,6 +200,28 @@ describe('Trace filters', () => {
     expect(screen.queryByRole('list', { name: 'Applied filters' })).toBeNull();
   });
 
+  it('removes the filter edited last, whatever its place among the chips', async () => {
+    const { user, setTraceFilter } = renderFilters((f) => (f.channels === null ? MATCHES : 0));
+    await addByteRule(user, '1F');
+    await user.click(within(sheet()).getByRole('checkbox', { name: 'can1' }));
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    expect(await screen.findByRole('heading', { name: 'No frames match these filters' })).toBeTruthy();
+    expect(chips()).toEqual(['can0', 'Byte 2 = 1F']);
+
+    await user.click(screen.getByRole('button', { name: 'Remove last filter, can0' }));
+    await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, rules: [{ type: 'byteEquals', byte: 2, value: 0x1f }] }));
+
+    // Editing the rule again, after the bus, makes the rule the last edited.
+    await openSheet(user);
+    await user.click(within(sheet()).getByRole('checkbox', { name: 'can1' }));
+    const value = within(sheet()).getByRole('textbox', { name: 'Rule 1 value, hex' });
+    await user.clear(value);
+    await user.type(value, '20');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    await user.click(await screen.findByRole('button', { name: 'Remove last filter, Byte 2 = 20' }));
+    await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, channels: [0] }));
+  });
+
   it('narrows the filters to the ID picked in the sidebar', async () => {
     const { user, setTraceFilter } = renderFilters((f) => (f.keys?.length === 0 ? 0 : MATCHES));
     await openSheet(user);

@@ -10,7 +10,7 @@ import { useViewState } from '../shared/viewState';
 import { InspectorSlot } from '../slots';
 import type { ViewProps } from '../types';
 import { FilterBar, NoMatches } from './FilterBar';
-import { filterChips, hasFilters, matchedBytes, toFrameFilter, type FilterChip, type TraceFilters } from './filters';
+import { filterChips, hasFilters, lastEditedChip, matchedBytes, toFrameFilter, type FilterChip, type TraceFilters } from './filters';
 import './trace.css';
 
 const FilterSheet = lazy(() => import('./FilterSheet').then((m) => ({ default: m.FilterSheet })));
@@ -170,9 +170,9 @@ export function TraceView({ ctx }: ViewProps) {
         </div>
       ) : result && result.count === 0 && chips.length > 0 ? (
         <NoMatches
-          last={chips[chips.length - 1]}
+          last={lastEditedChip(chips, filters?.edited)}
           oneId={summary ? idLabel(summary) : null}
-          onRemoveLast={() => apply(chips[chips.length - 1].without)}
+          onRemoveLast={() => apply(lastEditedChip(chips, filters?.edited).without)}
           onClear={() => apply(null)}
         />
       ) : (

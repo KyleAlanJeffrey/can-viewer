@@ -364,6 +364,38 @@ describe('Suggested signals', () => {
     expect([added?.muxValue, added?.muxSwitch]).toEqual([2, { signal: 'Inner', ranges: [[2, 2]] }]);
   });
 
+  it('names the top-level multiplexor of a page signal when a nested one is listed first', async () => {
+    const outer = { startBit: 0, size: 8, byteOrder: 'intel' as const };
+    const nested: LoadedDbc = {
+      ...car,
+      db: {
+        ...car.db,
+        messages: [
+          ...car.db.messages,
+          message(0x200, 'Paged', {
+            signals: [
+              signal('Inner', { startBit: 8, size: 4, isMultiplexor: true, muxValue: 1, muxSwitch: { signal: 'Outer', ranges: [[1, 1]] } }),
+              signal('Outer', { ...outer, isMultiplexor: true }),
+            ],
+          }),
+        ],
+      },
+    };
+    const cell = suggestion('continuous', 16, 16, { spec: { startBit: 16, size: 16, byteOrder: 'intel', signed: false, factor: 1, offset: 0, mux: { ...outer, value: 3 } } });
+    const { core, scan } = discoveryCore({ suggestSignals: vi.fn(async (key: number) => found(key, [cell])) });
+    const shell = renderInShell(ReverseView, { core, ids: [engine, first, second], dbcs: [nested], selected: first.key, capturing: false });
+    await shell.user.click(screen.getByRole('tab', { name: 'Advanced' }));
+    await screen.findByRole('region', { name: 'Suggested signals' });
+    act(() => scan.finish());
+    await shell.user.click(await within(panel()).findByRole('button', { name: 'Accept suggestion 1' }));
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' });
+    await waitFor(() => expect((within(inspector).getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('Value_16_m3'));
+    await shell.user.click(within(inspector).getByRole('button', { name: 'Add to Database' }));
+    await waitFor(() => expect(within(row(1)).getByRole('status').textContent).toBe('Accepted \u00b7 Value_16_m3'));
+    const added = shell.state.dbcs[0].db.messages.find((m) => m.id === 0x200)?.signals[2];
+    expect([added?.muxValue, added?.muxSwitch]).toEqual([3, { signal: 'Outer', ranges: [[3, 3]] }]);
+  });
+
   it('dismisses a suggestion and brings it back', async () => {
     const { core, scan } = discoveryCore();
     const { user } = await openAdvanced(core);

@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_logs_and_logs_read_beside_another_are_read_whole() {
+    fn only_text_logs_read_up_to_a_line_break_are_read_in_parts() {
         let mut s = Session::new();
         s.set_file_name("drive.blf");
         s.push_chunk(b"LOGG");
@@ -701,6 +701,8 @@ mod tests {
         assert_eq!(s.segment_format(), None);
         let part = read_part(Format::Candump, b"", b"(1.0) can0 123#00\n").unwrap();
         assert!(!s.push_segment(&part));
+        assert_eq!(s.compare_segment_format(), None, "no log B");
+        assert!(!s.compare_push_segment(&part).unwrap());
 
         let log = candump_log();
         let mut s = Session::new();

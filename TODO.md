@@ -66,7 +66,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [x] slcan on a CANable: learn whether the adapter answers from `S` rather than `V`, confirm listen-only only through `L`, read frames only once the open command is written, write `C` before closing the port, and give up on an adapter that doesn't start within 10 s (PR #39)
 - [x] Offer a rolling capture that keeps the last N minutes: Keep in the Capture sheet (1 to 60 min), with `trimCapture` dropping the store's oldest frames once they are a tenth of the window (at least 10 s) past it. Cost: each drop moves the kept frames to the front of the columns and rebuilds the per-ID statistics, in time proportional to the frames kept, and view times shift back at each drop since they count from the oldest frame kept. Untested on hardware
 - [x] Keep a remote frame's DLC (slcan `r1238`, gs_usb `can_dlc`), so candump export writes `123#R8`; the store keeps it as a one-byte payload that `frame()` hides (`FrameStore::remote_dlc`), every reader and writer carries it, and a test round-trips it through all six formats
-- [x] slcan CAN FD: set the data bitrate (the `Y` command of CANable 2 firmware) for FD buses: a CAN FD data bitrate select in the Capture sheet sends `Y1` to `Y8` before the bus opens. Untested on hardware
+- [x] slcan CAN FD: set the data bitrate (the `Y` command of CANable 2 firmware) for FD buses: a CAN FD data bitrate select in the Capture sheet sends `Y1` to `Y8` before the bus opens (only `Y2` and `Y5` are commonly documented; the rest are unverified). Untested on hardware
 - [ ] Decide whether an unsaved capture should survive a reload (writing it to IndexedDB in chunks as it runs); today only a saved one comes back
 
 ## Bugs

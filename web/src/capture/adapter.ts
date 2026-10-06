@@ -96,8 +96,34 @@ export const START_CANCELLED = 'The capture was stopped while the adapter starte
  */
 export const MAX_AHEAD_OF_HOST_NS = 1e9;
 
-/** How fast `DeviceClock` moves its anchor back to follow an adapter clock that runs fast: 1000 ppm. */
+/** How fast `DeviceClock` moves its anchor to follow an adapter clock that runs fast or slow: 1000 ppm. */
 const MAX_SLEW = 1e-3;
+
+/** How long `DeviceClock` watches how late frames arrive before it slews forward to the least late. */
+const SLEW_WINDOW_NS = 10e9;
+
+/** How late the least late frame of a window is left, so the forward and back slews don't fight. */
+const SLEW_MARGIN_NS = 1e6;
+
+/**
+ * How far before its arrival a frame may be timed before `DeviceClock` counts its anchor as off:
+ * a second more than `MAX_AHEAD_OF_HOST_NS`, for USB and browser delays.
+ */
+export const MAX_BEHIND_HOST_NS = 2e9;
+
+/** How long, in host time, frames must keep being timed past those bounds before `DeviceClock` re-anchors. */
+export const REANCHOR_AFTER_NS = 2e9;
+
+/** How many frames in a row must be timed past those bounds before `DeviceClock` re-anchors. */
+export const REANCHOR_FRAMES = 3;
+
+interface Stamp {
+  deviceNs: number;
+  hostNs: number;
+}
+
+/** A frame timed `aheadNs` past its arrival, negative when before it. */
+type OffFrame = Stamp & { aheadNs: number };
 
 /**
  * An adapter's own timestamps, from a counter that wraps every `wrapNs`, as capture times:
@@ -106,20 +132,40 @@ const MAX_SLEW = 1e-3;
  * USB and scheduling jitter is left out. A frame can't really be timed after it arrived, so
  * when one is, the anchor is moved back by up to `MAX_SLEW` of the adapter time since the latest
  * adapter time seen: that undoes an anchor taken late and follows an adapter clock that runs fast, while
- * times keep rising. A time still more than `MAX_AHEAD_OF_HOST_NS` past the host clock is held
- * to it and leaves the anchor alone.
+ * times keep rising. When even the least late frame over `SLEW_WINDOW_NS` arrived more than
+ * `SLEW_MARGIN_NS` after its time, the anchor moves forward the same way, which follows an
+ * adapter clock that runs slow. A time still more than `MAX_AHEAD_OF_HOST_NS` past the host
+ * clock is held to it and leaves the anchor alone. When `REANCHOR_FRAMES` frames in a row over
+ * `REANCHOR_AFTER_NS` are held, or timed more than `MAX_BEHIND_HOST_NS` before they arrived, the
+ * adapter's clock jumped (as when the computer sleeps): the clock re-anchors at the least late
+ * of them, tells `onReanchor`, and keeps times rising past the last one given out.
  */
 export class DeviceClock {
-  private anchor: { deviceNs: number; hostNs: number } | null = null;
+  private anchor: Stamp | null = null;
   /** The furthest adapter time since the anchor timed so far, which each slew is measured from. */
   private lastElapsedNs = 0;
+  /** Since `sinceHostNs`, the latest anchor host time that would have timed no frame after its arrival. */
+  private window = { sinceHostNs: 0, latestAnchorNs: Infinity };
+  /** How far the anchor is still to move forward, from the last window. */
+  private forwardNs = 0;
+  /** While frames keep being timed past the bounds by about the same: the first, how many, and the least late. */
+  private off: { first: OffFrame; frames: number; best: OffFrame } | null = null;
+  private lastTimeNs = -Infinity;
+  /** Set by a re-anchor, until times pass the last one given out before it. */
+  private catchingUp = false;
 
-  constructor(private readonly wrapNs: number) {}
+  constructor(
+    private readonly wrapNs: number,
+    private readonly onReanchor: (message: string) => void = () => {},
+  ) {}
 
   /** The device read `deviceNs` at host time `hostNs`. Without it, the first frame anchors. */
   sync(deviceNs: number, hostNs: number) {
     this.anchor = { deviceNs, hostNs };
     this.lastElapsedNs = 0;
+    this.window = { sinceHostNs: hostNs, latestAnchorNs: Infinity };
+    this.forwardNs = 0;
+    this.off = null;
   }
 
   /** The capture time of a frame the device stamped `deviceNs`, which arrived at host time `hostNs`. */
@@ -130,10 +176,68 @@ export class DeviceClock {
     const wraps = Math.round((hostNs - anchor.hostNs - counted) / this.wrapNs);
     const elapsedNs = counted + wraps * this.wrapNs;
     const aheadNs = anchor.hostNs + elapsedNs - hostNs;
-    if (aheadNs > MAX_AHEAD_OF_HOST_NS) return hostNs + MAX_AHEAD_OF_HOST_NS;
-    if (aheadNs > 0) anchor.hostNs -= Math.min(aheadNs, MAX_SLEW * Math.max(0, elapsedNs - this.lastElapsedNs));
+    const best = this.keptOff({ deviceNs, hostNs, aheadNs });
+    if (best) {
+      // This clears `off`, so the frame timed again below can't re-anchor again.
+      this.sync(best.deviceNs, best.hostNs);
+      this.catchingUp = true;
+      const seconds = (Math.abs(best.aheadNs) / 1e9).toFixed(1);
+      this.onReanchor(`The adapter's clock was ${seconds} s ${best.aheadNs > 0 ? 'ahead of' : 'behind'} the computer's, so it was anchored to the computer's clock again.`);
+      return this.time(deviceNs, hostNs);
+    }
+    if (aheadNs > MAX_AHEAD_OF_HOST_NS) return this.givenOut(hostNs + MAX_AHEAD_OF_HOST_NS);
+    const advanceNs = Math.max(0, elapsedNs - this.lastElapsedNs);
     this.lastElapsedNs = Math.max(this.lastElapsedNs, elapsedNs);
-    return anchor.hostNs + elapsedNs;
+    // Held frames returned above; frames further behind are left out, as they are a jump or a stall.
+    if (aheadNs >= -MAX_BEHIND_HOST_NS) {
+      this.window.latestAnchorNs = Math.min(this.window.latestAnchorNs, hostNs - elapsedNs);
+      if (hostNs - this.window.sinceHostNs >= SLEW_WINDOW_NS) {
+        this.forwardNs = Math.max(0, this.window.latestAnchorNs - SLEW_MARGIN_NS - anchor.hostNs);
+        this.window = { sinceHostNs: hostNs, latestAnchorNs: Infinity };
+      }
+    }
+    if (aheadNs > 0) {
+      anchor.hostNs -= Math.min(aheadNs, MAX_SLEW * advanceNs);
+      this.forwardNs = 0;
+    } else if (this.forwardNs > 0 && aheadNs >= -MAX_BEHIND_HOST_NS) {
+      const stepNs = Math.min(this.forwardNs, -aheadNs, MAX_SLEW * advanceNs);
+      anchor.hostNs += stepNs;
+      this.forwardNs -= stepNs;
+    }
+    return this.givenOut(anchor.hostNs + elapsedNs);
+  }
+
+  /**
+   * The least late of the frames, this one included, timed past the bounds for
+   * `REANCHOR_FRAMES` and `REANCHOR_AFTER_NS`, or null while they haven't been. Frames of one
+   * jump are off by the same, give or take their latency, so a frame off by more than
+   * `MAX_AHEAD_OF_HOST_NS` more or less than the first, such as a glitch, starts over.
+   */
+  private keptOff(frame: OffFrame): OffFrame | null {
+    if (frame.aheadNs <= MAX_AHEAD_OF_HOST_NS && frame.aheadNs >= -MAX_BEHIND_HOST_NS) {
+      this.off = null;
+      return null;
+    }
+    if (!this.off || Math.abs(frame.aheadNs - this.off.first.aheadNs) > MAX_AHEAD_OF_HOST_NS) this.off = { first: frame, frames: 0, best: frame };
+    const off = this.off;
+    off.frames += 1;
+    if (frame.aheadNs > off.best.aheadNs) off.best = frame;
+    return off.frames >= REANCHOR_FRAMES && frame.hostNs - off.first.hostNs >= REANCHOR_AFTER_NS ? off.best : null;
+  }
+
+  /**
+   * `timeNs`, except that after a re-anchor moved times back, times up to the last one given out
+   * are put a nanosecond apart just past it. Anchoring past the held frames instead would leave
+   * the clock at the hold's edge, where jitter holds frames again, and the back slew would take
+   * about 17 minutes to remove that second.
+   */
+  private givenOut(timeNs: number): number {
+    if (this.catchingUp) {
+      if (timeNs > this.lastTimeNs) this.catchingUp = false;
+      else timeNs = this.lastTimeNs + 1;
+    }
+    this.lastTimeNs = timeNs;
+    return timeNs;
   }
 }
 

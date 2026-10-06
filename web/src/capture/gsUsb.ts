@@ -264,7 +264,7 @@ export class GsUsbAdapter implements CaptureAdapter {
     this.cancelled = false;
     this.claimed = false;
     this.timestamps = false;
-    this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
+    this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS, (message) => events.onProblem(message));
     this.channel = settings.channel ?? 0;
     this.reads = [];
     this.events = events;

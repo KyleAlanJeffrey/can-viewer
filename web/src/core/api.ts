@@ -427,6 +427,7 @@ export interface CoreApi {
    * Empty when `byteCount` is above 1785, the longest payload.
    */
   rowBytes(key: number, start: number, count: number, first: number, byteCount: number): Promise<Uint16Array>;
+  /** Per-bit change counts of one ID, each frame compared with the previous frame of its kind. */
   bitFlips(key: number): Promise<Uint32Array>;
   /** Parse a DBC file. Nothing changes until it is passed to `setDatabases`. */
   parseDbc(file: Blob, name: string): Promise<Database>;
@@ -456,7 +457,7 @@ export interface CoreApi {
   bitFlipsBetween(key: number, t0: number, t1: number): Promise<Uint32Array>;
   /**
    * Payload bits that changed, per bucket, for one ID across [t0, t1] seconds: an activity strip.
-   * Each frame is compared with the previous frame of the ID, even if that one is before t0.
+   * Each frame is compared with the previous frame of the ID and kind, even if that one is before t0.
    */
   changeActivity(key: number, t0: number, t1: number, buckets: number): Promise<Uint32Array>;
   /** Decode any bit range of one ID across the log, for signals not (yet) in the database. */
@@ -520,12 +521,21 @@ export interface CoreApi {
   /**
    * Keep the frames that match `filter`, in time order, as the rows of `FILTERED_ROWS` for
    * `rowCount`, `rows`, `frameData`, `rowBytes`, `rowAtTime` and `rowCountBetween`, and resolve to
-   * how many there are. Null drops them. Opening a log drops them too.
+   * how many there are. Null drops them. Opening a log drops them too. Applying the filter the
+   * last `countFilterMatches` counted takes its matches rather than filtering again. During a
+   * capture, each frame `appendFrames` adds that matches joins them, and `endCapture` finds them
+   * again.
    */
   setTraceFilter(filter: FrameFilter | null): Promise<number>;
   /**
-   * How many frames match `filter`, keeping nothing: a preview. Resolves null when a later call
-   * replaced this one before it ran.
+   * `rowCount(FILTERED_ROWS)`, or null when the engine holds no trace filter: none was set, or
+   * it was dropped because there was no memory to match a capture's new frames or to filter it
+   * again when it ended.
+   */
+  filteredRowCount(): Promise<number | null>;
+  /**
+   * How many frames match `filter`, keeping nothing: a preview. It runs in steps, letting other
+   * calls run between them. Resolves null when a later count or `setTraceFilter` stopped it.
    */
   countFilterMatches(filter: FrameFilter): Promise<number | null>;
   /**

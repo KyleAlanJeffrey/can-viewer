@@ -114,6 +114,8 @@ const FRAME_TYPES: Record<string, FrameType> = {
 const HEX = /^[0-9A-Fa-f]+$/;
 /** The answer to `V`: hardware then software version, two hex digits each, such as `V1013`. */
 const VERSION_REPLY = /^[Vv][0-9A-Fa-f]{4}/;
+/** The answer to `F` while the channel is open: the status flags as two hex digits, such as `F00`. */
+const STATUS_REPLY = /^F[0-9A-Fa-f]{2}$/;
 
 function hex(text: string): number | null {
   return HEX.test(text) ? parseInt(text, 16) : null;
@@ -189,6 +191,9 @@ function lineEvent(line: string): SlcanEvent {
 
 type Answer = 'ok' | 'refused' | 'no answer' | 'write failed';
 
+/** A reply line awaited in place of a bare CR, which may then answer an earlier command. */
+type AwaitedReply = 'version' | 'status';
+
 interface Waiter {
   answer: (a: Answer) => void;
 }
@@ -213,12 +218,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * Opens the CAN channel with `C` (in case it was left open), `S<n>` (or `s` with custom bit
  * timing), `Y<n>` for a CAN FD data bitrate, then `O`. For listen only it sends `V` and `L`, and
- * if `L` is refused, or the adapter answers nothing, `M1` (CANable's silent mode, which it takes
- * only while off the bus) and `O`.
+ * if `L` is refused (or, after an `L` it didn't answer, `F`), or the adapter answers nothing,
+ * `M1` (CANable's silent mode, which it takes only while off the bus) and `O`.
  * Whether the adapter answers commands at all is learnt from `S<n>` or `s`, which every Lawicel
  * adapter answers. Listen-only counts as confirmed only when an adapter answers `L` with CR, and
  * only once the version line it sends for `V` has shown that every earlier answer has come.
- * An `L` that isn't refused but isn't confirmed either is left in place, without `M1` or `O`.
+ * An `L` that isn't refused but isn't confirmed either is left in place, without `M1` or `O`,
+ * unless it went unanswered and the adapter then refuses `F`, which shows the channel is closed.
  * `Z1` asks for the adapter's own timestamps before the bus opens; frames that carry one are
  * timed by it (see `DeviceClock`), others by the host clock when their bytes arrive. Frames are
  * read only once `O` or `L` has been sent.
@@ -246,8 +252,13 @@ export class SlcanAdapter implements CaptureAdapter {
   private deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS);
   /** `Z1` was sent and not refused, so a stop sends `Z0`: Lawicel adapters keep the setting. */
   private timestampsAsked = false;
-  /** Set while the answer to `V` is awaited: until it comes, a CR or BEL answers an earlier command. */
-  private awaitingVersion = false;
+  /**
+   * Set while the answer to `V` or `F` is awaited: until it comes, a CR answers an earlier
+   * command, and so does a BEL before the version line.
+   */
+  private awaitedReply: AwaitedReply | null = null;
+  /** F went unanswered on a consented start, so a late BEL means F was refused after all. */
+  private statusUnanswered = false;
 
   constructor(
     private readonly port: SerialPortLike,
@@ -288,7 +299,8 @@ export class SlcanAdapter implements CaptureAdapter {
     this.busOpen = false;
     this.deviceClock = new DeviceClock(TIMESTAMP_WRAP_NS, (message) => events.onProblem(message));
     this.timestampsAsked = false;
-    this.awaitingVersion = false;
+    this.awaitedReply = null;
+    this.statusUnanswered = false;
     this.events = events;
     this.clock = clock;
     try {
@@ -339,10 +351,18 @@ export class SlcanAdapter implements CaptureAdapter {
         const listenOnly = await this.expect('L', wait, null, busOpened);
         // Without the version line, this answer may still be an earlier command's.
         if (drained && listenOnly === 'ok') return { listenOnly: true };
-        if (listenOnly !== 'refused') {
+        // An L answered with CR is very probably in effect, and firmware without F would refuse
+        // it while the channel is open, so only an L left unanswered is probed.
+        const open = listenOnly === 'ok' || listenOnly === 'refused' ? undefined : await this.probeChannelOpen(wait);
+        if (listenOnly !== 'refused' && open !== false) {
           // The channel is likely open in listen-only mode, where Lawicel adapters refuse M1 and
-          // O, so it is left as it is: the safer of the two.
-          if (settings.allowUnconfirmedListenOnly) return { listenOnly: false };
+          // O, so it is left as it is: the safer of the two. A status line from F doesn't say
+          // more, as only the answer to L confirms the mode. A BEL to F that comes too late
+          // shows as a problem: the only sign that the channel is closed after all.
+          if (settings.allowUnconfirmedListenOnly) {
+            this.statusUnanswered = open === null;
+            return { listenOnly: false };
+          }
           this.busOpen = false;
           throw new ListenOnlyUnconfirmedError(
             listenOnly === 'ok'
@@ -433,7 +453,10 @@ export class SlcanAdapter implements CaptureAdapter {
     this.checkCancelled();
     const answer = await this.command(command, waitMs, onWritten);
     this.checkCancelled();
-    if (answer === 'write failed') throw new Error("The adapter stopped taking commands. Unplug it, plug it back in and try again.");
+    // A lost device has no stream left to read, and answers nothing more.
+    if (answer === 'write failed' || (answer === 'no answer' && !this.port.readable)) {
+      throw new Error('The adapter stopped taking commands. Unplug it, plug it back in and try again.');
+    }
     if (answer === 'refused' && refused !== null) throw new Error(refused);
     return answer;
   }
@@ -487,13 +510,29 @@ export class SlcanAdapter implements CaptureAdapter {
    * another CR. False when no version line came, so the next answer may still be stale.
    */
   private async drainAnswers(waitMs: number): Promise<boolean> {
-    this.awaitingVersion = true;
+    this.awaitedReply = 'version';
     try {
       if ((await this.expect('V', waitMs, null)) !== 'ok') return false;
       await sleep(this.timing.settleMs);
       return true;
     } finally {
-      this.awaitingVersion = false;
+      this.awaitedReply = null;
+    }
+  }
+
+  /**
+   * Asks for the status flags with `F`, which a Lawicel adapter answers with a status line only
+   * while the channel is open, and refuses with BEL while it is closed. A CR meanwhile may be a
+   * late answer to `L`, so it is dropped. Null when the answer tells neither.
+   */
+  private async probeChannelOpen(waitMs: number): Promise<boolean | null> {
+    this.awaitedReply = 'status';
+    try {
+      const status = await this.expect('F', waitMs, null);
+      if (status === 'ok') return true;
+      return status === 'refused' ? false : null;
+    } finally {
+      this.awaitedReply = null;
     }
   }
 
@@ -549,15 +588,24 @@ export class SlcanAdapter implements CaptureAdapter {
           break;
         }
         case 'ok':
-          if (!this.awaitingVersion) this.answer('ok');
+          if (this.awaitedReply === null) this.answer('ok');
           break;
         case 'reply':
-          if (this.awaitingVersion && VERSION_REPLY.test(event.text)) this.answer('ok');
+          if (this.awaitedReply === 'version' && VERSION_REPLY.test(event.text)) this.answer('ok');
+          else if (this.awaitedReply === 'status' && STATUS_REPLY.test(event.text)) this.answer('ok');
           break;
         case 'error':
-          if (this.awaitingVersion) break;
+          // Before the version line, a BEL answers an earlier command.
+          if (this.awaitedReply === 'version') break;
           // A late BEL to a command no longer waited for, such as the opening C, is no problem.
-          if (!this.answer('refused') && this.busOpen) this.events?.onProblem('The adapter reported an error.');
+          if (!this.answer('refused') && this.busOpen) {
+            this.events?.onProblem(
+              this.statusUnanswered
+                ? 'The adapter refused the status request (F), so its channel may not be open; stop and start without listen only.'
+                : 'The adapter reported an error.',
+            );
+            this.statusUnanswered = false;
+          }
           break;
         case 'bad':
           if (this.busOpen) this.events?.onProblem(`A line from the adapter wasn't a CAN frame (${event.reason}).`);

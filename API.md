@@ -308,7 +308,7 @@ The suggested signals for one message. Returned by [`suggestSignals`](#suggestsi
 - **`key`** `number` - ID key of the message.
 - **`frames`** `number` - Frames of the ID in the log.
 - **`sampledFrames`** `number` - Frames read to judge the candidates: all of them up to 20,000, or 20 blocks of 1,000 consecutive frames spread across the log, plus a block around each event marker. Payloads longer than 8 bytes get proportionally fewer: 2,500 for 64 bytes. Fields that rarely change are also read wherever they change across the whole log, within a fixed budget of frames per ID.
-- **`suggestions`** [`Suggestion[]`](#the-suggestion-object) - At most 16, or one per payload byte when that is more, best first. Their bit ranges never overlap.
+- **`suggestions`** [`Suggestion[]`](#the-suggestion-object) - Best first: at most 16, or one per payload byte when that is more, then each page's signals of a `multiplexor`, up to as many again per page. Bit ranges never overlap, except between signals with `mux` on different pages.
 
 ### The FrameFilter object
 

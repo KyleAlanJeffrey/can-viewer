@@ -278,7 +278,7 @@ export interface Suggestion {
   reason: string;
   /** A checksum whose rule held on only most frames, or that matched no known rule. */
   unconfirmed: boolean;
-  /** About 64 evenly spaced values across the whole log, scaled by `spec`; times in seconds. */
+  /** About 64 evenly spaced values across the whole log, or across its page's frames for a signal with `mux`, scaled by `spec`; times in seconds. */
   sparkline: { t: number[]; v: number[] };
   fit: SignalFit | null;
 }
@@ -288,7 +288,7 @@ export interface MessageSuggestions {
   /** Frames of the ID in the log, and how many of them were read. */
   frames: number;
   sampledFrames: number;
-  /** Best first; their bit ranges never overlap. */
+  /** Best first; their bit ranges never overlap, except signals on different pages of a multiplexor. */
   suggestions: Suggestion[];
 }
 

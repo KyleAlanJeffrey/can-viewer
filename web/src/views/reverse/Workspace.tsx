@@ -1,7 +1,6 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { formatId, type ByteLane, type IdSummary, type MessageDef, type RawSignalSpec, type SeriesInfo } from '../../core/api';
 import { formatCount } from '../../format';
-import { signalBits } from '../../signalBits';
 import { InspectorSlot } from '../slots';
 import type { ViewContext } from '../types';
 import { BitGrid, HeatLegend } from './BitGrid';
@@ -10,7 +9,7 @@ import { ByteStrip } from './ByteStrip';
 import { References, type Candidate } from './References';
 import { SignalForm, initialForm, parseRange, parseScale, useCandidateForms, type AddedSignal, type FormState } from './SignalForm';
 import { ChunkBoundary } from '../../components/ChunkBoundary';
-import { KIND_LABELS, shownSuggestions, type ShownSuggestion } from './suggestionList';
+import { KIND_LABELS, bitOwners, shownSuggestions, type ShownSuggestion } from './suggestionList';
 import { WindowStrip } from './WindowStrip';
 import {
   coveringRange,
@@ -207,13 +206,7 @@ export function Workspace(props: Props) {
   }, [core, summary.key, laneStart, laneCount, settled, logVersion]);
   const frame = useFrameAt(core, summary.key, cursor, logVersion);
 
-  const owners = useMemo(() => {
-    const owner = new Array<string | null>(bytes * 8).fill(null);
-    for (const s of message?.signals ?? []) {
-      for (const b of signalBits(s)) if (b >= 0 && b < owner.length && owner[b] === null) owner[b] = s.name;
-    }
-    return owner;
-  }, [message, bytes]);
+  const owners = useMemo(() => bitOwners(message, bytes * 8), [message, bytes]);
 
   const wholeBytes = useMemo(() => {
     const set = new Set(selected);

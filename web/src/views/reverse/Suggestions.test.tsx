@@ -30,7 +30,7 @@ const found = (key: number, suggestions: Suggestion[]): MessageSuggestions => ({
 const counter = suggestion('counter', 0, 8);
 const speed = suggestion('continuous', 16, 16, { confidence: 0.7, level: 'medium', reason: 'Changes smoothly; 300 values from 0 to 11799' });
 
-type Progress = (done: number, total: number, latest: MessageSuggestions) => void;
+type Progress = (done: number, total: number, latest: MessageSuggestions | null) => void;
 
 /** A core whose scan is driven by the test: `scan.progress` reports a message, `scan.finish` ends it. */
 function discoveryCore(overrides: Partial<CoreApi> = {}) {
@@ -129,6 +129,15 @@ describe('Suggested signals', () => {
     expect(core.suggestSignals).toHaveBeenCalledWith(second.key, { markers: [], reference: null });
     expect(scan.skip?.(second.key)).toBe(true);
     expect(within(panel()).getByRole('progressbar', { name: 'Scan progress' })).toBeTruthy();
+  });
+
+  it('counts in the overview only the suggestions it lists, not those over bits a DBC describes', async () => {
+    const { core } = discoveryCore({ suggestSignals: vi.fn(async (key: number) => found(key, [counter, speed])) });
+    await openAdvanced(core, engine.key);
+    // EngineSpeed covers the counter's bits 0-7.
+    expect(await within(panel()).findByText('Continuous value')).toBeTruthy();
+    expect(within(panel()).queryByText('Counter')).toBeNull();
+    expect(within(panel()).getByText('1 suggestion across 1 message')).toBeTruthy();
   });
 
   it('stops the scan on Cancel and offers to scan the rest', async () => {
@@ -302,6 +311,8 @@ describe('Suggested signals', () => {
   it('reads the time of an event from what was typed', () => {
     expect(parseMarker('12')).toBe(12);
     expect(parseMarker('12.5 s')).toBe(12.5);
+    expect(parseMarker('12,5 s')).toBe(12.5);
+    expect(parseMarker('Bremse bei 3,25')).toBe(3.25);
     expect(parseMarker('I pressed the brake at 7 s')).toBe(7);
     expect(parseMarker('brake 2 at 12 s')).toBe(12);
     expect(parseMarker('pedal 3: 45.5 sec')).toBe(45.5);

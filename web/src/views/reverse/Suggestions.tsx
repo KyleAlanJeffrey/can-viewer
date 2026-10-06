@@ -1,15 +1,19 @@
 import { useEffect, useId, useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, X } from 'lucide-react';
-import { formatId, type IdSummary, type MessageDef, type Suggestion } from '../../core/api';
+import { formatId, type IdSummary, type MessageDef, type SignalDef, type Suggestion } from '../../core/api';
 import { formatCount } from '../../format';
 import type { ViewContext } from '../types';
 import { Sparkline } from './Sparkline';
 import { layoutString, plainNumber, rangeBits } from './bits';
-import { KIND_LABELS, type ShownSuggestion } from './suggestionList';
+import { KIND_LABELS, bitOwners, shownSuggestions, type ShownSuggestion } from './suggestionList';
 import './suggestions.css';
-import { suggestionId, type Discovery, type MessageHints } from './useDiscovery';
+import type { Discovery, MessageHints } from './useDiscovery';
 
 const LEVEL_LABELS = { high: 'High', medium: 'Medium', low: 'Low' } as const;
+/** The core looks at this many markers. */
+const MAX_MARKERS = 20;
+/** A CAN FD payload's bits. */
+const MAX_BITS = 512;
 
 /** Where its bits are, such as `bits 16-31 \u00b7 Motorola \u00b7 unsigned`. */
 export function describePlace(s: Suggestion): string {
@@ -59,7 +63,8 @@ function suggestionBits(id: string): { startBit: number; size: number; byteOrder
 
 /**
  * Takes an accepted suggestion's signal out of its DBC again, and the message or DBC the add
- * created once empty. The signal is found by its name, or by its bits once renamed.
+ * created once empty. The signal is found by its bits, under its name or renamed; another
+ * signal that took the old name is left be.
  */
 function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndone: () => void) {
   const accepted = discovery.accepted[id];
@@ -68,9 +73,8 @@ function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndo
   void ctx.run(`Removing ${accepted.signal}\u2026`, async () => {
     const loaded = ctx.dbcs.find((d) => d.id === accepted.dbc);
     const signals = loaded?.db.messages.find((m) => m.id === accepted.messageId)?.signals ?? [];
-    const target =
-      signals.find((x) => x.name === accepted.signal) ??
-      signals.find((x) => x.startBit === bits.startBit && x.size === bits.size && x.byteOrder === bits.byteOrder);
+    const sameBits = (x: SignalDef) => x.startBit === bits.startBit && x.size === bits.size && x.byteOrder === bits.byteOrder;
+    const target = signals.find((x) => x.name === accepted.signal && sameBits(x)) ?? signals.find(sameBits);
     discovery.markAccepted(id, null);
     if (!loaded || !target) {
       ctx.setError(`Couldn't undo ${accepted.signal}: it's no longer in ${loaded ? loaded.db.name : 'the database it went into'}.`);
@@ -79,7 +83,7 @@ function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndo
     }
     const without = (messages: MessageDef[]) =>
       messages
-        .map((m) => (m.id === accepted.messageId ? { ...m, signals: m.signals.filter((x) => x.name !== target.name) } : m))
+        .map((m) => (m.id === accepted.messageId ? { ...m, signals: m.signals.filter((x) => !(x.name === target.name && sameBits(x))) } : m))
         .filter((m) => !(m.id === accepted.messageId && accepted.createdMessage && m.signals.length === 0));
     if (accepted.createdDbc && without(loaded.db.messages).length === 0) await ctx.removeDbc(loaded.id);
     else await ctx.updateDbc(loaded.id, ({ db }) => ({ db: { ...db, messages: without(db.messages) } }));
@@ -89,12 +93,12 @@ function undoAccepted(ctx: ViewContext, discovery: Discovery, id: string, onUndo
 
 /**
  * The time of an event in `text`, in seconds: the number after "at" or before "s", else the
- * first number, so "12", "12.5 s" and "brake 2 at 12 s" give 12, 12.5 and 12.
+ * first number, so "12", "12.5 s", "12,5 s" and "brake 2 at 12 s" give 12, 12.5, 12.5 and 12.
  */
 export function parseMarker(text: string): number | null {
-  const labelled = /\bat\s+(-?\d+(?:\.\d+)?)|(-?\d+(?:\.\d+)?)\s*(?:s|secs?|seconds?)\b/i.exec(text);
-  const number = labelled ? (labelled[1] ?? labelled[2]) : /-?\d+(?:\.\d+)?/.exec(text)?.[0];
-  return number === undefined ? null : Number(number);
+  const labelled = /\bat\s+(-?\d+(?:[.,]\d+)?)|(-?\d+(?:[.,]\d+)?)\s*(?:s|secs?|seconds?)\b/i.exec(text);
+  const number = labelled ? (labelled[1] ?? labelled[2]) : /-?\d+(?:[.,]\d+)?/.exec(text)?.[0];
+  return number === undefined ? null : Number(number.replace(',', '.'));
 }
 
 interface Props {
@@ -141,11 +145,12 @@ export function Suggestions(props: Props) {
   const ids = useId();
 
   const unknownKeys = useMemo(() => new Set(unknown.map((s) => s.key)), [unknown]);
-  // Over every message scanned, which includes one that stopped being unknown on an Accept.
+  // Over every message scanned, which includes one that stopped being unknown on an Accept, and
+  // as listed: without those dismissed or over bits a DBC describes.
   let total = 0;
   let messages = 0;
   for (const found of Object.values(discovery.results)) {
-    const n = found.suggestions.filter((x) => !discovery.dismissed.has(suggestionId(found.key, x))).length;
+    const n = shownSuggestions(discovery, found.key, bitOwners(ctx.messageOf(found.key), MAX_BITS)).length;
     total += n;
     if (n > 0) messages++;
   }
@@ -510,6 +515,10 @@ function Hints({ ctx, summary, hints, open, onOpen, inputRef, parked, busy, onCh
     const t = text.trim() === '' ? parked : parseMarker(text);
     if (t === null || !(t >= 0 && t <= duration)) {
       setMarkerError(`Give a time from 0 to ${plainNumber(Number(duration.toFixed(3)))} s, or park the cursor on one.`);
+      return;
+    }
+    if (!hints.markers.includes(t) && hints.markers.length >= MAX_MARKERS) {
+      setMarkerError(`Up to ${MAX_MARKERS} markers. Remove one to add another.`);
       return;
     }
     setMarkerError(null);

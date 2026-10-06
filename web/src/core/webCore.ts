@@ -190,7 +190,7 @@ export class WebCore implements CoreApi {
   scanSignals(
     keys: number[],
     hints: DiscoveryHints,
-    onProgress: (done: number, total: number, latest: MessageSuggestions) => void,
+    onProgress: (done: number, total: number, latest: MessageSuggestions | null) => void,
     signal?: AbortSignal,
     skip?: (key: number) => boolean,
   ) {

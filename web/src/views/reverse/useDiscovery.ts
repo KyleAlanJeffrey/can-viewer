@@ -110,6 +110,8 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
     () => () => {
       controller.current?.abort();
       controller.current = null;
+      inFlight.current.clear();
+      setRunning([]);
       setProgress(null);
       setErrors({});
       setScanError(null);
@@ -154,7 +156,7 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
           {},
           (done, total, found) => {
             if (abort.signal.aborted) return;
-            store(found, logVersion);
+            if (found) store(found, logVersion);
             setProgress({ done, total });
           },
           abort.signal,
@@ -197,6 +199,8 @@ export function useDiscovery(ctx: ViewContext, unknown: number[]): Discovery {
           (e) => logVersion === latest.current.logVersion && setError(key, errorText(e)),
         )
         .finally(() => {
+          // A request for the log before is already forgotten, and must not end one for this log.
+          if (logVersion !== latest.current.logVersion) return;
           inFlight.current.delete(key);
           setRunning((r) => r.filter((k) => k !== key));
         });

@@ -1,4 +1,5 @@
-import type { Suggestion, SuggestionKind } from '../../core/api';
+import type { MessageDef, Suggestion, SuggestionKind } from '../../core/api';
+import { signalBits } from '../../signalBits';
 import { rangeBits } from './bits';
 import { suggestionId, type Discovery } from './useDiscovery';
 
@@ -17,6 +18,15 @@ export interface ShownSuggestion {
   number: number;
   suggestion: Suggestion;
   bits: number[];
+}
+
+/** For each of the first `bitCount` payload bits, the signal of `message` covering it, if any. */
+export function bitOwners(message: MessageDef | null, bitCount: number): (string | null)[] {
+  const owner = new Array<string | null>(bitCount).fill(null);
+  for (const s of message?.signals ?? []) {
+    for (const b of signalBits(s)) if (b >= 0 && b < owner.length && owner[b] === null) owner[b] = s.name;
+  }
+  return owner;
 }
 
 /**

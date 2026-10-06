@@ -185,7 +185,11 @@ describe('WebCore', () => {
     worker.reply('suggestSignals', { result: found(1) });
     await expect(scan).resolves.toEqual([found(1)]);
     expect(worker.requests.map((r) => r.args[0])).toEqual([1]);
-    expect(progress.mock.calls).toEqual([[1, 3, found(1)]]);
+    expect(progress.mock.calls).toEqual([
+      [1, 3, found(1)],
+      [2, 3, null],
+      [3, 3, null],
+    ]);
   });
 
   it('passes a capture its name, and its frames packed and transferred', async () => {

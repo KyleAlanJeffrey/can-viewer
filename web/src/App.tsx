@@ -29,6 +29,8 @@ interface Busy {
   label: string;
   /** 0..1 when the task can report progress. */
   fraction: number | null;
+  /** Reading a log, which opening another log or Cancel may cut short. */
+  readsLog?: boolean;
 }
 
 interface SavedLog {
@@ -193,15 +195,26 @@ export function App({ core }: { core: CoreApi }) {
 
   /** Tasks under way, latest last: the app stays busy until every one has ended. */
   const tasks = useRef<Busy[]>([]);
-  const run = useCallback(async (label: string, task: () => Promise<void>) => {
-    const mine: Busy = { label, fraction: null };
+  const run = useCallback(async (label: string, task: (report: (progress: Busy) => void) => Promise<void>, readsLog = false) => {
+    let mine: Busy = { label, fraction: null, readsLog };
     tasks.current.push(mine);
     // Set now, not on the next render, so a file dropped meanwhile is turned away.
     busyRef.current = mine;
     setBusy(mine);
     setError(null);
+    /** Shows `progress` for this task, while it is the latest. */
+    const report = (progress: Busy) => {
+      const at = tasks.current.indexOf(mine);
+      if (at < 0) return;
+      mine = { ...progress, readsLog };
+      tasks.current[at] = mine;
+      if (at === tasks.current.length - 1) {
+        busyRef.current = mine;
+        setBusy(mine);
+      }
+    };
     try {
-      await task();
+      await task(report);
       return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -337,66 +350,99 @@ export function App({ core }: { core: CoreApi }) {
     [decodePlot],
   );
 
-  /** Show `info` as the open log, which the core has just read or swapped in. */
-  const showOpenedLog = useCallback(
-    async (info: LogInfo) => {
-      const nextIds = await core.idSummary();
-      // The new log's series replaced the old ones in the core.
-      plotSignals.current.clear();
-      setPlots([]);
-      setSelected(ALL_IDS);
-      setNotKept(null);
-      setUnsavedCapture(false);
-      setCaptureNotice(null);
-      setLog(info);
-      setLogVersion((v) => v + 1);
-      setDbcs(dbcsRef.current);
-      setIds(nextIds);
-      return nextIds;
-    },
-    [core],
-  );
+  /** Show `info`, with its summaries `nextIds`, as the open log, which the core has just read or swapped in. */
+  const showOpenedLog = useCallback((info: LogInfo, nextIds: IdSummary[]) => {
+    // The new log's series replaced the old ones in the core.
+    plotSignals.current.clear();
+    setPlots([]);
+    setSelected(ALL_IDS);
+    setNotKept(null);
+    setUnsavedCapture(false);
+    setCaptureNotice(null);
+    setLog(info);
+    setLogVersion((v) => v + 1);
+    setDbcs(dbcsRef.current);
+    setIds(nextIds);
+  }, []);
 
-  /** `stay` keeps the current view rather than going to Overview, for a log opened from within a view. */
+  /** The log read under way; `stopped` once another log or Cancel took its place. */
+  const reading = useRef<{ stopped: boolean } | null>(null);
+
+  /**
+   * Stops the log read under way, if any, at once rather than after it ends. The core has no
+   * cancel: a newer `openLog` supersedes the read, and an empty one leaves no log.
+   */
+  const stopReading = useCallback(() => {
+    const read = reading.current;
+    if (!read) return;
+    read.stopped = true;
+    reading.current = null;
+    core.openLog(new Blob([]), '', () => {}).catch(() => undefined);
+  }, [core]);
+
+  /**
+   * `stay` keeps the current view rather than going to Overview, for a log opened from within a
+   * view. Resolves false if the log wasn't opened, or another log or Cancel took its place.
+   */
   const openLog = useCallback(
-    // A video added while a log loads would belong to the log being replaced.
-    (file: Blob, name: string, restore?: SavedUi, stay = false) =>
-      videoSession.whileLoadingLog(() =>
-        run(`Reading ${name}\u2026`, () =>
-          serially(async () => {
-            setSkippedDismissed(false);
-            let info: LogInfo;
-            try {
-              info = await core.openLog(file, name, (p) =>
-                setBusy({ label: `Parsing ${name}\u2026 ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total }),
-              );
-              const noFrames = noFramesMessage(info);
-              if (noFrames) throw new Error(noFrames);
-            } catch (e) {
-              showNoLog();
-              throw e;
-            }
-            const nextIds = await showOpenedLog(info);
-            if (restore) {
-              await restoreUi(restore, nextIds);
-              return;
-            }
-            viewState.clearScope('log');
-            videoSession.close();
-            if (!stay) setView('overview');
-            // The core dropped the comparison log with the old log.
-            void forget('compare');
-            // Kept so a reload reopens it. A copy this browser can't store just isn't restored.
-            void save('log', { name, blob: file } satisfies SavedLog).then((kept) => {
-              if (!kept) {
-                setNotKept(name);
-                void forget('log');
+    (file: Blob, name: string, restore?: SavedUi, stay = false) => {
+      stopReading();
+      const read = { stopped: false };
+      reading.current = read;
+      // A video added while a log loads would belong to the log being replaced.
+      return videoSession.whileLoadingLog(async () => {
+        const opened = await run(
+          `Reading ${name}\u2026`,
+          (report) =>
+            serially(async () => {
+              // Whatever stopped this read shows its own outcome, so nothing here touches the UI.
+              if (read.stopped) return;
+              setSkippedDismissed(false);
+              // The core drops a capture as the read begins, so there is none left to save.
+              unsavedRef.current = false;
+              setUnsavedCapture(false);
+              let info: LogInfo;
+              try {
+                info = await core.openLog(file, name, (p) => {
+                  if (!read.stopped) report({ label: `Parsing ${name}\u2026 ${Math.round((100 * p.bytes) / p.total)}%`, fraction: p.bytes / p.total });
+                });
+                if (read.stopped) return;
+                const noFrames = noFramesMessage(info);
+                if (noFrames) throw new Error(noFrames);
+              } catch (e) {
+                // Most likely the AbortError of the read the core was told to stop.
+                if (read.stopped) return;
+                showNoLog();
+                throw e;
               }
-            });
-          }),
-        ),
-      ),
-    [core, run, serially, showNoLog, showOpenedLog, setView, restoreUi, viewState],
+              const nextIds = await core.idSummary();
+              if (read.stopped) return;
+              showOpenedLog(info, nextIds);
+              if (restore) {
+                await restoreUi(restore, nextIds);
+                return;
+              }
+              viewState.clearScope('log');
+              videoSession.close();
+              if (!stay) setView('overview');
+              // The core dropped the comparison log with the old log.
+              void forget('compare');
+              if (read.stopped) return;
+              // Kept so a reload reopens it. A copy this browser can't store just isn't restored.
+              void save('log', { name, blob: file } satisfies SavedLog).then((kept) => {
+                if (!kept) {
+                  setNotKept(name);
+                  void forget('log');
+                }
+              });
+            }),
+          true,
+        );
+        if (reading.current === read) reading.current = null;
+        return opened && !read.stopped;
+      });
+    },
+    [core, run, serially, stopReading, showNoLog, showOpenedLog, setView, restoreUi, viewState],
   );
 
   const swapCompareLog = useCallback(
@@ -405,7 +451,7 @@ export function App({ core }: { core: CoreApi }) {
         serially(async () => {
           const outgoing = logRef.current;
           const info = await core.swapCompareLog();
-          await showOpenedLog(info);
+          showOpenedLog(info, await core.idSummary());
           viewState.clearScope('log');
           // A video lines up with the log it was added to.
           videoSession.close();
@@ -448,6 +494,8 @@ export function App({ core }: { core: CoreApi }) {
       const dbcFiles = list.filter((f) => f.name.toLowerCase().endsWith('.dbc'));
       const videoFiles = list.filter(isVideoFile);
       const logFile = list.find((f) => !dbcFiles.includes(f) && !videoFiles.includes(f));
+      // The log replaces one being read, whose read the core would otherwise finish before the DBCs.
+      if (logFile) stopReading();
       for (const f of dbcFiles) await openDbc(f, f.name);
       const logOpened = logFile ? await openLog(logFile, logFile.name) : false;
       // DBCs on their own are opened for editing.
@@ -465,19 +513,30 @@ export function App({ core }: { core: CoreApi }) {
         }
       }
     },
-    [openDbc, openLog, setView],
+    [openDbc, openLog, stopReading, setView],
   );
+
+  /** Shows no log once the core has none, and forgets the copies a reload would reopen. */
+  const showClosedLog = async () => {
+    showNoLog();
+    await Promise.all([forget('log'), forget('compare')]);
+    if (dbcsRef.current.length > 0) setView('database');
+  };
 
   const closeLog = () =>
     run('Closing the log\u2026', () =>
       serially(async () => {
         // The core has no close; an empty log releases the old one's memory.
         await core.openLog(new Blob([]), '', () => {});
-        showNoLog();
-        await Promise.all([forget('log'), forget('compare')]);
-        if (dbcsRef.current.length > 0) setView('database');
+        await showClosedLog();
       }),
     );
+
+  /** Stops the log being read. The core is then left with no log, not the one open before. */
+  const cancelReading = () => {
+    stopReading();
+    void run('Cancelling\u2026', () => serially(showClosedLog));
+  };
 
   /** Decode every plotted signal again, as a live capture adds frames. Run it inside `serially`. */
   const redecodePlots = useCallback(async () => {
@@ -620,8 +679,10 @@ export function App({ core }: { core: CoreApi }) {
     else action();
   };
 
-  const loadDemo = () =>
-    run('Downloading the demo\u2026', async () => {
+  const loadDemo = () => {
+    // The demo replaces a log being read, whose read the core would otherwise finish first.
+    stopReading();
+    return run('Downloading the demo\u2026', async () => {
       const [logGz, dbcBlob] = await Promise.all(
         ['demo/demo.log.gz', 'demo/demo.dbc'].map(async (path) => {
           const res = await fetch(path);
@@ -632,6 +693,7 @@ export function App({ core }: { core: CoreApi }) {
       await openDbc(dbcBlob, 'demo.dbc');
       await openLog(await gunzip(logGz), 'demo.log');
     });
+  };
 
   // The landing page's Try the Demo links to `?demo=1`.
   const demoRequested = useRef(new URLSearchParams(window.location.search).has('demo'));
@@ -820,12 +882,14 @@ export function App({ core }: { core: CoreApi }) {
       e.preventDefault();
       setDragOver(false);
       if (!e.dataTransfer?.files.length) return;
-      if (busyRef.current) {
+      const files = [...e.dataTransfer.files];
+      const isDbc = (f: File) => f.name.toLowerCase().endsWith('.dbc');
+      // A video goes with the open log, so only a log replaces the capture, or a log being read.
+      const opensLog = files.some((f) => !isDbc(f) && !isVideoFile(f));
+      if (busyRef.current && !(busyRef.current.readsLog && opensLog)) {
         setError(`Wait for "${busyRef.current.label}" to finish, then drop the files again.`);
         return;
       }
-      const files = [...e.dataTransfer.files];
-      const isDbc = (f: File) => f.name.toLowerCase().endsWith('.dbc');
       if (liveRef.current && files.some((f) => !isDbc(f))) {
         setError('Stop the capture before opening a log or a video.');
         return;
@@ -834,8 +898,6 @@ export function App({ core }: { core: CoreApi }) {
         setError('Wait for the capture to stop, then drop the files again.');
         return;
       }
-      // A video goes with the open log, so only a log replaces the capture.
-      const opensLog = files.some((f) => !isDbc(f) && !isVideoFile(f));
       if (opensLog) unlessUnsavedCapture(() => openFiles(files));
       else openFiles(files);
     };
@@ -1114,8 +1176,17 @@ export function App({ core }: { core: CoreApi }) {
                 </button>
               </>
             )}
+            {busy?.readsLog && (
+              <button className="button" onClick={cancelReading}>
+                Cancel
+              </button>
+            )}
             {!live && (
-              <button className={showView && meta.hasPrimary ? 'button' : 'primary'} onClick={() => logInput.current?.click()} disabled={!!busy || stopping}>
+              <button
+                className={showView && meta.hasPrimary ? 'button' : 'primary'}
+                onClick={() => logInput.current?.click()}
+                disabled={(!!busy && !busy.readsLog) || stopping}
+              >
                 Open Log&hellip;
               </button>
             )}
@@ -1138,7 +1209,7 @@ export function App({ core }: { core: CoreApi }) {
               e.target.value = '';
               if (!file) return;
               // The picker may have opened before the app got busy, as when log B is restored.
-              if (busyRef.current) setError(`Wait for "${busyRef.current.label}" to finish, then open the log again.`);
+              if (busyRef.current && !busyRef.current.readsLog) setError(`Wait for "${busyRef.current.label}" to finish, then open the log again.`);
               else if (liveRef.current) setError('Stop the capture before opening a log.');
               else if (stoppingRef.current) setError('Wait for the capture to stop, then open the log again.');
               else unlessUnsavedCapture(() => void openLog(file, file.name));
@@ -1251,7 +1322,7 @@ export function App({ core }: { core: CoreApi }) {
                   <p className="lede">
                     Drop a CAN log (candump, Vector ASC or BLF, PEAK TRC, MF4 or CSV) anywhere in this window, or choose Open Log&hellip; above. Add DBC files to decode its signals.
                   </p>
-                  <button className="button" onClick={loadDemo} disabled={!!busy}>
+                  <button className="button" onClick={loadDemo} disabled={!!busy && !busy.readsLog}>
                     Try the Demo
                   </button>
                   <p className="privacy">

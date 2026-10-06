@@ -120,10 +120,19 @@ export function SuggestionsPanel(props: Props) {
         onPointerUp={() => (drag.current = null)}
         onPointerCancel={() => (drag.current = null)}
         onKeyDown={(e) => {
-          const step = e.key === 'ArrowLeft' ? 16 : e.key === 'ArrowRight' ? -16 : 0;
-          if (step === 0) return;
+          const to =
+            e.key === 'ArrowLeft'
+              ? width + 16
+              : e.key === 'ArrowRight'
+                ? width - 16
+                : e.key === 'Home'
+                  ? PANEL_WIDTH.min
+                  : e.key === 'End'
+                    ? PANEL_WIDTH.max
+                    : null;
+          if (to === null) return;
           e.preventDefault();
-          resize(width + step);
+          resize(to);
         }}
       />
       <div className="re-sugpanel-scroll" onKeyDown={onKeyDown}>

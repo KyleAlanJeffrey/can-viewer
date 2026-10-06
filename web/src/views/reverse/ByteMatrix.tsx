@@ -86,16 +86,18 @@ export function ByteMatrix(props: Props) {
   );
 
   const lanes = useByteLanes(core, specs, win, logVersion);
-  const markedRow = useRef<HTMLTableRowElement>(null);
+  const markedCell = useRef<HTMLButtonElement>(null);
   const markId = suggestion ? `${suggestion.key}:${suggestion.number}` : null;
   const lastMark = useRef(markId);
-  // A suggestion picked across all messages can be for a row out of view. Only a new pick
-  // scrolls, so coming back to the view keeps its scroll position.
+  // Rows grow once their sparklines arrive, so scrolling waits for the marked row's.
+  const markReady = suggestion !== null && lanes.has(specKey(suggestion.key, suggestion.bytes[0] - (suggestion.bytes[0] % LANES)));
+  // A suggestion picked across all messages can be for a row out of view, or a byte the table
+  // has scrolled sideways past. Only a new pick scrolls, so coming back keeps the position.
   useEffect(() => {
-    if (markId === lastMark.current) return;
+    if (markId === lastMark.current || !markReady) return;
     lastMark.current = markId;
-    markedRow.current?.scrollIntoView?.({ block: 'nearest' });
-  }, [markId]);
+    markedCell.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [markId, markReady]);
   const frame = useFrameAt(core, selected === -1 ? null : selected, cursor, logVersion);
   const pinnedBytes = useMemo(() => new Set(pins.filter((p) => p.kind === 'byte').map(pinId)), [pins]);
 
@@ -109,6 +111,8 @@ export function ByteMatrix(props: Props) {
     return specs.filter((spec) => changing.has(spec.summary.key));
   }, [specs, lanes, changingOnly, win]);
   const visible = shown.slice(0, MAX_ROWS);
+  // The bus filter, the search or Changing bytes only can leave the outline nowhere to show.
+  const markHidden = suggestion !== null && !visible.some((spec) => spec.summary.key === suggestion.key);
   const hiddenCount = shown.length - visible.length;
 
   const timeAt = (e: MouseEvent<HTMLElement>) => {
@@ -121,9 +125,9 @@ export function ByteMatrix(props: Props) {
   const bytePin: Pin | null = selectedByte ? { kind: 'byte', key: selectedByte.key, byte: selectedByte.byte } : null;
   const bytePinned = bytePin ? pinnedBytes.has(pinId(bytePin)) : false;
   const selectionLabel = suggestion && onSuggestion(suggestion, selectedByte)
-    ? `${idText(rows, suggestion.key)} \u00b7 ${describeBytes(suggestion.bytes)} \u00b7 ${suggestion.bits}`
+    ? `${idText(ctx.ids, suggestion.key)} \u00b7 ${describeBytes(suggestion.bytes)} \u00b7 ${suggestion.bits}`
     : selectedByte
-    ? `${idText(rows, selectedByte.key)} \u00b7 Byte ${selectedByte.byte}`
+    ? `${idText(ctx.ids, selectedByte.key)} \u00b7 Byte ${selectedByte.byte}`
     : selectedSummary
       ? idText(rows, selectedSummary.key)
       : null;
@@ -184,11 +188,7 @@ export function ByteMatrix(props: Props) {
                   const isExpanded = expanded.includes(key);
                   const mark = suggestion?.key === key ? suggestion : null;
                   return (
-                    <tr
-                      key={specKey(key, first)}
-                      ref={mark && first === mark.bytes[0] - (mark.bytes[0] % LANES) ? markedRow : undefined}
-                      className={isSelectedRow ? 're-row-selected' : undefined}
-                    >
+                    <tr key={specKey(key, first)} className={isSelectedRow ? 're-row-selected' : undefined}>
                       <th scope="row">
                         {first === 0 ? (
                           <button type="button" className="re-row-head" onClick={() => onSelectRow(key)} aria-pressed={isSelectedRow}>
@@ -231,6 +231,7 @@ export function ByteMatrix(props: Props) {
                           <td key={k}>
                             {carried ? (
                               <button
+                                ref={marked && byte === mark.bytes[0] ? markedCell : undefined}
                                 type="button"
                                 className={`re-cell${isSelected ? ' selected' : ''}${marked ? ' suggested' : ''}${still ? ' still' : ''}`}
                                 aria-pressed={isSelected}
@@ -274,6 +275,7 @@ export function ByteMatrix(props: Props) {
         {selectionLabel ? (
           <span className="re-matrix-sel">
             <span className="mono">{selectionLabel}</span>
+            {markHidden && <span className="re-matrix-hint"> Its row is filtered out of the table.</span>}
           </span>
         ) : (
           <span className="re-matrix-hint">Select a byte to pin it beside the references, or open its message in Advanced.</span>

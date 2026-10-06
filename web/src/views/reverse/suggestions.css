@@ -408,12 +408,12 @@
   height: 32px;
   margin-top: -16px;
   border-radius: 4px;
-  background: var(--hairline);
+  background: var(--scrubber);
 }
 
 .re-sugpanel-grip:hover::after,
 .re-sugpanel-grip:focus-visible::after {
-  background: var(--scrubber);
+  background: var(--graphite);
 }
 
 .re-sugpanel-grip:focus-visible {
@@ -421,8 +421,10 @@
   outline-offset: 0;
 }
 
-@container re-split (max-width: 860px) {
-  .re-sugpanel-grip {
+/* Stacked under the matrix, the panel's few lines go to the cards. */
+@container re-split (max-width: 1100px) {
+  .re-sugpanel-grip,
+  .re-sugpanel-foot {
     display: none;
   }
 }

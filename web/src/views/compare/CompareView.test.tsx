@@ -327,6 +327,38 @@ describe('logs that look the same', () => {
   });
 });
 
+describe('a core that stops', () => {
+  it('forgets the saved log B when the core restarts while comparing it', async () => {
+    let reset = () => {};
+    const core = compareCore(RESULTS, {
+      compareLogs: () => new Promise(() => {}),
+      onReset: (listener) => {
+        reset = listener;
+        return () => {};
+      },
+    });
+    renderInShell(CompareView, { core });
+    expect(await screen.findByRole('region', { name: 'Log B' })).toBeTruthy();
+    await waitFor(() => expect(session.forget).not.toHaveBeenCalled());
+    reset();
+    expect(session.forget).toHaveBeenCalledWith('compare');
+  });
+
+  it('keeps the saved log B when the core restarts with no work on it', async () => {
+    let reset = () => {};
+    const core = compareCore(RESULTS, {
+      onReset: (listener) => {
+        reset = listener;
+        return () => {};
+      },
+    });
+    renderInShell(CompareView, { core });
+    expect(await screen.findByRole('row', { name: /^450 BODY/ })).toBeTruthy();
+    reset();
+    expect(session.forget).not.toHaveBeenCalled();
+  });
+});
+
 describe('a comparison with no IDs', () => {
   it('does not say the logs look the same', async () => {
     renderInShell(CompareView, { core: compareCore([]) });

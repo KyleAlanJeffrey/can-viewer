@@ -13,6 +13,7 @@ import { ByteCompare } from './ByteCompare';
 import { CompareTable } from './CompareTable';
 import { IgnoreRulesSheet } from './IgnoreRules';
 import { LogCards, type Reading } from './LogCards';
+import { forgetLogBOnReset, onLogB } from './logBWork';
 import { DEFAULT_OPTIONS, GROUPS, SHOW_OPTIONS, busesMatchedByOrder, findingsCsv, groupOf, looksTheSame, matchesQuery, rowKey, stem, type Show } from './findings';
 import './compare.css';
 
@@ -70,7 +71,7 @@ function CompareLogs({ ctx }: ViewProps) {
     setReading({ name, fraction: 0 });
     await ctx.run(`Reading ${name}\u2026`, async () => {
       try {
-        const read = await core.openCompareLog(file, name, (p) => setReading({ name, fraction: p.total > 0 ? p.bytes / p.total : 1 }));
+        const read = await onLogB(core, core.openCompareLog(file, name, (p) => setReading({ name, fraction: p.total > 0 ? p.bytes / p.total : 1 })));
         const empty = read.frames === 0 ? (noFramesMessage(read) ?? `No CAN frames in ${name}.`) : null;
         if (empty) {
           await core.closeCompareLog();
@@ -99,6 +100,8 @@ function CompareLogs({ ctx }: ViewProps) {
     if (!left) await forget('compare');
     return null;
   };
+
+  useEffect(() => forgetLogBOnReset(core), [core]);
 
   // The core holds log B across view switches; after a reload it is read again from the saved copy.
   useEffect(() => {
@@ -133,7 +136,7 @@ function CompareLogs({ ctx }: ViewProps) {
     }
     let live = true;
     setResults(null);
-    core.compareLogs(options).then(
+    onLogB(core, core.compareLogs(options)).then(
       (found) => live && setResults(found),
       (e) => live && ctx.setError(errorText(e)),
     );

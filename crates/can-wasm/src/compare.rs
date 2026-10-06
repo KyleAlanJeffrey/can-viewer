@@ -421,6 +421,9 @@ fn within_reach(reference: &[u32; 256], other: &[u32; 256], step: usize) -> [boo
     for i in 1..present.len() {
         run[i] = run[i - 1] + usize::from(present[i] - present[i - 1] > step);
     }
+    // Counted before the last run wraps into the first, which leaves later runs numbered as
+    // they were.
+    let runs = run.last().map_or(0, |&r| r + 1);
     if let (Some(&first), Some(&last)) = (present.first(), present.last()) {
         if present.len() > 1 && first + 256 - last <= step {
             let wrapped = run[present.len() - 1];
@@ -431,7 +434,7 @@ fn within_reach(reference: &[u32; 256], other: &[u32; 256], step: usize) -> [boo
             }
         }
     }
-    let mut anchored = vec![false; run.last().map_or(0, |&r| r + 1)];
+    let mut anchored = vec![false; runs];
     for (i, &v) in present.iter().enumerate() {
         if reference[v] > 0 {
             anchored[run[i]] = true;
@@ -1880,5 +1883,39 @@ mod tests {
         session.compare_begin("small.log", log.len() as f64);
         assert!(session.compare_push_chunk(log.as_bytes()).is_ok());
         assert!(session.compare_finish().is_ok());
+    }
+
+    /// A 16-bit little-endian value from `from` to `to` over a minute at 10 Hz.
+    fn ramp16(from: u32, to: u32) -> FrameStore {
+        store(&periodic(0x10E, 10.0, 60.0, move |_, t| {
+            let v = from + ((to - from) as f64 * t / 60.0) as u32;
+            vec![v as u8, (v >> 8) as u8, 0, 0, 0, 0, 0, 0]
+        }))
+    }
+
+    /// A signed byte wandering around 0 (-2 to 2), with `extreme` for 3 s from 30 s.
+    fn signed_around_zero(extreme: Option<u8>) -> FrameStore {
+        store(&periodic(0x110, 10.0, 60.0, move |i, t| {
+            let v = match extreme {
+                Some(x) if (30.0..33.0).contains(&t) => x,
+                _ => [0, 1, 2, 0xFE, 0xFF][i % 5],
+            };
+            vec![v, 0, 0, 0, 0, 0, 0, 0]
+        }))
+    }
+
+    #[test]
+    fn values_wrapping_at_255_compare_without_a_crash() {
+        for options in [NO_RULES, DEFAULTS] {
+            let a = signed_around_zero(None);
+            assert_eq!(compare_logs(&a, &a, options)[0].score, 0);
+            let b = signed_around_zero(Some(0xF6));
+            assert!(compare_logs(&a, &b, options)[0].score >= 10);
+
+            let a = ramp16(0xF0, 0x110);
+            assert_eq!(compare_logs(&a, &a, options)[0].score, 0);
+            compare_logs(&a, &ramp16(0x120, 0x140), options);
+            compare_bytes(first_id(&a), first_id(&a), options);
+        }
     }
 }

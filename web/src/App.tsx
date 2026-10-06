@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, PanelRight, Save, Search, Square, X } from 'lucide-react';
 // Type-only, so the adapters stay out of the main chunk.
 import type { CaptureAdapter, CaptureSettings } from './capture/adapter';
@@ -905,6 +905,13 @@ export function App({ core }: { core: CoreApi }) {
     if (narrow()) setSidebarOpen(false);
   };
 
+  /** The Live Capture sheet around `content`, while the sheet itself loads or if it can't. */
+  const captureFrame = (content: ReactNode) => (
+    <Sheet open={captureOpen} onClose={() => setCaptureOpen(false)} title="Live Capture">
+      {content}
+    </Sheet>
+  );
+
   const ctx: ViewContext = {
     core,
     log,
@@ -931,8 +938,14 @@ export function App({ core }: { core: CoreApi }) {
     run,
     setError,
     setView,
-    // Left unsettled if the discard prompt is cancelled, so the caller goes no further.
-    openLog: (file, name) => new Promise((resolve) => unlessUnsavedCapture(() => resolve(openLog(file, name, undefined, true)))),
+    openLog: (file, name) => {
+      if (stoppingRef.current) {
+        setError('Wait for the capture to stop, then open the log again.');
+        return Promise.resolve(false);
+      }
+      // Left unsettled if the discard prompt is cancelled, so the caller goes no further.
+      return new Promise((resolve) => unlessUnsavedCapture(() => resolve(openLog(file, name, undefined, true))));
+    },
     swapCompareLog,
     openLogPicker: () => logInput.current?.click(),
     openDbcPicker: () => dbcInput.current?.click(),
@@ -1234,15 +1247,8 @@ export function App({ core }: { core: CoreApi }) {
       {(sidebarOpen || (showInspector && inspectorOpen)) && <div className="scrim" aria-hidden="true" onClick={closeOverlays} />}
       {dragOver && <div className="drop-overlay">Drop a log, DBC files or a video to open them</div>}
       {captureSheetUsed && (
-        <ChunkBoundary
-          message="Couldn't load capture."
-          frame={(fallback) => (
-            <Sheet open={captureOpen} onClose={() => setCaptureOpen(false)} title="Live Capture">
-              {fallback}
-            </Sheet>
-          )}
-        >
-          <Suspense fallback={null}>
+        <ChunkBoundary message="Couldn't load capture." frame={captureFrame}>
+          <Suspense fallback={captureFrame(<p className="hint">Loading&hellip;</p>)}>
             <CaptureSheet open={captureOpen} onClose={() => setCaptureOpen(false)} onStart={startCapture} />
           </Suspense>
         </ChunkBoundary>

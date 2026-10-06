@@ -117,9 +117,9 @@ describe('App live capture', () => {
 
   async function startCapture(port: FakeSerialPort) {
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    // The sheet loads on its own the first time.
-    const sheet = await screen.findByRole('dialog', { name: 'Live Capture' });
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Choose Adapter\u2026' }));
+    // The sheet shows as loading until its code arrives.
+    await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
+    const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
     await screen.findByRole('button', { name: 'Stop Capture' });
     expect(port.commands).toEqual(['C', 'S6', 'L']);
@@ -321,8 +321,9 @@ describe('App live capture', () => {
     const { core, frames } = captureCore();
     render(<App core={core} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    const sheet = await screen.findByRole('dialog', { name: 'Live Capture' });
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Choose Adapter\u2026' }));
+    // The sheet shows as loading until its code arrives.
+    await userEvent.click(await screen.findByRole('button', { name: 'Choose Adapter\u2026' }));
+    const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Start Capture' }));
     // A silent adapter takes its full wait for S6.
     expect((await within(sheet).findByRole('alert', {}, { timeout: 3000 })).textContent).toMatch(/didn't confirm listen-only mode\. Silent mode \(M1\) was sent.*Start anyway\?$/);
@@ -452,6 +453,7 @@ describe('App live capture', () => {
     const App = await freshApp();
     render(<App core={fakeCore()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    expect(within(await screen.findByRole('dialog', { name: 'Live Capture' })).getByText(/needs Chrome or Edge/)).toBeTruthy();
+    expect(await screen.findByText(/needs Chrome or Edge/)).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Live Capture' })).toBeTruthy();
   });
 });

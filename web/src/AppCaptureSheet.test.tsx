@@ -38,13 +38,32 @@ describe('App Capture sheet', () => {
     expect(loaded).toHaveBeenCalledTimes(1);
   });
 
+  it('shows the sheet as loading until its code arrives', async () => {
+    let arrive = () => {};
+    const arrived = new Promise<void>((resolve) => (arrive = resolve));
+    const App = await appWithSheet(async () => {
+      await arrived;
+      return vi.importActual('./capture/CaptureSheet');
+    });
+    render(<App core={fakeCore()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
+    const loading = await screen.findByRole('dialog', { name: 'Live Capture' });
+    expect(within(loading).getByText('Loading\u2026')).toBeTruthy();
+
+    arrive();
+    // This browser has no Web Serial, so the sheet explains that.
+    expect(await screen.findByText(/needs Chrome or Edge/)).toBeTruthy();
+    expect(screen.queryByText('Loading\u2026')).toBeNull();
+  });
+
   it('offers a reload in the sheet when the sheet fails to load, leaving the app usable', async () => {
     const App = await appWithSheet(async () => {
       throw new TypeError('Failed to fetch dynamically imported module');
     });
     render(<App core={fakeCore()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    const sheet = await screen.findByRole('dialog', { name: 'Live Capture' });
+    await screen.findByText("Couldn't load capture.");
+    const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
     expect(within(sheet).getByRole('alert').textContent).toContain("Couldn't load capture.");
     expect(within(sheet).getByRole('button', { name: 'Reload' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Open a CAN log to get started' })).toBeTruthy();

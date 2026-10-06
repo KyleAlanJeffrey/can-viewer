@@ -1,11 +1,12 @@
 import { formatId, type CompareOptions, type IdComparison, type LogInfo } from '../../core/api';
+import { formatCount } from '../../format';
 
 /** Scores from here up count as a difference, as the core reports them. */
 export const SIGNIFICANT = 10;
 
 export const DEFAULT_OPTIONS: CompareOptions = { ignoreCounters: true, ignoreChangesWithinA: true };
 
-export type GroupId = 'different' | 'onlyB' | 'onlyA' | 'same';
+export type GroupId = 'different' | 'onlyB' | 'onlyA' | 'same' | 'tooFew';
 export type Show = 'all' | 'both' | 'onlyA' | 'onlyB';
 
 export const GROUPS: { id: GroupId; label: string }[] = [
@@ -13,11 +14,12 @@ export const GROUPS: { id: GroupId; label: string }[] = [
   { id: 'onlyB', label: 'Only in B' },
   { id: 'onlyA', label: 'Only in A' },
   { id: 'same', label: 'In both \u00b7 no significant differences' },
+  { id: 'tooFew', label: 'Too few frames to compare' },
 ];
 
 export const SHOW_OPTIONS: { id: Show; label: string; groups: GroupId[] }[] = [
-  { id: 'all', label: 'All messages', groups: ['different', 'onlyB', 'onlyA', 'same'] },
-  { id: 'both', label: 'In both logs', groups: ['different', 'same'] },
+  { id: 'all', label: 'All messages', groups: ['different', 'onlyB', 'onlyA', 'same', 'tooFew'] },
+  { id: 'both', label: 'In both logs', groups: ['different', 'same', 'tooFew'] },
   { id: 'onlyA', label: 'Only in A', groups: ['onlyA'] },
   { id: 'onlyB', label: 'Only in B', groups: ['onlyB'] },
 ];
@@ -25,6 +27,7 @@ export const SHOW_OPTIONS: { id: Show; label: string; groups: GroupId[] }[] = [
 export function groupOf(c: IdComparison): GroupId {
   if (c.presence === 'onlyA') return 'onlyA';
   if (c.presence === 'onlyB') return 'onlyB';
+  if (c.tooFewFrames) return 'tooFew';
   return c.score >= SIGNIFICANT ? 'different' : 'same';
 }
 
@@ -38,9 +41,20 @@ export function matchesQuery(c: IdComparison, query: string): boolean {
   return !q || formatId(c.id, c.extended).toLowerCase().includes(q) || (c.name ?? '').toLowerCase().includes(q);
 }
 
-/** No ID differs under the current ignore rules, and there was something to compare. */
+/**
+ * No ID differs under the current ignore rules, and there was something to compare. IDs with
+ * too few frames say nothing either way.
+ */
 export function looksTheSame(results: IdComparison[]): boolean {
-  return results.length > 0 && results.every((c) => groupOf(c) === 'same');
+  const groups = results.map(groupOf);
+  return groups.includes('same') && groups.every((g) => g === 'same' || g === 'tooFew');
+}
+
+/** How many IDs the within-A rule left out, for the states that show no differences, or null. */
+export function withinANote(results: IdComparison[]): string | null {
+  const n = results.filter((c) => c.changesWithinA).length;
+  if (n === 0) return null;
+  return `${formatCount(n)} ${n === 1 ? 'ID changes' : 'IDs change'} within A; turn off the rule to see ${n === 1 ? 'it' : 'them'}.`;
 }
 
 /**

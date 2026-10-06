@@ -32,6 +32,8 @@ export interface ShellOptions {
   capturing?: boolean;
   openLog?: ViewContext['openLog'];
   swapCompareLog?: ViewContext['swapCompareLog'];
+  /** The label of a task the app is busy with, besides those the view runs. */
+  busy?: string;
 }
 
 const PLOT_COLORS = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'];
@@ -57,6 +59,7 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
   const [inspector, setInspector] = useState<HTMLElement | null>(null);
   // Changes apply in call order to the latest list, as App's mutateDbcs does.
   const latestDbcs = useRef(dbcs);
+  const labels = useRef<string[]>([]);
   Object.assign(state, { dbcs, selected, pinnedTime, plots, view, error });
 
   const mutateDbcs = useCallback(async (change: (prev: LoadedDbc[]) => LoadedDbc[]) => {
@@ -125,8 +128,9 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
     signalColor: (key, signal) => plots.find((p) => p.id === `${key}:${signal}`)?.color ?? 'grey',
     pinnedTime,
     setPinnedTime,
-    run: async (_label, task) => {
+    run: async (label, task) => {
       state.running++;
+      labels.current.push(label);
       try {
         await task();
         return true;
@@ -135,8 +139,10 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
         return false;
       } finally {
         state.running--;
+        labels.current.splice(labels.current.indexOf(label), 1);
       }
     },
+    busyLabel: () => labels.current[labels.current.length - 1] ?? options.busy ?? null,
     setError,
     setView,
     setInspectorHidden: () => {},

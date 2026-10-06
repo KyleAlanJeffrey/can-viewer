@@ -56,6 +56,8 @@ export interface ViewContext {
 
   /** Run a task under the toolbar's busy label; a thrown error shows in the banner. Resolves false if it threw. */
   run(label: string, task: () => Promise<void>): Promise<boolean>;
+  /** The label of the task under way, or null when none is; open no file until it ends. */
+  busyLabel(): string | null;
   setError(message: string | null): void;
   setView(view: ViewId): void;
   /** Hide the inspector pane for a mode of the view that has none; the shell resets it on a view change. */

@@ -59,7 +59,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] Trace filters while recording: extend the filtered rows as frames are appended, rather than turning filters off until Stop
 - [ ] Use the adapter's own timestamps when it has them (slcan `Z1`, unwrapping its 60 s counter; gs_usb hardware timestamps) for sub-millisecond timing; today frames get the host clock when their bytes arrive
 - [ ] gs_usb: CAN FD (data bitrate through `BT_CONST_EXT` and `DATA_BITTIMING`) and a choice of channel on multi-channel adapters; today classic CAN on the first channel
-- [ ] slcan: a serial speed setting for adapters behind a UART at a baud rate other than 115200, and custom bit timing (`s`) for bitrates outside `S0` to `S8`
+- [x] slcan: a serial speed setting for adapters behind a UART at a baud rate other than 115200, and custom bit timing (`s`) for bitrates outside `S0` to `S8`: both under Advanced in the Capture sheet; the rate shown is worked out for a 16 MHz SJA1000. Untested on hardware
 - [x] Name the capture's bus (always `can0` before), so a DBC scoped to another bus applies to it: a Bus name field in the Capture sheet, `can0` by default, suggesting the DBCs' buses and kept with the adapter chosen
 - [x] Overview bus load assumed 500 kbit/s for every log; it now uses the capture's bitrate, and a bitrate select per bus in the bus load card sets it for opened logs (kept in the view state with the log). `busLoad` already took a bitrate, so the core is unchanged; CAN FD data phases still count at the nominal rate
 - [x] Warn before a long capture reaches the wasm memory cap (about 65 bytes a frame), and stop it by itself before it does

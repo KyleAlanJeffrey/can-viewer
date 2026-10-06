@@ -81,3 +81,16 @@
     white-space: nowrap;
   }
 }
+
+.cap-advanced > summary {
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.cap-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 12px;
+}

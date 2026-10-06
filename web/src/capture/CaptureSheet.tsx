@@ -3,6 +3,7 @@ import { Segmented } from '../components/Segmented';
 import { Sheet } from '../components/Sheet';
 import { BITRATES, busNameProblem, errorText, formatBitrate, isListenOnlyUnconfirmed, type CaptureAdapter, type CaptureSettings } from './adapter';
 import { ADAPTER_KINDS, availableKinds, requestAdapter, type AdapterKind } from './devices';
+import { parseBtr, SERIAL_BAUD_RATE, SERIAL_BAUD_RATES, sja1000Bitrate } from './slcan';
 
 const DEFAULT_BITRATE = 500_000;
 const DEFAULT_BUS = 'can0';
@@ -28,6 +29,9 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
   const [bitrate, setBitrate] = useState(DEFAULT_BITRATE);
   const [listenOnly, setListenOnly] = useState(true);
   const [bus, setBus] = useState(DEFAULT_BUS);
+  const [serialBaudRate, setSerialBaudRate] = useState(SERIAL_BAUD_RATE);
+  // Empty: the bitrate chosen sets the timing.
+  const [btrText, setBtrText] = useState('');
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Why listen-only can't be confirmed, while the user decides whether to start anyway.
@@ -73,13 +77,26 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
   };
 
   const busProblem = busNameProblem(bus.trim());
+  const slcan = kind === 'slcan';
+  const btrTrimmed = btrText.trim();
+  const btr = slcan && btrTrimmed !== '' ? parseBtr(btrTrimmed) : null;
+  const btrProblem = slcan && btrTrimmed !== '' && !btr ? 'Enter four hex digits, BTR0 then BTR1, such as 031C.' : null;
+  const btrBitrate = btr ? Math.round(sja1000Bitrate(...btr)) : null;
+  const invalid = busProblem !== null || btrProblem !== null;
 
   const start = async () => {
-    if (!adapter || busProblem) return;
+    if (!adapter || invalid) return;
     setStarting(true);
     setError(null);
     try {
-      await onStart(adapter, { bitrate, bus: bus.trim(), listenOnly, allowUnconfirmedListenOnly: unconfirmed !== null });
+      await onStart(adapter, {
+        bitrate: btrBitrate ?? bitrate,
+        bus: bus.trim(),
+        listenOnly,
+        allowUnconfirmedListenOnly: unconfirmed !== null,
+        serialBaudRate: slcan && serialBaudRate !== SERIAL_BAUD_RATE ? serialBaudRate : undefined,
+        btr: btr ? btrTrimmed.toUpperCase() : undefined,
+      });
       setUnconfirmed(null);
       onClose();
     } catch (e) {
@@ -104,7 +121,7 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
           <button type="button" className="button" onClick={onClose} disabled={starting}>
             Cancel
           </button>
-          <button type="button" className="primary" onClick={start} disabled={!adapter || !!busProblem || starting}>
+          <button type="button" className="primary" onClick={start} disabled={!adapter || invalid || starting}>
             {starting ? 'Starting\u2026' : unconfirmed ? 'Start Anyway' : 'Start Capture'}
           </button>
         </>
@@ -138,7 +155,13 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
           <label htmlFor={`${ids}bitrate`} className="field-label">
             Bitrate
           </label>
-          <select id={`${ids}bitrate`} className="select cap-bitrate" value={bitrate} onChange={(e) => setBitrate(Number(e.target.value))} disabled={starting}>
+          <select
+            id={`${ids}bitrate`}
+            className="select cap-bitrate"
+            value={bitrate}
+            onChange={(e) => setBitrate(Number(e.target.value))}
+            disabled={starting || btr !== null}
+          >
             {BITRATES.map((b) => (
               <option key={b} value={b}>
                 {formatBitrate(b)}
@@ -192,6 +215,59 @@ export function CaptureSheet({ open, onClose, onStart, kinds = availableKinds(),
             The adapter never acknowledges or sends a frame, so it can&rsquo;t disturb the bus. If an adapter can&rsquo;t confirm it, you&rsquo;ll be asked before it starts.
           </p>
         </div>
+        {slcan && (
+          <details className="cap-advanced">
+            <summary>Advanced</summary>
+            <div className="cap-advanced-body">
+              <div className="field">
+                <label htmlFor={`${ids}baud`} className="field-label">
+                  Serial speed
+                </label>
+                <select
+                  id={`${ids}baud`}
+                  className="select cap-bitrate"
+                  value={serialBaudRate}
+                  onChange={(e) => setSerialBaudRate(Number(e.target.value))}
+                  disabled={starting}
+                  aria-describedby={`${ids}baudhint`}
+                >
+                  {SERIAL_BAUD_RATES.map((b) => (
+                    <option key={b} value={b}>
+                      {b.toLocaleString('en-US')} baud
+                    </option>
+                  ))}
+                </select>
+                <p id={`${ids}baudhint`} className="cap-hint">
+                  For an adapter behind a UART. USB adapters ignore it.
+                </p>
+              </div>
+              <div className="field">
+                <label htmlFor={`${ids}btr`} className="field-label">
+                  Bit timing (BTR0 BTR1)
+                </label>
+                <input
+                  id={`${ids}btr`}
+                  className="input mono cap-bus"
+                  value={btrText}
+                  onChange={(e) => setBtrText(e.target.value)}
+                  placeholder="Off"
+                  spellCheck={false}
+                  autoComplete="off"
+                  maxLength={4}
+                  disabled={starting}
+                  aria-invalid={btrProblem !== null}
+                  aria-describedby={`${ids}btrhint`}
+                />
+                <p id={`${ids}btrhint`} className={btrProblem ? 'field-error' : 'cap-hint'}>
+                  {btrProblem ??
+                    (btrBitrate !== null
+                      ? `Sent as s${btrTrimmed.toUpperCase()} in place of the bitrate: ${formatBitrate(btrBitrate)} on an SJA1000 at 16 MHz, such as the Lawicel CANUSB.`
+                      : 'For a bitrate the list lacks: SJA1000 registers in hex, sent with the s command.')}
+                </p>
+              </div>
+            </div>
+          </details>
+        )}
         {unconfirmed && (
           <p className="field-error" role="alert">
             {unconfirmed} Start anyway?

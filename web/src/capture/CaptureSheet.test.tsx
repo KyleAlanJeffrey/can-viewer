@@ -140,6 +140,37 @@ describe('CaptureSheet', () => {
     expect((screen.getByLabelText('Bus name') as HTMLInputElement).value).toBe(' body ');
   });
 
+  it('sets a serial speed and custom bit timing for slcan under Advanced', async () => {
+    const onStart = vi.fn(async () => {});
+    render(<CaptureSheet open onClose={() => {}} onStart={onStart} kinds={['slcan', 'gsusb']} request={async () => slcan()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));
+    await userEvent.click(screen.getByText('Advanced'));
+    expect((screen.getByLabelText('Serial speed') as HTMLSelectElement).value).toBe('115200');
+    await userEvent.selectOptions(screen.getByLabelText('Serial speed'), '57,600 baud');
+
+    const timing = screen.getByLabelText('Bit timing (BTR0 BTR1)');
+    await userEvent.type(timing, '31');
+    expect(screen.getByText('Enter four hex digits, BTR0 then BTR1, such as 031C.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Start Capture' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.clear(timing);
+    await userEvent.type(timing, '031c');
+    expect(screen.getByText(/^Sent as s031C in place of the bitrate: 125 kbit\/s/)).toBeTruthy();
+    expect((screen.getByLabelText('Bitrate') as HTMLSelectElement).disabled).toBe(true);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Capture' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.anything(), {
+      bitrate: 125_000,
+      bus: 'can0',
+      listenOnly: true,
+      allowUnconfirmedListenOnly: false,
+      serialBaudRate: 57_600,
+      btr: '031C',
+    });
+
+    await userEvent.click(screen.getByRole('radio', { name: 'USB (candleLight)' }));
+    expect(screen.queryByText('Advanced')).toBeNull();
+  });
+
   it('stays without an adapter when the device prompt is dismissed', async () => {
     render(<CaptureSheet open onClose={() => {}} onStart={vi.fn()} kinds={['slcan']} request={async () => null} />);
     await userEvent.click(screen.getByRole('button', { name: 'Choose Adapter\u2026' }));

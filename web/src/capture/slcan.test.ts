@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { FLAG_BRS, FLAG_FD, FLAG_RTR, type CaptureFrame } from '../core/api';
 import { FakeSerialPort } from '../test/fakeSerial';
 import { isListenOnlyUnconfirmed, type CaptureEvents } from './adapter';
-import { SlcanAdapter, SlcanParser, parseSlcanFrame, type SlcanEvent } from './slcan';
+import { SlcanAdapter, SlcanParser, parseBtr, parseSlcanFrame, sja1000Bitrate, type SlcanEvent } from './slcan';
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -58,6 +58,21 @@ describe('parseSlcanFrame', () => {
     expect(parseSlcanFrame('t1231AAZZZZ')).toBe('unexpected characters after the data');
     expect(parseSlcanFrame('t1231ZZ')).toBe('bad hex data');
     expect(parseSlcanFrame('d1239' + '00'.repeat(8))).toBe('data cut short');
+  });
+});
+
+describe('SJA1000 bit timing', () => {
+  it('reads BTR0 and BTR1 from four hex digits', () => {
+    expect(parseBtr('031c')).toEqual([0x03, 0x1c]);
+    expect(parseBtr('031')).toBeNull();
+    expect(parseBtr('03 1C')).toBeNull();
+  });
+
+  it('gives the bitrate of the registers with a 16 MHz crystal', () => {
+    expect(sja1000Bitrate(0x03, 0x1c)).toBe(125_000);
+    expect(sja1000Bitrate(0x00, 0x14)).toBe(1_000_000);
+    expect(sja1000Bitrate(0x00, 0x1c)).toBe(500_000);
+    expect(Math.round(sja1000Bitrate(0x4b, 0x14))).toBe(83_333);
   });
 });
 
@@ -342,6 +357,38 @@ describe('SlcanAdapter', () => {
     const adapter = new SlcanAdapter(port, timing);
     await expect(adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0)).rejects.toThrow(
       "The adapter couldn't be opened (Failed to open serial port.). Close any other program or tab using it, then try again.",
+    );
+  });
+
+  it('opens the port at 115200 baud unless told another serial speed', async () => {
+    const port = new FakeSerialPort();
+    const adapter = new SlcanAdapter(port, timing);
+    await adapter.start({ bitrate: 500_000, listenOnly: false }, recordingEvents().events, () => 0);
+    expect(port.baudRate).toBe(115_200);
+    await adapter.stop();
+    await adapter.start({ bitrate: 500_000, listenOnly: false, serialBaudRate: 57_600 }, recordingEvents().events, () => 0);
+    expect(port.baudRate).toBe(57_600);
+    await adapter.stop();
+  });
+
+  it('sets custom bit timing with s in place of S<n>', async () => {
+    const port = new FakeSerialPort();
+    const adapter = new SlcanAdapter(port, timing);
+    await adapter.start({ bitrate: 83_333, btr: '4b14', listenOnly: false }, recordingEvents().events, () => 0);
+    expect(port.commands).toEqual(['C', 's4B14', 'O']);
+    await adapter.stop();
+  });
+
+  it('fails with a message when the adapter refuses the bit timing', async () => {
+    const port = new FakeSerialPort();
+    port.answer = (command) => (command.startsWith('s') ? '\x07' : '\r');
+    const adapter = new SlcanAdapter(port, timing);
+    await expect(adapter.start({ bitrate: 125_000, btr: '031C', listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
+      /^The adapter refused the bit timing\./,
+    );
+    expect(port.closed).toBe(true);
+    await expect(adapter.start({ bitrate: 125_000, btr: '31C', listenOnly: false }, recordingEvents().events, () => 0)).rejects.toThrow(
+      'The bit timing must be four hex digits: BTR0 then BTR1.',
     );
   });
 

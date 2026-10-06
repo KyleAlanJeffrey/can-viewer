@@ -8,6 +8,13 @@ export interface CaptureSettings {
   bitrate: number;
   /** The bus name the frames are stored under, `can0` when not given. Adapters ignore it. */
   bus?: string;
+  /** slcan: the serial port's baud rate, 115200 when not given. USB CDC adapters ignore it. */
+  serialBaudRate?: number;
+  /**
+   * slcan: SJA1000 bit timing registers BTR0 and BTR1 as four hex digits, sent with `s` in
+   * place of `S<n>`. `bitrate` should then be the rate they give (see `sja1000Bitrate`).
+   */
+  btr?: string;
   /** Ask the adapter to only listen: it then never acknowledges, sends or disturbs a frame. */
   listenOnly: boolean;
   /**

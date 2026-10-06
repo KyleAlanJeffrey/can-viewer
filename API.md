@@ -403,6 +403,7 @@ One ID compared byte by byte. Returned by [`compareBytes`](#comparebytes). Per-b
 - **`byteScores`** `number[]` - From 0 to 100 per byte, after both ignore rules.
 - **`byteReasons`** `string[]` - Each byte's reason, worded as `IdComparison.reason`; `No significant changes` below 10, `Too few frames to compare` for every byte when either log has fewer than 8 frames of the ID, and empty when either log lacks the byte.
 - **`newValues`** `number[][]` - Per byte, up to 16 values log B shows and log A never does, with ignored bits cleared.
+- **`firstOnlyInA`** `(number | null)[]` - Per byte, seconds from log A's first frame to the ID's first frame in log A showing a value log B never does (counted as for `newValues`, with log A's and log B's roles swapped), or null when there is none, when either log lacks the byte, or when either log has too few frames. The Compare view opens Reverse Engineer there.
 - **`ignored`** `{ byte: number, mask: number, kind: 'counter' | 'checksum' }[]` - Bits left out by `ignoreCounters`, as a bit mask per byte.
 
 ## Logs

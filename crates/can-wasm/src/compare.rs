@@ -142,6 +142,9 @@ pub struct ByteComparison {
     /// Up to 16 values of each byte that log B shows and log A never does, counted as new
     /// rather than noise or drift, with ignored bits cleared.
     pub new_values: Vec<Vec<u8>>,
+    /// Per byte, seconds from log A's first frame to its first frame of the ID showing a value
+    /// that log B never does, counted as `new_values` are; None when A shows no such value.
+    pub first_only_in_a: Vec<Option<f64>>,
     pub ignored: Vec<Ignored>,
 }
 
@@ -384,6 +387,8 @@ struct ByteDiff {
     parts: [(f64, ByteReason); 3],
     bits: [f64; 8],
     new_values: Vec<u8>,
+    /// Every value of A that B never shows, counted as `new_values` are.
+    only_in_a: Vec<u8>,
 }
 
 impl ByteDiff {
@@ -829,6 +834,7 @@ fn byte_diff(
         ],
         bits,
         new_values,
+        only_in_a: values_a,
     })
 }
 
@@ -1309,6 +1315,7 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
     let mut byte_scores = vec![0u8; len];
     let mut byte_reasons = vec![String::new(); len];
     let mut new_values = vec![Vec::new(); len];
+    let mut first_only_in_a = vec![None; len];
     if let (Some(pa), Some(pb), Some(ab)) = (&analysis.a, &analysis.b, &analysis.ab) {
         let verdict = judge(ab, analysis.raw.as_ref(), pa, pb, analysis.noise.as_ref());
         for (k, d) in ab.bytes.iter().enumerate() {
@@ -1326,6 +1333,8 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
                 "No significant changes".to_owned()
             };
             new_values[k].clone_from(&d.new_values);
+            first_only_in_a[k] =
+                a.and_then(|a| first_showing(a, k, analysis.keep[k], &d.only_in_a));
         }
     }
     ByteComparison {
@@ -1338,8 +1347,24 @@ pub fn compare_bytes(a: Option<Side<'_>>, b: Option<Side<'_>>, options: Options)
         byte_scores,
         byte_reasons,
         new_values,
+        first_only_in_a,
         ignored: analysis.ignored,
     }
+}
+
+/// Seconds from the log's first frame to the ID's first frame whose byte `k`, over the bits in
+/// `keep`, is one of `values`.
+fn first_showing(side: Side<'_>, k: usize, keep: u8, values: &[u8]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let origin = side.store.first_ts_ns()?;
+    side.stats
+        .frames
+        .iter()
+        .map(|&i| side.store.frame(i as usize))
+        .find(|f| f.data.get(k).is_some_and(|&v| values.contains(&(v & keep))))
+        .map(|f| (f.ts_ns - origin) as f64 / 1e9)
 }
 
 /// What log A and log B may take between them, well under wasm32's 4 GiB, since a browser may
@@ -2083,6 +2108,7 @@ mod tests {
                 ],
                 bits: [0.0; 8],
                 new_values: vec![],
+                only_in_a: vec![],
             })],
         };
         let raw = components(0.3);
@@ -2428,6 +2454,20 @@ mod tests {
         let b = stepping(&[0], 1.0, Some((2, 30.0, 2.0)));
         let found = &compare_logs(&a, &b, DEFAULTS)[0];
         assert!(found.score >= 60, "{found:?}");
+    }
+
+    #[test]
+    fn the_first_frame_of_a_value_only_in_a_is_found() {
+        let clean = stepping(&[0], 1.0, None);
+        let a = stepping(&[0], 1.0, Some((1, 45.0, 2.0)));
+        let detail = compare_bytes(first_id(&a), first_id(&clean), DEFAULTS);
+        let at = detail.first_only_in_a[0].expect("found");
+        assert!((at - 45.0).abs() < 0.01, "{at}");
+        assert_eq!(detail.first_only_in_a[1], None);
+
+        // An event only in B has no frame in A.
+        let detail = compare_bytes(first_id(&clean), first_id(&a), DEFAULTS);
+        assert_eq!(detail.first_only_in_a[0], None);
     }
 
     #[test]

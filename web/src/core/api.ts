@@ -390,6 +390,8 @@ export interface ByteComparison {
   byteReasons: string[];
   /** Per byte, up to 16 values log B shows that log A never does. */
   newValues: number[][];
+  /** Per byte, seconds into log A of its first frame showing a value log B never does, or null. */
+  firstOnlyInA: (number | null)[];
   ignored: IgnoredBits[];
 }
 

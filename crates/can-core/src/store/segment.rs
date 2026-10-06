@@ -170,7 +170,7 @@ impl FrameStore {
             let (frame, stored) = segment.frame(j, &buses);
             self.append_row(&frame, stored);
             if self.reassemble(&frame, false) {
-                completions.push(j);
+                completions.push(j as u32);
             }
         }
         let mut index = std::mem::take(&mut self.index);
@@ -183,12 +183,15 @@ impl FrameStore {
             self.index = index;
             return Ok(());
         }
-        let rows = Rows::new(first, &completions, segment.len());
+        let rows = Rows {
+            first,
+            completions: &completions,
+        };
         // The IDs of the transfers have frames among the segment's, so they are counted frame by
         // frame; every other ID's frames in the store are the segment's, in its order.
         let mut touched: FxHashMap<IdKey, Touched> = FxHashMap::default();
-        for &j in &completions {
-            let row = rows.row(j) + 1;
+        for (before, &j) in completions.iter().enumerate() {
+            let row = first + j as usize + before + 1;
             let key = id_key(self.channel[row], self.id[row]);
             touched.entry(key).or_default().transfers.push(row as u32);
         }
@@ -209,13 +212,13 @@ impl FrameStore {
                 }
             }
         }
-        for (key, touched) in &touched {
-            let mut id_rows = touched.transfers.clone();
+        for (key, touched) in touched {
+            let mut id_rows = touched.transfers;
             if let Some(k) = touched.part {
-                id_rows.extend(segment.ids[k].frames().map(|j| rows.row(j) as u32));
+                id_rows.extend(rows.of(segment.ids[k].frames()));
                 id_rows.sort_unstable();
             }
-            let stats = match index.by_key.get(key) {
+            let stats = match index.by_key.get(&key) {
                 Some(&i) => &mut index.ids[i],
                 None => {
                     let frame = self.frame(id_rows[0] as usize);
@@ -249,40 +252,30 @@ struct Touched {
 
 /// Where a segment's frames land in the store: from `first` on, each after the transfers the
 /// frames before it completed.
-enum Rows {
-    InOrder { first: usize },
-    AfterTransfers(Vec<u32>),
+struct Rows<'a> {
+    first: usize,
+    /// The frames that completed a transfer, in order.
+    completions: &'a [u32],
 }
 
-impl Rows {
-    /// `completions` are the frames that completed a transfer, in order.
-    fn new(first: usize, completions: &[usize], len: usize) -> Self {
-        if completions.is_empty() {
-            return Self::InOrder { first };
-        }
-        let mut rows = Vec::with_capacity(len);
+impl<'a> Rows<'a> {
+    /// The rows of `frames`, which must ascend.
+    fn of(&self, frames: impl Iterator<Item = usize> + 'a) -> impl Iterator<Item = u32> + 'a {
+        let (first, completions) = (self.first, self.completions);
         let mut before = 0;
-        for j in 0..len {
-            rows.push((first + j + before) as u32);
-            if completions.get(before) == Some(&j) {
+        frames.map(move |j| {
+            while completions.get(before).is_some_and(|&c| (c as usize) < j) {
                 before += 1;
             }
-        }
-        Self::AfterTransfers(rows)
-    }
-
-    fn row(&self, j: usize) -> usize {
-        match self {
-            Self::InOrder { first } => first + j,
-            Self::AfterTransfers(rows) => rows[j] as usize,
-        }
+            (first + j + before) as u32
+        })
     }
 }
 
 impl IdStats {
     /// Carries on with the frames of `part`, the same ID's frames in a segment whose frames are
     /// now at `rows`, as [`IdStats::observe`] would frame by frame.
-    fn join(&mut self, part: &SegmentId<'_>, segment: &Segment<'_>, rows: &Rows) {
+    fn join(&mut self, part: &SegmentId<'_>, segment: &Segment<'_>, rows: &Rows<'_>) {
         self.bit_flips.grow(part.bit_flips().len() / 8);
         for (kind, last_of_part) in part.last_data.iter().enumerate() {
             let Some(last_of_part) = last_of_part else {
@@ -303,8 +296,8 @@ impl IdStats {
         for (count, pairs) in self.pairs_by_len.iter_mut().zip(u32s(part.pairs_by_len)) {
             *count += pairs;
         }
-        for j in part.frames() {
-            self.observe_time(rows.row(j) as u32, segment.ts(j));
+        for (j, row) in part.frames().zip(rows.of(part.frames())) {
+            self.observe_time(row, segment.ts(j));
         }
         self.flags |= part.flags;
         self.min_len = self.min_len.min(part.min_len);
@@ -546,12 +539,12 @@ impl SegmentId<'_> {
 
     /// The statistics of an ID first seen in this segment, on bus `channel`, with the segment's
     /// frames at `rows` and every frame's time shifted by `shift_ns`.
-    fn stats(&self, channel: u8, rows: &Rows, shift_ns: i64) -> IdStats {
+    fn stats(&self, channel: u8, rows: &Rows<'_>, shift_ns: i64) -> IdStats {
         IdStats {
             channel,
             id: self.id,
             flags: self.flags,
-            frames: self.frames().map(|j| rows.row(j) as u32).collect(),
+            frames: rows.of(self.frames()).collect(),
             first_ts_ns: self.first_ts_ns.saturating_add(shift_ns),
             last_ts_ns: self.last_ts_ns.saturating_add(shift_ns),
             min_len: self.min_len,
@@ -749,8 +742,20 @@ mod tests {
                 whole.remote_dlc(i),
                 "{what}: frame {i}"
             );
+            assert_eq!(
+                joined.previous_of_same_kind(i),
+                whole.previous_of_same_kind(i),
+                "{what}: frame {i}"
+            );
         }
         assert_eq!(joined.channels(), whole.channels(), "{what}");
+        assert_eq!(joined.out_of_order, whole.out_of_order, "{what}");
+        let by_key = |store: &FrameStore| {
+            let mut by_key: Vec<_> = store.index.by_key.iter().map(|(&k, &i)| (k, i)).collect();
+            by_key.sort_unstable();
+            by_key
+        };
+        assert_eq!(by_key(joined), by_key(whole), "{what}");
         // Debug shows every field, the floating-point gap sums bit for bit among them.
         assert_eq!(
             format!("{:?}", joined.ids()),
@@ -808,7 +813,7 @@ mod tests {
 
     #[test]
     fn a_segment_joins_with_its_first_frames_shifted_as_if_pushed_at_their_shifted_times() {
-        // Without the transfer too, which has the statistics worked out frame by frame anyway.
+        // With and without the transfer, whose ID is counted frame by frame where it completes.
         let mut without_transfer = log();
         without_transfer.drain(10..13);
         for frames in [log(), without_transfer] {
@@ -930,9 +935,12 @@ mod tests {
         }
     }
 
+    /// Frames as their IDs and payloads.
+    type Frames = Vec<(u32, Vec<u8>)>;
+
     /// The TP.CM announcement of `data` as PGN `pgn` from `source` to `destination` (a BAM
     /// to 0xFF, an RTS otherwise), then its TP.DT packets, as IDs and payloads.
-    fn transfer(source: u32, destination: u32, pgn: u32, data: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    fn transfer(source: u32, destination: u32, pgn: u32, data: &[u8]) -> Frames {
         let control = if destination == 0xFF { 32 } else { 16 };
         let packets = data.len().div_ceil(7) as u8;
         let size = (data.len() as u16).to_le_bytes();
@@ -954,7 +962,7 @@ mod tests {
     }
 
     /// The frames of each stream in turn, one from each until all are done.
-    fn interleave(streams: Vec<Vec<(u32, Vec<u8>)>>) -> Vec<(u32, Vec<u8>)> {
+    fn interleave(streams: Vec<Frames>) -> Frames {
         let longest = streams.iter().map(Vec::len).max().unwrap_or(0);
         (0..longest)
             .flat_map(|n| streams.iter().filter_map(move |s| s.get(n).cloned()))
@@ -997,6 +1005,8 @@ mod tests {
             (1..4).map(|n| plain(0x100, n)).collect(),
         ]));
         rows.push(plain(0x300, 0));
+        // The ID the transfer from 0x22 was reassembled to, now as a frame of its own.
+        rows.push(plain(EXT_FLAG | 0x18FE_E322, 0));
         rows.push(single_dm1(0x44));
         rows.extend(interleave(vec![
             transfer(0x21, 0xFF, 0xFECA, &bytes(10, 6)),
@@ -1054,6 +1064,135 @@ mod tests {
             assert_parts_read_as_whole(&frames, &cuts);
         }
         assert_shifted_parts_read_as_whole(&frames);
+    }
+
+    /// A seeded xorshift generator, so a failing case can be read again from its seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// A random log of J1939 traffic on two buses: transfers from sources whose packets
+    /// interleave, some cut short and some onto the IDs of TP.CM and TP.DT packets, runs of
+    /// single and remote frames (up to 300, past where bit flips are folded) on the IDs DM1 and
+    /// 0xFEE3 transfers are reassembled to, plain frames, and times that sometimes go back.
+    fn random_j1939_log(rng: &mut Rng) -> Vec<Pushed> {
+        const PGNS: [u32; 4] = [0xFECA, 0xFEE3, 0xEB00, 0xEC00];
+        let mut frames = Vec::new();
+        // Each open transfer's bus and the packets it has left to send, last first.
+        let mut open: Vec<(&str, Frames)> = Vec::new();
+        let mut t = 1_000;
+        let len = 100 + rng.below(300);
+        while frames.len() < len || !open.is_empty() {
+            t += 1 + rng.below(1000) as i64;
+            let ts_ns = if rng.below(100) < 4 {
+                t - rng.below(5000) as i64
+            } else {
+                t
+            };
+            let bus = if rng.below(5) == 0 { "can2" } else { "can1" };
+            match rng.below(12) {
+                0 if open.len() < 4 && frames.len() < len => {
+                    let source = 0x21 + rng.below(4) as u32;
+                    let destination = if rng.below(4) == 0 { 0x00 } else { 0xFF };
+                    let data: Vec<u8> = (0..9 + rng.below(50))
+                        .map(|_| rng.below(256) as u8)
+                        .collect();
+                    let mut packets = transfer(source, destination, PGNS[rng.below(4)], &data);
+                    if rng.below(5) == 0 {
+                        packets.truncate(1 + rng.below(packets.len()));
+                    }
+                    packets.reverse();
+                    open.push((bus, packets));
+                }
+                1 if frames.len() < len => {
+                    let id = EXT_FLAG | 0x1800_0000 | (PGNS[rng.below(2)] << 8) | 0x21;
+                    let run = if rng.below(8) == 0 {
+                        rng.below(300)
+                    } else {
+                        rng.below(5)
+                    };
+                    for n in 0..run {
+                        let mut single = frame(
+                            bus,
+                            ts_ns + n as i64,
+                            id,
+                            &[rng.below(4) as u8, 0xFF, 0x61, 0x02],
+                        );
+                        if rng.below(10) == 0 {
+                            single.flags = flags::RTR;
+                            single.data.clear();
+                            single.remote_dlc = Some(8);
+                        }
+                        frames.push(single);
+                    }
+                    t += run as i64;
+                }
+                2 if frames.len() < len => {
+                    frames.push(frame(bus, ts_ns, 0x100, &[rng.below(256) as u8]))
+                }
+                _ if !open.is_empty() => {
+                    let k = rng.below(open.len());
+                    let (bus, packets) = &mut open[k];
+                    let (id, data) = packets.pop().unwrap();
+                    frames.push(frame(bus, ts_ns, id, &data));
+                    if packets.is_empty() {
+                        open.swap_remove(k);
+                    }
+                }
+                _ => {}
+            }
+        }
+        frames
+    }
+
+    #[test]
+    fn random_j1939_logs_read_the_same_in_parts_as_whole() {
+        let logs = if cfg!(debug_assertions) { 30 } else { 300 };
+        let mut transfers = 0;
+        for seed in 1..=logs {
+            let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed);
+            let frames = random_j1939_log(&mut rng);
+            let mut cuts: Vec<usize> = (0..1 + rng.below(10))
+                .map(|_| rng.below(frames.len() + 1))
+                .collect();
+            cuts.sort_unstable();
+            assert_parts_read_as_whole(&frames, &cuts);
+
+            // The last part joined with all its times shifted.
+            let mut whole = FrameStore::new();
+            push_into(&mut whole, &frames);
+            whole.shrink_to_fit();
+            transfers += whole.reassembled_frames();
+            let last = cuts[cuts.len() - 1];
+            let mut store = read_in_parts(&frames[..last], &cuts[..cuts.len() - 1]);
+            let mut early = frames[last..].to_vec();
+            for frame in &mut early {
+                frame.ts_ns -= 7_000;
+            }
+            let mut part = FrameStore::for_segment();
+            push_into(&mut part, &early);
+            let shift = TimeShift {
+                frames: early.len(),
+                ns: 7_000,
+            };
+            store
+                .append_shifted_segment(&part.encode_segment(), shift)
+                .unwrap();
+            store.shrink_to_fit();
+            assert_same(
+                &store,
+                &whole,
+                &format!("seed {seed}, cut at {cuts:?}, shifted"),
+            );
+        }
+        assert!(transfers > logs as usize, "{transfers} transfers");
     }
 
     #[test]

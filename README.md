@@ -123,11 +123,22 @@ The per-ID statistics worked out as each frame is stored (`IdIndex::observe`) we
 | candump, in time order | 272 MB/s | 419 MB/s | 352 ms | 274 ms |
 | candump, first 1,000 lines moved to the end (sorted after reading) | 149 MB/s | 240 MB/s | 575 ms | 423 ms |
 
+MF4 logs of 32 MiB or more have their records read in parts by the part workers since 2026-10-06 (see "Reading logs in parts" in [COMPATIBILITY.md](COMPATIBILITY.md)). Profiled on a 79 MB, 7M-frame MF4 from `sample-gen convert` (DZ blocks of transposed records) read in one worker, natively: about 30% of the time went to untransposing the inflated blocks, 28% to inflating them, 26% to decoding records and 15% to merging the frames and storing them. Untransposing in bands of 64 records and reading a little-endian field as one word cut the read in one worker from 2.20 s to 1.83 s natively. On Apple Silicon (12 cores, so 6 part workers):
+
+| 79 MB MF4, 7M frames | one worker | in parts | |
+|---|---|---|---|
+| Native (`demo_in_parts`, 4 threads) | 1.81 s | 0.66 s | 2.7x |
+| wasm in Node 22 (6 worker threads) | 2.52 s | 0.99 s | 2.6x |
+| Chrome 153, `openLog` (headless, development build) | 2.35 s | 0.86 s | 2.7x |
+| Chrome 153, `openCompareLog` | 2.36 s | 0.86 s | 2.7x |
+
+Most of the time left in parts is the core's merge and store (0.95 s of the 0.99 s in Node), which stays on one core so that the frames, `LogInfo` and per-ID statistics are those of a read in one worker.
+
 ## Known gaps / next steps
 
 The larger ones; every open task is in [TODO.md](TODO.md).
 
-- **Formats:** candump, Vector ASC, Vector BLF (CAN objects), PEAK TRC, ASAM MF4 (CAN bus logging) and CSV (python-can, SavvyCAN and generic header-named layouts) are supported, all through the `LogParser` interface. MF4 is buffered and read when the file ends, up to 1 GiB, because its blocks link anywhere in the file; its data is then read a block at a time and the frames merged by time, so a 112 MB, 10M-frame MF4 takes about 490 MB of wasm memory (the file plus the frames). Not read: CAN XL, LIN, FlexRay and Ethernet frames, and MF4 files of decoded signals rather than bus frames.
-- **Parallel parsing:** large candump, TRC, CSV and ASC logs are read in 2 MiB parts by up to 6 workers and joined in order, 2 to 4 times faster on a 12-core machine in Chrome and Firefox (see "Reading logs in parts" in [COMPATIBILITY.md](COMPATIBILITY.md)), Compare's log B among them. BLF logs are read in parts too, cut where their objects end, about 3.9 times faster in Chrome; MF4 is still read on one core, because its records and channel groups don't split into parts that join in file order.
+- **Formats:** candump, Vector ASC, Vector BLF (CAN objects), PEAK TRC, ASAM MF4 (CAN bus logging) and CSV (python-can, SavvyCAN and generic header-named layouts) are supported, all through the `LogParser` interface. MF4 is buffered and read when the file ends, up to 1 GiB, because its blocks link anywhere in the file; its data is then read a block at a time and the frames merged by time, so a 112 MB, 10M-frame MF4 takes about 490 MB of wasm memory (the file plus the frames) when it is read in one worker. Read in parts, the core lets the file go once the parts are planned and keeps only its variable length data (SD blocks and VLSD channel groups) until the frames are read. Not read: CAN XL, LIN, FlexRay and Ethernet frames, and MF4 files of decoded signals rather than bus frames.
+- **Parallel parsing:** large candump, TRC, CSV and ASC logs are read in 2 MiB parts by up to 6 workers and joined in order, 2 to 4 times faster on a 12-core machine in Chrome and Firefox (see "Reading logs in parts" in [COMPATIBILITY.md](COMPATIBILITY.md)), Compare's log B among them. BLF logs are read in parts too, cut where their objects end, about 3.9 times faster in Chrome. An MF4 log's records are read in parts once the file is in, and the core merges their frames by time as a read in one worker does, about 2.7 times faster in Chrome.
 - **Reverse engineering:** drag-to-define signals on the heatmap, a scrubbable time window for bit flips, and DBC export are in. Suggested signals guesses counters, checksums, flags, enums, values, 32-bit floats and multiplexed pages from bit activity; next is opendbc fingerprinting.
 - **Live capture:** not yet tried with real adapters. One bus at a time and receive only; see [TODO.md](TODO.md) for the follow-ups.

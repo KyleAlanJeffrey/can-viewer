@@ -17,6 +17,7 @@ serde_json.workspace = true
 wasm-bindgen.workspace = true
 
 [dev-dependencies]
+can-formats = { workspace = true, features = ["test-util"] }
 miniz_oxide.workspace = true
 
 [package.metadata.wasm-pack.profile.release]

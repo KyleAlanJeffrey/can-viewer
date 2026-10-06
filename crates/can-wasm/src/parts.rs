@@ -13,7 +13,7 @@
 
 use can_core::FrameStore;
 use can_formats::blf::{Early, ObjectEnds, PartEdges};
-use can_formats::{AnyParser, Format, LogParser, ParseStats, PartTimes};
+use can_formats::{mf4, AnyParser, Format, LogParser, ParseStats, PartTimes};
 use wasm_bindgen::prelude::*;
 
 use crate::{clock, js_err};
@@ -71,6 +71,25 @@ pub fn parse_segment(format: &str, head: &[u8], part: &[u8]) -> Result<Vec<u8>, 
     Format::from_name(format)
         .and_then(|format| read_part(format, head, part))
         .ok_or_else(|| js_err("this log can't be read in parts"))
+}
+
+/// Reads a part of an MF4 log's frames: `task` from `Session::part_task`, from `fetched`, the
+/// bytes of the file in `Session::part_ranges` joined. Returns the part for
+/// `Session::join_part`.
+///
+/// # Errors
+/// When the part can't be read from the bytes given.
+#[wasm_bindgen]
+pub fn read_mf4_part(task: &[u8], fetched: &[u8]) -> Result<Vec<u8>, JsError> {
+    mf4::read_part(task, fetched).ok_or_else(|| js_err("this part of the log can't be read"))
+}
+
+/// A part's ranges of the file, `[start, end, ...]`.
+pub(crate) fn part_ranges(task: &mf4::PartTask) -> Vec<f64> {
+    task.ranges
+        .iter()
+        .flat_map(|&(start, end)| [start as f64, end as f64])
+        .collect()
 }
 
 fn read_part(format: Format, head: &[u8], part: &[u8]) -> Option<Vec<u8>> {
@@ -356,6 +375,35 @@ mod tests {
             match self {
                 Log::Open => s.push_segment(part),
                 Log::B => s.compare_push_segment(part).unwrap(),
+            }
+        }
+
+        fn plan_parts(self, s: &mut Session, part_bytes: f64) -> Option<u32> {
+            match self {
+                Log::Open => s.plan_parts(part_bytes),
+                Log::B => s.compare_plan_parts(part_bytes),
+            }
+        }
+
+        /// The task of part `index` and the bytes of `log` it reads.
+        fn part_task(self, s: &Session, index: u32, log: &[u8]) -> (Vec<u8>, Vec<u8>) {
+            let (task, ranges) = match self {
+                Log::Open => (s.part_task(index), s.part_ranges(index)),
+                Log::B => (s.compare_part_task(index), s.compare_part_ranges(index)),
+            };
+            let fetched = ranges
+                .unwrap()
+                .chunks(2)
+                .flat_map(|range| &log[range[0] as usize..range[1] as usize])
+                .copied()
+                .collect();
+            (task.unwrap(), fetched)
+        }
+
+        fn join_part(self, s: &mut Session, index: u32, part: &[u8]) -> i32 {
+            match self {
+                Log::Open => s.join_part(index, part),
+                Log::B => s.compare_join_part(index, part).unwrap(),
             }
         }
 
@@ -1635,6 +1683,413 @@ mod tests {
             "{in_parts:?}"
         );
     }
+
+    /// Reads an MF4 `log` as the web app does: whole into the session, then, when the session
+    /// plans parts of `part_bytes`, each read from the bytes of the file it names, in the
+    /// order of `reads` (a part worker's order doesn't matter), and joined when the session
+    /// asks for it.
+    fn read_mf4_in_parts_as(which: Log, log: &[u8], part_bytes: f64) -> (Session, Read) {
+        let mut s = which.begin("drive.mf4", log.len());
+        which.push_chunk(&mut s, log);
+        let Some(count) = which.plan_parts(&mut s, part_bytes) else {
+            return (s, Read::Whole);
+        };
+        let parts: Vec<Vec<u8>> = (0..count)
+            .rev()
+            .map(|index| {
+                let (task, fetched) = which.part_task(&s, index, log);
+                mf4::read_part(&task, &fetched).expect("a part read")
+            })
+            .rev()
+            .collect();
+        let mut joined = vec![false; parts.len()];
+        let mut needs = 0;
+        while needs >= 0 {
+            let index = needs as usize;
+            assert!(!joined[index], "part {index} asked for twice");
+            joined[index] = true;
+            needs = which.join_part(&mut s, index as u32, &parts[index]);
+        }
+        // A file that ends at a budget of the walk asks for no parts after.
+        if needs == -2 {
+            return (s, Read::Refused);
+        }
+        (s, Read::InParts)
+    }
+
+    /// Reads an MF4 `log` whole and in parts of each of `part_bytes`, as the open log and as
+    /// log B, and checks that the parts give the same log, with the same `LogInfo`. Returns
+    /// how each read went, which is the same for both logs.
+    fn assert_mf4_parts_read_as_whole(log: &[u8], part_bytes: &[f64]) -> Vec<Read> {
+        let mut wholes = [Log::Open, Log::B].map(|which| {
+            let mut whole = which.begin("drive.mf4", log.len());
+            which.push_chunk(&mut whole, log);
+            let info = which.finish(&mut whole);
+            (which, whole, info)
+        });
+        let mut reads = Vec::new();
+        for &part_bytes in part_bytes {
+            let mut read_as = Vec::new();
+            for (which, whole, info) in &mut wholes {
+                let (mut joined, read) = read_mf4_in_parts_as(*which, log, part_bytes);
+                assert_ne!(read, Read::Refused, "{which:?} in parts of {part_bytes}");
+                let what = format!("{which:?} in parts of {part_bytes}");
+                assert_eq!(which.finish(&mut joined), *info, "{what}");
+                assert_same_store(&joined, whole, &what);
+                read_as.push(read);
+            }
+            assert_eq!(read_as[0], read_as[1], "in parts of {part_bytes}");
+            reads.push(read_as[0]);
+        }
+        reads
+    }
+
+    /// Part sizes from one record to more than the file.
+    const MF4_PART_BYTES: [f64; 9] = [1.0, 7.0, 28.0, 29.0, 100.0, 333.0, 1000.0, 4096.0, 1e9];
+
+    mod mf4_file {
+        use can_formats::mf4::test_file::*;
+
+        use super::Rng;
+
+        /// `count` data frame records and the values their data offsets point at: times in
+        /// seconds, mostly in order, on up to 3 buses, standard and extended IDs, classic and
+        /// CAN FD lengths, and perhaps a few with a data offset past the values or a time that
+        /// is not finite. With `record_id`, each record starts with it; with `vlsd`, each value
+        /// is a record of its own before it, as a VLSD channel group's are; when `fixed`, the
+        /// bytes are the record's 8 at the data offset.
+        pub fn data_records(
+            rng: &mut Rng,
+            count: usize,
+            record_id: Option<u8>,
+            vlsd: Option<u8>,
+            fixed: bool,
+        ) -> (Vec<u8>, Vec<u8>) {
+            let mut records = Vec::new();
+            let mut values = Vec::new();
+            let mut t = rng.below(1000) as f64 / 1000.0;
+            let bad = rng.chance(50);
+            for _ in 0..count {
+                t += rng.below(20) as f64 / 10_000.0;
+                if rng.chance(5) {
+                    t -= rng.below(50) as f64 / 1000.0;
+                }
+                let len = if fixed {
+                    rng.below(9)
+                } else if rng.chance(10) {
+                    [12, 16, 20, 24, 32, 48, 64, 100][rng.below(8)]
+                } else {
+                    rng.below(9)
+                };
+                let value: Vec<u8> = (0..len).map(|_| rng.below(256) as u8).collect();
+                let mut offset = if vlsd.is_some() {
+                    0
+                } else {
+                    values.len() as u64
+                };
+                if let Some(id) = vlsd {
+                    records.push(id);
+                    records.extend(variable_records(&[&value]));
+                } else if !fixed {
+                    values.extend(variable_records(&[&value]));
+                }
+                if fixed {
+                    let mut bytes = [0; 8];
+                    bytes[..len].copy_from_slice(&value);
+                    offset = u64::from_le_bytes(bytes);
+                } else if bad && rng.chance(2) {
+                    offset = 1 << 40;
+                }
+                let time = if bad && rng.chance(1) { f64::NAN } else { t };
+                let extended = rng.chance(30);
+                let id = if extended {
+                    rng.next() as u32 & 0x1FFF_FFFF
+                } else {
+                    rng.below(0x800) as u32
+                };
+                let fd = len > 8 || rng.chance(10);
+                let dlc = match len {
+                    0..=8 => len as u8,
+                    12 => 9,
+                    16 => 10,
+                    20 => 11,
+                    24 => 12,
+                    32 => 13,
+                    48 => 14,
+                    _ => 15,
+                };
+                let flags = [rng.chance(20), fd, fd && rng.chance(50), false];
+                let bus = 1 + rng.below(3) as u8;
+                if let Some(id) = record_id {
+                    records.push(id);
+                }
+                records.extend(data_record(
+                    time,
+                    bus,
+                    id,
+                    extended,
+                    (dlc, len as u8),
+                    offset,
+                    flags,
+                ));
+            }
+            (records, values)
+        }
+
+        /// `records` in data blocks cut at random bytes, perhaps compressed, perhaps in a data
+        /// list, perhaps in a header list. Returns the block a data group links to and the last
+        /// data block written.
+        pub fn data_blocks(
+            rng: &mut Rng,
+            b: &mut Builder,
+            records: &[u8],
+            record_len: u32,
+            compress: bool,
+        ) -> (u64, u64) {
+            let mut cuts: Vec<usize> = (0..rng.below(6))
+                .map(|_| rng.below(records.len() + 1))
+                .collect();
+            cuts.push(0);
+            cuts.push(records.len());
+            cuts.sort_unstable();
+            cuts.dedup();
+            let mut blocks = Vec::new();
+            for pair in cuts.windows(2) {
+                let bytes = &records[pair[0]..pair[1]];
+                let block = if compress && rng.chance(60) {
+                    let columns = if rng.chance(50) { record_len } else { 0 };
+                    b.compressed_block(b"DT", bytes, columns)
+                } else {
+                    b.data_block(bytes)
+                };
+                blocks.push(block);
+            }
+            let last = *blocks.last().unwrap_or(&0);
+            if blocks.len() == 1 && rng.chance(50) {
+                return (blocks[0], last);
+            }
+            let list = if blocks.len() > 2 && rng.chance(50) {
+                let split = 1 + rng.below(blocks.len() - 1);
+                let second = b.data_list(&blocks[split..]);
+                let first = b.data_list(&blocks[..split]);
+                b.set_link(first, 0, second);
+                first
+            } else {
+                b.data_list(&blocks)
+            };
+            if rng.chance(30) {
+                return (b.block(b"##HL", &[list], &[0; 8]), last);
+            }
+            (list, last)
+        }
+
+        /// A sorted data group of data frames, their bytes in an SD block or fixed in the
+        /// record. Returns it and its records.
+        pub fn sorted(rng: &mut Rng, b: &mut Builder, count: usize) -> (u64, Vec<u8>) {
+            let fixed = rng.chance(30);
+            let (records, values) = data_records(rng, count, None, None, fixed);
+            let mut members = data_frame_members(0);
+            if rng.chance(30) {
+                // The ID read from 3 bits into its first byte.
+                members[1] = Member {
+                    bit_offset: 3,
+                    ..member("CAN_DataFrame.ID", UNSIGNED, 9, 29)
+                };
+            }
+            if fixed {
+                members[5].cn_type = 0;
+            } else {
+                members[5].data = b.block(b"##SD", &[], &values);
+            }
+            let structure = b.structure("CAN_DataFrame", &members);
+            let time = b.channel(&master("t", FLOAT, 0, 64), structure, 0);
+            let cg = b.channel_group(0, 0, DATA_RECORD_LEN, time, 0);
+            (b.data_group(0, cg, 0), records)
+        }
+
+        /// An unsorted data group of data frames (record ID 1), remote frames with a virtual
+        /// time master (2) and error frames (3), the bytes of the data and error frames in a
+        /// VLSD channel group (9). Returns it and its records.
+        pub fn unsorted(rng: &mut Rng, b: &mut Builder, count: usize) -> (u64, Vec<u8>) {
+            let ms = b.linear(0.0, 0.001);
+            let vlsd_cg = b.channel_group(9, VLSD_FLAGS, 0, 0, 0);
+            let error_members = vec![
+                Member {
+                    cn_type: 1,
+                    data: vlsd_cg,
+                    ..member("CAN_ErrorFrame.DataBytes", BYTES, 4, 64)
+                },
+                member("CAN_ErrorFrame.DataLength", UNSIGNED, 12, 8),
+            ];
+            let error_structure = b.structure("CAN_ErrorFrame", &error_members);
+            let error_time = b.channel(&master("t", FLOAT, 0, 32), error_structure, 0);
+            let error_cg = b.channel_group(3, 0, 13, error_time, vlsd_cg);
+            let remote_members = vec![
+                member("CAN_RemoteFrame.ID", UNSIGNED, 0, 16),
+                member("CAN_RemoteFrame.DLC", UNSIGNED, 2, 8),
+            ];
+            let remote_structure = b.structure("CAN_RemoteFrame", &remote_members);
+            let remote_time = b.channel(
+                &Member {
+                    cn_type: 3,
+                    conversion: ms,
+                    ..member("t", UNSIGNED, 0, 0)
+                },
+                remote_structure,
+                0,
+            );
+            let remote_cg = b.channel_group(2, 0, 3, remote_time, error_cg);
+            let data_structure = b.structure("CAN_DataFrame", &data_frame_members(vlsd_cg));
+            let data_time = b.channel(&master("t", FLOAT, 0, 64), data_structure, 0);
+            let data_cg = b.channel_group(1, 0, DATA_RECORD_LEN, data_time, remote_cg);
+
+            let mut records = Vec::new();
+            let mut remote_count = 0;
+            for _ in 0..count {
+                match rng.below(10) {
+                    0 => {
+                        records.push(2);
+                        records.extend_from_slice(&(rng.below(0x800) as u16).to_le_bytes());
+                        records.push(rng.below(9) as u8);
+                        remote_count += 1;
+                    }
+                    1 => {
+                        let len = rng.below(20);
+                        let value: Vec<u8> = (0..len).map(|_| rng.below(256) as u8).collect();
+                        records.push(9);
+                        records.extend(variable_records(&[&value]));
+                        records.push(3);
+                        records.extend_from_slice(&(remote_count as f32 / 900.0).to_le_bytes());
+                        records.extend_from_slice(&0u64.to_le_bytes());
+                        records.push(len.min(8) as u8);
+                    }
+                    _ => {
+                        let (record, _) = data_records(rng, 1, Some(1), Some(9), false);
+                        records.extend(record);
+                    }
+                }
+            }
+            (b.data_group(1, data_cg, 0), records)
+        }
+
+        /// A random MF4 file of up to 3 data groups, sorted and unsorted, with its data in
+        /// blocks as `data_blocks` writes them; perhaps an unfinalized file whose last data
+        /// block runs to the end of the file, perhaps with zeros after it.
+        pub fn random(rng: &mut Rng) -> Vec<u8> {
+            let mut b = Builder::new();
+            let hd = b.header(rng.below(1 << 20) as u64 * 1_000_000_000);
+            let mut groups: Vec<(u64, Vec<u8>, u32, bool)> = Vec::new();
+            for _ in 0..1 + rng.below(3) {
+                let count = rng.below(400);
+                let (dg, records, record_len, sorted) = if rng.chance(50) {
+                    let (dg, records) = sorted(rng, &mut b, count);
+                    (dg, records, DATA_RECORD_LEN, true)
+                } else {
+                    let (dg, records) = unsorted(rng, &mut b, count);
+                    (dg, records, 0, false)
+                };
+                if let Some(&(previous, ..)) = groups.last() {
+                    b.set_link(previous, 0, dg);
+                } else {
+                    b.set_link(hd, 0, dg);
+                }
+                groups.push((dg, records, record_len, sorted));
+            }
+            let mut last = 0;
+            for (dg, records, record_len, sorted) in &groups {
+                // An unsorted group with compressed blocks is read whole.
+                let compress = rng.chance(if *sorted { 60 } else { 15 });
+                let (data, last_block) = data_blocks(rng, &mut b, records, *record_len, compress);
+                b.set_link(*dg, 2, data);
+                last = last_block;
+            }
+            if rng.chance(25) && &b.bytes[last as usize..last as usize + 4] == b"##DT" {
+                let mut flags = 0x04;
+                if rng.chance(30) {
+                    flags |= 0x40;
+                }
+                unfinalize(&mut b, flags, 0);
+                set_length(&mut b, last, 24);
+                if rng.chance(50) {
+                    b.bytes.resize(b.bytes.len() + rng.below(200), 0);
+                }
+            }
+            b.bytes
+        }
+    }
+
+    #[test]
+    fn an_mf4_file_reads_the_same_in_parts_as_whole() {
+        // Data groups sorted and unsorted, data, remote and error frames, SD, VLSD and fixed
+        // bytes, data and header lists, compressed blocks, an open last block.
+        let mut in_parts = 0;
+        for seed in [1, 2, 3, 5, 8] {
+            let log = mf4_file::random(&mut Rng(0xA076_1D64_78BD_642F ^ seed));
+            let reads = assert_mf4_parts_read_as_whole(&log, &MF4_PART_BYTES);
+            in_parts += reads.iter().filter(|read| **read == Read::InParts).count();
+        }
+        assert!(in_parts > 10, "{in_parts}");
+    }
+
+    #[test]
+    fn mf4_files_at_the_file_size_budgets_read_the_same_in_parts() {
+        use can_formats::mf4::test_file::*;
+
+        // Records of nothing but a record ID, from a block the data list repeats, give more
+        // frames than the file has bytes.
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let dt = b.data_block(&[1; 3000]);
+        let dl = b.data_list(&[dt; 100]);
+        let structure = b.structure("CAN_DataFrame", &[]);
+        let cg = b.channel_group(1, 0, 0, structure, 0);
+        let dg = b.data_group(1, cg, dl);
+        b.set_link(hd, 0, dg);
+        let mut whole = read_whole("drive.mf4", &b.bytes);
+        let info: serde_json::Value = serde_json::from_str(&whole.finish()).unwrap();
+        assert_eq!(
+            info["firstRejection"][1],
+            "more frames than the file's size allows"
+        );
+        let reads = assert_mf4_parts_read_as_whole(&b.bytes, &[100.0, 997.0, 5000.0]);
+        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+
+        // A sorted group whose data list repeats a compressed block, read in parts that start
+        // only where blocks do.
+        let mut rng = Rng(7);
+        let mut b = Builder::new();
+        let hd = b.header(0);
+        let (dg, records) = mf4_file::sorted(&mut rng, &mut b, 30);
+        let dz = b.compressed_block(b"DT", &records, DATA_RECORD_LEN);
+        let dl = b.data_list(&vec![dz; 2000]);
+        b.set_link(dg, 2, dl);
+        b.set_link(hd, 0, dg);
+        let mut whole = read_whole("drive.mf4", &b.bytes);
+        let info: serde_json::Value = serde_json::from_str(&whole.finish()).unwrap();
+        assert_eq!(
+            info["firstRejection"][1],
+            "more frames than the file's size allows"
+        );
+        let reads = assert_mf4_parts_read_as_whole(&b.bytes, &[1.0, 5000.0, 100_000.0]);
+        assert!(reads.iter().all(|read| *read == Read::InParts), "{reads:?}");
+    }
+
+    #[test]
+    fn random_mf4_files_read_the_same_in_parts_as_whole() {
+        let iterations = if cfg!(debug_assertions) { 8 } else { 200 };
+        let mut in_parts = 0;
+        for seed in 1..=iterations {
+            let mut rng = Rng(0x5851_F42D_4C95_7F2D ^ seed);
+            let log = mf4_file::random(&mut rng);
+            let mut part_bytes: Vec<f64> =
+                (0..4).map(|_| (1 + rng.below(log.len())) as f64).collect();
+            part_bytes.push(1.0 + rng.below(64) as f64);
+            let reads = assert_mf4_parts_read_as_whole(&log, &part_bytes);
+            in_parts += reads.iter().filter(|read| **read == Read::InParts).count();
+        }
+        // Reading every file whole would pass the checks above.
+        assert!(in_parts > iterations as usize * 2, "{in_parts}");
+    }
 }
 
 #[cfg(test)]
@@ -1649,7 +2104,7 @@ mod demo {
 
     const CHUNK: usize = 8 << 20;
 
-    /// The demo log, or the log `DEMO_LOG` names (a BLF file too), read whole and then in parts
+    /// The demo log, or the log `DEMO_LOG` names (a BLF or MF4 file too), read whole and then in parts
     /// on threads as the web app's workers read it, natively. Needs the demo log: `pnpm --dir
     /// web demo`, then `cargo test -p can-wasm --release -- --ignored --nocapture demo_in_parts`.
     #[test]
@@ -1689,11 +2144,57 @@ mod demo {
     /// Parts of a BLF file, cut where its objects end, as the web app cuts them.
     const BLF_PART: usize = 2 << 20;
 
+    /// Parts of an MF4 file's data, as the web app plans them.
+    const MF4_PART: f64 = (4 << 20) as f64;
+
     /// None for a log that isn't read in parts.
     fn read_on_threads(name: &str, log: &[u8], workers: usize) -> Option<Session> {
         let mut s = Session::new();
         s.set_file_name(name);
         let first = &log[..CHUNK.min(log.len())];
+        if Format::detect(name, first) == Format::Mf4 {
+            log.chunks(CHUNK).for_each(|chunk| s.push_chunk(chunk));
+            let count = s.plan_parts(MF4_PART)? as usize;
+            let tasks: Vec<(Vec<u8>, Vec<u8>)> = (0..count as u32)
+                .map(|index| {
+                    let fetched = s
+                        .part_ranges(index)
+                        .unwrap()
+                        .chunks(2)
+                        .flat_map(|range| &log[range[0] as usize..range[1] as usize])
+                        .copied()
+                        .collect();
+                    (s.part_task(index).unwrap(), fetched)
+                })
+                .collect();
+            let next = AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                let (sender, results) = mpsc::channel();
+                for _ in 0..workers {
+                    let (sender, next, tasks) = (sender.clone(), &next, &tasks);
+                    scope.spawn(move || loop {
+                        let k = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((task, fetched)) = tasks.get(k) else {
+                            return;
+                        };
+                        sender
+                            .send((k, mf4::read_part(task, fetched).unwrap()))
+                            .unwrap();
+                    });
+                }
+                drop(sender);
+                let mut waiting = BTreeMap::new();
+                let mut needs = 0;
+                for (k, part) in results {
+                    waiting.insert(k as i32, part);
+                    while let Some(part) = waiting.remove(&needs) {
+                        needs = s.join_part(needs as u32, &part);
+                        assert!(needs != -2);
+                    }
+                }
+            });
+            return Some(s);
+        }
         let cuts = s.object_cuts(first, BLF_PART as f64);
         let exact = cuts.is_some();
         let (cut, parts): (usize, Vec<(usize, usize)>) = match cuts {

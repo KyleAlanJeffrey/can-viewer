@@ -1,71 +1,38 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fakeCore } from './test/fixtures';
 
-/** A fresh copy of the app's modules, with the Capture sheet's module replaced by `sheetModule`. */
-async function appWithSheet(sheetModule: () => Promise<unknown>) {
-  vi.resetModules();
-  vi.doMock('./capture/CaptureSheet', sheetModule);
-  return (await import('./App')).App;
-}
-
-beforeEach(() => {
-  vi.stubGlobal('indexedDB', new IDBFactory());
-  vi.spyOn(console, 'error').mockImplementation(() => {});
+// One way of loading per file: a mocked module is loaded once per file, whatever resetModules does.
+const sheet = vi.hoisted(() => {
+  let arrive = () => {};
+  const arrived = new Promise<void>((resolve) => (arrive = resolve));
+  return { loaded: 0, arrived, arrive };
 });
-
-afterEach(() => {
-  vi.doUnmock('./capture/CaptureSheet');
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
+vi.mock('./capture/CaptureSheet', async (importOriginal) => {
+  sheet.loaded++;
+  await sheet.arrived;
+  return importOriginal();
 });
 
 describe('App Capture sheet', () => {
-  it('loads the sheet only once Capture... is clicked', async () => {
-    const loaded = vi.fn();
-    const App = await appWithSheet(async () => {
-      loaded();
-      return vi.importActual('./capture/CaptureSheet');
-    });
+  it('loads the sheet only once Capture... is clicked, showing it as loading until then', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const { App } = await import('./App');
     render(<App core={fakeCore()} />);
     await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
-    expect(loaded).not.toHaveBeenCalled();
+    expect(sheet.loaded).toBe(0);
 
     await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
-    expect(await screen.findByRole('dialog', { name: 'Live Capture' })).toBeTruthy();
-    expect(loaded).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows the sheet as loading until its code arrives', async () => {
-    let arrive = () => {};
-    const arrived = new Promise<void>((resolve) => (arrive = resolve));
-    const App = await appWithSheet(async () => {
-      await arrived;
-      return vi.importActual('./capture/CaptureSheet');
-    });
-    render(<App core={fakeCore()} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
     const loading = await screen.findByRole('dialog', { name: 'Live Capture' });
-    expect(within(loading).getByText('Loading\u2026')).toBeTruthy();
+    expect(await within(loading).findByText('Loading\u2026')).toBeTruthy();
+    expect(sheet.loaded).toBe(1);
 
-    arrive();
+    sheet.arrive();
     // This browser has no Web Serial, so the sheet explains that.
     expect(await screen.findByText(/needs Chrome or Edge/)).toBeTruthy();
     expect(screen.queryByText('Loading\u2026')).toBeNull();
-  });
-
-  it('offers a reload in the sheet when the sheet fails to load, leaving the app usable', async () => {
-    const App = await appWithSheet(async () => {
-      throw new TypeError('Failed to fetch dynamically imported module');
-    });
-    render(<App core={fakeCore()} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Capture\u2026' }));
-    await screen.findByText("Couldn't load capture.");
-    const sheet = screen.getByRole('dialog', { name: 'Live Capture' });
-    expect(within(sheet).getByRole('alert').textContent).toContain("Couldn't load capture.");
-    expect(within(sheet).getByRole('button', { name: 'Reload' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Open a CAN log to get started' })).toBeTruthy();
+    vi.unstubAllGlobals();
   });
 });

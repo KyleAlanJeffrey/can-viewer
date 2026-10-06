@@ -327,17 +327,18 @@ describe('App live capture', () => {
     expect(leave()).toBe(false);
 
     await startCapture(port);
-    expect(leave()).toBe(true);
+    // The listener is added by an effect, which can run a little after the button shows.
+    await waitFor(() => expect(leave()).toBe(true));
     port.send('t1230\r');
     await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
     await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
     await screen.findByText(/Not saved/);
-    expect(leave()).toBe(true);
+    await waitFor(() => expect(leave()).toBe(true));
 
     stubSavePicker();
     await userEvent.click(screen.getByRole('button', { name: 'Save Capture\u2026' }));
     await waitFor(() => expect(screen.queryByText(/Not saved/)).toBeNull());
-    expect(leave()).toBe(false);
+    await waitFor(() => expect(leave()).toBe(false));
   });
 
   it('asks before recording from a CANable, which confirms nothing, and never claims listen-only for it', async () => {

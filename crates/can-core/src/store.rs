@@ -3,6 +3,7 @@ use std::ops::Range;
 
 use rustc_hash::FxHashMap;
 
+use crate::chunked::{Column, Payloads};
 use crate::{flags, tp, FrameKind, FrameRef, FrameSink, EXT_FLAG};
 
 /// Identifies one arbitration ID on one channel: `(channel << 32) | id`.
@@ -153,16 +154,17 @@ fn bucket_of(ts_ns: i64, t0_ns: i64, t1_ns: i64, buckets: usize) -> usize {
 /// protocol transfer completed in it ([`tp`]).
 ///
 /// Classic frames cost 26 bytes each on wasm32 (plus 4 in the per-ID index), so ten
-/// million frames fit comfortably under the 4 GB wasm32 address space.
+/// million frames fit comfortably under the 4 GB wasm32 address space. The columns grow
+/// 4 MiB at a time, so they hold little more than the frames.
 #[derive(Debug, Default)]
 pub struct FrameStore {
-    ts_ns: Vec<i64>,
-    id: Vec<u32>,
-    channel: Vec<u8>,
-    flags: Vec<u8>,
-    /// Where each frame's payload starts in `data`; it ends where the next one starts.
-    data_start: Vec<usize>,
-    data: Vec<u8>,
+    ts_ns: Column<i64>,
+    id: Column<u32>,
+    channel: Column<u8>,
+    flags: Column<u8>,
+    /// Where each frame's payload is in `data`.
+    data_start: Column<usize>,
+    data: Payloads,
     channels: Vec<String>,
     index: IdIndex,
     error_frames: usize,
@@ -233,12 +235,12 @@ fn for_each_row(
 /// `column` in the order [`for_each_row`] visits, a transfer taking `reassembled` of the value
 /// of the frame that completed it.
 fn reorder<T: Copy>(
-    column: &[T],
+    column: &Column<T>,
     order: &[u32],
     transfers: &[(usize, tp::Transfer)],
     reassembled: impl Fn(T, &tp::Transfer) -> T,
-) -> Vec<T> {
-    let mut reordered = Vec::with_capacity(order.len() + transfers.len());
+) -> Column<T> {
+    let mut reordered = Column::default();
     for_each_row(order, transfers, |row| {
         reordered.push(match row {
             Row::Logged(i) => column[i],
@@ -254,18 +256,16 @@ impl FrameStore {
         Self::default()
     }
 
-    /// Pre-allocate for roughly `frames` frames carrying `payload_bytes` of data in total.
+    /// Pre-allocate for roughly `frames` more frames carrying `payload_bytes` of data in
+    /// total, as far as memory allows. The columns grow without copying, so this is only
+    /// worth it to know the room is there: see [`FrameStore::try_reserve`].
     pub fn reserve(&mut self, frames: usize, payload_bytes: usize) {
-        self.ts_ns.reserve(frames);
-        self.id.reserve(frames);
-        self.channel.reserve(frames);
-        self.flags.reserve(frames);
-        self.data_start.reserve(frames);
-        self.data.reserve(payload_bytes);
+        let _ = self.try_reserve(frames, payload_bytes);
     }
 
-    /// [`FrameStore::reserve`], but failing rather than aborting when memory runs out. The
-    /// per-ID index still grows as frames are pushed.
+    /// [`FrameStore::reserve`], but failing when memory runs out. The per-ID index still
+    /// grows as frames are pushed. Room left unused stays until
+    /// [`FrameStore::shrink_to_fit`].
     ///
     /// # Errors
     /// When a column can't grow; the frames already stored are untouched.
@@ -282,6 +282,20 @@ impl FrameStore {
         self.data.try_reserve(payload_bytes)
     }
 
+    /// Gives back the room reserved for frames that never came, and trims each ID's frame
+    /// list to its length. Call it once the log is read.
+    pub fn shrink_to_fit(&mut self) {
+        self.ts_ns.release_spare();
+        self.id.release_spare();
+        self.channel.release_spare();
+        self.flags.release_spare();
+        self.data_start.release_spare();
+        self.data.release_spare();
+        for stats in &mut self.index.ids {
+            stats.frames.shrink_to_fit();
+        }
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.ts_ns.len()
@@ -289,7 +303,7 @@ impl FrameStore {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.ts_ns.is_empty()
+        self.ts_ns.len() == 0
     }
 
     /// # Panics
@@ -303,7 +317,7 @@ impl FrameStore {
             id: self.id[index],
             flags,
             data: if flags & flags::RTR == 0 {
-                &self.data[self.data_range(index)]
+                self.payload(index)
             } else {
                 &[]
             },
@@ -316,28 +330,26 @@ impl FrameStore {
         if self.flags[index] & flags::RTR == 0 {
             return None;
         }
-        let range = self.data_range(index);
-        (range.len() == 1).then(|| self.data[range.start])
+        match self.payload(index) {
+            &[dlc] => Some(dlc),
+            _ => None,
+        }
     }
 
-    fn data_range(&self, index: usize) -> Range<usize> {
-        let start = self.data_start[index];
-        let end = self
-            .data_start
-            .get(index + 1)
-            .copied()
-            .unwrap_or(self.data.len());
-        start..end
+    /// The bytes stored for frame `index`: its payload, or a remote frame's DLC.
+    fn payload(&self, index: usize) -> &[u8] {
+        self.data
+            .get(self.data_start[index], self.data_start.get(index + 1))
     }
 
     #[must_use]
     pub fn first_ts_ns(&self) -> Option<i64> {
-        self.ts_ns.first().copied()
+        self.ts_ns.first()
     }
 
     #[must_use]
     pub fn last_ts_ns(&self) -> Option<i64> {
-        self.ts_ns.last().copied()
+        self.ts_ns.last()
     }
 
     #[must_use]
@@ -396,7 +408,7 @@ impl FrameStore {
     /// [`FrameStore::sort_by_time`] once the log is read.
     #[must_use]
     pub fn first_at_or_after(&self, ts_ns: i64) -> usize {
-        self.ts_ns.partition_point(|&t| t < ts_ns)
+        self.ts_ns.partition_point(|t| t < ts_ns)
     }
 
     /// Position in `stats.frames` of the first frame at or after `ts_ns`, or the number of
@@ -499,7 +511,7 @@ impl FrameStore {
         }
         let mut bits = vec![0u64; buckets];
         let start = self.first_at_or_after(t0_ns);
-        let end = self.ts_ns.partition_point(|&t| t <= t1_ns).max(start);
+        let end = self.ts_ns.partition_point(|t| t <= t1_ns).max(start);
         for i in start..end {
             let ts = self.ts_ns[i];
             if self.channel[i] != channel
@@ -508,7 +520,7 @@ impl FrameStore {
             {
                 continue;
             }
-            let len = self.data_range(i).len();
+            let len = self.payload(i).len();
             bits[bucket_of(ts, t0_ns, t1_ns, buckets)] +=
                 u64::from(frame_bits(self.id[i], self.flags[i], len));
         }
@@ -522,12 +534,12 @@ impl FrameStore {
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
         use std::mem::size_of;
-        self.ts_ns.capacity() * size_of::<i64>()
-            + self.id.capacity() * size_of::<u32>()
-            + self.channel.capacity()
-            + self.flags.capacity()
-            + self.data_start.capacity() * size_of::<usize>()
-            + self.data.capacity()
+        self.ts_ns.heap_bytes()
+            + self.id.heap_bytes()
+            + self.channel.heap_bytes()
+            + self.flags.heap_bytes()
+            + self.data_start.heap_bytes()
+            + self.data.heap_bytes()
             + self
                 .index
                 .ids
@@ -544,33 +556,24 @@ impl FrameStore {
     /// many were dropped. For a rolling live capture: the per-ID statistics are rebuilt from the
     /// frames kept, so this costs time in proportion to them, not to the frames dropped.
     pub fn drop_before(&mut self, ts_ns: i64) -> usize {
-        let count = self.ts_ns.iter().take_while(|&&t| t < ts_ns).count();
+        let count = self.ts_ns.iter().take_while(|&t| t < ts_ns).count();
         if count == 0 {
             return 0;
         }
-        let dropped_flags = &self.flags[..count];
-        self.error_frames -= dropped_flags
-            .iter()
-            .filter(|&&f| f & flags::ERROR != 0)
-            .count();
-        self.reassembled_frames -= dropped_flags
-            .iter()
-            .filter(|&&f| f & flags::REASSEMBLED != 0)
-            .count();
-        let data_dropped = self
-            .data_start
-            .get(count)
-            .copied()
-            .unwrap_or(self.data.len());
-        self.data.drain(..data_dropped);
-        self.data_start.drain(..count);
-        for start in &mut self.data_start {
-            *start -= data_dropped;
+        for f in self.flags.iter().take(count) {
+            self.error_frames -= usize::from(f & flags::ERROR != 0);
+            self.reassembled_frames -= usize::from(f & flags::REASSEMBLED != 0);
         }
-        self.ts_ns.drain(..count);
-        self.id.drain(..count);
-        self.channel.drain(..count);
-        self.flags.drain(..count);
+        let first_kept = self.data_start.get(count).unwrap_or(self.data.end());
+        let moved = self.data.drop_chunks_before(first_kept);
+        self.data_start.drop_front(count);
+        if moved > 0 {
+            self.data_start.for_each_mut(|start| *start -= moved);
+        }
+        self.ts_ns.drop_front(count);
+        self.id.drop_front(count);
+        self.channel.drop_front(count);
+        self.flags.drop_front(count);
         self.trimmed = true;
         // Freed first to make room.
         self.index = IdIndex::default();
@@ -588,9 +591,10 @@ impl FrameStore {
     /// A store that dropped its oldest frames keeps the transfers it reassembled instead, sorted
     /// with the frames, since the packets that began some of them may be gone.
     ///
-    /// The columns are rebuilt in turn, so beyond the store this needs 4 bytes per frame, the
-    /// J1939 transfers, and the data with its offsets or one other column at a time. A store
-    /// already in order costs nothing.
+    /// The frames are sorted by time with 16 bytes per frame, then the columns are rebuilt in
+    /// turn, so beyond the store this needs 4 bytes per frame, the J1939 transfers, and the
+    /// data with its offsets or one other column at a time. A store already in order costs
+    /// nothing.
     pub fn sort_by_time(&mut self) {
         if !self.out_of_order {
             return;
@@ -609,13 +613,23 @@ impl FrameStore {
     /// The largest allocations are tried first and leave the store as it was if they fail;
     /// the columns rebuilt after them need less than the data they free.
     fn sort_columns_by_time(&mut self) -> Result<(), TryReserveError> {
-        let mut order: Vec<u32> = Vec::new();
-        order.try_reserve_exact(self.len())?;
-        order.extend(
-            (0..self.len() as u32)
-                .filter(|&i| self.trimmed || self.flags[i as usize] & flags::REASSEMBLED == 0),
+        // Sorted with their times beside them: looking each up in its chunk as the sort
+        // compares them took twice as long.
+        let mut timed: Vec<(i64, u32)> = Vec::new();
+        timed.try_reserve_exact(self.len())?;
+        timed.extend(
+            self.ts_ns
+                .iter()
+                .zip(self.flags.iter())
+                .zip(0..)
+                .filter(|&((_, f), _)| self.trimmed || f & flags::REASSEMBLED == 0)
+                .map(|((ts, _), i)| (ts, i)),
         );
-        order.sort_unstable_by_key(|&i| (self.ts_ns[i as usize], i));
+        timed.sort_unstable();
+        let mut order: Vec<u32> = Vec::new();
+        order.try_reserve_exact(timed.len())?;
+        order.extend(timed.iter().map(|&(_, i)| i));
+        drop(timed);
 
         let mut reassembler = tp::Reassembler::default();
         let mut transfers = Vec::new();
@@ -631,26 +645,26 @@ impl FrameStore {
         let mut data_len = 0;
         for_each_row(&order, &transfers, |row| {
             data_len += match row {
-                Row::Logged(i) => self.data_range(i).len(),
+                Row::Logged(i) => self.payload(i).len(),
                 Row::Reassembled(_, transfer) => transfer.data.len(),
             }
         });
-        let mut data = Vec::new();
-        data.try_reserve_exact(data_len)?;
-        let mut data_start = Vec::new();
-        data_start.try_reserve_exact(rows)?;
+        let mut data = Payloads::default();
+        data.try_reserve(data_len)?;
+        let mut data_start = Column::default();
+        data_start.try_reserve(rows)?;
         self.out_of_order = false;
         self.reassembler = reassembler;
         if !self.trimmed {
             self.reassembled_frames = transfers.len();
         }
         for_each_row(&order, &transfers, |row| {
-            data_start.push(data.len());
-            match row {
-                Row::Logged(i) => data.extend_from_slice(&self.data[self.data_range(i)]),
-                Row::Reassembled(_, transfer) => data.extend_from_slice(&transfer.data),
-            }
+            data_start.push(data.push(match row {
+                Row::Logged(i) => self.payload(i),
+                Row::Reassembled(_, transfer) => &transfer.data,
+            }));
         });
+        data.release_spare();
         self.data = data;
         self.data_start = data_start;
 
@@ -708,7 +722,7 @@ impl FrameStore {
     /// A remote frame keeps no payload; its data column holds the DLC it asked for, if known,
     /// as one byte, which [`FrameStore::frame`] leaves out.
     fn store(&mut self, frame: &FrameRef<'_>, remote_dlc: Option<u8>) {
-        if self.ts_ns.last().is_some_and(|&last| frame.ts_ns < last) {
+        if self.ts_ns.last().is_some_and(|last| frame.ts_ns < last) {
             self.out_of_order = true;
         }
         let remote = frame.flags & flags::RTR != 0;
@@ -728,11 +742,11 @@ impl FrameStore {
         self.id.push(frame.id);
         self.channel.push(frame.channel);
         self.flags.push(frame.flags);
-        self.data_start.push(self.data.len());
-        match remote_dlc.filter(|_| remote) {
-            Some(dlc) => self.data.push(dlc),
-            None => self.data.extend_from_slice(payload),
-        }
+        let stored = match remote_dlc.filter(|_| remote) {
+            Some(dlc) => &[dlc][..],
+            None => payload,
+        };
+        self.data_start.push(self.data.push(stored));
     }
 }
 
@@ -1234,6 +1248,29 @@ mod tests {
         assert_eq!(stats.bit_flips[..2], [1, 1]);
         assert_eq!(stats.bit_flips.iter().sum::<u32>(), 2);
         assert_eq!(s.previous_of_same_kind(3), Some(0));
+    }
+
+    #[test]
+    fn a_store_spanning_chunks_sorts_and_drops_its_oldest_frames() {
+        let frame = |t: i64| (t, 0x100 + (t % 3) as u32, vec![t as u8; (t % 17) as usize]);
+        let expected: Vec<(i64, u32, Vec<u8>)> = (0..600_000).map(frame).collect();
+        let mut s = FrameStore::new();
+        // Each pair of frames comes swapped, so the store needs sorting.
+        for pair in expected.chunks(2) {
+            for (ts_ns, id, data) in pair.iter().rev() {
+                push(&mut s, *ts_ns, *id, data);
+            }
+        }
+        s.sort_by_time();
+        assert!(frames_of(&s) == expected);
+        assert_eq!(s.id_stats(id_key(0, 0x101)).unwrap().frames.len(), 200_000);
+
+        assert_eq!(s.drop_before(550_000), 550_000);
+        assert!(frames_of(&s) == expected[550_000..]);
+        let (ts_ns, id, data) = frame(600_000);
+        push(&mut s, ts_ns, id, &data);
+        assert_eq!(s.frame(50_000).data, &data[..]);
+        assert_eq!(s.id_stats(id_key(0, 0x100)).unwrap().frames[0], 2);
     }
 
     #[test]

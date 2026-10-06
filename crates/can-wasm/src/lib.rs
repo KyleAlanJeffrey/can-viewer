@@ -46,11 +46,11 @@ fn bytes_per_frame(format: Format) -> f64 {
     }
 }
 
-/// The store is pre-sized for at most this many frames, about 520 MB on wasm32; a log with
-/// more grows it as it is read.
+/// Log B's store is pre-sized for at most this many frames, about 520 MB on wasm32; a log
+/// with more grows it as it is read.
 const MAX_RESERVED_FRAMES: usize = 20_000_000;
 
-/// Frames to pre-size the store for, from the file's size.
+/// Frames to pre-size log B's store for, from the file's size.
 fn reserved_frames(format: Format, total_bytes: f64) -> usize {
     ((total_bytes / bytes_per_frame(format)) as usize).min(MAX_RESERVED_FRAMES)
 }
@@ -295,13 +295,18 @@ impl LogInput {
             return;
         }
         store.sort_by_time();
+        store.shrink_to_fit();
     }
 
+    /// The open log's store grows as it is read. Log B's is reserved from the file's size, in
+    /// a way that can fail, so that a log B the memory can't hold is refused and the open log
+    /// stays.
     fn reserve(&mut self, format: Format, store: &mut FrameStore) {
-        let frames = reserved_frames(format, self.total_bytes);
         if self.limit.is_none() {
-            store.reserve(frames, frames * 8);
-        } else if store.try_reserve(frames, frames * 8).is_err() {
+            return;
+        }
+        let frames = reserved_frames(format, self.total_bytes);
+        if store.try_reserve(frames, frames * 8).is_err() {
             self.refused = true;
         }
     }
@@ -647,6 +652,7 @@ impl Session {
             .ok_or_else(|| js_err("no capture is running"))?;
         capture.finished = true;
         self.store.sort_by_time();
+        self.store.shrink_to_fit();
         self.count = None;
         self.preview = None;
         // Sorting may move frames, so the rows are found again; without the memory, the filter
@@ -1314,7 +1320,7 @@ mod tests {
 ";
 
     #[test]
-    fn the_store_is_sized_from_the_file_size_up_to_a_cap() {
+    fn log_b_is_sized_from_the_file_size_up_to_a_cap() {
         assert_eq!(reserved_frames(Format::Candump, 4000.0), 100);
         assert_eq!(
             reserved_frames(Format::Blf, 2.0 * (1u64 << 30) as f64),
@@ -1323,25 +1329,34 @@ mod tests {
 
         let mut head = b"MDF     4.10    ".to_vec();
         head.resize(SNIFF_BYTES, 0);
-        let mf4_heap = |total_bytes: f64| {
-            let mut s = Session::new();
-            s.set_file_name("drive.mf4");
-            s.reserve_for_bytes(total_bytes);
-            s.push_chunk(&head);
-            let before_finish = s.store.heap_bytes();
-            s.finish();
-            (before_finish, s.store.heap_bytes())
+        let mf4_heap = |total_bytes: f64, limit: Option<usize>| {
+            let mut input = LogInput {
+                file_name: "drive.mf4".to_owned(),
+                total_bytes,
+                limit,
+                ..LogInput::default()
+            };
+            let mut store = FrameStore::new();
+            input.push(&head, &mut store);
+            let before_finish = store.heap_bytes();
+            input.finish(&mut store);
+            (before_finish, store.heap_bytes())
         };
-        let (before_finish, after_finish) = mf4_heap(1100.0);
+        let (before_finish, after_finish) = mf4_heap(1100.0, Some(1 << 30));
         assert_eq!(
             before_finish, 0,
             "an MF4 store is sized after the file is buffered"
         );
         assert!(after_finish > 0);
         assert_eq!(
-            mf4_heap(2.0 * (1u64 << 30) as f64),
+            mf4_heap(2.0 * (1u64 << 30) as f64, Some(1 << 30)),
             (0, 0),
             "an MF4 file too large to read sizes no store"
+        );
+        assert_eq!(
+            mf4_heap(1100.0, None),
+            (0, 0),
+            "the open log's store grows as it is read"
         );
     }
 

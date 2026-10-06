@@ -329,7 +329,7 @@ describe('SlcanAdapter', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       const refusal = await starting;
       expect(isListenOnlyUnconfirmed(refusal)).toBe(true);
-      expect((refusal as Error).message).toBe("This adapter was sent listen-only mode (L) but didn't answer in time, so it may still acknowledge frames on the bus.");
+      expect((refusal as Error).message).toBe("This adapter was sent listen-only mode (L) but didn't confirm it in time, so it may still acknowledge frames on the bus.");
       expect(port.commands).toEqual(['C', 'S6', 'Z1', 'V', 'L', 'C', 'Z0']);
 
       port.commands.length = 0;
@@ -490,14 +490,14 @@ describe('SlcanAdapter', () => {
     await adapter.stop();
   });
 
-  it('takes only a bare CR as confirming listen-only, not an echo of the command', async () => {
+  it('takes only a bare CR as confirming listen-only, treating an echo of the command as no answer', async () => {
     const port = new FakeSerialPort();
     const defaultAnswer = port.answer;
     port.answer = (command) => (command === 'L' ? 'L\r' : defaultAnswer(command));
     const adapter = new SlcanAdapter(port, timing);
     const refusal = await adapter.start({ bitrate: 500_000, listenOnly: true }, recordingEvents().events, () => 0).catch((e: unknown) => e);
     expect(isListenOnlyUnconfirmed(refusal)).toBe(true);
-    expect((refusal as Error).message).toMatch(/^This adapter was sent listen-only mode \(L\) but didn't answer in time/);
+    expect((refusal as Error).message).toMatch(/^This adapter was sent listen-only mode \(L\) but didn't confirm it in time/);
     expect(port.commands).toEqual(['C', 'S6', 'Z1', 'V', 'L', 'C', 'Z0']);
   });
 

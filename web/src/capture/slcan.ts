@@ -347,9 +347,11 @@ export class SlcanAdapter implements CaptureAdapter {
           throw new ListenOnlyUnconfirmedError(
             listenOnly === 'ok'
               ? "This adapter was sent listen-only mode (L), but its answer couldn't be told from an earlier command's, so it may still acknowledge frames on the bus."
-              : "This adapter was sent listen-only mode (L) but didn't answer in time, so it may still acknowledge frames on the bus.",
+              : "This adapter was sent listen-only mode (L) but didn't confirm it in time, so it may still acknowledge frames on the bus.",
           );
         }
+        // Without the version line this BEL may be an earlier command's while L opened the
+        // channel; M1 and O are then refused with a visible error, which is safe.
         this.busOpen = false;
       }
       // Only L confirms listen-only: on Lawicel adapters M sets the acceptance code, so a CR for

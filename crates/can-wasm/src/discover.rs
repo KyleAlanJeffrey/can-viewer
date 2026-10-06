@@ -362,6 +362,150 @@ impl<'a> Sample<'a> {
     }
 }
 
+/// A range the sample sees change about this many times is judged from the sample; one that
+/// changes less is read over the whole log, where its few changes are.
+const SEEN_ENOUGH: usize = 1000;
+/// Positions read across all of an ID's rarely changing ranges, which bounds the work per ID.
+const REREAD_BUDGET: usize = 1_000_000;
+/// Values read for the whole-log range of values judged from a sample.
+const VALUE_READS: usize = 2_000_000;
+
+/// For each byte whose rarely changing bits change too seldom for the sample to show, the
+/// positions in the frame list where those bits differ from the frame before, found in one
+/// pass over the log. `None` for other bytes, and for all of them when the sample is the log.
+struct Rereads {
+    rare: Vec<u8>,
+    changes: Vec<Option<Vec<u32>>>,
+    /// Positions still to be read by [`Rereads::profile`].
+    budget: std::cell::Cell<usize>,
+}
+
+impl Rereads {
+    fn new(store: &FrameStore, frames: &Frames, sample: &Sample, rates: &[f64]) -> Self {
+        let len = frames.len;
+        let rare: Vec<u8> = (0..len)
+            .map(|byte| {
+                (0..8)
+                    .filter(|b| rates[byte * 8 + b] < FLAG_RATE)
+                    .fold(0, |m, b| m | 1 << b)
+            })
+            .collect();
+        let mut changes: Vec<Option<Vec<u32>>> = vec![None; len];
+        let n = frames.list.len();
+        if sample.partial {
+            let most = SEEN_ENOUGH * n / sample.len().max(1);
+            for (byte, list) in changes.iter_mut().enumerate() {
+                // Each change of the byte's rare bits flips at least one of them.
+                let flips: usize = (0..8)
+                    .filter(|b| rare[byte] >> b & 1 == 1)
+                    .map(|b| frames.flips[byte * 8 + b] as usize)
+                    .sum();
+                if rare[byte] != 0 && flips <= most {
+                    *list = Some(Vec::with_capacity(flips));
+                }
+            }
+        }
+        // Compared eight bytes at a time; most frames change none of the listed bits.
+        let words = len.div_ceil(8);
+        let mut watch = vec![0u64; words];
+        for (byte, list) in changes.iter().enumerate() {
+            if list.is_some() {
+                watch[byte / 8] |= u64::from(rare[byte]) << (byte % 8 * 8);
+            }
+        }
+        let word = |data: &[u8], w: usize| {
+            let mut bytes = [0u8; 8];
+            let chunk = &data[w * 8..len.min(w * 8 + 8)];
+            bytes[..chunk.len()].copy_from_slice(chunk);
+            u64::from_le_bytes(bytes)
+        };
+        let watched: Vec<usize> = (0..words).filter(|&w| watch[w] != 0).collect();
+        if !watched.is_empty() {
+            let mut before = frames.data(store, 0);
+            for position in 1..n {
+                let after = frames.data(store, position);
+                for &w in &watched {
+                    let mut changed = (word(before, w) ^ word(after, w)) & watch[w];
+                    while changed != 0 {
+                        let byte = w * 8 + changed.trailing_zeros() as usize / 8;
+                        changes[byte]
+                            .as_mut()
+                            .expect("watched")
+                            .push(position as u32);
+                        changed &= !(0xFFu64 << (byte % 8 * 8));
+                    }
+                }
+                before = after;
+            }
+        }
+        Self {
+            rare,
+            changes,
+            budget: REREAD_BUDGET.into(),
+        }
+    }
+
+    /// Where the bits of `range` may change after the first frame, if all its bytes are listed
+    /// and its bits are rarely changing ones.
+    fn positions(&self, range: Range) -> Option<Vec<u32>> {
+        let bits = range.bits();
+        if !bits
+            .iter()
+            .all(|&b| self.rare.get(b / 8).is_some_and(|r| r >> (b % 8) & 1 == 1))
+        {
+            return None;
+        }
+        let mut bytes: Vec<usize> = bits.iter().map(|b| b / 8).collect();
+        bytes.sort_unstable();
+        bytes.dedup();
+        let mut out: Vec<u32> = Vec::new();
+        for byte in bytes {
+            out = merge(&out, self.changes[byte].as_ref()?);
+        }
+        Some(out)
+    }
+
+    /// Over every frame, keeping only the values that differ from the one before: for a range
+    /// that rarely changes, where a sample can miss what it does. Read only where its bytes
+    /// change; `None` when they are not listed or the budget is spent.
+    fn profile<'p>(
+        &self,
+        store: &FrameStore,
+        frames: &Frames,
+        range: Range,
+    ) -> Option<Profile<'p>> {
+        let positions = self.positions(range)?;
+        let budget = self.budget.get().checked_sub(positions.len())?;
+        self.budget.set(budget);
+        let mut values = vec![range.read(frames.data(store, 0))];
+        for &position in &positions {
+            let v = range.read(frames.data(store, position as usize));
+            if values.last() != Some(&v) {
+                values.push(v);
+            }
+        }
+        let follows: Vec<bool> = (0..values.len()).map(|i| i > 0).collect();
+        let mut p = Profile::from_values(values, Cow::Owned(follows));
+        p.steps = frames.steps();
+        Some(p)
+    }
+}
+
+/// The sorted union of two sorted lists.
+fn merge(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        let (x, y) = (a[i], b[j]);
+        out.push(x.min(y));
+        i += usize::from(x <= y);
+        j += usize::from(y <= x);
+    }
+    out.extend_from_slice(&a[i..]);
+    out.extend_from_slice(&b[j..]);
+    out
+}
+
 /// What candidates are judged against.
 struct Log<'a> {
     store: &'a FrameStore,
@@ -369,6 +513,7 @@ struct Log<'a> {
     sample: &'a Sample<'a>,
     /// Each payload bit's share of frames on which it changes.
     rates: &'a [f64],
+    rereads: &'a Rereads,
 }
 
 /// A candidate's raw values, and how they move.
@@ -386,22 +531,6 @@ impl<'a> Profile<'a> {
     fn new(sample: &'a Sample, range: Range) -> Self {
         let values = sample.data.iter().map(|d| range.read(d)).collect();
         Self::from_values(values, Cow::Borrowed(&sample.follows))
-    }
-
-    /// Over every frame, keeping only the values that differ from the one before: for a range
-    /// that rarely changes, where a sample can miss what it does.
-    fn whole_log(store: &FrameStore, frames: &Frames, range: Range) -> Self {
-        let mut values: Vec<u64> = Vec::new();
-        for position in 0..frames.list.len() {
-            let v = range.read(frames.data(store, position));
-            if values.last() != Some(&v) {
-                values.push(v);
-            }
-        }
-        let follows: Vec<bool> = (0..values.len()).map(|i| i > 0).collect();
-        let mut p = Self::from_values(values, Cow::Owned(follows));
-        p.steps = frames.steps();
-        p
     }
 
     fn from_values(values: Vec<u64>, follows: Cow<'a, [bool]>) -> Self {
@@ -896,28 +1025,45 @@ fn flag_moves_with_a_neighbour(log: &Log, bit: usize) -> bool {
             sample.follows[i] && (changed >> (bit % 8)) & 1 == 1
         })
         .count();
-    if in_sample >= 3 || !sample.partial {
-        let pairs = (1..sample.len())
-            .filter(|&i| sample.follows[i])
-            .map(|i| (sample.data[i - 1], sample.data[i]));
-        moves_with_a_neighbour(pairs, bit, log.rates)
-    } else {
-        let pairs = log.frames.list.windows(2).map(|w| {
-            (
-                log.store.frame(w[0] as usize).data,
-                log.store.frame(w[1] as usize).data,
-            )
-        });
-        moves_with_a_neighbour(pairs, bit, log.rates)
+    let whole = (in_sample < 3)
+        .then(|| log.rereads.positions(Range::intel(bit, 1)))
+        .flatten();
+    match whole {
+        Some(positions) => {
+            let data = |p: u32| log.frames.data(log.store, p as usize);
+            let pairs = positions.into_iter().map(|p| (data(p - 1), data(p)));
+            moves_with_a_neighbour(pairs, bit, log.rates)
+        }
+        None => {
+            let pairs = (1..sample.len())
+                .filter(|&i| sample.follows[i])
+                .map(|i| (sample.data[i - 1], sample.data[i]));
+            moves_with_a_neighbour(pairs, bit, log.rates)
+        }
     }
 }
 
-/// The share of all frames of the ID with the flag set; the sample can miss a short stretch.
-fn whole_log_set_share(store: &FrameStore, frames: &Frames, range: Range) -> f64 {
-    let set = (0..frames.list.len())
-        .filter(|&i| range.read(frames.data(store, i)) != 0)
-        .count();
-    set as f64 / frames.list.len().max(1) as f64
+/// The share of frames of the ID with the flag set: over all of them when the flag changes
+/// rarely, as the sample can miss a short stretch, else over the sample.
+fn set_share(log: &Log, range: Range) -> f64 {
+    let Some(positions) = log.rereads.positions(range) else {
+        let data = &log.sample.data;
+        let set = data.iter().filter(|d| range.read(d) != 0).count();
+        return set as f64 / data.len().max(1) as f64;
+    };
+    let n = log.frames.list.len();
+    let (mut set, mut from) = (0, 0);
+    let mut on = range.read(log.frames.data(log.store, 0)) != 0;
+    for p in positions.into_iter().map(|p| p as usize).chain([n]) {
+        if on {
+            set += p - from;
+        }
+        if p < n {
+            on = range.read(log.frames.data(log.store, p)) != 0;
+            from = p;
+        }
+    }
+    set as f64 / n.max(1) as f64
 }
 
 /// `0-6`, or `0-2, 4-7` around a byte in the middle.
@@ -1308,13 +1454,31 @@ fn read_as(raw: u64, size: u16, signed: bool) -> f64 {
 
 /// The reasons for unsigned values judged from a sample, with their ranges over the whole log.
 fn whole_log_value_reasons(log: &Log, ranges: &[Range]) -> Vec<String> {
-    let mut limits = vec![(u64::MAX, 0u64); ranges.len()];
-    for i in 0..log.frames.list.len() {
-        let data = log.frames.data(log.store, i);
-        for (range, (min, max)) in ranges.iter().zip(&mut limits) {
-            let v = range.read(data);
-            *min = (*min).min(v);
-            *max = (*max).max(v);
+    let n = log.frames.list.len();
+    let first = log.frames.data(log.store, 0);
+    let mut limits: Vec<(u64, u64)> = ranges
+        .iter()
+        .map(|r| (r.read(first), r.read(first)))
+        .collect();
+    let mut rest = Vec::new();
+    for (i, range) in ranges.iter().enumerate() {
+        match log.rereads.positions(*range) {
+            Some(positions) => {
+                for p in positions {
+                    let v = range.read(log.frames.data(log.store, p as usize));
+                    limits[i] = (limits[i].0.min(v), limits[i].1.max(v));
+                }
+            }
+            None => rest.push(i),
+        }
+    }
+    // A value read on every few frames of a very long log still finds about its range.
+    let stride = (n * rest.len()).div_ceil(VALUE_READS).max(1);
+    for position in (0..n).step_by(stride) {
+        let data = log.frames.data(log.store, position);
+        for &i in &rest {
+            let v = ranges[i].read(data);
+            limits[i] = (limits[i].0.min(v), limits[i].1.max(v));
         }
     }
     limits
@@ -1348,21 +1512,22 @@ pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
     let rates: Vec<f64> = (0..bits)
         .map(|b| f64::from(frames.flips.get(b).copied().unwrap_or(0)) / steps as f64)
         .collect();
+    let rereads = Rereads::new(store, &frames, &sample, &rates);
     let log = Log {
         store,
         frames: &frames,
         sample: &sample,
         rates: &rates,
+        rereads: &rereads,
     };
 
     let mut scored = checksums(&sample, len, &rates);
     for range in candidates(&rates, bits) {
         let rarely_changes = range.size > 1 && range.bits().iter().all(|&b| rates[b] < FLAG_RATE);
-        let profile = if sample.partial && rarely_changes {
-            Profile::whole_log(store, &frames, range)
-        } else {
-            Profile::new(&sample, range)
-        };
+        let profile = rarely_changes
+            .then(|| rereads.profile(store, &frames, range))
+            .flatten()
+            .unwrap_or_else(|| Profile::new(&sample, range));
         let Some(mut s) = classify(range, &profile, &log) else {
             continue;
         };
@@ -1510,8 +1675,7 @@ pub fn suggest(store: &FrameStore, stats: &IdStats, hints: &Hints) -> Findings {
                     .find("; changes near")
                     .map_or("", |at| &s.reason[at..]);
                 let flips = frames.flips[usize::from(s.range.start_bit)];
-                flag_reason(flips, steps, whole_log_set_share(store, &frames, s.range))
-                    + marker_note
+                flag_reason(flips, steps, set_share(&log, s.range)) + marker_note
             } else {
                 s.reason.clone()
             };

@@ -4,7 +4,7 @@ import type { CompareOptions, IdComparison, LogInfo } from '../../core/api';
 import { formatCount, formatDuration, noFramesMessage } from '../../format';
 import { forget, loadSaved, save } from '../../session';
 import type { SelectedByte } from '../reverse/ByteMatrix';
-import { errorText } from '../reverse/bits';
+import { errorText, windowAround, type TimeWindow } from '../reverse/bits';
 import { isVideoFile } from '../plot/video/videoSession';
 import { startTextSave } from '../shared/saveFile';
 import { useViewState } from '../shared/viewState';
@@ -66,6 +66,7 @@ function CompareLogs({ ctx }: ViewProps) {
   const [picked, setPicked] = useViewState<string | null>('cmp.selected', null);
   const [, setReverseMode] = useViewState<string>('re.mode', 'bytes');
   const [, setReverseByte] = useViewState<SelectedByte | null>('re.byte', null, 'log');
+  const [, setReverseWindow] = useViewState<TimeWindow | null>('re.window', null, 'log');
   const pickB = useRef<HTMLInputElement>(null);
   const pickA = useRef<HTMLInputElement>(null);
   const restoredFor = useRef<number | null>(null);
@@ -207,11 +208,18 @@ function CompareLogs({ ctx }: ViewProps) {
     await ctx.swapCompareLog();
   };
 
-  const openInReverse = (c: IdComparison, byte: number) => {
+  const openInReverse = async (c: IdComparison, byte: number) => {
     if (c.keyA === null) {
       setPicked(rowKey(c));
       setNotice(ONLY_IN_B);
       return;
+    }
+    // Log A only has a frame to go to when it shows a value log B never does.
+    const detail = await onLogB(core, core.compareBytes(c.keyA, c.keyB, options)).catch(() => null);
+    const at = detail?.firstOnlyInA[byte] ?? null;
+    if (at !== null) {
+      setReverseWindow(windowAround(at, log.durationS));
+      ctx.setPinnedTime(at);
     }
     ctx.select(c.keyA);
     setReverseByte({ key: c.keyA, byte });
@@ -286,7 +294,7 @@ function CompareLogs({ ctx }: ViewProps) {
                 setPicked(rowKey(c));
                 setNotice('');
               }}
-              onOpen={(c) => openInReverse(c, c.bytes[0] ?? 0)}
+              onOpen={(c) => void openInReverse(c, c.bytes[0] ?? 0)}
               busNote={matchedBuses && `Buses matched by order: ${matchedBuses}`}
               hasDbc={dbcs.length > 0}
               options={options}
@@ -300,7 +308,7 @@ function CompareLogs({ ctx }: ViewProps) {
                 logA={log}
                 logB={logB}
                 options={options}
-                onOpenInReverse={(byte) => openInReverse(selected, byte)}
+                onOpenInReverse={(byte) => void openInReverse(selected, byte)}
                 onExport={exportFindings}
               />
             ) : (

@@ -403,7 +403,7 @@ export function App({ core }: { core: CoreApi }) {
     () =>
       run('Swapping the logs\u2026', () =>
         serially(async () => {
-          const outgoing = logRef.current?.name;
+          const outgoing = logRef.current;
           const info = await core.swapCompareLog();
           await showOpenedLog(info);
           viewState.clearScope('log');
@@ -411,10 +411,11 @@ export function App({ core }: { core: CoreApi }) {
           videoSession.close();
           // The saved copies trade places too, so a reload reopens each log where it now is. A
           // copy that never landed, or failed to, leaves an older log under its key, which must
-          // not come back as the other log.
+          // not come back as the other log. Loggers reuse file names, so the size must match too.
           const [savedA, savedB] = await Promise.all([loadSaved<SavedLog>('log'), loadSaved<SavedLog>('compare')]);
-          const a = savedA?.name === outgoing ? savedA : undefined;
-          const b = savedB?.name === info.name ? savedB : undefined;
+          const isCopyOf = (saved: SavedLog | undefined, log: LogInfo | null) => !!saved && !!log && saved.name === log.name && saved.blob.size === log.bytes;
+          const a = isCopyOf(savedA, outgoing) ? savedA : undefined;
+          const b = isCopyOf(savedB, info) ? savedB : undefined;
           if (!b || !(await save('log', b))) {
             setNotKept(info.name);
             await forget('log');
@@ -952,7 +953,7 @@ export function App({ core }: { core: CoreApi }) {
     pinnedTime,
     setPinnedTime,
     run,
-    busyLabel: () => busyRef.current?.label ?? null,
+    busyLabel: () => busyRef.current?.label ?? (stoppingRef.current ? 'Stopping the capture\u2026' : null),
     setError,
     setView,
     openLog: (file, name) => {

@@ -27,10 +27,12 @@ pub struct IdStats {
     /// Payload lengths in bytes. Above [`crate::MAX_PAYLOAD`] only for reassembled frames.
     pub min_len: u16,
     pub max_len: u16,
-    /// How often each payload bit changed between consecutive frames of this ID, indexed by
+    /// How often each payload bit changed from the previous frame of this ID and the same
+    /// [`FrameKind`], as [`FrameStore::previous_of_same_kind`] pairs them, indexed by
     /// `byte * 8 + bit` where bit 0 is the least significant bit of the byte.
     pub bit_flips: Vec<u32>,
-    last_data: Vec<u8>,
+    /// The payload of the last frame of each kind, indexed by `FrameKind as usize`.
+    last_data: [Option<Vec<u8>>; 4],
     gap_mean_ns: f64,
     /// Sum of squared deviations of the gaps from their mean (Welford's algorithm).
     gap_m2: f64,
@@ -48,7 +50,7 @@ impl IdStats {
             min_len: u16::MAX,
             max_len: 0,
             bit_flips: Vec::new(),
-            last_data: Vec::new(),
+            last_data: Default::default(),
             gap_mean_ns: 0.0,
             gap_m2: 0.0,
         }
@@ -79,8 +81,15 @@ impl IdStats {
         if self.bit_flips.len() < len * 8 {
             self.bit_flips.resize(len * 8, 0);
         }
+        match &mut self.last_data[FrameKind::of(frame.flags) as usize] {
+            Some(last) => {
+                count_flips(&mut self.bit_flips, last, frame.data);
+                last.clear();
+                last.extend_from_slice(frame.data);
+            }
+            none => *none = Some(frame.data.to_vec()),
+        }
         if !self.frames.is_empty() {
-            count_flips(&mut self.bit_flips, &self.last_data, frame.data);
             let gap = (frame.ts_ns - self.last_ts_ns) as f64;
             let delta = gap - self.gap_mean_ns;
             self.gap_mean_ns += delta / self.frames.len() as f64;
@@ -92,8 +101,6 @@ impl IdStats {
         let len16 = len as u16;
         self.min_len = self.min_len.min(len16);
         self.max_len = self.max_len.max(len16);
-        self.last_data.clear();
-        self.last_data.extend_from_slice(frame.data);
     }
 }
 
@@ -408,21 +415,30 @@ impl FrameStore {
         start..end.max(start)
     }
 
-    /// Like [`IdStats::bit_flips`], counting only changes between consecutive frames that are
-    /// both within `[t0_ns, t1_ns]`.
+    /// Like [`IdStats::bit_flips`], counting only changes between frames that are both within
+    /// `[t0_ns, t1_ns]`.
     #[must_use]
     pub fn bit_flips_between(&self, stats: &IdStats, t0_ns: i64, t1_ns: i64) -> Vec<u32> {
         let mut counts = vec![0; stats.bit_flips.len()];
-        let range = self.id_frames_between(stats, t0_ns, t1_ns);
-        for pair in stats.frames[range].windows(2) {
-            let (a, b) = (self.frame(pair[0] as usize), self.frame(pair[1] as usize));
-            count_flips(&mut counts, a.data, b.data);
+        let mut last_of_kind = [None; 4];
+        for &index in &stats.frames[self.id_frames_between(stats, t0_ns, t1_ns)] {
+            let index = index as usize;
+            let kind = FrameKind::of(self.flags[index]) as usize;
+            if let Some(previous) = last_of_kind[kind] {
+                count_flips(
+                    &mut counts,
+                    self.frame(previous).data,
+                    self.frame(index).data,
+                );
+            }
+            last_of_kind[kind] = Some(index);
         }
         counts
     }
 
-    /// Payload bits that changed from the previous frame of the same ID, summed per bucket for
-    /// the frames of `stats` within `[t0_ns, t1_ns]`. The previous frame may be before `t0_ns`.
+    /// Payload bits that changed from the previous frame of the same ID and kind, summed per
+    /// bucket for the frames of `stats` within `[t0_ns, t1_ns]`. The previous frame may be
+    /// before `t0_ns`.
     #[must_use]
     pub fn change_activity(
         &self,
@@ -435,12 +451,17 @@ impl FrameStore {
         if buckets == 0 || t1_ns <= t0_ns {
             return out;
         }
+        let mut last_of_kind = [None; 4];
         for pos in self.id_frames_between(stats, t0_ns, t1_ns) {
-            let Some(prev) = pos.checked_sub(1) else {
+            let index = stats.frames[pos] as usize;
+            let kind = FrameKind::of(self.flags[index]) as usize;
+            let previous = last_of_kind[kind].or_else(|| self.previous_of_same_kind_at(stats, pos));
+            last_of_kind[kind] = Some(index);
+            let Some(previous) = previous else {
                 continue;
             };
-            let frame = self.frame(stats.frames[pos] as usize);
-            let before = self.frame(stats.frames[prev] as usize);
+            let frame = self.frame(index);
+            let before = self.frame(previous);
             let changed: u32 = frame
                 .data
                 .iter()
@@ -1256,5 +1277,21 @@ mod tests {
         assert_eq!(s.change_activity(stats, 10, 30, 2), vec![4, 8]);
         assert_eq!(s.change_activity(stats, 0, 40, 4), vec![0, 4, 1, 11]);
         assert_eq!(s.change_activity(stats, 30, 10, 2), vec![0, 0]);
+    }
+
+    #[test]
+    fn bit_activity_skips_the_remote_frames_of_a_polled_id() {
+        let mut s = FrameStore::new();
+        for (t, data) in [(0, 0x00), (20, 0x0F), (40, 0x0E)] {
+            push_on(&mut s, t, 0, 0x100, flags::RTR, &[]);
+            push_on(&mut s, t + 10, 0, 0x100, 0, &[data]);
+        }
+        let stats = s.id_stats(id_key(0, 0x100)).unwrap();
+        assert_eq!(stats.bit_flips.iter().sum::<u32>(), 5);
+        assert_eq!(stats.bit_flips[0], 2);
+        assert_eq!(s.bit_flips_between(stats, 0, 50), stats.bit_flips);
+        assert_eq!(s.bit_flips_between(stats, 20, 50).iter().sum::<u32>(), 1);
+        // The data frame at 30 is compared with the one at 10, before the window.
+        assert_eq!(s.change_activity(stats, 20, 50, 2), vec![4, 1]);
     }
 }

@@ -25,9 +25,21 @@ class FakeSession {
     FakeSession.filters.push(json);
     return json === 'null' ? 0 : 3;
   }
-  count_filter_matches(json: string): number {
+  /** Steps each count takes before it is done. */
+  static countSteps = 1;
+  private counting: { steps: number } | null = null;
+  count_begin(json: string) {
     FakeSession.filters.push(json);
+    this.counting = { steps: FakeSession.countSteps };
+  }
+  count_step(): number | undefined {
+    if (!this.counting) throw new Error('no count is running');
+    if (--this.counting.steps > 0) return undefined;
+    this.counting = null;
     return 5;
+  }
+  count_running() {
+    return this.counting !== null;
   }
   set_file_name() {}
   reserve_for_bytes() {}
@@ -179,23 +191,50 @@ describe('core worker', () => {
     expect(await call(port, 2, 'compareLogInfo')).toEqual({ id: 2, result: null });
   });
 
-  it('runs only the newest of the filter counts waiting in the queue', async () => {
+  it('runs only the newest of the filter counts waiting in the queue, and none a filter came after', async () => {
     FakeSession.filters = [];
+    FakeSession.countSteps = 1;
     const port = await startWorker();
     const replies: unknown[] = [];
     port.postMessage.mockImplementation((reply: unknown) => replies.push(reply));
     const filter = { channels: null, keys: [1], kinds: null, rules: [], combine: 'all', t0: null, t1: null };
     port.onmessage?.({ data: { id: 1, method: 'countFilterMatches', args: [filter] } });
     port.onmessage?.({ data: { id: 2, method: 'countFilterMatches', args: [filter] } });
-    port.onmessage?.({ data: { id: 3, method: 'setTraceFilter', args: [filter] } });
-    port.onmessage?.({ data: { id: 4, method: 'setTraceFilter', args: [null] } });
-    await vi.waitUntil(() => replies.length === 4);
+    port.onmessage?.({ data: { id: 3, method: 'countFilterMatches', args: [filter] } });
+    port.onmessage?.({ data: { id: 4, method: 'setTraceFilter', args: [filter] } });
+    port.onmessage?.({ data: { id: 5, method: 'countFilterMatches', args: [filter] } });
+    port.onmessage?.({ data: { id: 6, method: 'setTraceFilter', args: [null] } });
+    await vi.waitUntil(() => replies.length === 6);
     expect(replies).toEqual([
       { id: 1, result: null },
-      { id: 2, result: 5 },
-      { id: 3, result: 3 },
-      { id: 4, result: 0 },
+      { id: 2, result: null },
+      { id: 3, result: null },
+      { id: 4, result: 3 },
+      { id: 5, result: null },
+      { id: 6, result: 0 },
     ]);
-    expect(FakeSession.filters).toEqual([JSON.stringify(filter), JSON.stringify(filter), 'null']);
+    expect(FakeSession.filters).toEqual([JSON.stringify(filter), 'null']);
+  });
+
+  it('counts a step at a time, letting other requests run between steps, until a newer count stops it', async () => {
+    FakeSession.filters = [];
+    FakeSession.countSteps = 3;
+    const port = await startWorker();
+    const replies: { id: number }[] = [];
+    port.postMessage.mockImplementation((reply: { id: number }) => replies.push(reply));
+    const filter = (byte: number) => ({ channels: null, keys: null, kinds: null, rules: [{ type: 'byteEquals', byte, value: 0 }], combine: 'all', t0: null, t1: null });
+    port.onmessage?.({ data: { id: 1, method: 'countFilterMatches', args: [filter(1)] } });
+    // Sent while the first step runs: answered before the count goes on.
+    port.onmessage?.({ data: { id: 2, method: 'rowCount', args: [3] } });
+    await vi.waitUntil(() => replies.length === 1);
+    expect(replies).toEqual([{ id: 2, result: 7 }]);
+
+    port.onmessage?.({ data: { id: 3, method: 'countFilterMatches', args: [filter(2)] } });
+    await vi.waitUntil(() => replies.length === 3);
+    expect(replies.slice(1)).toEqual([
+      { id: 1, result: null },
+      { id: 3, result: 5 },
+    ]);
+    expect(FakeSession.filters).toEqual([JSON.stringify(filter(1)), JSON.stringify(filter(2))]);
   });
 });

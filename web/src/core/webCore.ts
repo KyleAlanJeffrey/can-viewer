@@ -167,6 +167,7 @@ export class WebCore implements CoreApi {
   decodeRaw = (key: number, spec: RawSignalSpec) => this.call<SeriesInfo>('decodeRaw', key, spec);
   exportDbc = (db: Database) => this.call<string>('exportDbc', db);
   setTraceFilter = (filter: FrameFilter | null) => this.call<number>('setTraceFilter', filter);
+  filteredRowCount = () => this.call<number | null>('filteredRowCount');
   countFilterMatches = (filter: FrameFilter) => this.call<number | null>('countFilterMatches', filter);
   exportLog = (format: ExportFormat) => this.call<Blob>('exportLog', format);
 

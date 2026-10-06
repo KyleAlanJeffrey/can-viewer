@@ -6,7 +6,7 @@
 
 - The web build implements `CoreApi` with `WebCore` (`web/src/core/webCore.ts`). `WebCore` starts one module Web Worker (`web/src/core/worker.ts`). The worker loads the wasm build of `crates/can-wasm` and owns a single `Session`, which holds the parsed log, the loaded databases and the decoded series.
 - Each call posts `{ id, method, args }` to the worker. The worker answers with `{ id, result }` or `{ id, error }`, and pushes parse progress as `{ event: 'progress', bytes, total }`.
-- Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it. The one exception is [`countFilterMatches`](#countfiltermatches): a count still waiting when a newer count arrives is answered with null instead of run.
+- Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it. The one exception is [`countFilterMatches`](#countfiltermatches): it runs in steps of about 524,000 frames, and the calls sent during a step run before the next one, so a count delays them by one step at most; a count that a newer count or a [`setTraceFilter`](#settracefilter) follows stops at its next step, or before it starts, and is answered with null.
 - Bulk results (trace rows, bit counts, series points, bus load) arrive as typed arrays whose buffers are transferred, not copied. Small structured results cross the wasm boundary as JSON.
 - If the worker itself stops (an uncaught error or a reply that cannot be read), `WebCore` terminates it and starts another: every call in flight rejects with `The CAN core stopped and was restarted. Open the log again.`, the databases from the last `setDatabases` are set again, and the listeners given to [`onReset`](#onreset) are called. The log and every series are gone. A worker that stopped before it ever answered is not replaced, since another would fail the same way; every later call then rejects with the worker's error.
 - The planned desktop app will implement the same interface over Tauri commands, with the same crates running natively.
@@ -312,6 +312,8 @@ Which frames a filtered trace keeps. Passed to [`setTraceFilter`](#settracefilte
 - **`t0`** `number | null` - Window start in seconds, inclusive, or null for the start of the log.
 - **`t1`** `number | null` - Window end in seconds, inclusive, or null for the end of the log. A window that ends before it starts matches nothing.
 
+Times count from the log's first frame, as in [`rows`](#rows). A capture's filter keeps them so: a window set before the first frame came counts from that frame once it comes, and one set before [`endCapture`](#endcapture) sorts an earlier frame first counts from that frame afterwards.
+
 ### The DataRule object
 
 One condition on a frame's payload, told apart by `type`. Bytes count from 0, over the whole payload (a reassembled J1939 transfer included), and bit 0 is the least significant bit of its byte, as in [`bitFlips`](#bitflips). A frame too short to have the byte matches neither a byte rule nor a bit rule, whether the bit is wanted set or clear.
@@ -383,10 +385,11 @@ One bus/ID pair of the open log (A) or the comparison log (B). Returned by [`com
 - **`framesB`** `number` - Frames in log B; 0 when only in A.
 - **`rateA`** `number | null` - Frames per second of log A's duration, so logs of different lengths compare. Null when log A has no duration (all its frames have one timestamp); the rate then plays no part in the score.
 - **`rateB`** `number | null` - The same for log B.
-- **`score`** `number` - From 0 to 100, how differently the ID behaves. Below 10 is no significant difference. See [`compareLogs`](#comparelogs).
+- **`score`** `number` - From 0 to 100, how differently the ID behaves. Below 10 is no significant difference; the reason and `bytes` follow this rounded score. See [`compareLogs`](#comparelogs).
 - **`reason`** `string` - Why, in a few words: `Appears only in A`, `Appears only in B`, `Byte 3 takes new values`, `Byte 3 has values only in A`, `Byte 3 holds a different value`, `Byte 3 changes more often`, `Byte 3 changes less often`, `Byte 3 values shift`, `Small value changes`, `Length changes from 8 to 6 bytes`, `Changes from classic CAN to CAN FD`, `Changes from CAN FD to classic CAN`, `Rate doubled`, `Rate halved`, `Rate up 3.1x`, `Rate down 3.1x`, `Too few frames to compare`, `Too few frames to compare; payloads differ`, `Also changes within A` or `No significant changes`.
 - **`bytes`** `number[]` - Payload bytes scoring 10 or more, most different first.
 - **`tooFewFrames`** `boolean` - True when either log has fewer than 8 frames of the ID, so it is not scored. The reason then adds `; payloads differ` when the logs' payloads take different values or lengths.
+- **`payloadsDiffer`** `boolean` - True with `tooFewFrames` when the logs' payloads take different values or lengths, as the reason's `; payloads differ` says, so a rarely sent message that changed is not taken for one that did not. Always false for a scored ID.
 - **`changesWithinA`** `boolean` - True when the ID differs between the logs but `ignoreChangesWithinA` left every difference out as a change within log A. Always false without that rule.
 
 ### The ByteComparison object
@@ -404,6 +407,7 @@ One ID compared byte by byte. Returned by [`compareBytes`](#comparebytes). Per-b
 - **`byteScores`** `number[]` - From 0 to 100 per byte, after both ignore rules.
 - **`byteReasons`** `string[]` - Each byte's reason, worded as `IdComparison.reason`; `No significant changes` below 10, `Too few frames to compare` for every byte when either log has fewer than 8 frames of the ID, and empty when either log lacks the byte.
 - **`newValues`** `number[][]` - Per byte, up to 16 values log B shows and log A never does, with ignored bits cleared.
+- **`firstOnlyInA`** `(number | null)[]` - Per byte, seconds from log A's first frame to the ID's first frame in log A showing a value log B never does (counted as for `newValues`, with log A's and log B's roles swapped), or null when there is none, when either log lacks the byte, or when either log has too few frames. It is set even when those values are too few to count as a change. The Compare view opens Reverse Engineer there.
 - **`ignored`** `{ byte: number, mask: number, kind: 'counter' | 'checksum' }[]` - Bits left out by `ignoreCounters`, as a bit mask per byte.
 
 ## Logs
@@ -513,7 +517,7 @@ const log = await core.startCapture('capture-20261005-143000.log', 'can0', Date.
 appendFrames(frames: CaptureFrame[]): Promise<LogInfo>
 ```
 
-Adds frames to the running capture, in the order received. Once it resolves, every other call sees them. `WebCore` packs the batch into one buffer and transfers it to the worker. Times are expected to rise, as a monotonic clock gives them; [`endCapture`](#endcapture) sorts the frames in case they do not.
+Adds frames to the running capture, in the order received, and those that match the trace filter to the rows of `FILTERED_ROWS` (see [`setTraceFilter`](#settracefilter)). Once it resolves, every other call sees them. `WebCore` packs the batch into one buffer and transfers it to the worker. Times are expected to rise, as a monotonic clock gives them; [`endCapture`](#endcapture) sorts the frames in case they do not.
 
 **Parameters**
 
@@ -521,7 +525,7 @@ Adds frames to the running capture, in the order received. Once it resolves, eve
 
 **Returns** the capture so far.
 
-**Errors** Rejects with `no capture is running` or `the capture has ended`, and with `a captured frame is longer than 64 bytes` or `a captured frame has no time` for a frame that cannot be stored; frames before it in the batch are kept. Rejects with `there is no memory left for more frames` when the engine can't grow its frame store for the batch; then none of the batch is kept, and the frames appended before stay intact.
+**Errors** Rejects with `no capture is running` or `the capture has ended`, and with `a captured frame is longer than 64 bytes` or `a captured frame has no time` for a frame that cannot be stored; frames before it in the batch are kept. Rejects with `there is no memory left for more frames` when the engine can't grow its frame store for the batch; then none of the batch is kept, and the frames appended before stay intact. When the batch is kept but there is no memory to add its matches to the filtered rows, the trace filter is dropped and the capture goes on; [`filteredRowCount`](#filteredrowcount) then resolves null.
 
 ```ts
 const log = await core.appendFrames([{ timeNs: 1_250_000, id: 0x123, extended: false, flags: 0, data: Uint8Array.of(0xde, 0xad) }]);
@@ -553,7 +557,7 @@ const log = await core.trimCapture(latestNs - 5 * 60e9);
 endCapture(): Promise<LogInfo>
 ```
 
-Ends the running capture and puts its frames in time order. The capture stays the current log, so it can be viewed and exported with [`exportLog`](#exportlog) (the web app's Save Capture... writes `'candump'`); `appendFrames` rejects from then on.
+Ends the running capture and puts its frames in time order, then finds the rows of the trace filter again, if one is set; without the memory for them, the filter is dropped, and [`filteredRowCount`](#filteredrowcount) resolves null. The capture stays the current log, so it can be viewed and exported with [`exportLog`](#exportlog) (the web app's Save Capture... writes `'candump'`); `appendFrames` rejects from then on.
 
 **Returns** the finished capture.
 
@@ -714,7 +718,7 @@ const share = flips[0] / Math.max(1, frames - 1);
 setTraceFilter(filter: FrameFilter | null): Promise<number>
 ```
 
-Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, swapping logs with [`swapCompareLog`](#swapcomparelog), starting a capture or ending one (which may reorder its frames); until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames. The kept rows cost 4 bytes per matching frame. During a capture, frames appended after the call do not join the rows; the web app turns filters off while recording.
+Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, swapping logs with [`swapCompareLog`](#swapcomparelog) or starting a capture; until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames; when the last [`countFilterMatches`](#countfiltermatches) counted the same filter, its matches are taken instead (and a count of it still running is finished first), so applying a previewed filter does not go through the log again. The kept rows cost 4 bytes per matching frame. During a capture, [`appendFrames`](#appendframes) adds each new frame that matches to the rows, a pass over just the new frames, so call [`rowCount`](#rowcount) for the count so far; until the capture ends, "changes" rules compare frames in the order they came. [`endCapture`](#endcapture), which may reorder the frames, finds the rows again.
 
 **Parameters**
 
@@ -738,19 +742,34 @@ console.log(`${matches} of ${log.frames} frames match`);
 const batch = await core.rows(FILTERED_ROWS, 0, 40);
 ```
 
+### filteredRowCount
+
+```ts
+filteredRowCount(): Promise<number | null>
+```
+
+The number of rows of `FILTERED_ROWS`, as [`rowCount`](#rowcount) gives it, or null when the engine holds no trace filter: none was set, or the engine dropped it for want of memory as a capture grew or ended (see [`appendFrames`](#appendframes) and [`endCapture`](#endcapture)). The web app's Trace view asks it at each refresh of a capture, to follow the count, and turns its filters off with a message when it resolves null.
+
+**Returns** the count, or null.
+
+```ts
+const matches = await core.filteredRowCount();
+if (matches === null) turnFiltersOff();
+```
+
 ### countFilterMatches
 
 ```ts
 countFilterMatches(filter: FrameFilter): Promise<number | null>
 ```
 
-How many frames match `filter`, without keeping them or changing the rows of `FILTERED_ROWS`: a preview while a filter is edited. Requests still run in order, so send a count only when the edit settles (the Trace view waits 250 ms). If another count arrives while this one is still waiting behind other work, this one is skipped and resolves to null, so only the newest count costs a pass over the log.
+How many frames match `filter`, without keeping them or changing the rows of `FILTERED_ROWS`: a preview while a filter is edited. The count goes through the frames in steps of about 524,000 (some tens of milliseconds each), and the calls sent during a step, such as the trace's row fetches, run before the next step. When another count or a `setTraceFilter` arrives, this count stops at its next step, or before it starts, and resolves to null, so only the newest count costs a pass over the log. Still, send a count only when the edit settles (the Trace view waits 250 ms). It covers the frames there were when it started; during a capture, frames appended meanwhile are left out. The engine keeps the matches of the last count it finished, 4 bytes per match, for a `setTraceFilter` of the same filter to take; the next count, `setTraceFilter`, or a new log or capture frees them. Starting or ending a capture, or opening or swapping a log, while it runs makes it start over on the new frames.
 
 **Parameters**
 
 - **`filter`** [`FrameFilter`](#the-framefilter-object) - The frames to count.
 
-**Returns** the number of matching frames, or null when a later count replaced this one before it ran.
+**Returns** the number of matching frames, or null when a later count or `setTraceFilter` stopped this one.
 
 **Errors** Rejects for a malformed `filter` as [`setTraceFilter`](#settracefilter) does. A count never changes the rows of `FILTERED_ROWS`, even when it fails.
 
@@ -767,7 +786,7 @@ if (count !== null) showPreview(`${count} of ${log.frames} frames match`);
 bitFlips(key: number): Promise<Uint32Array>
 ```
 
-How often each payload bit of one ID changed between consecutive frames, over the whole log. The counts are kept while parsing, so this is cheap.
+How often each payload bit of one ID changed from the previous frame of the ID and the same kind (data, remote, error or reassembled, as `changed(i, byte)` in a [`RowBatch`](#the-rowbatch-object) compares them), over the whole log, so a polled ID's remote frames don't hide the changes between its data frames. A bit changes at most once per frame after the first of its kind, so for an ID with frames of more than one kind, a share worked out over `count - 1` frames reads low. The counts are kept while parsing, so this is cheap.
 
 **Parameters**
 
@@ -787,7 +806,7 @@ console.log(`byte ${busiest >> 3}, bit ${busiest & 7}`);
 bitFlipsBetween(key: number, t0: number, t1: number): Promise<Uint32Array>
 ```
 
-Like [`bitFlips`](#bitflips), counting only changes between consecutive frames that are both inside `[t0, t1]` seconds.
+Like [`bitFlips`](#bitflips), counting only changes between frames that are both inside `[t0, t1]` seconds.
 
 **Parameters**
 
@@ -807,7 +826,7 @@ const flips = await core.bitFlipsBetween(summary.key, 120, 135);
 changeActivity(key: number, t0: number, t1: number, buckets: number): Promise<Uint32Array>
 ```
 
-The number of payload bits that changed, per time bucket, for one ID across `[t0, t1]` seconds: an activity strip. Buckets are equal in width, and `t1` falls in the last one. Each frame is compared with the previous frame of the ID, even if that one is before `t0`. The ID's first frame in the log adds nothing.
+The number of payload bits that changed, per time bucket, for one ID across `[t0, t1]` seconds: an activity strip. Buckets are equal in width, and `t1` falls in the last one. Each frame is compared with the previous frame of the ID and the same kind, as in [`bitFlips`](#bitflips), even if that one is before `t0`. The ID's first frame of each kind in the log adds nothing.
 
 **Parameters**
 

@@ -2,7 +2,7 @@
 
 use std::collections::TryReserveError;
 
-use crate::{flags, FrameStore, IdKey, IdStats};
+use crate::{flags, id_key, FrameStore, IdKey, IdStats};
 
 /// What kind of frame a stored frame is. Every frame is exactly one kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,23 +117,131 @@ impl FrameFilter {
     }
 }
 
-impl FrameStore {
-    /// Indices of the frames that match `filter`, in store (time) order, or an error if there
-    /// is no memory for them.
-    pub fn filter(&self, filter: &FrameFilter) -> Result<Vec<u32>, TryReserveError> {
-        // A bit per frame, so the matches of each ID merge back into time order without a sort.
-        let words = self.len().div_ceil(64);
+/// A pass over the frames that match a [`FrameFilter`], made a slice at a time with
+/// [`FilterPass::step`], so it can stop between slices. It covers the frames stored when it
+/// began; frames stored since are left out.
+#[derive(Debug)]
+pub struct FilterPass {
+    filter: FrameFilter,
+    /// The IDs to visit, in order.
+    keys: Vec<IdKey>,
+    /// The ID of `keys` the next step starts in, and the position in its frames to go on from.
+    next_key: usize,
+    next_pos: usize,
+    /// Frames in the store when the pass began.
+    frames: usize,
+    /// A bit per frame, so the matches of each ID merge back into store order without a sort.
+    matched: Vec<u64>,
+    count: usize,
+}
+
+impl FilterPass {
+    /// A pass over the frames now in `store`, or an error if there is no memory for a bit per
+    /// frame.
+    pub fn new(store: &FrameStore, filter: FrameFilter) -> Result<Self, TryReserveError> {
+        let frames = store.len();
+        let words = frames.div_ceil(64);
         let mut matched = Vec::new();
         matched.try_reserve_exact(words)?;
         matched.resize(words, 0u64);
-        let mut count = 0;
-        self.visit_matches(filter, |index| {
-            matched[index / 64] |= 1 << (index % 64);
-            count += 1;
-        });
+        let keys = if filter.t1_ns < filter.t0_ns {
+            Vec::new()
+        } else if let Some(keys) = &filter.keys {
+            let mut keys = keys.clone();
+            keys.sort_unstable();
+            keys.dedup();
+            keys
+        } else {
+            store.ids().iter().map(IdStats::key).collect()
+        };
+        Ok(Self {
+            filter,
+            keys,
+            next_key: 0,
+            next_pos: 0,
+            frames,
+            matched,
+            count: 0,
+        })
+    }
+
+    #[must_use]
+    pub fn filter(&self) -> &FrameFilter {
+        &self.filter
+    }
+
+    /// Frames in the store when the pass began: the frames it covers.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.frames
+    }
+
+    /// Matches found so far.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Visits about `budget` more frames of `store`, which must be the store the pass began on,
+    /// with frames only added since; the frames a "changes" rule walks back over to find the
+    /// frame it compares with count too. Returns whether the pass is done.
+    pub fn step(&mut self, store: &FrameStore, budget: usize) -> bool {
+        let wants_previous = self.filter.rules.contains(&DataRule::Changes);
+        let mut budget = budget.max(1);
+        while let Some(&key) = self.keys.get(self.next_key) {
+            if budget == 0 {
+                return false;
+            }
+            if let Some(stats) = store.id_stats(key).filter(|s| self.filter.keeps_id(s)) {
+                let window = store.id_frames_between(stats, self.filter.t0_ns, self.filter.t1_ns);
+                let covered = stats
+                    .frames
+                    .partition_point(|&f| (f as usize) < self.frames);
+                let end = window.end.min(covered);
+                let mut pos = window.start.max(self.next_pos);
+                let mut last_of_kind = [None; 4];
+                while pos < end && budget > 0 {
+                    let index = stats.frames[pos] as usize;
+                    let frame = store.frame(index);
+                    pos += 1;
+                    budget -= 1;
+                    if !self.filter.keeps_kind(frame.flags) {
+                        continue;
+                    }
+                    let kind = FrameKind::of(frame.flags) as usize;
+                    let previous = if wants_previous {
+                        let previous = last_of_kind[kind].or_else(|| {
+                            let (previous, walked) = previous_of_kind(store, stats, pos - 1);
+                            budget = budget.saturating_sub(walked);
+                            previous
+                        });
+                        last_of_kind[kind] = Some(index);
+                        previous.map(|p| store.frame(p).data)
+                    } else {
+                        None
+                    };
+                    if self.filter.keeps_payload(frame.data, previous) {
+                        self.matched[index / 64] |= 1 << (index % 64);
+                        self.count += 1;
+                    }
+                }
+                if pos < end {
+                    self.next_pos = pos;
+                    return false;
+                }
+            }
+            self.next_key += 1;
+            self.next_pos = 0;
+        }
+        true
+    }
+
+    /// Indices of the matches found, in store (time) order, or an error if there is no memory
+    /// for them.
+    pub fn rows(&self) -> Result<Vec<u32>, TryReserveError> {
         let mut out = Vec::new();
-        out.try_reserve_exact(count)?;
-        for (word_index, &word) in matched.iter().enumerate() {
+        out.try_reserve_exact(self.count)?;
+        for (word_index, &word) in self.matched.iter().enumerate() {
             let mut bits = word;
             while bits != 0 {
                 out.push((word_index * 64 + bits.trailing_zeros() as usize) as u32);
@@ -142,49 +250,73 @@ impl FrameStore {
         }
         Ok(out)
     }
+}
 
-    /// How many frames match `filter`, without keeping them.
-    #[must_use]
-    pub fn count_matches(&self, filter: &FrameFilter) -> usize {
-        let mut count = 0;
-        self.visit_matches(filter, |_| count += 1);
-        count
+/// The frame before position `pos` of `stats` of the same [`FrameKind`], as
+/// [`FrameStore::previous_of_same_kind_at`] finds it, and how many frames were walked back.
+fn previous_of_kind(store: &FrameStore, stats: &IdStats, pos: usize) -> (Option<usize>, usize) {
+    let kind = FrameKind::of(store.frame(stats.frames[pos] as usize).flags);
+    let found = stats.frames[..pos]
+        .iter()
+        .rposition(|&f| FrameKind::of(store.frame(f as usize).flags) == kind);
+    (
+        found.map(|p| stats.frames[p] as usize),
+        pos - found.map_or(0, |p| p + 1),
+    )
+}
+
+impl FrameStore {
+    /// Indices of the frames that match `filter`, in store (time) order, or an error if there
+    /// is no memory for them.
+    pub fn filter(&self, filter: &FrameFilter) -> Result<Vec<u32>, TryReserveError> {
+        let mut pass = FilterPass::new(self, filter.clone())?;
+        pass.step(self, usize::MAX);
+        pass.rows()
     }
 
-    /// Calls `visit` with the index of each matching frame, an ID at a time.
-    fn visit_matches(&self, filter: &FrameFilter, mut visit: impl FnMut(usize)) {
-        if filter.t1_ns < filter.t0_ns {
-            return;
-        }
-        let ids: Vec<&IdStats> = match &filter.keys {
-            Some(keys) => {
-                let mut keys = keys.clone();
-                keys.sort_unstable();
-                keys.dedup();
-                keys.iter().filter_map(|&k| self.id_stats(k)).collect()
-            }
-            None => self.ids().iter().collect(),
-        };
+    /// Appends to `rows` the frames from index `from` on that match `filter`, in store order, so
+    /// the matches of [`FrameStore::filter`] can follow the frames stored after it. On an error
+    /// `rows` is as it was.
+    pub fn extend_matches(
+        &self,
+        filter: &FrameFilter,
+        from: usize,
+        rows: &mut Vec<u32>,
+    ) -> Result<(), TryReserveError> {
+        let kept = rows.len();
+        let keys = filter.keys.as_ref().map(|keys| {
+            let mut keys = keys.clone();
+            keys.sort_unstable();
+            keys
+        });
         let wants_previous = filter.rules.contains(&DataRule::Changes);
-        for stats in ids {
-            if !filter.keeps_id(stats) {
+        for index in from..self.len() {
+            let frame = self.frame(index);
+            let wanted = (filter.t0_ns..=filter.t1_ns).contains(&frame.ts_ns)
+                && filter
+                    .channels
+                    .as_ref()
+                    .is_none_or(|c| c.contains(&frame.channel))
+                && keys
+                    .as_ref()
+                    .is_none_or(|k| k.binary_search(&id_key(frame.channel, frame.id)).is_ok())
+                && filter.keeps_kind(frame.flags);
+            if !wanted {
                 continue;
             }
-            for pos in self.id_frames_between(stats, filter.t0_ns, filter.t1_ns) {
-                let index = stats.frames[pos] as usize;
-                let frame = self.frame(index);
-                if !filter.keeps_kind(frame.flags) {
-                    continue;
+            let previous = wants_previous
+                .then(|| self.previous_of_same_kind(index))
+                .flatten()
+                .map(|p| self.frame(p).data);
+            if filter.keeps_payload(frame.data, previous) {
+                if let Err(e) = rows.try_reserve(1) {
+                    rows.truncate(kept);
+                    return Err(e);
                 }
-                let previous = wants_previous
-                    .then(|| self.previous_of_same_kind_at(stats, pos))
-                    .flatten()
-                    .map(|p| self.frame(p).data);
-                if filter.keeps_payload(frame.data, previous) {
-                    visit(index);
-                }
+                rows.push(index as u32);
             }
         }
+        Ok(())
     }
 }
 
@@ -234,7 +366,16 @@ mod tests {
 
     fn check(s: &FrameStore, filter: &FrameFilter, expected: &[u32]) {
         assert_eq!(s.filter(filter).unwrap(), expected, "{filter:?}");
-        assert_eq!(s.count_matches(filter), expected.len(), "{filter:?}");
+        for budget in [1, 2, 3] {
+            let mut pass = FilterPass::new(s, filter.clone()).unwrap();
+            let mut steps = 0;
+            while !pass.step(s, budget) {
+                steps += 1;
+                assert!(steps <= s.len(), "{filter:?} never ends");
+            }
+            assert_eq!(pass.rows().unwrap(), expected, "{filter:?} by {budget}");
+            assert_eq!(pass.count(), expected.len());
+        }
     }
 
     #[test]
@@ -422,5 +563,79 @@ mod tests {
             ..changes
         };
         check(&s, &late, &[3, 5]);
+    }
+
+    #[test]
+    fn matches_extend_over_frames_stored_later_as_if_found_at_once() {
+        let whole = store();
+        let filters = [
+            FrameFilter::default(),
+            FrameFilter {
+                channels: Some(vec![0]),
+                keys: Some(vec![id_key(0, 0x200), id_key(0, 0x100)]),
+                kinds: Some(vec![FrameKind::Data]),
+                t0_ns: 10,
+                t1_ns: 60,
+                ..FrameFilter::default()
+            },
+            FrameFilter {
+                rules: vec![DataRule::Changes],
+                ..FrameFilter::default()
+            },
+            FrameFilter {
+                t0_ns: 40,
+                t1_ns: 10,
+                ..FrameFilter::default()
+            },
+        ];
+        for filter in &filters {
+            for split in 0..=whole.len() {
+                let mut growing = FrameStore::new();
+                for i in 0..split {
+                    growing.push(whole.frame(i));
+                }
+                let mut rows = growing.filter(filter).unwrap();
+                for i in split..whole.len() {
+                    growing.push(whole.frame(i));
+                }
+                growing.extend_matches(filter, split, &mut rows).unwrap();
+                assert_eq!(rows, whole.filter(filter).unwrap(), "{filter:?} at {split}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_pass_leaves_out_the_frames_stored_after_it_began() {
+        let mut s = store();
+        let mut pass = FilterPass::new(&s, FrameFilter::default()).unwrap();
+        assert!(!pass.step(&s, 3));
+        push(&mut s, 80, 0, 0x100, 0, &[0x01, 0x1F]);
+        push(&mut s, 90, 0, 0x300, 0, &[]);
+        while !pass.step(&s, 3) {}
+        assert_eq!(pass.frames(), 8);
+        assert_eq!(pass.rows().unwrap(), [0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn a_step_counts_the_frames_walked_back_for_a_change() {
+        let mut s = FrameStore::new();
+        push(&mut s, 0, 0, 0x100, flags::RTR, &[]);
+        for t in 1..=10 {
+            push(&mut s, t, 0, 0x100, 0, &[t as u8]);
+        }
+        push(&mut s, 11, 0, 0x100, flags::RTR, &[]);
+        push(&mut s, 12, 0, 0x200, flags::RTR, &[]);
+        let late = FrameFilter {
+            rules: vec![DataRule::Changes],
+            kinds: Some(vec![FrameKind::Remote]),
+            t0_ns: 11,
+            ..FrameFilter::default()
+        };
+        let mut pass = FilterPass::new(&s, late).unwrap();
+        // The remote frame at 11 walks back over the ten data frames to the one at 0, which
+        // leaves no budget for ID 200.
+        assert!(!pass.step(&s, 5));
+        assert!(pass.step(&s, 5));
+        assert_eq!(pass.count(), 0);
     }
 }

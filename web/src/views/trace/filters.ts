@@ -12,9 +12,14 @@ export interface TraceFilters {
   /** Seconds from the start of the log; null leaves that end open. */
   t0: number | null;
   t1: number | null;
+  /**
+   * Chip ids (see `filterChips`) in the order they were edited, the last edited at the end.
+   * Filters saved before this was kept have none, and count as edited in display order.
+   */
+  edited?: string[];
 }
 
-export const NO_FILTERS: TraceFilters = { channels: null, keys: [], kinds: null, rules: [], combine: 'all', t0: null, t1: null };
+export const NO_FILTERS: TraceFilters = { channels: null, keys: [], kinds: null, rules: [], combine: 'all', t0: null, t1: null, edited: [] };
 
 export const KINDS: { kind: FrameKind; label: string }[] = [
   { kind: 'data', label: 'Data' },
@@ -66,15 +71,36 @@ export interface FilterChip {
   without: TraceFilters;
 }
 
+/** The chip id of data rule `index`. */
+export function ruleChipId(index: number): string {
+  return `rule-${index}`;
+}
+
+function ruleIndexOf(chipId: string): number | null {
+  return chipId.startsWith('rule-') ? Number(chipId.slice(5)) : null;
+}
+
+/** `edited` without chip `id`, the rules after a removed rule numbered down to follow it. */
+function editedWithout(edited: string[] | undefined, id: string): string[] {
+  const removed = ruleIndexOf(id);
+  return (edited ?? [])
+    .filter((e) => e !== id)
+    .map((e) => {
+      const rule = ruleIndexOf(e);
+      return removed !== null && rule !== null && rule > removed ? ruleChipId(rule - 1) : e;
+    });
+}
+
 /**
  * One removable chip per part of the filters, in a fixed order: bus, IDs, kinds, time, then
- * each data rule. "Remove last filter" takes the last one.
+ * each data rule.
  */
 export function filterChips(f: TraceFilters, channels: string[], ids: IdSummary[]): FilterChip[] {
   const chips: FilterChip[] = [];
+  const without = (id: string, patch: Partial<TraceFilters>): TraceFilters => ({ ...f, ...patch, edited: editedWithout(f.edited, id) });
   if (f.channels !== null) {
     const names = f.channels.map((c) => channels[c] ?? `bus ${c}`);
-    chips.push({ id: 'bus', label: names.length > 0 ? names.join(', ') : 'No bus', without: { ...f, channels: null } });
+    chips.push({ id: 'bus', label: names.length > 0 ? names.join(', ') : 'No bus', without: without('bus', { channels: null }) });
   }
   if (f.keys.length > 0) {
     const labels = f.keys.map((key) => {
@@ -84,20 +110,30 @@ export function filterChips(f: TraceFilters, channels: string[], ids: IdSummary[
       return onOtherBus ? `${idLabel(s)} on ${channels[s.channel] ?? `bus ${s.channel}`}` : idLabel(s);
     });
     const shown = labels.slice(0, 3).join(', ');
-    chips.push({ id: 'ids', label: labels.length > 3 ? `${shown} +${labels.length - 3}` : shown, without: { ...f, keys: [] } });
+    chips.push({ id: 'ids', label: labels.length > 3 ? `${shown} +${labels.length - 3}` : shown, without: without('ids', { keys: [] }) });
   }
   if (f.kinds !== null) {
     const names = KINDS.filter((k) => f.kinds!.includes(k.kind)).map((k) => k.label);
-    chips.push({ id: 'kinds', label: names.length > 0 ? names.join(', ') : 'No frame kind', without: { ...f, kinds: null } });
+    chips.push({ id: 'kinds', label: names.length > 0 ? names.join(', ') : 'No frame kind', without: without('kinds', { kinds: null }) });
   }
   if (f.t0 !== null || f.t1 !== null) {
-    chips.push({ id: 'time', label: timeLabel(f.t0, f.t1), without: { ...f, t0: null, t1: null } });
+    chips.push({ id: 'time', label: timeLabel(f.t0, f.t1), without: without('time', { t0: null, t1: null }) });
   }
   f.rules.forEach((rule, i) => {
     const rules = f.rules.filter((_, j) => j !== i);
-    chips.push({ id: `rule-${i}`, label: ruleLabel(rule), without: { ...f, rules, combine: rules.length > 1 ? f.combine : 'all' } });
+    const id = ruleChipId(i);
+    chips.push({ id, label: ruleLabel(rule), without: without(id, { rules, combine: rules.length > 1 ? f.combine : 'all' }) });
   });
   return chips;
+}
+
+/** The chip of the filter edited last, which "Remove last filter" removes. */
+export function lastEditedChip(chips: FilterChip[], edited: string[] = []): FilterChip {
+  for (let i = edited.length - 1; i >= 0; i--) {
+    const chip = chips.find((c) => c.id === edited[i]);
+    if (chip) return chip;
+  }
+  return chips[chips.length - 1];
 }
 
 /**

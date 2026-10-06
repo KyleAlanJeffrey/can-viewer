@@ -75,6 +75,23 @@ function Switcher(props: ViewProps) {
   );
 }
 
+/** The Trace view over a capture, with buttons that add 200 frames to it as a refresh would, and stop it. */
+function GrowingCapture(props: ViewProps) {
+  const [log, setLog] = useState(() => logInfo({ format: 'capture', frames: FRAMES, channels: ['can0', 'can1'], durationS: 100 }));
+  const [capturing, setCapturing] = useState(true);
+  return (
+    <>
+      <button type="button" onClick={() => setLog((l) => ({ ...l, frames: l.frames + 200 }))}>
+        More frames
+      </button>
+      <button type="button" onClick={() => setCapturing(false)}>
+        Stop
+      </button>
+      <TraceView ctx={{ ...props.ctx, log, capturing }} />
+    </>
+  );
+}
+
 const sheet = () => screen.getByRole('dialog', { name: 'Trace filters' });
 const preview = () => within(sheet()).getByRole('status').textContent;
 const chips = () =>
@@ -200,6 +217,78 @@ describe('Trace filters', () => {
     expect(screen.queryByRole('list', { name: 'Applied filters' })).toBeNull();
   });
 
+  it('removes the filter edited last, whatever its place among the chips', async () => {
+    const { user, setTraceFilter } = renderFilters((f) => (f.channels === null ? MATCHES : 0));
+    await addByteRule(user, '1F');
+    await user.click(within(sheet()).getByRole('checkbox', { name: 'can1' }));
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    expect(await screen.findByRole('heading', { name: 'No frames match these filters' })).toBeTruthy();
+    expect(chips()).toEqual(['can0', 'Byte 2 = 1F']);
+
+    await user.click(screen.getByRole('button', { name: 'Remove last filter, can0' }));
+    await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, rules: [{ type: 'byteEquals', byte: 2, value: 0x1f }] }));
+
+    // Editing the rule again, after the bus, makes the rule the last edited.
+    await openSheet(user);
+    await user.click(within(sheet()).getByRole('checkbox', { name: 'can1' }));
+    const value = within(sheet()).getByRole('textbox', { name: 'Rule 1 value, hex' });
+    await user.clear(value);
+    await user.type(value, '20');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    await user.click(await screen.findByRole('button', { name: 'Remove last filter, Byte 2 = 20' }));
+    await waitFor(() => expect(setTraceFilter).toHaveBeenLastCalledWith({ ...NONE, channels: [0] }));
+  });
+
+  it('says when a filter matched only bytes of a long transfer past those the trace shows', async () => {
+    const { user, rows } = renderFilters();
+    const long = (key: number, start: number) =>
+      makeRowBatch(key, start, [{ t: 0, id: 0x18feca00, index: 0, data: Array.from({ length: 64 }, () => 0), fullLength: 100 }]);
+    rows.mockImplementation(async (key, start) => long(key, start));
+    await openSheet(user);
+    await user.click(within(sheet()).getByRole('button', { name: 'Add rule' }));
+    const byte = within(sheet()).getByRole('textbox', { name: 'Rule 1 byte' });
+    await user.clear(byte);
+    await user.type(byte, '70');
+    await user.type(within(sheet()).getByRole('textbox', { name: 'Rule 1 value, hex' }), '1F');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+
+    const grid = screen.getByRole('grid', { name: 'Frame trace' });
+    await waitFor(() => expect(within(grid).getAllByRole('row').length).toBeGreaterThan(1));
+    const dataCell = within(within(grid).getAllByRole('row')[1]).getAllByRole('gridcell').at(-1);
+    expect(dataCell?.textContent).toMatch(/\u2026 \(100 bytes, filter matched past byte 63\)$/);
+  });
+
+  it('filters a capture while it records, the count following the frames that come', async () => {
+    const { user, core, setTraceFilter } = renderFilters(undefined, { view: GrowingCapture });
+    let kept: number | null = MATCHES;
+    core.filteredRowCount = async () => kept;
+    await addByteRule(user, '1F');
+    await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
+    await waitFor(() => expect(countLine()).toBe(`${MATCHES} of 1,000 frames match`));
+    expect(applied(setTraceFilter)).toHaveLength(1);
+
+    kept = MATCHES + 8;
+    await user.click(screen.getByRole('button', { name: 'More frames' }));
+    await waitFor(() => expect(countLine()).toBe(`${MATCHES + 8} of 1,200 frames match`));
+    // The core added the new matches itself; the log is not filtered again.
+    expect(applied(setTraceFilter)).toHaveLength(1);
+
+    // Out of memory, the core dropped the filter and recorded on.
+    kept = null;
+    await user.click(screen.getByRole('button', { name: 'More frames' }));
+    expect(await screen.findByText(/The filters were turned off: there was no memory left/)).toBeTruthy();
+    expect(screen.queryByRole('list', { name: 'Applied filters' })).toBeNull();
+    expect(await screen.findByRole('grid', { name: 'Frame trace' })).toBeTruthy();
+  });
+
+  it('fetches the rows again when the capture stops, since stopping may sort its frames', async () => {
+    const { user, rows } = renderFilters(undefined, { view: GrowingCapture });
+    await waitFor(() => expect(rows).toHaveBeenCalled());
+    const fetched = rows.mock.calls.length;
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(rows.mock.calls.length).toBeGreaterThan(fetched));
+  });
+
   it('narrows the filters to the ID picked in the sidebar', async () => {
     const { user, setTraceFilter } = renderFilters((f) => (f.keys?.length === 0 ? 0 : MATCHES));
     await openSheet(user);
@@ -267,6 +356,11 @@ describe('Trace filters', () => {
     );
     // Every edit above came within the delay of the one before, so each settled draft was counted once.
     expect(countFilterMatches.mock.calls.length).toBeLessThanOrEqual(3);
+
+    await user.selectOptions(within(second).getByRole('combobox', { name: 'Rule 2 type' }), 'Any byte changes');
+    expect(within(sheet()).getByText(/a payload that only gets longer or shorter is not a change/)).toBeTruthy();
+    await user.selectOptions(within(second).getByRole('combobox', { name: 'Rule 2 type' }), 'Bit is clear');
+    await user.selectOptions(within(second).getByRole('combobox', { name: 'Rule 2 bit' }), '3');
 
     await user.click(within(sheet()).getByRole('button', { name: 'Apply filters' }));
     await waitFor(() => expect(chips()).toEqual(['Any ofByte 2 = 1F', 'Byte 0 bit 3 clear']));

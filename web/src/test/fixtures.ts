@@ -121,6 +121,7 @@ export function fakeCore(overrides: Partial<CoreApi> = {}): CoreApi {
     endCapture: notInFake('endCapture'),
     idSummary: notInFake('idSummary'),
     rowCount: notInFake('rowCount'),
+    filteredRowCount: notInFake('filteredRowCount'),
     rows: notInFake('rows'),
     frameData: notInFake('frameData'),
     rowBytes: notInFake('rowBytes'),

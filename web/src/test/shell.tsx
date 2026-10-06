@@ -18,6 +18,7 @@ export interface ShellState {
   error: string | null;
   /** Tasks passed to ctx.run that haven't finished. */
   running: number;
+  viewState: ViewStateStore;
 }
 
 export interface ShellOptions {
@@ -60,7 +61,7 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
   // Changes apply in call order to the latest list, as App's mutateDbcs does.
   const latestDbcs = useRef(dbcs);
   const labels = useRef<string[]>([]);
-  Object.assign(state, { dbcs, selected, pinnedTime, plots, view, error });
+  Object.assign(state, { dbcs, selected, pinnedTime, plots, view, error, viewState: store });
 
   const mutateDbcs = useCallback(async (change: (prev: LoadedDbc[]) => LoadedDbc[]) => {
     latestDbcs.current = change(latestDbcs.current);

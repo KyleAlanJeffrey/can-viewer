@@ -159,7 +159,8 @@ export function TraceTable({ core, filterKey, rowCount, logVersion, follow = fal
     return () => {
       stale = true;
     };
-  }, [core, filterKey, top, visible, rowCount, logVersion]);
+    // `follow` ends with a capture, which may sort its frames, so the rows are fetched again.
+  }, [core, filterKey, top, visible, rowCount, logVersion, follow]);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -450,7 +451,7 @@ function draw(
             dx += pitch;
           }
           const data = batch.data(i);
-          const cut = lengthNote(batch, i);
+          const cut = lengthNote(batch, i, matchedBytes);
           const room = cx + w - dx - (cut ? ctx.measureText(cut).width : 0);
           const fits = Math.max(0, Math.floor(room / pitch));
           const shown = Math.min(data.length, fits);
@@ -495,10 +496,15 @@ function rowDomId(prefix: string, row: number): string {
   return `${prefix}-row-${row}`;
 }
 
-/** A reassembled J1939 transfer longer than the row's 64 bytes says how long it is. */
-function lengthNote(batch: RowBatch, i: number): string | null {
+/**
+ * A reassembled J1939 transfer longer than the row's 64 bytes says how long it is, and, when the
+ * filter matched none of the bytes shown, that it matched bytes the trace doesn't show.
+ */
+function lengthNote(batch: RowBatch, i: number, matchedBytes?: Props['matchedBytes']): string | null {
   const len = batch.fullLength(i);
-  return len > batch.len(i) ? `\u2026 (${len} bytes)` : null;
+  if (len <= batch.len(i)) return null;
+  const matchedUnseen = matchedBytes?.(batch, i).length === 0;
+  return `\u2026 (${len} bytes${matchedUnseen ? `, filter matched past byte ${batch.len(i) - 1}` : ''})`;
 }
 
 /** A cell's text. The canvas clips long names and drops the data bytes that don't fit; this doesn't. */
@@ -527,7 +533,7 @@ function cellText(
     case 'data': {
       const parts = flags & FLAG_FD ? ['FD'] : [];
       for (const b of batch.data(i)) parts.push(HEX[b]);
-      const note = lengthNote(batch, i);
+      const note = lengthNote(batch, i, matchedBytes);
       if (note) parts.push(note);
       const matched = matchedBytes?.(batch, i) ?? [];
       const why = matched.length === 0 ? '' : `, filter matched ${matched.length === 1 ? 'byte' : 'bytes'} ${matched.join(', ')}`;

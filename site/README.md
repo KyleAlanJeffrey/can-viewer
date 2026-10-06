@@ -43,7 +43,15 @@ npx wrangler dev
 python3 -m http.server 8000 --directory public
 ```
 
+From the repository root, this one applies `_headers`, clean URLs and the 404 page too, with no install:
+
+```bash
+node scripts/serve-static.mjs site/public --404-page
+```
+
 `wrangler dev` applies `_headers`, clean-URL handling and the 404 page as Cloudflare will. `http.server` does not, but is enough for checking copy and layout. Buttons point at `https://app.freecanstudio.com/`, not at a local app.
+
+CI takes screenshots of every page at 1440 and 390 px and fails on a CSP violation, a failed request or a page wider than a phone; see "Screenshots" in [CONTRIBUTING.md](../CONTRIBUTING.md#screenshots).
 
 ## Deploy
 

@@ -69,8 +69,53 @@ jobs:
       - name: Build wasm
         run: pnpm --dir web run wasm
 
+      # The screenshots job opens the demo, which the build copies into web/dist.
+      - name: Generate the demo
+        run: pnpm --dir web run demo
+
       - name: Type-check and build
         run: pnpm --dir web build
 
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-dist
+          path: web/dist/
+          retention-days: 3
+          if-no-files-found: error
+          overwrite: true
+
       - name: Web tests
         run: pnpm --dir web test
+
+  # Screenshots of the landing site and the built app, under their real CSP. See CONTRIBUTING.md.
+  screenshots:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Node 22 for its built-in WebSocket; the script has no dependencies to install.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web-dist
+          path: web/dist
+
+      # Uses the Google Chrome preinstalled on the runner.
+      - name: Take screenshots
+        run: node scripts/screenshots.mjs
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: screenshots
+          path: target/screenshots/
+          retention-days: 14
+          if-no-files-found: warn
+          overwrite: true

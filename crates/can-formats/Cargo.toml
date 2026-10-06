@@ -9,3 +9,7 @@ publish.workspace = true
 can-core.workspace = true
 memchr.workspace = true
 miniz_oxide.workspace = true
+
+[features]
+# The MF4 test file builder, for the tests of crates that read logs.
+test-util = []

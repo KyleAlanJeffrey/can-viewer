@@ -27,7 +27,7 @@ use wasm_bindgen::prelude::*;
 use export::ChunkedFile;
 use find::Behaviour;
 pub use parts::parse_segment;
-use parts::{ObjectCuts, Part, ReadStats};
+use parts::{part_ranges, ObjectCuts, Part, ReadStats};
 use series::Series;
 
 /// Bytes per row returned by [`Session::rows`]; see `web/src/core/rows.ts` for the layout.
@@ -314,7 +314,10 @@ impl LogInput {
         if self.refused {
             return;
         }
-        if self.format() == Format::Mf4 && self.total_bytes <= mf4::MAX_FILE as f64 {
+        if self.format() == Format::Mf4
+            && self.total_bytes <= mf4::MAX_FILE as f64
+            && !self.reads_mf4_in_parts()
+        {
             self.reserve(Format::Mf4, store);
         }
         if let Some(parts) = &mut self.parts {
@@ -409,6 +412,57 @@ impl LogInput {
         match &mut self.cuts {
             Cuts::Objects(cuts) => Some(cuts.push(chunk)),
             _ => None,
+        }
+    }
+
+    fn mf4_parser(&self) -> Option<&mf4::Mf4Parser> {
+        match &self.parser {
+            Some(AnyParser::Mf4(parser)) if !self.refused => Some(parser),
+            _ => None,
+        }
+    }
+
+    fn reads_mf4_in_parts(&self) -> bool {
+        self.mf4_parser()
+            .is_some_and(mf4::Mf4Parser::reads_in_parts)
+    }
+
+    /// See [`Session::plan_parts`].
+    fn plan_parts(&mut self, part_bytes: f64, store: &mut FrameStore) -> Option<u32> {
+        if self.refused || self.parts.is_some() {
+            return None;
+        }
+        let Some(AnyParser::Mf4(parser)) = &mut self.parser else {
+            return None;
+        };
+        let count = parser.plan_parts(part_bytes as u64)?;
+        // As `finish` would before reading the frames.
+        if self.total_bytes <= mf4::MAX_FILE as f64 {
+            self.reserve(Format::Mf4, store);
+        }
+        if self.refused {
+            return None;
+        }
+        u32::try_from(count).ok()
+    }
+
+    fn part_task(&self, index: u32) -> Option<&mf4::PartTask> {
+        self.mf4_parser()?.part_task(index as usize)
+    }
+
+    /// See [`Session::join_part`]. Like `push`, sets `refused` once the store outgrows `limit`.
+    fn join_mf4_part(&mut self, index: u32, part: &[u8], store: &mut FrameStore) -> i32 {
+        let joined = match &mut self.parser {
+            Some(AnyParser::Mf4(parser)) if !self.refused => {
+                parser.join_part(index as usize, part, store)
+            }
+            _ => None,
+        };
+        self.refuse_if_over_limit(store);
+        match joined {
+            Some(mf4::Joined::Needs(next)) => i32::try_from(next).unwrap_or(-2),
+            Some(mf4::Joined::Done) => -1,
+            None => -2,
         }
     }
 
@@ -775,6 +829,41 @@ impl Session {
     pub fn push_segment(&mut self, segment: &[u8]) -> bool {
         self.discovery.store_changed();
         self.input.push_part(segment, &mut self.store).is_ok()
+    }
+
+    /// For a log whose frames are read once the whole file is in (MF4), after every chunk is
+    /// pushed: plans reading its frames in parts of about `part_bytes` of its data each, by
+    /// [`read_mf4_part`] in other workers, and returns how many parts there are. Each part is
+    /// read from the bytes of the file in [`Session::part_ranges`], joined, with
+    /// [`Session::part_task`], and joined with [`Session::join_part`], before `finish`. None
+    /// for a log to `finish` here.
+    pub fn plan_parts(&mut self, part_bytes: f64) -> Option<u32> {
+        if self.capture.is_some() {
+            return None;
+        }
+        self.discovery.store_changed();
+        self.input.plan_parts(part_bytes, &mut self.store)
+    }
+
+    /// The task of part `index` of the plan, for [`read_mf4_part`].
+    #[must_use]
+    pub fn part_task(&self, index: u32) -> Option<Vec<u8>> {
+        Some(self.input.part_task(index)?.task.clone())
+    }
+
+    /// The byte ranges of the file that part `index` of the plan reads, `[start, end, ...]`.
+    #[must_use]
+    pub fn part_ranges(&self, index: u32) -> Option<Vec<f64>> {
+        Some(part_ranges(self.input.part_task(index)?))
+    }
+
+    /// Joins part `index` of the plan, as read by [`read_mf4_part`], merging its frames with
+    /// those of the parts joined before. Returns the part to join next (part 0 first), -1 once
+    /// every part is joined, or -2 when the part can't be joined, and the log must be read again
+    /// from the start in a new session.
+    pub fn join_part(&mut self, index: u32, part: &[u8]) -> i32 {
+        self.discovery.store_changed();
+        self.input.join_mf4_part(index, part, &mut self.store)
     }
 
     /// Flush the parser and return a JSON `LogInfo`.

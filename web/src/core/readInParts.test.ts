@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CHUNK_BYTES, READY_MS, lineStart, partBytes, readChunks, readInParts, taskBytes, type PartTask, type PartWorker, type ReadSession } from './readInParts';
+import { CHUNK_BYTES, READY_MS, lineStart, partBytes, rangeBytes, readChunks, readInParts, taskBytes, type FramePartTask, type PartTask, type PartWorker, type ReadSession } from './readInParts';
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const realSetTimeout = globalThis.setTimeout;
@@ -38,6 +38,110 @@ class RecordingSession implements ReadSession {
   }
   object_cuts(_chunk: Uint8Array, _partBytes: number): Float64Array | undefined {
     return undefined;
+  }
+  plan_parts(_partBytes: number): number | undefined {
+    return undefined;
+  }
+  part_task(_index: number): Uint8Array | undefined {
+    return undefined;
+  }
+  part_ranges(_index: number): Float64Array | undefined {
+    return undefined;
+  }
+  join_part(_index: number, _part: Uint8Array) {
+    return -2;
+  }
+}
+
+/**
+ * A session for a log whose frames it reads in parts once the whole file is pushed, as an MF4
+ * log's are: part `i` is the bytes of the file in `ranges(i)`, and it asks for the parts in
+ * `order`, as it would merging them by time.
+ */
+class FrameSession extends RecordingSession {
+  constructor(
+    private readonly order: number[],
+    private readonly refuseNth = -1,
+    /** Parts planned, when the log ends at a limit before the session asks for them all. */
+    private readonly count = order.length,
+  ) {
+    super(undefined);
+  }
+  ranges(index: number) {
+    return Float64Array.from([index * 9, index * 9 + 4, index * 9 + 6, index * 9 + 7]);
+  }
+  plan_parts(_partBytes: number) {
+    return this.count;
+  }
+  part_task(index: number) {
+    return index < this.count ? Uint8Array.of(index) : undefined;
+  }
+  part_ranges(index: number) {
+    return index < this.count ? this.ranges(index) : undefined;
+  }
+  join_part(index: number, part: Uint8Array) {
+    const { task, body } = JSON.parse(text(part)) as { task: number; body: string };
+    if (this.joined.length === this.refuseNth) return -2;
+    expect(index).toBe(this.order[this.joined.length]);
+    expect(task).toBe(index);
+    const [a, b, c, d] = this.ranges(index);
+    expect(body).toBe(this.bytes.slice(a, b) + this.bytes.slice(c, d));
+    this.joined.push(index);
+    return this.order[this.joined.length] ?? -1;
+  }
+}
+
+/** Reads a part of a log's frames as the real worker does, answering after `delay(index)` ms. */
+class FrameWorker implements PartWorker {
+  static reading = 0;
+  static mostReading = 0;
+  closed = false;
+  /** The parts whose reads got past their delay. */
+  partsRead: number[] = [];
+  private stops: (() => void)[] = [];
+  ready = Promise.resolve();
+  constructor(
+    private readonly delay: (index: number) => number = () => 0,
+    private readonly failAt = -1,
+    private readonly session?: FrameSession,
+  ) {}
+  async read(task: PartTask | FramePartTask) {
+    if (!('ranges' in task)) throw new Error('not a part of frames');
+    FrameWorker.reading += 1;
+    // Parts read or reading but not yet joined, which the session last asked for counted out.
+    const held = FrameWorker.reading - (this.session?.joined.length ?? 0);
+    FrameWorker.mostReading = Math.max(FrameWorker.mostReading, held);
+    const body = text(await rangeBytes(task.file, task.ranges));
+    // Closing stops a read at once, as terminating the real worker does.
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, this.delay(task.task[0]));
+      this.stops.push(() => {
+        clearTimeout(timer);
+        reject(new Error('closed'));
+      });
+    });
+    if (this.closed) throw new Error('closed');
+    this.partsRead.push(task.task[0]);
+    if (task.task[0] === this.failAt) throw new Error('out of memory');
+    return new TextEncoder().encode(JSON.stringify({ task: task.task[0], body }));
+  }
+  close() {
+    this.closed = true;
+    const stops = this.stops;
+    this.stops = [];
+    for (const stop of stops) stop();
+  }
+}
+
+/** A `FrameWorker` that is still loading until it is closed, which fails its load as a real one's. */
+class LoadingFrameWorker extends FrameWorker {
+  private stopLoading: (err: Error) => void = () => undefined;
+  ready = new Promise<void>((_, reject) => {
+    this.stopLoading = reject;
+  });
+  close() {
+    super.close();
+    this.stopLoading(new Error('closed'));
   }
 }
 
@@ -510,5 +614,182 @@ describe('reading a log in parts', () => {
     expect(workers.every((worker) => worker.closed)).toBe(true);
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  describe('of frames planned once the whole log is read', () => {
+    // Asks for part 0 first, then the rest out of plan order, as merging the parts by time does.
+    const order = [0, 3, 1, 7, 2, 4, 9, 5, 6, 8, 10, 11, 13, 12];
+    const content = log(40);
+
+    it('reads the parts in the ranges the session gives, joining each when the session asks for it', async () => {
+      FrameWorker.reading = 0;
+      FrameWorker.mostReading = 0;
+      const session = new FrameSession(order);
+      const workers: FrameWorker[] = [];
+      const progress: number[] = [];
+      const read = await readInParts(
+        new Blob([content]),
+        session,
+        {
+          workers: 2,
+          startWorker: () => {
+            const worker = new FrameWorker((index) => (index * 7) % 5, -1, session);
+            workers.push(worker);
+            return worker;
+          },
+        },
+        (bytes) => progress.push(bytes),
+      );
+      expect(read).toBe(true);
+      expect(session.bytes).toBe(content);
+      expect(session.joined).toEqual(order);
+      expect(progress.at(-1)).toBe(content.length);
+      expect(workers).toHaveLength(2);
+      expect(workers.every((worker) => worker.closed)).toBe(true);
+      // Two per worker read ahead, and the part the session waits for.
+      expect(FrameWorker.mostReading).toBeLessThanOrEqual(2 * 2 + 1);
+    });
+
+    it('starts no more workers than there are parts', async () => {
+      const workers: FrameWorker[] = [];
+      const session = new FrameSession([0, 1]);
+      const startWorker = () => {
+        const worker = new FrameWorker();
+        workers.push(worker);
+        return worker;
+      };
+      expect(await readInParts(new Blob([content]), session, { workers: 6, startWorker }, () => undefined)).toBe(true);
+      expect(session.joined).toEqual([0, 1]);
+      expect(workers).toHaveLength(2);
+    });
+
+    it('stops reading parts, without a warning, once the session has every frame it will join', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workers: FrameWorker[] = [];
+      const session = new FrameSession([0, 2, 1], -1, 40);
+      const startWorker = () => {
+        const worker = new FrameWorker((index) => (index < 3 ? 0 : 50));
+        workers.push(worker);
+        return worker;
+      };
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
+      expect(session.joined).toEqual([0, 2, 1]);
+      expect(workers.every((worker) => worker.closed)).toBe(true);
+      // The slow reads of the parts after them were stopped, not waited for.
+      expect(workers.flatMap((worker) => worker.partsRead).sort()).toEqual([0, 1, 2]);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('ends, without a warning, when the session has every frame while the read-ahead is full', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workers: FrameWorker[] = [];
+      // Part 9 is asked for once the read-ahead is full, and the read of part 3 is closed unfinished.
+      const session = new FrameSession([0, 1, 9], -1, 12);
+      const startWorker = () => {
+        const worker = new FrameWorker((index) => (index === 1 ? 10 : index === 3 ? 1000 : 0));
+        workers.push(worker);
+        return worker;
+      };
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
+      expect(session.joined).toEqual([0, 1, 9]);
+      expect(workers.every((worker) => worker.closed)).toBe(true);
+      expect(workers.flatMap((worker) => worker.partsRead)).not.toContain(3);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('counts a worker still loading when the session has every frame as closed, not failed', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workers: FrameWorker[] = [];
+      const session = new FrameSession([0, 1], -1, 5);
+      const startWorker = () => {
+        const worker = workers.length < 2 ? new FrameWorker() : new LoadingFrameWorker();
+        workers.push(worker);
+        return worker;
+      };
+      expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(true);
+      expect(session.joined).toEqual([0, 1]);
+      expect(workers.every((worker) => worker.closed)).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('gives up, closing every worker, when a part is refused or a worker fails', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      for (const [refuseNth, failAt] of [
+        [4, -1],
+        [-1, 7],
+        [0, -1],
+      ]) {
+        const workers: FrameWorker[] = [];
+        const session = new FrameSession(order, refuseNth);
+        const startWorker = () => {
+          const worker = new FrameWorker((index) => index % 3, failAt);
+          workers.push(worker);
+          return worker;
+        };
+        expect(await readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).toBe(false);
+        expect(session.joined.length).toBeLessThan(order.length);
+        expect(workers.every((worker) => worker.closed)).toBe(true);
+      }
+      warn.mockRestore();
+    });
+
+    it('closes every worker at once and rejects with the reason when the read is aborted', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workers: PartWorker[] = [];
+      const startWorker = () => {
+        let closed = (_: Error) => {};
+        const worker = {
+          ready: Promise.resolve(),
+          read: vi.fn(
+            () =>
+              new Promise<Uint8Array>((_, reject) => {
+                closed = reject;
+              }),
+          ),
+          close: vi.fn(() => closed(new Error('closed'))),
+        };
+        workers.push(worker);
+        return worker;
+      };
+      const session = new FrameSession(order);
+      const stop = new AbortController();
+      const reading = readInParts(new Blob([content]), session, { workers: 3, signal: stop.signal, startWorker }, () => undefined);
+      await vi.waitUntil(() => workers.length === 3 && workers.every((worker) => vi.mocked(worker.read).mock.calls.length === 1));
+      const reason = new DOMException('superseded', 'AbortError');
+      stop.abort(reason);
+      expect(workers.every((worker) => vi.mocked(worker.close).mock.calls.length > 0)).toBe(true);
+      await expect(reading).rejects.toBe(reason);
+      expect(session.joined).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('stops the other workers, without a warning, when joining a part throws', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workers: FrameWorker[] = [];
+      const session = new FrameSession(order);
+      session.join_part = () => {
+        throw new Error('log B is too large');
+      };
+      const startWorker = () => {
+        const worker = new FrameWorker((index) => (index === 0 ? 0 : 5));
+        workers.push(worker);
+        return worker;
+      };
+      await expect(readInParts(new Blob([content]), session, { workers: 3, startWorker }, () => undefined)).rejects.toThrow('too large');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(workers.every((worker) => worker.closed)).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+  });
+
+  it('joins the bytes of a file in ranges', async () => {
+    const file = new Blob(['0123456789']);
+    expect(text(await rangeBytes(file, Float64Array.from([1, 3, 3, 4, 8, 10])))).toBe('12389');
+    expect(await rangeBytes(file, new Float64Array())).toHaveLength(0);
   });
 });

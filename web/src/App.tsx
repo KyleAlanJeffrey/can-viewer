@@ -17,6 +17,7 @@ import { forget, loadSaved, loadSavedDbcs, onDbcsChangedElsewhere, save, saveDbc
 import { VIEWS, viewMeta } from './views';
 import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { chooseBlobFile } from './views/shared/saveFile';
+import { BUS_BITRATES_KEY } from './views/shared/busBitrates';
 import { ViewStateContext, ViewStateStore } from './views/shared/viewState';
 import { SlotContext } from './views/slots';
 import type { LoadedDbc, ViewContext, ViewId } from './views/types';
@@ -572,6 +573,7 @@ export function App({ core }: { core: CoreApi }) {
         setLiveStatus(recorder.status());
         setUnsavedCapture(true);
         viewState.clearScope('log');
+        viewState.set(BUS_BITRATES_KEY, { [recorder.bus]: settings.bitrate }, 'log');
         setView('trace');
         // Only a saved capture comes back after a reload. The core dropped log B with the old log.
         void forget('log');

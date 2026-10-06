@@ -61,7 +61,7 @@ A separate static site on `freecanstudio.com`, with the app moving to `app.freec
 - [ ] gs_usb: CAN FD (data bitrate through `BT_CONST_EXT` and `DATA_BITTIMING`) and a choice of channel on multi-channel adapters; today classic CAN on the first channel
 - [ ] slcan: a serial speed setting for adapters behind a UART at a baud rate other than 115200, and custom bit timing (`s`) for bitrates outside `S0` to `S8`
 - [x] Name the capture's bus (always `can0` before), so a DBC scoped to another bus applies to it: a Bus name field in the Capture sheet, `can0` by default, suggesting the DBCs' buses and kept with the adapter chosen
-- [ ] Overview bus load assumes 500 kbit/s for every log; use the capture's bitrate, and let the user set it for opened logs
+- [x] Overview bus load assumed 500 kbit/s for every log; it now uses the capture's bitrate, and a bitrate select per bus in the bus load card sets it for opened logs (kept in the view state with the log). `busLoad` already took a bitrate, so the core is unchanged; CAN FD data phases still count at the nominal rate
 - [x] Warn before a long capture reaches the wasm memory cap (about 65 bytes a frame), and stop it by itself before it does
 - [x] slcan on a CANable: learn whether the adapter answers from `S` rather than `V`, confirm listen-only only through `L`, read frames only once the open command is written, write `C` before closing the port, and give up on an adapter that doesn't start within 10 s (PR #39)
 - [ ] Offer a rolling capture that keeps the last N minutes

@@ -114,7 +114,8 @@ export class CaptureRecorder {
   private lastProblem: string | null = null;
   private origin = 0;
   private bitrate = 0;
-  private bus = CAPTURE_CHANNEL;
+  /** The bus name the frames are stored under, once started. */
+  bus = CAPTURE_CHANNEL;
   /** Whether the adapter confirmed listen-only mode. */
   private listenOnly = false;
   private samples: [number, number][] = [];

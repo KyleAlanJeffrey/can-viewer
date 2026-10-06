@@ -356,3 +356,9 @@
   font-family: var(--font-ui);
   line-height: 18px;
 }
+
+.ov-bitrate {
+  height: 24px;
+  padding-left: 6px;
+  font-size: 12px;
+}

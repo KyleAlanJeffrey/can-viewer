@@ -300,6 +300,12 @@ describe('results', () => {
     expect(screen.queryByText(/Loading/, { selector: '.cmp-grid-empty' })).toBeNull();
   });
 
+  it('says log A has no payload bytes when it holds only remote frames, beside log B\'s grid', async () => {
+    renderInShell(CompareView, { core: compareCore(RESULTS, { compareBytes: async () => bytes({ payloadsA: 0 }) }) });
+    expect(await screen.findByText('No payload bytes in log A.')).toBeTruthy();
+    expect(screen.queryByText('No payload bytes in log B.')).toBeNull();
+  });
+
   it('opens the selected ID and byte in Reverse Engineer on log A', async () => {
     const { user, state } = renderInShell(CompareView, { core: compareCore() });
     await screen.findByRole('heading', { name: '450BODY' });

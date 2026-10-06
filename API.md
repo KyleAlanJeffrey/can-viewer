@@ -413,7 +413,7 @@ One ID compared byte by byte. Returned by [`compareBytes`](#comparebytes). Per-b
 - **`len`** `number` - Bytes described: the longer payload of the two logs, at most 64.
 - **`framesA`** `number` - Frames of the ID in log A, 0 if none.
 - **`framesB`** `number` - Frames of the ID in log B, 0 if none.
-- **`payloadsA`** `number` - Data frames and reassembled J1939 transfers of the ID in log A, the frames `flipsA` pairs up: `framesA` without remote frames. 0 if none.
+- **`payloadsA`** `number` - Data frames and reassembled J1939 transfers of the ID in log A, the frames `flipsA` pairs up: `framesA` without remote or error frames. 0 if none.
 - **`payloadsB`** `number` - The same for log B.
 - **`flipsA`** `number[]` - How often each bit toggled from the previous frame of the ID and the same kind in log A, as [`bitFlips`](#bitflips) counts them over its first `len` bytes, so a polled ID's remote frames don't hide its changes; `len * 8` counts, zeros when log A lacks the ID.
 - **`flipsB`** `number[]` - The same for log B.

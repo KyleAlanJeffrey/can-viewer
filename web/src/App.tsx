@@ -495,7 +495,10 @@ export function App({ core }: { core: CoreApi }) {
                 if (read.stopped) return;
                 // The core let the log shown go when this read began. It is reopened, as Cancel
                 // does, unless this read was a reopen, which a bad saved copy would repeat.
-                previous = read.reopens ? undefined : await savedCopyOf(logRef.current);
+                const saved = read.reopens ? undefined : await savedCopyOf(logRef.current);
+                // The lookup can wait behind a save, long enough for this read to be stopped.
+                if (read.stopped) return;
+                previous = saved;
                 if (!previous) {
                   showNoLog();
                   // No log is open now, so none must come back after a reload.

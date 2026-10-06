@@ -2,9 +2,9 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LOG_SUPERSEDED, type CaptureFrame, type CoreApi, type LogInfo, type Progress } from './core/api';
+import { LOG_SUPERSEDED, type CaptureFrame, type CoreApi, type LogInfo, type Progress, type SeriesInfo } from './core/api';
 import { FakeSerialPort } from './test/fakeSerial';
-import { fakeCore, logInfo, summary } from './test/fixtures';
+import { fakeCore, logInfo, message, seriesInfo, signal as signalDef, summary } from './test/fixtures';
 
 /** session.ts caches its open database, so each test loads a fresh copy of the app's modules. */
 async function freshApp() {
@@ -116,44 +116,83 @@ describe('App', () => {
 const toolbarStatus = () => document.querySelector('.toolbar [role=status]')?.textContent;
 
 describe('App while a log is read', () => {
-  interface Read {
+  interface FakeRead {
     name: string;
+    settled: boolean;
+    superseded: boolean;
     progress: (p: Progress) => void;
+    /** Resolves the read without `act`, for a test that needs to act between steps itself. */
+    settle: () => void;
     resolve: () => Promise<void>;
+    fail: (message: string) => Promise<void>;
+    abort: () => void;
   }
 
   /**
    * A core whose reads the test finishes. As the worker does, an `openLog` supersedes the read
-   * under way; the superseded read rejects with an AbortError once the test calls `abortSuperseded`.
+   * under way, which rejects with an AbortError once the test calls `abortSuperseded`, and a
+   * superseded read that resolves anyway, past its last chunk, leaves no log.
    */
-  function readingCore() {
-    const reads: Read[] = [];
-    const superseded: (() => void)[] = [];
-    let current: (() => void) | null = null;
+  function readingCore(overrides: Partial<CoreApi> = {}) {
+    const reads: FakeRead[] = [];
+    const events: string[] = [];
+    let current: FakeRead | null = null;
+    let held: string | null = null;
     const core = fakeCore({
       openLog: vi.fn<CoreApi['openLog']>((file, name, onProgress) => {
-        if (current) superseded.push(current);
+        events.push(`openLog ${name}`);
+        if (current) current.superseded = true;
         current = null;
+        held = null;
         if (file.size === 0) return Promise.resolve(logInfo({ name, frames: 0, bytes: 0 }));
         return new Promise<LogInfo>((resolve, reject) => {
-          current = () => reject(new DOMException(LOG_SUPERSEDED, 'AbortError'));
-          reads.push({
+          const read: FakeRead = {
             name,
+            settled: false,
+            superseded: false,
             progress: (p) => act(() => onProgress(p)),
-            resolve: () => act(async () => resolve(logInfo({ name, bytes: file.size }))),
-          });
+            settle: () => {
+              read.settled = true;
+              if (!read.superseded) held = name;
+              if (current === read) current = null;
+              resolve(logInfo({ name, bytes: file.size }));
+            },
+            resolve: () => act(async () => read.settle()),
+            fail: (message) =>
+              act(async () => {
+                read.settled = true;
+                if (current === read) current = null;
+                reject(new Error(message));
+              }),
+            abort: () => {
+              read.settled = true;
+              reject(new DOMException(LOG_SUPERSEDED, 'AbortError'));
+            },
+          };
+          current = read;
+          reads.push(read);
         });
       }),
       idSummary: () => Promise.resolve([]),
-      parseDbc: (_file, name) => Promise.resolve({ name, messages: [] }),
+      parseDbc: (_file, name) => {
+        events.push(`parseDbc ${name}`);
+        return Promise.resolve({ name, messages: [] });
+      },
+      setDatabases: () => {
+        events.push('setDatabases');
+        return Promise.resolve();
+      },
+      ...overrides,
     });
+    /** The latest unsettled read of `name`. */
     const read = async (name: string) => {
-      await waitFor(() => expect(reads.some((r) => r.name === name)).toBe(true));
-      return reads.find((r) => r.name === name)!;
+      const find = () => reads.filter((r) => r.name === name && !r.settled).pop();
+      await waitFor(() => expect(find()).toBeTruthy());
+      return find()!;
     };
-    const abortSuperseded = () => act(async () => superseded.splice(0).forEach((abort) => abort()));
-    const openedNames = () => vi.mocked(core.openLog).mock.calls.map(([, name]) => name);
-    return { core, read, abortSuperseded, openedNames };
+    const abortSuperseded = () => act(async () => reads.filter((r) => r.superseded && !r.settled).forEach((r) => r.abort()));
+    const openedNames = () => events.filter((e) => e.startsWith('openLog ')).map((e) => e.slice('openLog '.length));
+    return { core, read, abortSuperseded, events, openedNames, held: () => held };
   }
 
   const pick = (container: HTMLElement, name: string) =>
@@ -169,6 +208,17 @@ describe('App while a log is read', () => {
 
   const title = () => document.querySelector('.doc-title')?.textContent;
   const openLogButton = () => screen.getByRole('button', { name: 'Open Log\u2026' }) as HTMLButtonElement;
+  const savedLog = async () => (await (await import('./session')).loadSaved<{ name: string }>('log'))?.name;
+
+  async function openFirst(container: HTMLElement, name: string, read: (name: string) => Promise<FakeRead>) {
+    await pick(container, name);
+    await (await read(name)).resolve();
+    await waitFor(() => expect(title()).toBe(name));
+    await waitFor(async () => expect(await savedLog()).toBe(name));
+    // fake-indexeddb can't clone jsdom's Files, and a reopen reads only the copy's size.
+    const file = new File(['(1.0) can0 123#00\n'], name);
+    await (await import('./session')).save('log', { name, blob: { size: file.size } as Blob });
+  }
 
   it('reads a log picked while another is read in its place, showing no error', async () => {
     const App = await freshApp();
@@ -181,6 +231,7 @@ describe('App while a log is read', () => {
     a.progress({ bytes: 30, total: 100 });
     expect(toolbarStatus()).toBe('Parsing a.log\u2026 30%');
     expect(openLogButton().disabled).toBe(false);
+    expect(screen.getByRole('button', { name: 'Cancel reading a.log' })).toBeTruthy();
 
     await pick(container, 'b.log');
     // An empty log stops the read at once; b.log waits until the core has let a.log go.
@@ -200,11 +251,12 @@ describe('App while a log is read', () => {
     expect(toolbarStatus()).toBe('candump \u00b7 1,000 frames \u00b7 1 min 40 s');
     expect(openedNames()).toEqual(['a.log', '', 'b.log']);
     expect(screen.queryByRole('alert')).toBeNull();
+    await waitFor(async () => expect(await savedLog()).toBe('b.log'));
   });
 
-  it('keeps the log that took over when the stopped read finishes after all', async () => {
+  it('keeps the log that took over when the stopped read finishes after all, and never saves it', async () => {
     const App = await freshApp();
-    const { core, read, openedNames } = readingCore();
+    const { core, read, openedNames, held } = readingCore();
     const { container } = render(<App core={core} />);
     await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
 
@@ -214,41 +266,106 @@ describe('App while a log is read', () => {
     // Past the last chunk the core takes no newer call, so a stopped read can still resolve.
     await a.resolve();
     expect(title()).toBe('No log open');
+    expect(toolbarStatus()).toBe('Reading b.log\u2026');
+    expect(await savedLog()).toBeUndefined();
     const b = await read('b.log');
     await b.resolve();
     await waitFor(() => expect(title()).toBe('b.log'));
+    expect(held()).toBe('b.log');
     expect(openedNames()).toEqual(['a.log', '', 'b.log']);
     expect(screen.queryByRole('alert')).toBeNull();
+    await waitFor(async () => expect(await savedLog()).toBe('b.log'));
   });
 
-  it('leaves no log, and no error, when the read is cancelled', async () => {
+  it('shows why the log that took over failed, and leaves no log', async () => {
     const App = await freshApp();
-    const session = await import('./session');
     const { core, read, abortSuperseded } = readingCore();
     const { container } = render(<App core={core} />);
     await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
-    await pick(container, 'p.log');
-    await (await read('p.log')).resolve();
-    await waitFor(() => expect(title()).toBe('p.log'));
-    await waitFor(async () => expect((await session.loadSaved<{ name: string }>('log'))?.name).toBe('p.log'));
-    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    await openFirst(container, 'p.log', read);
 
     await pick(container, 'a.log');
-    const a = await read('a.log');
-    a.progress({ bytes: 40, total: 100 });
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await read('a.log');
+    await pick(container, 'b.log');
     await abortSuperseded();
-    // The core let p.log go when a.log began, so p.log isn't shown, nor reopened after a reload.
+    await (await read('b.log')).fail('b.log is not a CAN log.');
+    expect((await screen.findByRole('alert')).textContent).toContain('b.log is not a CAN log.');
+    expect(title()).toBe('No log open');
+    await waitFor(async () => expect(await savedLog()).toBeUndefined());
+  });
+
+  it('reopens the log shown before, as it was, when the read is cancelled', async () => {
+    const App = await freshApp();
+    const { core, read, abortSuperseded, openedNames, held } = readingCore({ compareLogInfo: async () => null });
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    await openFirst(container, 'p.log', read);
+    await userEvent.click(screen.getByRole('radio', { name: 'Compare' }));
+
+    await pick(container, 'a.log');
+    (await read('a.log')).progress({ bytes: 40, total: 100 });
+    // The log shown until the read ends is the one Cancel goes back to.
+    expect(title()).toBe('p.log');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel reading a.log' }));
+    await abortSuperseded();
+    const p = await read('p.log');
+    expect(toolbarStatus()).toBe('Reading p.log\u2026');
+    expect(title()).toBe('p.log');
+    await p.resolve();
+    await waitFor(() => expect(toolbarStatus()).toBe('candump \u00b7 1,000 frames \u00b7 1 min 40 s'));
+    expect(title()).toBe('p.log');
+    expect(held()).toBe('p.log');
+    expect(screen.getByRole('radio', { name: 'Compare' }).getAttribute('aria-checked')).toBe('true');
+    expect(openedNames()).toEqual(['p.log', 'a.log', '', '', 'p.log']);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(await savedLog()).toBe('p.log');
+    expect(document.activeElement).toBe(openLogButton());
+  });
+
+  it('leaves no log when the log shown before has no saved copy to reopen', async () => {
+    const App = await freshApp();
+    const session = await import('./session');
+    const { core, read, abortSuperseded, held } = readingCore();
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    await openFirst(container, 'p.log', read);
+    // As when the browser couldn't keep a copy.
+    await session.forget('log');
+
+    await pick(container, 'a.log');
+    await read('a.log');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel reading a.log' }));
+    await abortSuperseded();
     await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
     expect(title()).toBe('No log open');
     await waitFor(() => expect(toolbarStatus()).toBe('Open a CAN log to begin'));
-    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(held()).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(await session.loadSaved('log')).toBeUndefined();
+    expect(await savedLog()).toBeUndefined();
+    await waitFor(() => expect(document.activeElement).toBe(openLogButton()));
     expect(openLogButton().disabled).toBe(false);
   });
 
-  it('cancels a saved log being reopened after a reload', async () => {
+  it('does nothing when Cancel is pressed as the read ends, before the next render', async () => {
+    const App = await freshApp();
+    const { core, read, openedNames, held } = readingCore();
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    await pick(container, 'a.log');
+    const a = await read('a.log');
+    const cancel = screen.getByRole('button', { name: 'Cancel reading a.log' });
+    await act(async () => {
+      a.settle();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      cancel.click();
+    });
+    await waitFor(() => expect(title()).toBe('a.log'));
+    expect(held()).toBe('a.log');
+    expect(openedNames()).toEqual(['a.log']);
+    await waitFor(async () => expect(await savedLog()).toBe('a.log'));
+  });
+
+  it('cancels a saved log being reopened after a reload, leaving none', async () => {
     const App = await freshApp();
     const session = await import('./session');
     await session.save('log', { name: 'p.log', blob: { size: 10 } as Blob });
@@ -256,12 +373,41 @@ describe('App while a log is read', () => {
     const { core, read, abortSuperseded } = readingCore();
     render(<App core={core} />);
     await read('p.log');
-    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel reading p.log' }));
     await abortSuperseded();
     await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
     expect(screen.queryByRole('alert')).toBeNull();
     expect(await session.loadSaved('log')).toBeUndefined();
     expect(await session.loadSaved('compare')).toBeUndefined();
+  });
+
+  it('shows only the log that took over from a reopened one still restoring its plots', async () => {
+    const App = await freshApp();
+    const session = await import('./session');
+    const speed = summary({ id: 0x123, dbc: 0, messageId: 0x123 });
+    await session.saveDbcs([
+      { id: 'd', db: { name: 'car.dbc', messages: [message(0x123, 'M', { signals: [signalDef('Speed')], j1939: false })] }, channel: null, edited: false },
+    ]);
+    await session.save('log', { name: 'p.log', blob: { size: 10 } as Blob });
+    await session.save('ui', { view: 'overview', selected: speed.key, pinnedTime: null, plots: [{ key: speed.key, signal: 'Speed', color: '#a56612' }] });
+    let decoded: (info: SeriesInfo) => void = () => {};
+    const decodeSignal = vi.fn<CoreApi['decodeSignal']>(() => new Promise<SeriesInfo>((resolve) => (decoded = resolve)));
+    const { core, read, abortSuperseded, openedNames } = readingCore({ idSummary: async () => [speed], decodeSignal });
+    const { container } = render(<App core={core} />);
+    await (await read('p.log')).resolve();
+    await waitFor(() => expect(decodeSignal).toHaveBeenCalled());
+
+    await pick(container, 'b.log');
+    await act(async () => decoded(seriesInfo(1, 'Speed')));
+    await abortSuperseded();
+    await (await read('b.log')).resolve();
+    await waitFor(() => expect(title()).toBe('b.log'));
+    expect(openedNames()).toEqual(['p.log', '', 'b.log']);
+    expect(screen.queryByRole('alert')).toBeNull();
+    await waitFor(async () => expect(await savedLog()).toBe('b.log'));
+    // p.log's plots don't come back with b.log.
+    await waitFor(async () => expect((await session.loadSaved<{ plots: unknown[]; selected: number }>('ui'))?.plots).toEqual([]));
+    expect(decodeSignal).toHaveBeenCalledTimes(1);
   });
 
   it('reads a log dropped while another is read in its place, and turns away a DBC alone', async () => {
@@ -283,6 +429,21 @@ describe('App while a log is read', () => {
     await waitFor(() => expect(title()).toBe('b.log'));
     expect(openedNames()).toEqual(['a.log', '', 'b.log']);
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('stops the read before the DBCs dropped with a log are loaded', async () => {
+    const App = await freshApp();
+    const { core, read, abortSuperseded, events } = readingCore();
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    await pick(container, 'a.log');
+    await read('a.log');
+
+    drop([new File(['VERSION ""'], 'x.dbc'), new File(['(1.0) can0 123#00\n'], 'b.log')]);
+    await abortSuperseded();
+    await (await read('b.log')).resolve();
+    await waitFor(() => expect(title()).toBe('b.log'));
+    expect(events).toEqual(['openLog a.log', 'openLog ', 'parseDbc x.dbc', 'setDatabases', 'openLog b.log']);
   });
 
   it('opens the demo in place of a log being read', async () => {
@@ -496,6 +657,38 @@ describe('App live capture', () => {
 
   const stubSavePicker = () =>
     vi.stubGlobal('showSaveFilePicker', async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {} }) }));
+
+  it('asks about an unsaved capture once, not again for a log opened while the first is read', async () => {
+    const App = await freshApp();
+    const port = new FakeSerialPort();
+    withSerialPort(port);
+    const { core } = captureCore();
+    let stopRead: () => void = () => {};
+    const openLog = vi.fn<CoreApi['openLog']>((file, name) => {
+      stopRead();
+      if (file.size === 0 || name === 'b.log') return Promise.resolve(logInfo({ name, frames: file.size === 0 ? 0 : 1000 }));
+      return new Promise<LogInfo>((_resolve, reject) => (stopRead = () => reject(new DOMException(LOG_SUPERSEDED, 'AbortError'))));
+    });
+    core.openLog = openLog;
+    core.idSummary = async () => [];
+    const { container } = render(<App core={core} />);
+    await startCapture(port);
+    port.send('t1230\r');
+    await waitFor(() => expect(core.appendFrames).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('button', { name: 'Stop Capture' }));
+    await screen.findByText(/Not saved/);
+
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
+    await userEvent.upload(input, new File(['(1.0) can0 123#00\n'], 'a.log'));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Discard the capture?' })).getByRole('button', { name: 'Discard Capture' }));
+    await waitFor(() => expect(openLog).toHaveBeenCalledTimes(1));
+
+    await userEvent.upload(input, new File(['(1.0) can0 123#00\n'], 'b.log'));
+    expect(screen.queryByRole('dialog', { name: 'Discard the capture?' })).toBeNull();
+    await waitFor(() => expect(document.querySelector('.doc-title')?.textContent).toBe('b.log'));
+    expect(openLog.mock.calls.map(([, name]) => name)).toEqual(['a.log', '', 'b.log']);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 
   it('offers to save an unsaved capture before it is replaced, then goes on', async () => {
     const App = await freshApp();

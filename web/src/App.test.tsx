@@ -631,4 +631,21 @@ describe('Compare in the app', () => {
     finish(logInfo({ name: 'b.log' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Open Log\u2026' }) as HTMLButtonElement).disabled).toBe(false));
   });
+
+  it('turns away a log picked while log B is read, as a picker opened before the read began would give', async () => {
+    const App = await freshApp();
+    await savedSession('a.log', 'b.log');
+    let finish: (info: LogInfo) => void = () => {};
+    const core = compareApp(() => new Promise<LogInfo>((resolve) => (finish = resolve)));
+    const openLog = vi.spyOn(core, 'openLog');
+    const { container } = render(<App core={core} />);
+    expect(await screen.findByText(/^Reading\u2026/)).toBeTruthy();
+    await waitFor(() => expect(openLog).toHaveBeenCalledTimes(1));
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!;
+    // Disabled buttons don't stop a file from reaching the input itself.
+    await userEvent.upload(input, new File(['(1.0) can0 123#00\n'], 'c.log'), { applyAccept: false });
+    expect((await screen.findByRole('alert')).textContent).toContain('Wait for "Reading b.log\u2026" to finish, then open the log again.');
+    expect(openLog).toHaveBeenCalledTimes(1);
+    finish(logInfo({ name: 'b.log' }));
+  });
 });

@@ -5,8 +5,8 @@
 ## How it works
 
 - The web build implements `CoreApi` with `WebCore` (`web/src/core/webCore.ts`). `WebCore` starts one module Web Worker (`web/src/core/worker.ts`). The worker loads the wasm build of `crates/can-wasm` and owns a single `Session`, which holds the parsed log, the loaded databases and the decoded series.
-- Each call posts `{ id, method, args }` to the worker. The worker answers with `{ id, result }` or `{ id, error }`, and pushes parse progress as `{ event: 'progress', bytes, total }`.
-- Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it. The one exception is [`countFilterMatches`](#countfiltermatches): it runs in steps of about 524,000 frames, and the calls sent during a step run before the next one, so a count delays them by one step at most; a count that a newer count or a [`setTraceFilter`](#settracefilter) follows stops at its next step, or before it starts, and is answered with null.
+- Each call posts `{ id, method, args }` to the worker. The worker answers with `{ id, result }` or `{ id, error }`, the error also carrying `aborted: true` when it is an `AbortError` (a superseded [`openLog`](#openlog) or [`openCompareLog`](#opencomparelog)), for which `WebCore` rejects with a `DOMException` named `AbortError`. It pushes parse progress as `{ event: 'progress', bytes, total }`.
+- Requests run one at a time, in the order they were sent, so no request sees a half-parsed log. A long `openLog` delays every call queued behind it, though an `openLog` or `startCapture` sent meanwhile stops it (see [`openLog`](#openlog)). The one exception is [`countFilterMatches`](#countfiltermatches): it runs in steps of about 524,000 frames, and the calls sent during a step run before the next one, so a count delays them by one step at most; a count that a newer count or a [`setTraceFilter`](#settracefilter) follows stops at its next step, or before it starts, and is answered with null.
 - Bulk results (trace rows, bit counts, series points, bus load) arrive as typed arrays whose buffers are transferred, not copied. Small structured results cross the wasm boundary as JSON.
 - If the worker itself stops (an uncaught error or a reply that cannot be read), `WebCore` terminates it and starts another: every call in flight rejects with `The CAN core stopped and was restarted. Open the log again.`, the databases from the last `setDatabases` are set again, and the listeners given to [`onReset`](#onreset) are called. The log and every series are gone. A worker that stopped before it ever answered is not replaced, since another would fail the same way; every later call then rejects with the worker's error.
 - The planned desktop app will implement the same interface over Tauri commands, with the same crates running natively.
@@ -44,6 +44,8 @@ Exported from `web/src/core/api.ts`:
 | `FLAG_REASSEMBLED` | `1 << 6` | Not from the log: a J1939 parameter group reassembled from its transport protocol packets (see "J1939 transport protocol" in COMPATIBILITY.md) |
 | `EXT_FLAG` | `0x8000_0000` | Bit 31: extended ID |
 | `NO_BYTE` | `0xffff` | What [`rowBytes`](#rowbytes) gives for a byte past the end of a frame |
+| `LOG_SUPERSEDED` | string | The message of the `AbortError` a superseded [`openLog`](#openlog) or [`openCompareLog`](#opencomparelog) rejects with |
+| `isAbort(e)` | function | Whether `e` is a `DOMException` named `AbortError`: a superseded `openLog` or `openCompareLog`, or a cancelled `suggestSignals` or `scanSignals` |
 | `dbcId(s)` | function | The ID of an `IdSummary` with `EXT_FLAG` set when extended, as used in DBC files |
 | `isErrorFrame(s)` | function | Whether an `IdSummary` is for CAN error frames (`FLAG_ERROR` in its flags) |
 | `formatId(id, extended)` | function | Upper-case hex: 3 digits for standard IDs, 8 for extended |
@@ -454,6 +456,8 @@ Parses a CAN log and makes it the current log. It replaces the previous log, dro
 
 A text log of 32 MiB or more (candump, TRC, CSV or ASC) is read in parts on several cores when the browser can start workers from a worker: the core worker reads the first 2 MiB itself, then up to 6 part workers (one fewer than `navigator.hardwareConcurrency`) each parse a 2 MiB range of lines, and the core joins the parts in file order. The result is the same as a read in one worker: the same frames in the same order, the same `LogInfo` (`rejected`, `firstRejection` and its line number, `channels` in order of first appearance, `reassembledFrames`) and the same per-ID statistics, since J1939 transfers, bus numbering and sorting are still done once, in order, and an ASC file's relative times are carried from part to part. When a part worker fails, or a part was not read as it would be in the whole file, the log is read again in one worker, and the progress shown holds until that read passes it. When a part worker can't start (it can't be created, its script or wasm fails to load, or it hasn't loaded within 15 s; how long parts take to read doesn't count), later logs are read in one worker too, until the page is reloaded. See `web/src/core/readInParts.ts` and `crates/can-wasm/src/parts.rs`.
 
+An `openLog` or [`startCapture`](#startcapture) sent while an `openLog` is reading supersedes it. A read in parts stops as soon as the newer call arrives, and its part workers are terminated; a read in one worker stops before its next 8 MiB chunk. The superseded `openLog` rejects with a `DOMException` named `AbortError` whose message is `LOG_SUPERSEDED`, and leaves no log: a call sent after it but before the newer one sees an empty log (`idSummary` gives `[]`). An `openLog` still waiting in the queue when a newer one is sent never starts: it rejects the same way, and the previous log stays open until the newer call replaces it. The worker receives the newer call only between chunks or parts, not during the work after the last chunk (J1939 reassembly and sorting, and for MF4, which is held whole until then, the parsing itself), so a read that has reached that work finishes and resolves before the newer call is received. The web app avoids superseding a read: while it reads a log or log B, its open controls are disabled, and a dropped file, or one from a picker opened before the read began, is turned away. Should a read of log B be superseded anyway, the Compare view takes it as a quiet cancel and shows no error.
+
 Series handles restart from 0 for each log. Forget every handle from before the call, and do not pass one to `dropSeries`: it could name a new series.
 
 To close a log, open an empty Blob.
@@ -466,7 +470,7 @@ To close a log, open an empty Blob.
 
 **Returns** a [`LogInfo`](#the-loginfo-object).
 
-**Errors** Rejects if the file cannot be read or the engine fails, for example when wasm runs out of memory.
+**Errors** Rejects if the file cannot be read or the engine fails, for example when wasm runs out of memory, and with a `DOMException` named `AbortError` (message `LOG_SUPERSEDED`) when a newer `openLog` or `startCapture` superseded it.
 
 ```ts
 const log = await core.openLog(file, file.name, (p) => {
@@ -531,7 +535,7 @@ A capture is a log the page fills as an adapter receives frames, rather than one
 startCapture(name: string, channel: string, startedAtMs: number): Promise<LogInfo>
 ```
 
-Starts a live capture of one bus in place of the log, as [`openLog`](#openlog) replaces it: the previous log, any [log B](#compare-logs) and every decoded series are freed, and the loaded databases are kept. Series handles restart from 0.
+Starts a live capture of one bus in place of the log, as [`openLog`](#openlog) replaces it: the previous log, any [log B](#compare-logs) and every decoded series are freed, and the loaded databases are kept. Series handles restart from 0. An `openLog` or `openCompareLog` still reading is stopped, and rejects as superseded.
 
 **Parameters**
 
@@ -1086,6 +1090,8 @@ openCompareLog(file: Blob, name: string, onProgress: (p: Progress) => void): Pro
 
 Reads `file` as log B, replacing any log B before it. The file is read as [`openLog`](#openlog) reads one: in 8 MiB chunks, with the format chosen the same way and the same limits. Both logs are held in the engine's memory at once, so log B gets what is left of a 2 GiB budget once log A is counted. A log B estimated from its size and format to need more is refused before any frame is stored, and the frame store for log B is reserved in a way that can fail without harm, so log A stays open (see "Browsers" in COMPATIBILITY.md).
 
+An [`openLog`](#openlog) or [`startCapture`](#startcapture) sent while log B is read supersedes it as it does an `openLog`: the read stops before its next chunk, there is no log B, and the call rejects with an `AbortError` whose message is `LOG_SUPERSEDED`. An `openCompareLog` still waiting in the queue when the newer call is sent never starts: it rejects the same way, and the earlier log B stays until the newer call runs and drops it.
+
 **Parameters**
 
 - **`file`** `Blob` - The log file.
@@ -1094,7 +1100,7 @@ Reads `file` as log B, replacing any log B before it. The file is read as [`open
 
 **Returns** log B's [`LogInfo`](#the-loginfo-object). A log with no frames is still kept; check `frames`.
 
-**Errors** Rejects if the file cannot be read, with `<name> is too large to read beside the open log in this browser's memory. Compare a shorter log, or open a smaller log A.` when log B does not fit the budget, or if the engine fails. Log B is then gone and log A stays open. If the engine runs out of memory anyway, as a log with far more frames than its size suggests can make it, the engine restarts (see [`onReset`](#onreset)) and both logs are gone.
+**Errors** Rejects if the file cannot be read, with `<name> is too large to read beside the open log in this browser's memory. Compare a shorter log, or open a smaller log A.` when log B does not fit the budget, or if the engine fails. Log B is then gone and log A stays open. If the engine runs out of memory anyway, as a log with far more frames than its size suggests can make it, the engine restarts (see [`onReset`](#onreset)) and both logs are gone. Rejects with a `DOMException` named `AbortError` (message `LOG_SUPERSEDED`) when a newer `openLog` or `startCapture` superseded it.
 
 ```ts
 const b = await core.openCompareLog(file, file.name, (p) => showProgress(p.bytes / p.total));

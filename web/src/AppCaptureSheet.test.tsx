@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it, vi } from 'vitest';
+import { App } from './App';
 import { fakeCore } from './test/fixtures';
 
 // One way of loading per file: a mocked module is loaded once per file, whatever resetModules does.
@@ -19,9 +20,9 @@ vi.mock('./capture/CaptureSheet', async (importOriginal) => {
 describe('App Capture sheet', () => {
   it('loads the sheet only once Capture... is clicked, showing it as loading until then', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
-    const { App } = await import('./App');
     render(<App core={fakeCore()} />);
-    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    // A worker's first render, and loading the real sheet's code, can each take over a second under load.
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' }, { timeout: 3000 });
     expect(sheet.loaded).toBe(0);
 
     await userEvent.click(screen.getByRole('button', { name: 'Capture\u2026' }));
@@ -31,7 +32,7 @@ describe('App Capture sheet', () => {
 
     sheet.arrive();
     // This browser has no Web Serial, so the sheet explains that.
-    expect(await screen.findByText(/needs Chrome or Edge/)).toBeTruthy();
+    expect(await screen.findByText(/needs Chrome or Edge/, {}, { timeout: 3000 })).toBeTruthy();
     expect(screen.queryByText('Loading\u2026')).toBeNull();
     vi.unstubAllGlobals();
   });

@@ -132,7 +132,14 @@ const CaptureSheet = lazy(() => import('./capture/CaptureSheet').then((m) => ({ 
 /** The sidebar floats over the content. */
 const narrow = () => window.matchMedia('(max-width: 900px)').matches;
 /** The inspector floats over the content, so view headers and tables keep their room. */
-const inspectorFloats = () => window.matchMedia('(max-width: 1240px)').matches;
+const INSPECTOR_FLOATS = '(max-width: 1240px)';
+const inspectorFloats = () => window.matchMedia(INSPECTOR_FLOATS).matches;
+
+/** Puts the floating inspector away. Focus inside it would fall to the page, so it goes back to the Details toggle. */
+function closeInspector(setInspectorOpen: (open: boolean) => void) {
+  if (document.activeElement?.closest('#inspector')) document.querySelector<HTMLElement>('.details-toggle')?.focus();
+  setInspectorOpen(false);
+}
 
 const splitPlotId = (id: string): [number, string] => {
   const at = id.indexOf(':');
@@ -267,6 +274,8 @@ export function App({ core }: { core: CoreApi }) {
   logRef.current = log;
   const plotsRef = useRef(plots);
   plotsRef.current = plots;
+  const pinnedRef = useRef(pinnedTime);
+  pinnedRef.current = pinnedTime;
   /** The UI as a reload restores it, to reopen the log shown with it. */
   const currentUi = useRef(() => uiSnapshot(view, selected, pinnedTime, plots));
   currentUi.current = () => uiSnapshot(view, selected, pinnedTime, plots);
@@ -1171,13 +1180,28 @@ export function App({ core }: { core: CoreApi }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      setPinnedTime(null);
+      // Escape that closes a sheet, or that a field or grid used, isn't also meant for the panes.
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]')) return;
+      // A parked cursor goes first, so Escape meant for it leaves the panes open.
+      if (pinnedRef.current !== null) {
+        setPinnedTime(null);
+        return;
+      }
       if (narrow()) setSidebarOpen(false);
-      if (inspectorFloats()) setInspectorOpen(false);
+      if (inspectorFloats()) closeInspector(setInspectorOpen);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // A window narrowed past the breakpoint would otherwise float the open inspector over the content.
+  useEffect(() => {
+    const query = window.matchMedia(INSPECTOR_FLOATS);
+    const onChange = (e: MediaQueryListEvent) => {
+      if (e.matches) closeInspector(setInspectorOpen);
+    };
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
   }, []);
 
   // Covers Clear, removing the last plot and opening a new log, which all empty the plots.
@@ -1360,7 +1384,7 @@ export function App({ core }: { core: CoreApi }) {
   // On narrow windows the panes float over the content; a tap outside or Escape puts them away.
   const closeOverlays = () => {
     if (narrow()) setSidebarOpen(false);
-    setInspectorOpen(false);
+    closeInspector(setInspectorOpen);
   };
 
   const openCaptureSheet = () =>
@@ -1704,7 +1728,13 @@ export function App({ core }: { core: CoreApi }) {
         </div>
       </div>
       {(sidebarOpen || (showInspector && inspectorOpen)) && (
-        <div className={`scrim${showInspector && inspectorOpen ? ' under-inspector' : ''}`} aria-hidden="true" onClick={closeOverlays} />
+        <div
+          className={`scrim${showInspector && inspectorOpen ? ' under-inspector' : ''}`}
+          aria-hidden="true"
+          // Keeps focus where it was, so closing can tell whether it was in the inspector.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={closeOverlays}
+        />
       )}
       {dragOver && <div className="drop-overlay">Drop a log, DBC files or a video to open them</div>}
       {captureSheetUsed && (

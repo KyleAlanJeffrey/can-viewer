@@ -155,20 +155,6 @@
   margin-top: 12px;
 }
 
-/* Content header */
-.pv-header {
-  flex-wrap: wrap;
-  row-gap: 8px;
-}
-
-/* Beside a docked video the actions run out of room before the summary does. */
-.pv-header .content-actions {
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
 .pv-summary {
   display: flex;
   align-items: center;

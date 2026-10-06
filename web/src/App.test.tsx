@@ -4,7 +4,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOG_SUPERSEDED, type CaptureFrame, type CoreApi, type LogInfo, type Progress, type SeriesInfo } from './core/api';
 import { FakeSerialPort } from './test/fakeSerial';
-import { fakeCore, logInfo, message, seriesInfo, signal as signalDef, summary } from './test/fixtures';
+import { bitFlips, fakeCore, logInfo, message, seriesInfo, signal as signalDef, summary } from './test/fixtures';
 import { stubToolbarWidth } from './test/toolbarWidth';
 
 /** session.ts caches its open database, so each test loads a fresh copy of the app's modules. */
@@ -182,6 +182,84 @@ describe('App toolbar', () => {
     await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
     expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open Log\u2026' })));
+  });
+});
+
+describe('App floating inspector', () => {
+  /** A window of 1100px: the inspector floats, the sidebar doesn't. `narrowTo` crosses the breakpoint. */
+  function floatInspector() {
+    const listeners = new Set<(e: MediaQueryListEvent) => void>();
+    vi.stubGlobal('matchMedia', (media: string) => ({
+      matches: media.includes('1240px'),
+      media,
+      addEventListener: (_type: string, listener: (e: MediaQueryListEvent) => void) => media.includes('1240px') && listeners.add(listener),
+      removeEventListener: (_type: string, listener: (e: MediaQueryListEvent) => void) => listeners.delete(listener),
+    }));
+    return {
+      narrowTo: () => act(() => listeners.forEach((listener) => listener({ matches: true } as MediaQueryListEvent))),
+    };
+  }
+
+  async function traceWithId() {
+    const App = await freshApp();
+    const core = fakeCore({
+      openLog: () => Promise.resolve(logInfo({ name: 'x.blf', format: 'blf' })),
+      idSummary: () => Promise.resolve([summary({ id: 0x123 })]),
+      bitFlips: () => Promise.resolve(bitFlips(8, 10)),
+    });
+    const { container } = render(<App core={core} />);
+    await screen.findByRole('heading', { name: 'Open a CAN log to get started' });
+    await userEvent.upload(container.querySelector<HTMLInputElement>('input[type="file"]:not([accept])')!, new File(['LOGG'], 'x.blf'));
+    await screen.findByText(/^BLF/);
+    await userEvent.click(screen.getByRole('radio', { name: 'Trace' }));
+    await userEvent.click(within(screen.getByRole('navigation', { name: 'Messages' })).getByRole('button', { name: /^123/ }));
+    return container;
+  }
+  const details = () => screen.getByRole('button', { name: 'Details' });
+  const inspectorShown = (container: HTMLElement) => !container.querySelector('.body')!.classList.contains('inspector-hidden');
+
+  it('starts closed, opens with Details, and closes on Escape with focus back on Details', async () => {
+    floatInspector();
+    const container = await traceWithId();
+    expect(inspectorShown(container)).toBe(false);
+    expect(details().getAttribute('aria-pressed')).toBe('false');
+
+    await userEvent.click(details());
+    expect(inspectorShown(container)).toBe(true);
+    expect(container.querySelector('.scrim.under-inspector')).toBeTruthy();
+    const inspector = container.querySelector<HTMLElement>('#inspector')!;
+    inspector.tabIndex = -1;
+    inspector.focus();
+    await userEvent.keyboard('{Escape}');
+    expect(inspectorShown(container)).toBe(false);
+    expect(document.activeElement).toBe(details());
+  });
+
+  it('closes on a click outside, leaving the sidebar open', async () => {
+    floatInspector();
+    const container = await traceWithId();
+    await userEvent.click(details());
+    await userEvent.click(container.querySelector('.scrim')!);
+    expect(inspectorShown(container)).toBe(false);
+    expect(container.querySelector('.app')!.classList.contains('sidebar-hidden')).toBe(false);
+  });
+
+  it('stays open when Escape is meant for a sheet', async () => {
+    floatInspector();
+    const container = await traceWithId();
+    await userEvent.click(details());
+    await userEvent.click(screen.getByRole('button', { name: 'Filters\u2026' }));
+    await screen.findByRole('dialog', { name: 'Trace filters' });
+    await userEvent.keyboard('{Escape}');
+    expect(inspectorShown(container)).toBe(true);
+  });
+
+  it('closes when the window narrows past the breakpoint', async () => {
+    const media = floatInspector();
+    const container = await traceWithId();
+    await userEvent.click(details());
+    media.narrowTo();
+    expect(inspectorShown(container)).toBe(false);
   });
 });
 

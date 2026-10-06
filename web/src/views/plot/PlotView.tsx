@@ -231,7 +231,7 @@ export function PlotView({ ctx }: ViewProps) {
           </div>
         ) : (
           <>
-            <header className="content-header pv-header">
+            <header className="content-header">
               <div className="pv-summary">
                 <p className="content-sub pv-summary-text" title="Drag across a plot or scroll to zoom. Shift-scroll pans. Double-click resets.">
                   {plots.length} {plots.length === 1 ? 'signal' : 'signals'} &middot;{' '}

@@ -389,7 +389,7 @@ export function DatabaseView({ ctx }: ViewProps) {
             )}
           </p>
         </div>
-        <div className="content-actions db-actions">
+        <div className="content-actions">
           <ExportStatus dbc={dbc} />
           <button className="button" onClick={addSignal} disabled={!message}>
             <Plus size={16} strokeWidth={1.5} aria-hidden="true" />

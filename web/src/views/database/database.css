@@ -192,11 +192,6 @@
 }
 
 /* Content header */
-.db-header {
-  flex-wrap: wrap;
-  row-gap: 8px;
-}
-
 .db-heading {
   flex: 1 1 200px;
   min-width: 0;
@@ -204,12 +199,6 @@
 
 .db-title {
   overflow-wrap: anywhere;
-}
-
-.db-actions {
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .db-status {

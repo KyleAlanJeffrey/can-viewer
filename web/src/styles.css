@@ -1218,6 +1218,7 @@ button:disabled {
   gap: 8px;
   flex: 0 1 auto;
   min-width: 0;
+  margin-left: auto;
 }
 
 .content-scroll {

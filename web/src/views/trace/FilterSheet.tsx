@@ -82,7 +82,8 @@ interface Props {
 export function FilterSheet({ open, onClose, core, channels, ids, duration, selected, total, filters, onApply }: Props) {
   const [draft, setDraft] = useState(() => draftOf(filters, channels.length));
   const [attempted, setAttempted] = useState(false);
-  const [preview, setPreview] = useState<Preview>({ state: 'counting' });
+  /** The last count of a filter, with the filter (as `query`) it counted. */
+  const [counted, setCounted] = useState<{ query: string; preview: Preview } | null>(null);
   const formId = useId();
   const formRef = useRef<HTMLFormElement>(null);
   const nextRuleId = useRef(draft.rules.length + 1);
@@ -90,26 +91,29 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
   const { filters: parsed, errors } = useMemo(() => parseDraft(draft, channels.length), [draft, channels.length]);
   const valid = parsed !== null;
   const query = parsed && hasFilters(parsed) ? JSON.stringify(toFrameFilter(parsed, selected)) : null;
+  // Worked out as the sheet renders, so it never shows a state its effect hasn't caught up with.
+  const preview: Preview = !valid
+    ? { state: 'invalid' }
+    : query === null
+      ? { state: 'all' }
+      : counted?.query === query
+        ? counted.preview
+        : { state: 'counting' };
 
   useEffect(() => {
-    if (!open) return;
-    if (!valid) {
-      setPreview({ state: 'invalid' });
+    if (!open) {
+      setCounted(null);
       return;
     }
-    if (query === null) {
-      setPreview({ state: 'all' });
-      return;
-    }
+    if (query === null) return;
     let stale = false;
-    setPreview({ state: 'counting' });
     const timer = setTimeout(() => {
       core.countFilterMatches(JSON.parse(query)).then(
         (count) => {
-          if (!stale && count !== null) setPreview({ state: 'counted', count, of: total });
+          if (!stale && count !== null) setCounted({ query, preview: { state: 'counted', count, of: total } });
         },
         (e) => {
-          if (!stale) setPreview({ state: 'failed', message: e instanceof Error ? e.message : String(e) });
+          if (!stale) setCounted({ query, preview: { state: 'failed', message: e instanceof Error ? e.message : String(e) } });
         },
       );
     }, PREVIEW_DELAY_MS);
@@ -118,7 +122,7 @@ export function FilterSheet({ open, onClose, core, channels, ids, duration, sele
       clearTimeout(timer);
     };
     // Not counted again for each frame a capture adds; `total` is read with the count.
-  }, [open, core, query, valid]);
+  }, [open, core, query]);
 
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   /** Like `update`, marking `part` as edited last. */

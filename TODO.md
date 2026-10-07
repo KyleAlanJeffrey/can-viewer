@@ -22,7 +22,8 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [x] Connect Cloudflare Workers Builds to the repo (deploy command: `npx wrangler deploy`)
 - [x] After the first deploy, check the demo, reload restore and the CSP on the live site
 - [ ] Exclude `app.freecanstudio.com` from Cloudflare Web Analytics; it injects a beacon that the app's CSP blocks (owner)
-- [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner)
+- [ ] Workers Builds fails at once on every non-production branch for both projects while `main` deploys fine; check the non-production branch build settings in the dashboard (owner). The landing site's `site/wrangler.jsonc` named the Worker `freecan-site` while the dashboard project is `freecan-studio-landing`; fixing that did not fix the branch builds (they still fail at once on PR #26), so the cause is in the dashboard's non-production build settings or its build log
+- [ ] Turn on the build cache (Settings, Builds, Cache) for both Workers Builds projects (owner)
 - [x] Update the Reverse Engineer view to the v4 mockups (Byte Values and Advanced)
 - [x] Reverse Engineer Advanced: Suggested signals (counters, checksums, flags, enums, continuous and signed values) with Accept, Dismiss and Plot it, event and reference hints, and a scan of the unknown messages (`suggestSignals`, `scanSignals`)
 - [x] Suggested signals: float32 values are left out on purpose; 32-bit IEEE 754 words in either byte order are now suggested as `float` (decodeRaw and the New Signal form read them, Add writes float32) when they also overlap no counter or checksum, keep within six decades, and their low mantissa bits aren't a separate smooth value; all 8 floats in the probes and the demo's IMU are found, with no float on the integer look-alikes

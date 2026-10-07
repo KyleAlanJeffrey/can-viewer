@@ -18,7 +18,7 @@ It is plain static HTML with one shared stylesheet. There is no build step and n
 | `public/capture-sheet.webp` | Screenshot of the app's Live Capture sheet for the home page's live capture section, 560 x 607 at 2x. Retake it if the sheet changes |
 | `public/_headers` | Content-Security-Policy and caching |
 | `public/robots.txt`, `public/sitemap.xml` | For search engines. Add new pages to the sitemap |
-| `wrangler.jsonc` | The `freecan-site` Workers static-assets project |
+| `wrangler.jsonc` | The `freecan-studio-landing` Workers static-assets project |
 
 Each folder holds an `index.html`, so pages have clean URLs (`/blf-viewer-online/`).
 

@@ -552,7 +552,7 @@ function cellText(
 }
 
 /** The row closest in time to `time`, by binary search over rows in time order. */
-async function nearestRow(core: CoreApi, key: number, count: number, time: number): Promise<{ row: number; frame: number }> {
+export async function nearestRow(core: CoreApi, key: number, count: number, time: number): Promise<{ row: number; frame: number }> {
   let lo = 0;
   let hi = count - 1;
   while (lo < hi) {
@@ -573,7 +573,7 @@ function cell(ctx: CanvasRenderingContext2D, text: string, x: number, y: number,
   ctx.fillText(text, x, y);
 }
 
-const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).toUpperCase().padStart(2, '0'));
+export const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).toUpperCase().padStart(2, '0'));
 
 function clip(ctx: CanvasRenderingContext2D, text: string, max: number): string {
   if (ctx.measureText(text).width <= max) return text;

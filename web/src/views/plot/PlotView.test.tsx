@@ -1,10 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoreApi } from '../../core/api';
 import type { PlotSpec } from '../../components/Plots';
 import { fakeCore, logInfo, message, seriesInfo, signal, summary } from '../../test/fixtures';
 import { renderInShell, type ShellOptions } from '../../test/shell';
 import type { LoadedDbc } from '../types';
+import { PHONE } from '../../phone';
 import { PlotView } from './PlotView';
 
 const engine = summary({ id: 0x100, name: 'Engine' });
@@ -205,5 +206,45 @@ describe('Plot cursors', () => {
 
     await user.click(within(markers).getByRole('button', { name: 'Remove marker M1' }));
     expect(within(markers).queryByRole('listitem')).toBeNull();
+  });
+});
+
+describe('Plot on a phone', () => {
+  beforeEach(() => {
+    vi.stubGlobal('matchMedia', (media: string) => ({ matches: media === PHONE, media, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const cursorReadout = (label: string) => screen.getByText(label, { selector: '.pv-cursors dt' }).nextElementSibling?.textContent;
+
+  it('names where each plot comes from, and moves cursor A with the step buttons', async () => {
+    const { user } = renderPlot({ plots: [plotOf('EngineSpeed')] });
+    expect(await screen.findByText('ID 100 \u00b7 Engine \u00b7 can0')).toBeTruthy();
+    await waitFor(() => expect(cursorReadout('A')).toBe('33.333 s'));
+    expect(cursorReadout('B')).toBe('\u2014');
+
+    await user.click(screen.getByRole('button', { name: 'Move cursor A forward' }));
+    expect(cursorReadout('A')).toBe('34.333 s');
+    await user.click(screen.getByRole('button', { name: 'Move cursor A back' }));
+    await user.click(screen.getByRole('button', { name: 'Move cursor A back' }));
+    expect(cursorReadout('A')).toBe('32.333 s');
+  });
+
+  it('turns on one drag mode at a time, and says what a drag does', async () => {
+    const { user } = renderPlot({ plots: [plotOf('EngineSpeed')] });
+    const move = await screen.findByRole('button', { name: 'Move cursor' });
+    const zoom = screen.getByRole('button', { name: 'Zoom' });
+    expect(screen.getByText('Tap a plot to move cursor A there.')).toBeTruthy();
+
+    await user.click(move);
+    expect(move.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('Drag across a plot to move the nearest cursor.')).toBeTruthy();
+    await user.click(zoom);
+    expect(move.getAttribute('aria-pressed')).toBe('false');
+    expect(zoom.getAttribute('aria-pressed')).toBe('true');
+    await user.click(zoom);
+    expect(zoom.getAttribute('aria-pressed')).toBe('false');
   });
 });

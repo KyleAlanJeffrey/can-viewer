@@ -1,6 +1,7 @@
 import { Fragment } from 'react';
 import { FLAG_FD, isErrorFrame, type LogInfo } from '../../core/api';
 import { formatCount } from '../../format';
+import { usePhone } from '../../phone';
 import { IdListSidebar } from '../shared/IdListSidebar';
 import type { ViewContext, ViewProps } from '../types';
 import { BusLoadCard } from './BusLoadCard';
@@ -10,6 +11,7 @@ import './overview.css';
 /** The log at a glance: a few facts, DBC coverage, bus load and every ID with its timing. */
 export function OverviewView({ ctx }: ViewProps) {
   const { log } = ctx;
+  const phone = usePhone();
   if (!log) return null;
   return (
     <>
@@ -17,10 +19,10 @@ export function OverviewView({ ctx }: ViewProps) {
       <div className="ov">
         <div className="ov-top">
           <Facts ctx={ctx} log={log} />
-          <DbcCoverage ctx={ctx} />
+          <DbcCoverage ctx={ctx} phone={phone} />
         </div>
         <BusLoadCard core={ctx.core} log={log} logVersion={ctx.logVersion} />
-        <IdTable ctx={ctx} />
+        <IdTable ctx={ctx} phone={phone} />
       </div>
     </>
   );
@@ -70,7 +72,7 @@ function Facts({ ctx, log }: { ctx: ViewContext; log: LogInfo }) {
   );
 }
 
-function DbcCoverage({ ctx }: { ctx: ViewContext }) {
+function DbcCoverage({ ctx, phone }: { ctx: ViewContext; phone: boolean }) {
   const { dbcs, messageOf } = ctx;
   const ids = ctx.ids.filter((s) => !isErrorFrame(s));
   const unknown = ids
@@ -84,6 +86,43 @@ function DbcCoverage({ ctx }: { ctx: ViewContext }) {
     ctx.select(unknown[0].key);
     ctx.setView('reverse');
   };
+
+  // On phones a tile of the facts grid, so it says the same in fewer words.
+  if (phone) {
+    return (
+      <section className="ov-dbc card" aria-labelledby="ov-dbc-title">
+        <h2 id="ov-dbc-title" className="ov-label">
+          DBC coverage
+        </h2>
+        {loaded ? (
+          <>
+            <p className="ov-value">
+              {formatCount(matched)} of {formatCount(ids.length)}
+            </p>
+            <p className="ov-detail">{ids.length === 1 ? 'ID matched' : 'IDs matched'}</p>
+            {unknown.length > 0 && (
+              <>
+                <p className="ov-detail">
+                  {formatCount(unknown.length)} unknown {unknown.length === 1 ? 'ID' : 'IDs'}
+                </p>
+                <button type="button" className="button" onClick={reverseEngineer} aria-label={`Investigate ${formatCount(unknown.length)} unknown ${unknown.length === 1 ? 'ID' : 'IDs'} in Reverse Engineer`}>
+                  Investigate
+                </button>
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="ov-value">No DBC</p>
+            <p className="ov-detail">Open one to decode these IDs.</p>
+            <button type="button" className="button" onClick={ctx.openDbcPicker}>
+              Open DBC&hellip;
+            </button>
+          </>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="ov-dbc card" aria-labelledby="ov-dbc-title">

@@ -46,6 +46,11 @@ export interface ViewContext {
   plots: PlotSpec[];
   /** Plot `signal` of ID `key`, or remove it if it's already plotted. */
   togglePlot(key: number, signal: string): Promise<void>;
+  /**
+   * Plot every one of `signals` of ID `key` not plotted yet, as far as there are colours left,
+   * saying in the banner why any were not. Resolves to how many of them are plotted after.
+   */
+  plotAll(key: number, signals: string[]): Promise<number>;
   removePlot(id: string): void;
   clearPlots(): void;
   /** The colour `signal` of ID `key` plots in: its plot's colour, else the one it would get. */
@@ -111,6 +116,8 @@ export interface ViewMeta {
   Component: ComponentType<ViewProps>;
   /** Placeholder for the sidebar search field. */
   search: string;
+  /** What the sidebar holds, naming the button that shows it on phones. */
+  sidebar: 'Messages' | 'Signals';
   /** False leaves the inspector pane out. */
   hasInspector: boolean;
   /** True when the view shows its own amber primary, so Open Log drops to an outlined button. See `setViewPrimary`. */

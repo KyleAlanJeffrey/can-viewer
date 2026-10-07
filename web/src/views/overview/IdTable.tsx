@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react';
-import { ArrowDown, ArrowUp } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronRight } from 'lucide-react';
 import { FLAG_FD, formatId, idLabel, isErrorFrame, type IdSummary, type MessageDef } from '../../core/api';
 import { formatCount, formatPeriod } from '../../format';
 import { useViewState } from '../shared/viewState';
@@ -73,7 +73,7 @@ function matchesQuery(s: IdSummary, message: MessageDef | null, q: string): bool
 }
 
 /** Every bus/ID pair with its timing, sortable, filtered by the sidebar search. */
-export function IdTable({ ctx }: { ctx: ViewContext }) {
+export function IdTable({ ctx, phone = false }: { ctx: ViewContext; phone?: boolean }) {
   const { ids, messageOf, dbcOf, dbcs, query, selected, select, setView, log } = ctx;
   const [savedSort, setSort] = useViewState<Sort>('ov.sort', DEFAULT_SORT);
   // A sort saved by an older version may name a column that no longer exists.
@@ -140,6 +140,51 @@ export function IdTable({ ctx }: { ctx: ViewContext }) {
       }
     }
   };
+
+  // On phones a list of rows to tap, each opening its ID in Trace; the sidebar's search filters it.
+  if (phone) {
+    return (
+      <section className="ov-list card" aria-labelledby="ov-list-title">
+        <h2 id="ov-list-title" className="ov-card-title">
+          Messages <span className="ov-list-count">&middot; {formatCount(rows.length)}</span>
+        </h2>
+        {rows.length === 0 ? (
+          <p className="ov-list-empty">{query.trim() ? 'No IDs or signals match.' : 'No IDs in this log.'}</p>
+        ) : (
+          <ul>
+            {rows.map(({ summary: s, name }) => (
+              <li key={s.key}>
+                <button type="button" className="ov-msg" aria-current={selected === s.key ? 'true' : undefined} onClick={() => openInTrace(s.key)}>
+                  <span className="ov-msg-id">
+                    {idLabel(s)}
+                    {s.flags & FLAG_FD ? <span className="tag">FD</span> : null}
+                  </span>
+                  <span className="ov-msg-main">
+                    <span className="ov-msg-name">
+                      {name ?? (dbcs.length > 0 ? (
+                        <span className="status unknown">Unknown</span>
+                      ) : (
+                        <span className="ov-msg-none">No DBC loaded</span>
+                      ))}
+                    </span>
+                    <span className="ov-msg-meta">
+                      {channels[s.channel] ?? s.channel}
+                      {s.periodMs !== null && <> &middot; {formatPeriod(s.periodMs)}</>}
+                    </span>
+                  </span>
+                  <span className="ov-msg-count">
+                    <span className="num">{formatCount(s.count)}</span>
+                    <span className="ov-msg-unit">{s.count === 1 ? 'frame' : 'frames'}</span>
+                  </span>
+                  <ChevronRight className="ov-msg-chevron" size={18} strokeWidth={1.5} aria-hidden="true" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    );
+  }
 
   const fitHeight = HEAD_H + ROW_H * Math.max(1, rows.length) + 2;
   // One tab stop for the whole table; the arrow keys move between rows.

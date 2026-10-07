@@ -1,9 +1,9 @@
 // Screenshots of the landing site (site/public) and the built app (web/dist) at desktop and phone
 // widths, taken in headless Chrome over the DevTools protocol. Both are served with their _headers,
 // so the shots run under the real Content-Security-Policy. Fails on any console error, CSP
-// violation, uncaught exception or failed same-origin request, on a site page or a step of the
-// app's welcome wider than the window, and on a service worker that fails to install. No dependencies: needs Node 22 (for
-// WebSocket) and Chrome.
+// violation, uncaught exception or failed same-origin request, on a site page, a step of the
+// app's welcome or a view of the app on a phone wider than the window, and on a service worker
+// that fails to install. No dependencies: needs Node 22 (for WebSocket) and Chrome.
 //
 // Usage: node scripts/screenshots.mjs
 //   CHROME           Chrome's path (default: the macOS app, or google-chrome on PATH)
@@ -226,6 +226,16 @@ class Tab {
     return null;
   }
 
+  /** Marks the first `selector` whose text includes `text`, so `press` can find it. Returns the selector to press. */
+  async markWithText(selector, text) {
+    await this.evaluate(`(() => {
+      document.querySelectorAll('[data-shot]').forEach((el) => el.removeAttribute('data-shot'));
+      const el = [...document.querySelectorAll(${JSON.stringify(selector)})].find((e) => e.textContent.includes(${JSON.stringify(text)}));
+      el?.setAttribute('data-shot', '');
+    })()`);
+    return '[data-shot]';
+  }
+
   /** Clicks `selector`, failing the step if it can't. Returns whether it could. */
   async press(selector, what) {
     const reason = await this.click(selector);
@@ -233,12 +243,22 @@ class Tab {
     return !reason;
   }
 
-  /** Fails the step if anything in the app reaches past the window's edges. The app clips its own overflow, so the page never scrolls to show it. */
+  /**
+   * Fails the step if anything in the app reaches past the window's edges. The app clips its own
+   * overflow, so the page never scrolls to show it. What a region of its own scrolls sideways to
+   * is in reach, so it counts only if that region itself is too wide.
+   */
   async checkAppFits() {
     const wide = await this.evaluate(`(() => {
       const w = document.documentElement.clientWidth;
+      const inScroller = (el) => {
+        for (let p = el.parentElement; p && !p.classList.contains('app'); p = p.parentElement) {
+          if (/auto|scroll/.test(getComputedStyle(p).overflowX)) return true;
+        }
+        return false;
+      };
       return [...document.querySelectorAll('.app *')]
-        .filter((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && (r.right > w + 0.5 || r.left < -0.5); })
+        .filter((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && (r.right > w + 0.5 || r.left < -0.5) && !inScroller(el); })
         .slice(0, 5)
         .map((el) => el.tagName.toLowerCase() + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\\s+/).join('.') : ''));
     })()`);
@@ -424,7 +444,7 @@ async function shootWelcome(tab, origin, viewport, shoot, samples) {
   await shoot(tab.step, 'welcome, live capture unavailable in this browser');
 }
 
-async function shootApp(tab, origin, viewport, shots, notes, samples) {
+async function shootApp(tab, origin, viewport, shots, samples) {
   const status = `(document.querySelector('.toolbar [role=status]')?.textContent ?? '')`;
   const idle = `!document.querySelector('.app[data-busy]')`;
   const shoot = async (file, what) => {
@@ -454,18 +474,15 @@ async function shootApp(tab, origin, viewport, shots, notes, samples) {
   // The views and the Capture sheet would only show the failed load again.
   if (!demoLoaded) return;
 
-  for (const view of APP_VIEWS) {
-    const file = `app-${view.id}-${viewport.name}.png`;
-    tab.step = file;
-    const unreachable = await tab.click(`.view-switcher [data-value="${view.id}"]`);
-    if (unreachable) {
-      // Phones are out of scope for the app (PRODUCT.md), so only a desktop miss is a failure.
-      if (viewport.mobile) notes.push(`${view.label} tab not clickable at ${viewport.width} px: ${unreachable}`);
-      else tab.problem('unreachable', `${view.label} tab: ${unreachable}`);
-      continue;
+  if (viewport.mobile) await shootPhoneViews(tab, shoot, idle);
+  else {
+    for (const view of APP_VIEWS) {
+      const file = `app-${view.id}-${viewport.name}.png`;
+      tab.step = file;
+      if (!(await tab.press(`.view-switcher [data-value="${view.id}"]`, `${view.label} tab`))) continue;
+      await tab.waitFor(`the ${view.label} tab did not open`, `document.querySelector('.view-switcher [data-value="${view.id}"]')?.getAttribute('aria-checked') === 'true' && ${idle}`, 30_000);
+      await shoot(file, `${view.label} tab`);
     }
-    await tab.waitFor(`the ${view.label} tab did not open`, `document.querySelector('.view-switcher [data-value="${view.id}"]')?.getAttribute('aria-checked') === 'true' && ${idle}`, 30_000);
-    await shoot(file, `${view.label} tab`);
   }
 
   const file = `app-capture-sheet-${viewport.name}.png`;
@@ -480,15 +497,71 @@ async function shootApp(tab, origin, viewport, shots, notes, samples) {
   const inline = await tab.evaluate(`!!document.querySelector('.toolbar-button.capture')`);
   const unreachable = inline ? await tab.click('.toolbar-button.capture') : await fromMenu();
   if (unreachable) {
-    if (viewport.mobile) notes.push(`Connect live not clickable at ${viewport.width} px: ${unreachable}`);
-    else tab.problem('unreachable', `Connect live: ${unreachable}`);
+    tab.problem('unreachable', `Connect live: ${unreachable}`);
     return;
   }
   await tab.waitFor('the Capture sheet did not open', `!!document.querySelector('dialog.sheet[open] .sheet-title')?.textContent.includes('Live Capture')`, 30_000);
   await shoot(file, 'Capture sheet open');
 }
 
-function writeSummary(shots, problems, notes) {
+/**
+ * On a phone, each view through the Views sheet, checked for anything past the window's edge, with
+ * a Trace card opened and two signals plotted.
+ */
+async function shootPhoneViews(tab, shoot, idle) {
+  const sheetOpen = `!!document.querySelector('dialog.views-sheet[open]')`;
+  const openPicker = async () => (await tab.press('.view-picker', 'the view picker')) && tab.waitFor('the Views sheet did not open', sheetOpen, 5_000);
+
+  tab.step = 'app-views-sheet-mobile.png';
+  if (!(await openPicker())) return;
+  await tab.checkAppFits();
+  await shoot(tab.step, 'Views sheet');
+  await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await tab.waitFor('the Views sheet did not close', `!${sheetOpen}`, 5_000);
+
+  for (const view of APP_VIEWS) {
+    const file = `app-${view.id}-mobile.png`;
+    tab.step = file;
+    if (!(await openPicker())) continue;
+    if (!(await tab.press(`.views-sheet [data-view="${view.id}"]`, `${view.label} in the Views sheet`))) continue;
+    await tab.waitFor(
+      `${view.label} did not open`,
+      `!${sheetOpen} && document.querySelector('.view-picker')?.textContent.includes(${JSON.stringify(view.label)}) && ${idle}`,
+      30_000,
+    );
+    await tab.settle();
+    await tab.checkAppFits();
+    await shoot(file, `${view.label}`);
+
+    if (view.id === 'trace') {
+      tab.step = 'app-trace-open-mobile.png';
+      const card = await tab.markWithText('.tc-head', 'ENGINE_1');
+      if (!(await tab.press(card, 'a Trace card'))) continue;
+      await tab.waitFor('the Trace card did not open', `!!document.querySelector('.tc-card.open .tc-values')`, 10_000);
+      await tab.checkAppFits();
+      await shoot(tab.step, 'Trace with a card open');
+    }
+
+    if (view.id === 'plot') {
+      tab.step = 'app-plot-signals-mobile.png';
+      if (!(await tab.press('.phone-view-actions .button', 'Signals'))) continue;
+      for (const [message, signal] of [
+        ['ENGINE_1', 'EngineSpeed'],
+        ['VEHICLE_STATE', 'VehicleSpeed'],
+      ]) {
+        if (!(await tab.press(await tab.markWithText('.pv-msg', message), `${message} in the signal list`))) break;
+        if (!(await tab.press(await tab.markWithText('.pv-sig', signal), `${signal} in the signal list`))) break;
+        await tab.waitFor(`${signal} was not plotted`, `${idle} && [...document.querySelectorAll('.pv-lane')].some((l) => l.textContent.includes(${JSON.stringify(signal)}))`, 30_000);
+      }
+      if (!(await tab.press('.sidebar-head .icon-button', 'Close signals'))) continue;
+      await tab.checkAppFits();
+      await shoot(tab.step, 'Plot with two signals');
+    }
+  }
+}
+
+function writeSummary(shots, problems) {
   const lines = ['## Screenshots', '', `${shots.length} PNGs, in this run's artifacts.`, '', '| File | Shows | Window |', '|---|---|---|'];
   for (const s of shots) {
     const size = `${s.viewport.width} x ${s.viewport.height}${s.viewport.mobile ? ', phone' : ''}${s.fullPage ? ', full page' : ''}`;
@@ -496,7 +569,6 @@ function writeSummary(shots, problems, notes) {
   }
   lines.push('', problems.length ? `### ${problems.length} problems` : '### No problems found');
   if (problems.length) lines.push('', ...problems.map((p) => `- \`${p.step}\`: ${p.kind}: ${p.text}`));
-  if (notes.length) lines.push('', '### Notes', '', ...notes.map((n) => `- ${n}`));
   const markdown = `${lines.join('\n')}\n`;
   writeFileSync(join(outDir, 'index.md'), markdown);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
@@ -563,7 +635,6 @@ async function main() {
 
   const tabs = [];
   const problems = [];
-  const notes = [];
   const shots = [];
   watchForProblems(cdp, tabs, [site.origin, app.origin]);
 
@@ -572,11 +643,11 @@ async function main() {
     const siteTab = await openTab(cdp, tabs, problems, viewport, mobileUserAgent);
     await shootSite(siteTab, site.origin, viewport, shots);
     const appTab = await openTab(cdp, tabs, problems, viewport, mobileUserAgent);
-    await shootApp(appTab, app.origin, viewport, shots, notes, samples);
+    await shootApp(appTab, app.origin, viewport, shots, samples);
     for (const tab of [siteTab, appTab]) await cdp.send('Target.disposeBrowserContext', { browserContextId: tab.contextId });
   }
 
-  writeSummary(shots, problems, notes);
+  writeSummary(shots, problems);
   console.log(`${shots.length} screenshots, ${problems.length} problems. Index: ${join(outDir, 'index.md')}`);
   return problems.length === 0;
 }

@@ -88,3 +88,237 @@
   gap: 8px;
   margin-top: 4px;
 }
+
+/* Phones: the trace as cards (TraceCards.tsx). A collapsed card is CARD_H (84px) tall: 1px
+   borders, 10px padding and three lines of 20, 18 and 20px with 2px between. */
+.tc {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  /* clip, not hidden: focusing a card must not scroll the list, which places the cards itself. */
+  overflow: clip;
+  background: var(--plot-paper);
+  /* Scrolling is the list's own, so a drag never moves the page or zooms it. */
+  touch-action: none;
+}
+
+.tc [role='list'] {
+  position: absolute;
+  inset: 0;
+}
+
+.tc-card {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--paper);
+}
+
+.tc-card:not(.open) {
+  height: 84px;
+}
+
+.tc-card.selected,
+.tc-card.open {
+  background: var(--selected-row);
+}
+
+.tc-loading {
+  height: 84px;
+  background: var(--paper);
+}
+
+.tc-head {
+  position: relative;
+  display: grid;
+  row-gap: 2px;
+  width: 100%;
+  padding: 10px 40px 10px 12px;
+  border-radius: 11px;
+  text-align: left;
+  user-select: none;
+}
+
+.tc-head:focus-visible {
+  outline-offset: -2px;
+}
+
+.tc-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  height: 20px;
+  white-space: nowrap;
+}
+
+.tc-time {
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.tc-where {
+  color: var(--slate);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.tc-where .mono {
+  color: var(--graphite);
+  font-size: 14px;
+}
+
+.tc-where .tc-error {
+  color: var(--rust);
+}
+
+.tc-details {
+  display: block;
+  height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--slate);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* Clear of View all, which sits over the end of this line. */
+.tc-card.more .tc-details {
+  padding-right: 124px;
+}
+
+.tc-bytes {
+  display: flex;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.tc-bytes.all {
+  display: grid;
+  grid-template-columns: repeat(8, max-content);
+  gap: 2px 6px;
+}
+
+.tc-byte {
+  margin: 0 -2px;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+
+.tc-byte.changed {
+  background: var(--changed-byte);
+}
+
+.tc-byte.matched {
+  outline: 1px solid var(--ochre-control);
+  font-weight: 600;
+}
+
+.tc-chevron {
+  position: absolute;
+  top: 32px;
+  right: 12px;
+  display: flex;
+  color: var(--slate);
+}
+
+.tc-more {
+  position: absolute;
+  top: 20px;
+  right: 36px;
+  height: 44px;
+  padding: 0 8px;
+  color: var(--deep-ochre);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tc-detail {
+  margin: 0 12px;
+  padding-bottom: 2px;
+  border-top: 1px solid var(--hairline);
+}
+
+.tc-detail-title {
+  margin: 10px 0 6px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.tc-values {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.tc-value {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.tc-value dt {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--slate);
+}
+
+.tc-value dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.tc-note {
+  padding: 10px 0;
+  color: var(--slate);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.tc-plot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 8px;
+  border-top: 1px solid var(--hairline);
+  color: var(--deep-ochre);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.tc-plot svg:last-child {
+  margin-left: auto;
+}
+
+/* Wide enough for a finger, and dragged through a long log far faster than flinging it. */
+.tc-scrollbar {
+  top: 0;
+  width: 14px;
+}
+
+.tc-scrollbar .thumb {
+  left: 4px;
+  right: 4px;
+  touch-action: none;
+}
+
+/* A finger-wide grip around the 6px thumb, reaching into the gutter beside the cards. */
+.tc-scrollbar .thumb::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px 0 -12px;
+}

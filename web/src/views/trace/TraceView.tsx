@@ -1,17 +1,20 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SlidersHorizontal } from 'lucide-react';
 import { ALL_IDS, FILTERED_ROWS, dbcId, idLabel, type CoreApi, type FrameFilter } from '../../core/api';
 import type { RowBatch } from '../../core/rows';
 import { ChunkBoundary } from '../../components/ChunkBoundary';
 import { DetailPanel } from '../../components/DetailPanel';
 import { Plots } from '../../components/Plots';
 import { TraceTable } from '../../components/TraceTable';
+import { usePhone } from '../../phone';
 import { DetailsToggle } from '../shared/DetailsToggle';
 import { IdListSidebar } from '../shared/IdListSidebar';
 import { useViewState } from '../shared/viewState';
-import { InspectorSlot } from '../slots';
+import { InspectorSlot, PhoneActionsSlot } from '../slots';
 import type { ViewProps } from '../types';
 import { FilterBar, NoMatches } from './FilterBar';
 import { filterChips, hasFilters, lastEditedChip, matchedBytes, toFrameFilter, type FilterChip, type TraceFilters } from './filters';
+import { TraceCards, type FrameLookup } from './TraceCards';
 import './trace.css';
 
 const FilterSheet = lazy(() => import('./FilterSheet').then((m) => ({ default: m.FilterSheet })));
@@ -41,12 +44,21 @@ export function TraceView({ ctx }: ViewProps) {
   const [sheetKey, setSheetKey] = useState(0);
   const [filtered, setFiltered] = useState<Filtered | null>(() => held.get(core) ?? null);
   const editButton = useRef<HTMLButtonElement>(null);
+  const phone = usePhone();
 
   // Names come from the core's summaries, which already apply each DBC's bus scope.
   const nameOf = useMemo(() => {
     const names = new Map(ids.map((s) => [`${s.channel}:${dbcId(s)}`, s.name ?? undefined]));
     return (channel: number, id: number) => names.get(`${channel}:${id}`);
   }, [ids]);
+  const { messageOf } = ctx;
+  const lookup = useMemo(() => {
+    const byId = new Map(ids.map((s) => [`${s.channel}:${dbcId(s)}`, s]));
+    return (channel: number, id: number): FrameLookup => {
+      const s = byId.get(`${channel}:${id}`);
+      return { name: s?.name ?? undefined, message: s ? messageOf(s.key) : null, key: s?.key ?? null };
+    };
+  }, [ids, messageOf]);
 
   const query = filters ? JSON.stringify(toFrameFilter(filters, selected)) : null;
   useEffect(() => {
@@ -130,11 +142,12 @@ export function TraceView({ ctx }: ViewProps) {
     }
   }, [sheetOpen]);
 
-  // With All frames there is nothing to inspect, so the pane gives the table its room.
+  // With All frames there is nothing to inspect, so the pane gives the table its room. On phones
+  // an opened card shows what the inspector would.
   const nothingSelected = !ids.some((s) => s.key === selected);
   useEffect(() => {
-    setInspectorHidden(nothingSelected);
-  }, [setInspectorHidden, nothingSelected]);
+    setInspectorHidden(nothingSelected || phone);
+  }, [setInspectorHidden, nothingSelected, phone]);
 
   const apply = useCallback(
     (next: TraceFilters | null) => {
@@ -162,20 +175,40 @@ export function TraceView({ ctx }: ViewProps) {
   };
   const closeSheet = () => setSheetOpen(false);
 
+  const plotMessage = async (key: number, time: number) => {
+    const message = ctx.messageOf(key);
+    if (!message) return;
+    // Nothing to show if none could be plotted; the banner says why.
+    if ((await ctx.plotAll(key, message.signals.map((s) => s.name))) === 0) return;
+    setPinnedTime(time);
+    ctx.setView('plot');
+  };
+
   return (
     <>
       <IdListSidebar ctx={ctx} />
-      <FilterBar
-        chips={chips}
-        anyRule={filters?.combine === 'any' && filters.rules.length > 1}
-        matches={result?.count ?? null}
-        total={total}
-        editRef={editButton}
-        onEdit={openSheet}
-        onRemove={(chip) => apply(chip.without)}
-        onClear={() => apply(null)}
-        trailing={<DetailsToggle ctx={ctx} emptyReason={summary ? null : 'Select an ID to see its bit activity and signals'} />}
-      />
+      {phone && (
+        <PhoneActionsSlot>
+          <button ref={editButton} type="button" className="button" onClick={openSheet}>
+            <SlidersHorizontal size={16} strokeWidth={1.5} aria-hidden="true" />
+            {chips.length > 0 ? `Filters (${chips.length})` : 'Filters'}
+          </button>
+        </PhoneActionsSlot>
+      )}
+      {(!phone || chips.length > 0) && (
+        <FilterBar
+          chips={chips}
+          anyRule={filters?.combine === 'any' && filters.rules.length > 1}
+          matches={result?.count ?? null}
+          total={total}
+          editRef={editButton}
+          onEdit={openSheet}
+          onRemove={(chip) => apply(chip.without)}
+          onClear={() => apply(null)}
+          showEdit={!phone}
+          trailing={phone ? null : <DetailsToggle ctx={ctx} emptyReason={summary ? null : 'Select an ID to see its bit activity and signals'} />}
+        />
+      )}
       {sheetOpen && (
         <ChunkBoundary key={sheetKey} message="Couldn't load the filters.">
           <Suspense fallback={null}>
@@ -208,6 +241,23 @@ export function TraceView({ ctx }: ViewProps) {
           onRemoveLast={() => apply(lastEditedChip(chips, filters?.edited).without)}
           onClear={() => apply(null)}
         />
+      ) : phone ? (
+        <TraceCards
+          key={result ? `filtered-${result.version}` : 'all'}
+          core={core}
+          filterKey={result ? FILTERED_ROWS : selected}
+          rowCount={result ? result.count : total}
+          logVersion={logVersion}
+          droppedFrames={log.droppedFrames}
+          follow={ctx.capturing}
+          channels={log.channels}
+          hasDbc={ctx.dbcs.length > 0}
+          lookup={lookup}
+          pinnedTime={pinnedTime}
+          onPin={plots.length > 0 ? setPinnedTime : undefined}
+          onPlotMessage={(key, time) => void plotMessage(key, time)}
+          matchedBytes={result ? highlight : undefined}
+        />
       ) : (
         <TraceTable
           key={result ? `filtered-${result.version}` : 'all'}
@@ -224,15 +274,18 @@ export function TraceView({ ctx }: ViewProps) {
           matchedBytes={result ? highlight : undefined}
         />
       )}
-      <Plots
-        core={core}
-        specs={plots}
-        duration={log.durationS}
-        pinnedTime={pinnedTime}
-        onPin={setPinnedTime}
-        onRemove={ctx.removePlot}
-        onClear={ctx.clearPlots}
-      />
+      {/* On phones the cards need the height; Plot is a tap away. */}
+      {!phone && (
+        <Plots
+          core={core}
+          specs={plots}
+          duration={log.durationS}
+          pinnedTime={pinnedTime}
+          onPin={setPinnedTime}
+          onRemove={ctx.removePlot}
+          onClear={ctx.clearPlots}
+        />
+      )}
       <InspectorSlot>
         <DetailPanel
           core={core}

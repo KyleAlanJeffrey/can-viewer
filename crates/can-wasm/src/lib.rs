@@ -1133,6 +1133,24 @@ impl Session {
         }
     }
 
+    /// The signals of row `row` of the trace of `key` (-1 for all, -2 for the filtered frames),
+    /// decoded from its whole payload by the DBC that describes its ID on its bus: a JSON array
+    /// of `FrameValue`, as [`MessageDef::decode_frame`] gives them. Empty for an error frame, an
+    /// ID no loaded DBC describes, an unknown key or a row past the end.
+    pub fn decode_frame(&self, key: f64, row: u32) -> String {
+        let row = row as usize;
+        let values = match self.trace(key) {
+            Ok(trace) if row < trace.len(&self.store) => {
+                let frame = self.store.frame(trace.index(row));
+                self.message(frame.channel, frame.id)
+                    .map(|m| m.decode_frame(frame.data))
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_owned())
+    }
+
     /// Payload bytes `first..first + byte_count` of rows `start..start + count` of the trace of
     /// `key` (pass -1 for all), which [`Self::rows`] would cut at [`MAX_PAYLOAD`]: `byte_count`
     /// values per row, row after row, with [`NO_BYTE`] for a byte past the end of the frame. Rows
@@ -2109,6 +2127,21 @@ mod tests {
         assert_eq!(summary_name(&s, 0, 0x456), "LATER");
         let info = s.decode_signal(key_123(), "Value").unwrap();
         assert_eq!(series_values(&s, &info), [1.0, 3.0, 5.0]);
+    }
+
+    #[test]
+    fn decodes_one_row_of_a_trace() {
+        let mut s = session();
+        set_databases(&mut s, &[(None, database(&[(0x123, "M", 8)]))]);
+        let values = json(&s.decode_frame(key_123(), 1));
+        assert_eq!(values[0]["name"], "Value");
+        assert_eq!(values[0]["value"], 4.0);
+        assert_eq!(values[0]["missing"], Value::Null);
+        // Row 1 of all frames is the same frame.
+        assert_eq!(json(&s.decode_frame(-1.0, 1)), values);
+        // 0x456 has no message; a row past the end has no frame.
+        assert_eq!(s.decode_frame(-1.0, 2), "[]");
+        assert_eq!(s.decode_frame(key_123(), 9), "[]");
     }
 
     #[test]

@@ -16,17 +16,21 @@ interface BarProps {
   onClear: () => void;
   /** At the far end of the bar, after the count. */
   trailing?: ReactNode;
+  /** False where the Filters button is elsewhere, as beside the view picker on phones. */
+  showEdit?: boolean;
 }
 
 /** The Filters button over the trace, then the applied filters as removable chips and their count. */
-export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onRemove, onClear, trailing }: BarProps) {
+export function FilterBar({ chips, anyRule, matches, total, editRef, onEdit, onRemove, onClear, trailing, showEdit = true }: BarProps) {
   const filtered = chips.length > 0;
   return (
     <div className="tv-bar">
-      <button ref={editRef} type="button" className="button" onClick={onEdit}>
-        <SlidersHorizontal size={16} strokeWidth={1.5} aria-hidden="true" />
-        {filtered ? 'Edit filters\u2026' : 'Filters\u2026'}
-      </button>
+      {showEdit && (
+        <button ref={editRef} type="button" className="button" onClick={onEdit}>
+          <SlidersHorizontal size={16} strokeWidth={1.5} aria-hidden="true" />
+          {filtered ? 'Edit filters\u2026' : 'Filters\u2026'}
+        </button>
+      )}
       {filtered && (
         <>
           <ul className="tv-chips" aria-label="Applied filters">

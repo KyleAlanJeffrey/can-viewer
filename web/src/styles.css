@@ -1549,3 +1549,278 @@ input[type='checkbox'] {
     box-shadow: var(--shadow-float);
   }
 }
+
+/* The Views sheet, which only phones have. */
+.views-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.views-actions {
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+.views-actions .separated {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+.views-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 48px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 16px;
+  line-height: 22px;
+  text-align: left;
+}
+
+.views-item:hover:not(:disabled) {
+  background: var(--hover-wash);
+}
+
+.views-item[aria-current='page'] {
+  background: var(--selected-row);
+  font-weight: 600;
+}
+
+.views-item:focus-visible {
+  outline-offset: -2px;
+}
+
+.views-item > svg {
+  flex: none;
+}
+
+.views-label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.views-note {
+  color: var(--slate);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+}
+
+.views-chevron {
+  color: var(--slate);
+}
+
+.sheet-head.closable {
+  position: relative;
+  padding-right: 48px;
+}
+
+.sheet-close {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  width: 44px;
+  height: 44px;
+}
+
+/* Phones (600px and below): one column under a two-row header, 44px targets, and room for the
+   notch and home indicator. In step with PHONE in phone.ts. */
+@media (max-width: 600px) {
+  .app {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  /* Header: the mark, the log's name and status centred, and the More menu; then the view picker. */
+  .toolbar.phone-bar {
+    padding: 0 4px 0 12px;
+    column-gap: 8px;
+    background: var(--warm-white);
+  }
+
+  .toolbar.phone-bar .toolbar-leading,
+  .toolbar.phone-bar .toolbar-actions {
+    height: 56px;
+  }
+
+  .toolbar.phone-bar .toolbar-leading {
+    gap: 8px;
+  }
+
+  .phone-mark {
+    display: flex;
+    flex: none;
+  }
+
+  .toolbar.phone-bar .doc {
+    text-align: center;
+  }
+
+  .toolbar.phone-bar .doc-title {
+    font-size: 16px;
+    line-height: 22px;
+  }
+
+  .toolbar.phone-bar .doc-sub {
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  .toolbar.phone-bar .toolbar-actions {
+    gap: 4px;
+  }
+
+  .toolbar.phone-bar .icon-button,
+  .toolbar.phone-bar .toolbar-actions .button,
+  .toolbar.phone-bar .toolbar-actions .primary {
+    height: 44px;
+  }
+
+  .toolbar.phone-bar .icon-button {
+    width: 44px;
+  }
+
+  .toolbar.phone-bar .cancel-read {
+    padding: 0 10px;
+  }
+
+  .toolbar-views.phone-views {
+    /* Clear of the 4px the bar leaves on the right for the More button, to match the left. */
+    flex-basis: calc(100% - 8px);
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: auto;
+    margin: 0 8px 0 0;
+    padding: 2px 0 10px;
+  }
+
+  .view-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    height: 44px;
+    padding: 0 10px 0 14px;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    background: var(--paper);
+    font-size: 16px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .view-picker svg {
+    color: var(--slate);
+  }
+
+  .phone-view-actions {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .phone-view-slot {
+    display: contents;
+  }
+
+  .phone-views .button {
+    height: 44px;
+    padding: 0 12px;
+  }
+
+  .menu {
+    min-width: 240px;
+  }
+
+  .menu-item {
+    height: 44px;
+    font-size: 15px;
+  }
+
+  .banner {
+    margin: 12px 12px 0;
+  }
+
+  .banner .icon-button.small {
+    width: 44px;
+    height: 44px;
+    margin: -12px -12px -12px 0;
+  }
+
+  /* The sidebar covers the window, under a title and a close button. */
+  .sidebar {
+    inset: 0;
+    width: auto;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    border-right: 0;
+    box-shadow: none;
+  }
+
+  .sidebar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex: none;
+    height: 56px;
+    padding: 0 4px 0 16px;
+  }
+
+  .sidebar-title {
+    font-size: 17px;
+    line-height: 22px;
+    font-weight: 600;
+  }
+
+  .sidebar-head .icon-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* 16px, as iOS zooms into a field with smaller text. */
+  .search {
+    height: 44px;
+    margin: 0 16px 8px;
+    font-size: 16px;
+  }
+
+  .id-row,
+  .group-head {
+    height: 44px;
+  }
+
+  /* Sheets rise from the bottom edge, full width. */
+  .sheet,
+  .sheet.large {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100% - 16px - env(safe-area-inset-top));
+    margin: auto 0 0;
+    border-width: 1px 0 0;
+    border-radius: 12px 12px 0 0;
+  }
+
+  .sheet-body {
+    padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .sheet-foot {
+    flex-wrap: wrap;
+  }
+
+  .sheet-foot .button,
+  .sheet-foot .primary {
+    height: 44px;
+  }
+
+  .views-sheet .sheet-body {
+    gap: 8px;
+  }
+}

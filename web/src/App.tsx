@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AlertTriangle, Cable, FileDown, FileText, Lock, PanelLeft, Save, Search, Square, X } from 'lucide-react';
+import { AlertTriangle, Cable, ChevronDown, FileDown, FileText, FolderOpen, List, ListTree, Lock, PanelLeft, Plus, Save, Search, Square, X } from 'lucide-react';
 // Type-only, so the adapters stay out of the main chunk.
 import type { CaptureAdapter, CaptureSettings } from './capture/adapter';
 import type { CaptureRecorder, CaptureStatus } from './capture/recorder';
@@ -16,6 +16,7 @@ import { ChunkBoundary } from './components/ChunkBoundary';
 import { Sheet } from './components/Sheet';
 import { FIXED_WIDTH, useToolbarLayout, type SpareAction } from './components/toolbarLayout';
 import { UpdateBanner } from './components/UpdateBanner';
+import { ViewsSheet, type SheetAction } from './components/ViewsSheet';
 import { cssVar, formatBytes, formatCount, formatCountOf, formatDuration, formatFirstRejection, formatSkipped, logFormatName, noFramesMessage } from './format';
 import {
   claimKeptCapture,
@@ -32,6 +33,7 @@ import {
   type HeldCapture,
   type KeptCapture,
 } from './session';
+import { PHONE, usePhone } from './phone';
 import { VIEWS, viewMeta } from './views';
 import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { chooseBlobFile } from './views/shared/saveFile';
@@ -255,6 +257,17 @@ export function App({ core }: { core: CoreApi }) {
   const [viewPrimary, setViewPrimary] = useState<boolean | null>(null);
   const [sidebarSlot, setSidebarSlot] = useState<HTMLElement | null>(null);
   const [inspectorSlot, setInspectorSlot] = useState<HTMLElement | null>(null);
+  const [phoneActionsSlot, setPhoneActionsSlot] = useState<HTMLElement | null>(null);
+  /** The Views sheet, which takes the place of the view tabs on phones. */
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const phone = usePhone();
+  // The Views sheet belongs to the phone layout; a window widened past it drops the sheet.
+  if (pickerOpen && !phone) setPickerOpen(false);
+  const sidebarOpenRef = useRef(sidebarOpen);
+  sidebarOpenRef.current = sidebarOpen;
+  const pickerButton = useRef<HTMLButtonElement>(null);
+  const sidebarButton = useRef<HTMLButtonElement>(null);
+  const sidebarClose = useRef<HTMLButtonElement>(null);
   const [viewState] = useState(() => new ViewStateStore());
   const logInput = useRef<HTMLInputElement>(null);
   const dbcInput = useRef<HTMLInputElement>(null);
@@ -808,12 +821,14 @@ export function App({ core }: { core: CoreApi }) {
     await Promise.all([forget('log'), forget('compare')]);
   };
 
-  const closeLog = () =>
+  /** Closes the log, going on to Database while DBCs are loaded, or to the welcome when not `toDatabase`. */
+  const closeLog = (toDatabase = true) =>
     run('Closing the log\u2026', () =>
       serially(async () => {
         // The core has no close; an empty log releases the old one's memory.
         await core.openLog(new Blob([]), '', () => {});
-        await showClosedLog();
+        if (!toDatabase) setView('overview');
+        await showClosedLog(toDatabase);
       }),
     );
 
@@ -1214,6 +1229,11 @@ export function App({ core }: { core: CoreApi }) {
     const onKey = (e: KeyboardEvent) => {
       // Escape that closes a sheet, or that a field or grid used, isn't also meant for the panes.
       if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]')) return;
+      // On a phone the sidebar covers everything, so it closes before anything behind it changes.
+      if (sidebarOpenRef.current && window.matchMedia(PHONE).matches) {
+        setSidebarOpen(false);
+        return;
+      }
       // A parked cursor goes first, so Escape meant for it leaves the panes open.
       if (pinnedRef.current !== null) {
         setPinnedTime(null);
@@ -1225,6 +1245,31 @@ export function App({ core }: { core: CoreApi }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // The Views sheet gives focus back to its button, unless a sheet opened from it has taken it.
+  const pickerWasOpen = useRef(false);
+  useEffect(() => {
+    if (pickerOpen) {
+      pickerWasOpen.current = true;
+      return;
+    }
+    if (!pickerWasOpen.current) return;
+    pickerWasOpen.current = false;
+    if (!document.querySelector('dialog[open]')) pickerButton.current?.focus();
+  }, [pickerOpen]);
+
+  // On phones the sidebar covers the window: focus goes into it, and back to its button after.
+  const sidebarWasOpen = useRef(sidebarOpen);
+  useEffect(() => {
+    if (!phone || sidebarOpen === sidebarWasOpen.current) return;
+    sidebarWasOpen.current = sidebarOpen;
+    const focused = document.activeElement;
+    if (sidebarOpen) {
+      if (!focused?.closest('#sidebar')) sidebarClose.current?.focus();
+    } else if (!focused || focused === document.body || focused.closest('#sidebar')) {
+      sidebarButton.current?.focus();
+    }
+  }, [phone, sidebarOpen]);
 
   // A window narrowed past the breakpoint would otherwise float the open inspector over the content.
   useEffect(() => {
@@ -1323,6 +1368,30 @@ export function App({ core }: { core: CoreApi }) {
     });
   };
 
+  const plotAll = async (key: number, signals: string[]) => {
+    const hit = resolved.get(key);
+    if (!hit) return 0;
+    const shown = plotsRef.current;
+    const wanted = signals.filter((signal) => !shown.some((p) => p.id === `${key}:${signal}`));
+    const used = new Set(shown.map((p) => p.color));
+    const free = Array.from({ length: SERIES_SLOTS }, (_, i) => seriesColor(i)).filter((c) => !used.has(c));
+    if (wanted.length > free.length) {
+      setError(`Up to ${SERIES_SLOTS} signals can be plotted at once, so ${free.length === 0 ? 'none' : `only ${free.length}`} of ${hit.message.name}'s were added.`);
+    }
+    const added: PlotSpec[] = [];
+    await run(`Decoding ${hit.message.name}\u2026`, async () => {
+      for (const signal of wanted.slice(0, free.length)) {
+        const preferred = seriesColor(hit.message.signals.findIndex((s) => s.name === signal));
+        const color = free.includes(preferred) ? preferred : free[0];
+        free.splice(free.indexOf(color), 1);
+        const plot = await decodePlot(key, signal, color, hit);
+        if (plot) added.push(plot);
+      }
+      setPlots((ps) => [...ps, ...added.filter((p) => !ps.some((q) => q.id === p.id))]);
+    });
+    return signals.length - wanted.length + added.length;
+  };
+
   const addDbc = async (db: Database, channel: string | null = null) => {
     const id = crypto.randomUUID();
     await mutateDbcs((prev) => [...prev, { id, db: { ...db, name: uniqueName(prev, db.name) }, channel, edited: true }]);
@@ -1381,6 +1450,7 @@ export function App({ core }: { core: CoreApi }) {
     query,
     plots,
     togglePlot,
+    plotAll,
     removePlot,
     clearPlots,
     signalColor,
@@ -1447,9 +1517,21 @@ export function App({ core }: { core: CoreApi }) {
   );
   // Recording, the status line gets the first row to itself.
   const oneRow = layout.oneRow && !live;
+  // On phones every action is in the More menu, Open Log... first, and the views in the Views sheet.
+  const inline: ReadonlySet<SpareAction> = phone ? new Set() : layout.inline;
+  const openLogDisabled = (!!busy && !readingLog) || stopping;
   const menuItems: MenuItem[] = spare
-    .filter((id) => !layout.inline.has(id))
+    .filter((id) => !inline.has(id))
     .map((id) => ({ id, label: spareActions[id].label, icon: spareActions[id].icon, onSelect: spareActions[id].onSelect, disabled: spareActions[id].disabled }));
+  if (phone && !live) {
+    menuItems.unshift({
+      id: 'open-log',
+      label: 'Open Log\u2026',
+      icon: <FolderOpen size={16} strokeWidth={1.5} aria-hidden="true" />,
+      onSelect: () => logInput.current?.click(),
+      disabled: openLogDisabled,
+    });
+  }
   if (log && !live) {
     menuItems.push({
       id: 'close',
@@ -1469,14 +1551,80 @@ export function App({ core }: { core: CoreApi }) {
   }
   const viewSwitcher =
     !welcome && (log || dbcs.length > 0) ? (
-      <Segmented
-        label="View"
-        className="view-switcher"
-        options={VIEWS.map((v) => ({ value: v.id, label: v.label, disabled: v.needsLog && !log }))}
-        value={view}
-        onChange={setView}
-      />
+      phone ? (
+        <>
+          <button
+            ref={pickerButton}
+            type="button"
+            className="view-picker"
+            aria-label={`View: ${meta.label}`}
+            aria-haspopup="dialog"
+            aria-expanded={pickerOpen}
+            onClick={() => setPickerOpen(true)}
+          >
+            {meta.label}
+            <ChevronDown size={18} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          <div className="phone-view-actions">
+            {showView && (
+              <button
+                ref={sidebarButton}
+                type="button"
+                className="button"
+                aria-expanded={sidebarOpen}
+                aria-controls="sidebar"
+                onClick={() => setSidebarOpen(true)}
+              >
+                {meta.sidebar === 'Signals' ? <ListTree size={16} strokeWidth={1.5} aria-hidden="true" /> : <List size={16} strokeWidth={1.5} aria-hidden="true" />}
+                {meta.sidebar === 'Signals' ? `Signals (${plots.length})` : meta.sidebar}
+              </button>
+            )}
+            <div ref={setPhoneActionsSlot} className="phone-view-slot" />
+          </div>
+        </>
+      ) : (
+        <Segmented
+          label="View"
+          className="view-switcher"
+          options={VIEWS.map((v) => ({ value: v.id, label: v.label, disabled: v.needsLog && !log }))}
+          value={view}
+          onChange={setView}
+        />
+      )
     ) : null;
+
+  /** Back to the welcome, closing the log; loaded DBCs stay, for the next log. */
+  const newSession = () =>
+    unlessUnsavedCapture(() => {
+      setFocusAfterCancel(true);
+      // The welcome shows once no view does; Database shows with DBCs alone, so it goes too.
+      if (log) void closeLog(false);
+      else setView('overview');
+    });
+  const canCapture = phone && availableKinds().length > 0;
+  const sheetActions: SheetAction[] = [
+    { id: 'new-session', label: 'New session', icon: <Plus size={20} strokeWidth={1.5} aria-hidden="true" />, onSelect: newSession, disabled: !!busy || !!live || stopping },
+    {
+      id: 'open-dbc',
+      label: 'Open DBC\u2026',
+      icon: <FileText size={20} strokeWidth={1.5} aria-hidden="true" />,
+      onSelect: () => dbcInput.current?.click(),
+      disabled: !!busy,
+      separated: true,
+    },
+    { id: 'open-log', label: 'Open Log\u2026', icon: <FolderOpen size={20} strokeWidth={1.5} aria-hidden="true" />, onSelect: () => logInput.current?.click(), disabled: openLogDisabled || !!live },
+    { id: 'export-log', label: 'Export Log\u2026', icon: <FileDown size={20} strokeWidth={1.5} aria-hidden="true" />, onSelect: () => setExportOpen(true), disabled: !!busy || !log || stopping || !!live },
+    {
+      id: 'capture',
+      label: 'Connect live',
+      note: canCapture ? 'Device support required' : 'Not available in this browser',
+      icon: <Cable size={20} strokeWidth={1.5} aria-hidden="true" />,
+      onSelect: openCaptureSheet,
+      disabled: !!busy || !!live || stopping,
+      opensSheet: true,
+      separated: true,
+    },
+  ];
 
   /** Opens a log the user picked, unless a capture or another task is in the way. */
   const openPickedLog = (file: File) => {
@@ -1521,13 +1669,22 @@ export function App({ core }: { core: CoreApi }) {
   return (
     <div className={`app${welcome ? ' welcome-mode' : sidebarOpen ? '' : ' sidebar-hidden'}`} data-busy={busy ? '' : undefined}>
       {!welcome && (
-        <aside className="sidebar" aria-label="Sidebar">
-          <div className="brand">
-            <Logo size={40} />
-            <span className="wordmark">
-              <b>FreeCAN</b> Studio
-            </span>
-          </div>
+        <aside id="sidebar" className="sidebar" aria-label={phone ? meta.sidebar : 'Sidebar'}>
+          {phone ? (
+            <div className="sidebar-head">
+              <h2 className="sidebar-title">{meta.sidebar}</h2>
+              <button ref={sidebarClose} type="button" className="icon-button" aria-label={`Close ${meta.sidebar.toLowerCase()}`} onClick={() => setSidebarOpen(false)}>
+                <X size={20} strokeWidth={1.5} />
+              </button>
+            </div>
+          ) : (
+            <div className="brand">
+              <Logo size={40} />
+              <span className="wordmark">
+                <b>FreeCAN</b> Studio
+              </span>
+            </div>
+          )}
           {showView && (
             <label className="search">
               <Search size={16} strokeWidth={1.5} aria-hidden="true" />
@@ -1546,11 +1703,16 @@ export function App({ core }: { core: CoreApi }) {
         </aside>
       )}
 
-      <div className="main">
+      {/* On phones the sidebar covers the window, so what is under it is put out of reach. */}
+      <div className="main" inert={phone && !welcome && sidebarOpen}>
         {/* The same element in the welcome, so its status line and progress bar carry on into the workspace. */}
         <header
           ref={toolbar}
-          className={welcome ? 'toolbar welcome-bar' : `toolbar${live ? ' recording' : ''}${oneRow ? ' one-row' : viewSwitcher ? ' two-rows' : ''}`}
+          className={
+            welcome
+              ? 'toolbar welcome-bar'
+              : `toolbar${live ? ' recording' : ''}${phone ? ' phone-bar' : oneRow ? ' one-row' : viewSwitcher ? ' two-rows' : ''}`
+          }
           data-reading-log={readingLog ? '' : undefined}
         >
           <div className="toolbar-leading">
@@ -1561,6 +1723,10 @@ export function App({ core }: { core: CoreApi }) {
                   <b>FreeCAN</b> Studio
                 </span>
               </div>
+            ) : phone ? (
+              <span className="phone-mark">
+                <Logo size={28} background="var(--warm-white)" />
+              </span>
             ) : (
               <>
                 <button
@@ -1594,7 +1760,7 @@ export function App({ core }: { core: CoreApi }) {
           </div>
           {!welcome && (
             <div className="toolbar-actions">
-              {spare.filter((id) => layout.inline.has(id)).map((id) => {
+              {spare.filter((id) => inline.has(id)).map((id) => {
                 const action = spareActions[id];
                 return (
                   <button key={id} ref={id === 'export-log' ? exportButton : undefined} className={`toolbar-button ${id}`} onClick={action.onSelect} disabled={action.disabled}>
@@ -1621,12 +1787,12 @@ export function App({ core }: { core: CoreApi }) {
                   <span className="label">Cancel</span>
                 </button>
               )}
-              {!live && (
+              {!live && !phone && (
                 <button
                   ref={openLogButton}
                   className={hasPrimary ? 'button' : 'primary'}
                   onClick={() => logInput.current?.click()}
-                  disabled={(!!busy && !readingLog) || stopping}
+                  disabled={openLogDisabled}
                 >
                   Open Log&hellip;
                 </button>
@@ -1636,7 +1802,7 @@ export function App({ core }: { core: CoreApi }) {
           )}
           {/* Last, as on two rows, and always this element, so a focused tab keeps focus as the
               views move between rows; on one row CSS places them between the log and its actions. */}
-          {viewSwitcher && <div className="toolbar-views">{viewSwitcher}</div>}
+          {viewSwitcher && <div className={phone ? 'toolbar-views phone-views' : 'toolbar-views'}>{viewSwitcher}</div>}
           <input
             ref={logInput}
             type="file"
@@ -1770,7 +1936,7 @@ export function App({ core }: { core: CoreApi }) {
               </div>
             )}
             {showView ? (
-              <SlotContext.Provider value={{ sidebar: sidebarSlot, inspector: inspectorSlot }}>
+              <SlotContext.Provider value={{ sidebar: sidebarSlot, inspector: inspectorSlot, phoneActions: phone ? phoneActionsSlot : null }}>
                 <ViewStateContext.Provider value={viewState}>
                   <meta.Component key={view} ctx={ctx} />
                 </ViewStateContext.Provider>
@@ -1825,6 +1991,9 @@ export function App({ core }: { core: CoreApi }) {
         />
       )}
       {dragOver && <div className="drop-overlay">Drop a log, DBC files or a video to open them</div>}
+      {phone && viewSwitcher && (
+        <ViewsSheet open={pickerOpen} onClose={() => setPickerOpen(false)} view={view} hasLog={!!log} onView={setView} actions={sheetActions} />
+      )}
       {captureSheetUsed && (
         <ChunkBoundary message="Couldn't load capture." frame={captureFrame}>
           <Suspense fallback={captureFrame(<p className="hint">Loading&hellip;</p>)}>

@@ -6,7 +6,7 @@
 
 web
 
-Desktop browsers only. Phones and tablets are out of scope: no phone layout is designed, built or tested.
+Desktop browsers first, with phones coming in progressively. On phones (600px wide and below) Overview, Trace and Plot have phone layouts; Reverse Engineer, Compare and Database don't yet, though they stay reachable and inside the window. Live capture on phones is experimental and follows the browser: iOS browsers can't reach serial or USB devices, so the app says it isn't available there. Tablets get the desktop layout.
 
 FreeCAN Studio Pro, the paid desktop app, will wrap the same web UI in Tauri, so its design language stays web rather than native macOS or Windows.
 

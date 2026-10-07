@@ -134,12 +134,13 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
       const info = await core.decodeSignal(key, signal);
       setPlots((ps) => [...ps, { id, label: signal, info, color: PLOT_COLORS[ps.length] }]);
     },
-    plotSignals: async (key, signals) => {
+    plotAll: async (key, signals) => {
       for (const signal of signals) {
         const id = `${key}:${signal}`;
         const info = await core.decodeSignal(key, signal);
         setPlots((ps) => (ps.some((p) => p.id === id) ? ps : [...ps, { id, label: signal, info, color: PLOT_COLORS[ps.length] }]));
       }
+      return signals.length;
     },
     removePlot,
     clearPlots: () => setPlots([]),

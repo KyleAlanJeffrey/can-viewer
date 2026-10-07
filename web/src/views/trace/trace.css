@@ -95,7 +95,8 @@
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  /* clip, not hidden: focusing a card must not scroll the list, which places the cards itself. */
+  overflow: clip;
   background: var(--plot-paper);
   /* Scrolling is the list's own, so a drag never moves the page or zooms it. */
   touch-action: none;
@@ -313,4 +314,11 @@
   left: 4px;
   right: 4px;
   touch-action: none;
+}
+
+/* A finger-wide grip around the 6px thumb, reaching into the gutter beside the cards. */
+.tc-scrollbar .thumb::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px 0 -12px;
 }

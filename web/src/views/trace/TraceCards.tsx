@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from 'react';
 import { ChartLine, ChevronDown, ChevronRight } from 'lucide-react';
-import { EXT_FLAG, FLAG_ERROR, FLAG_FD, FLAG_RTR, formatId, idLabel, type CoreApi, type MessageDef } from '../../core/api';
+import { EXT_FLAG, FLAG_ERROR, FLAG_FD, FLAG_RTR, formatId, idLabel, type CoreApi, type FrameValue, type MessageDef } from '../../core/api';
 import type { RowBatch } from '../../core/rows';
 import { HEX, nearestRow } from '../../components/TraceTable';
-import { decodeFrame } from './decodeFrame';
+import { formatValue } from '../plot/model';
 
 /** A collapsed card's height and the gap under it. Keep in step with .tc-card in trace.css. */
 export const CARD_H = 84;
@@ -78,6 +78,8 @@ export function TraceCards({ core, filterKey, rowCount, logVersion, droppedFrame
   const [extra, setExtra] = useState(0);
   /** The open card's payload past the 64 bytes a row carries, for a long J1939 transfer. */
   const [fullData, setFullData] = useState<{ frame: number; data: Uint8Array } | null>(null);
+  /** The open card's signals, as the core decodes them from its whole payload. */
+  const [decoded, setDecoded] = useState<{ frame: number; values: FrameValue[] } | null>(null);
   const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
   const [focusRow, setFocusRow] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -100,9 +102,15 @@ export function TraceCards({ core, filterKey, rowCount, logVersion, droppedFrame
     return Math.max(0, Math.min(rowCount - 1, Math.floor(at / PITCH)));
   };
 
-  // Read by the pointer handlers and the fling, which outlive renders.
+  // Read by the pointer handlers, the fling and the pin lookup, which outlive renders.
   const maxRef = useRef(maxScroll);
   maxRef.current = maxScroll;
+  const rowTopRef = useRef(rowTop);
+  rowTopRef.current = rowTop;
+  const openedRef = useRef(opened);
+  openedRef.current = opened;
+  const extraRef = useRef(extra);
+  extraRef.current = extra;
   const scrollTo = useCallback((y: number) => setScrollY(Math.max(0, Math.min(maxRef.current, y))), []);
   const scrollBy = useCallback((dy: number) => setScrollY((y) => Math.max(0, Math.min(maxRef.current, y + dy))), []);
 
@@ -173,10 +181,9 @@ export function TraceCards({ core, filterKey, rowCount, logVersion, droppedFrame
       if (stale) return;
       matchedPin.current = { time: pinnedTime, key: filterKey };
       setSelectedFrame(frame);
-      setScrollY((y) => {
-        const top = PAD + row * PITCH;
-        return top >= y && top + CARD_H <= y + size.height ? y : Math.max(0, Math.min(maxRef.current, top - (size.height - CARD_H) / 2));
-      });
+      const top = rowTopRef.current(row);
+      const height = CARD_H + (openedRef.current?.row === row ? extraRef.current : 0);
+      setScrollY((y) => (top >= y && top + height <= y + size.height ? y : Math.max(0, Math.min(maxRef.current, top - (size.height - height) / 2))));
     });
     return () => {
       stale = true;
@@ -209,7 +216,8 @@ export function TraceCards({ core, filterKey, rowCount, logVersion, droppedFrame
     if (focusRow === null) return;
     const card = wrapRef.current?.querySelector<HTMLElement>(`[data-row="${focusRow}"]`);
     if (!card) return;
-    card.focus();
+    // The list places the cards itself; a browser scroll to the focused one would undo that.
+    card.focus({ preventScroll: true });
     setFocusRow(null);
   });
 
@@ -230,10 +238,24 @@ export function TraceCards({ core, filterKey, rowCount, logVersion, droppedFrame
     };
   }, [core, filterKey, opened, needsFull]);
 
+  // Fetched again when the DBCs change, which `lookup` follows.
+  useEffect(() => {
+    if (!opened) return;
+    let stale = false;
+    core.decodeFrame(filterKey, opened.row).then((values) => {
+      if (!stale) setDecoded({ frame: opened.frame, values });
+    });
+    return () => {
+      stale = true;
+    };
+  }, [core, filterKey, opened, lookup]);
+
   const toggle = (row: number) => {
     const i = indexIn(row);
     if (!rows || i === null) return;
     const frame = rows.index(i);
+    setFullData(null);
+    setDecoded(null);
     if (opened?.row === row) {
       setOpened(null);
       setExtra(0);
@@ -379,6 +401,7 @@ export function TraceCards({ core, filterKey, rowCount, logVersion, droppedFrame
         open={isOpen}
         selected={rows.index(i) === selectedFrame}
         fullData={isOpen && fullData?.frame === rows.index(i) ? fullData.data : null}
+        values={isOpen && decoded?.frame === rows.index(i) ? decoded.values : null}
         channels={channels}
         hasDbc={hasDbc}
         lookup={lookup}
@@ -425,6 +448,8 @@ interface CardProps {
   open: boolean;
   selected: boolean;
   fullData: Uint8Array | null;
+  /** The open card's decoded signals; null while they load. */
+  values: FrameValue[] | null;
   channels: string[];
   hasDbc: boolean;
   lookup: (channel: number, id: number) => FrameLookup;
@@ -433,7 +458,22 @@ interface CardProps {
   onPlotMessage: (key: number, time: number) => void;
 }
 
-function FrameCard({ ref, rows, i, row, rowCount, top, open, selected, fullData, channels, hasDbc, lookup, matched, onToggle, onPlotMessage }: CardProps) {
+const MISSING_TEXT: Record<Exclude<FrameValue['missing'], null | 'absent'>, string> = {
+  short: 'Not in this frame',
+  reserved: 'Reserved',
+  error: 'Error',
+  notAvailable: 'Not available',
+};
+
+/** A decoded value as the card shows it: its label, its value and unit, or why it has none. */
+function valueText(v: FrameValue): string {
+  if (v.missing && v.missing !== 'absent') return MISSING_TEXT[v.missing];
+  if (v.label !== null) return v.label;
+  const value = formatValue(v.value ?? NaN);
+  return v.unit ? `${value} ${v.unit}` : value;
+}
+
+function FrameCard({ ref, rows, i, row, rowCount, top, open, selected, fullData, values, channels, hasDbc, lookup, matched, onToggle, onPlotMessage }: CardProps) {
   const id = rows.id(i);
   const flags = rows.flags(i);
   const channel = rows.channel(i);
@@ -447,8 +487,11 @@ function FrameCard({ ref, rows, i, row, rowCount, top, open, selected, fullData,
   const more = !open && length > SHOWN_BYTES;
   const time = rows.time(i);
   const shown = open ? data : data.subarray(0, SHOWN_BYTES);
-  const details = [name, flags & FLAG_FD ? 'FD' : null, remote ? 'Remote frame' : `${length} ${length === 1 ? 'byte' : 'bytes'}`].filter(Boolean).join(' \u00b7 ');
-  const values = open && found?.message && !remote ? decodeFrame(found.message, data) : null;
+  const detailParts = [name, flags & FLAG_FD ? 'FD' : null, remote ? 'Remote frame' : `${length} ${length === 1 ? 'byte' : 'bytes'}`].filter(Boolean);
+  const where = `${error ? 'Error frame' : formatId(id & 0x1fff_ffff, extended)} on ${channels[channel] ?? 'an unknown bus'}`;
+  const label = [`${time.toFixed(6)} s`, where, ...detailParts].join(', ');
+  const decoding = open && !!found?.message && !remote;
+  const shownValues = decoding && values ? values.filter((v) => v.missing !== 'absent') : null;
 
   return (
     <div
@@ -459,14 +502,14 @@ function FrameCard({ ref, rows, i, row, rowCount, top, open, selected, fullData,
       aria-setsize={rowCount}
       aria-posinset={row + 1}
     >
-      <button type="button" className="tc-head" data-row={row} aria-expanded={open} onClick={onToggle}>
+      <button type="button" className="tc-head" data-row={row} aria-label={label} aria-expanded={open} onClick={onToggle}>
         <span className="tc-line">
           <span className="tc-time num">{time.toFixed(6)} s</span>
           <span className="tc-where">
             <span className={`mono${error ? ' tc-error' : ''}`}>{error ? 'ERR' : formatId(id & 0x1fff_ffff, extended)}</span> &middot; {channels[channel] ?? '?'}
           </span>
         </span>
-        <span className="tc-line tc-details">{details}</span>
+        <span className="tc-line tc-details">{detailParts.join(' \u00b7 ')}</span>
         {shown.length > 0 && (
           <span className={`tc-bytes mono${open ? ' all' : ''}`}>
             {Array.from(shown, (b, k) => (
@@ -488,14 +531,19 @@ function FrameCard({ ref, rows, i, row, rowCount, top, open, selected, fullData,
       {open && (
         <div className="tc-detail">
           {length > data.length && <p className="tc-note">Showing the first {data.length} of {length} bytes.</p>}
-          {values && values.length > 0 && (
+          {decoding && !shownValues && (
+            <p className="tc-note" aria-busy="true">
+              Decoding&hellip;
+            </p>
+          )}
+          {shownValues && shownValues.length > 0 && (
             <section aria-label="Decoded values">
               <h3 className="tc-detail-title">Decoded values</h3>
               <dl className="tc-values">
-                {values.map((v) => (
+                {shownValues.map((v) => (
                   <div key={v.name} className="tc-value">
                     <dt>{v.name}</dt>
-                    <dd className="mono">{v.text}</dd>
+                    <dd className="mono">{valueText(v)}</dd>
                   </div>
                 ))}
               </dl>

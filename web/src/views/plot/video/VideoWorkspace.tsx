@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from 'react';
 import { ChunkBoundary } from '../../../components/ChunkBoundary';
+import { usePhone } from '../../../phone';
 import { useViewState } from '../../shared/viewState';
 import { useVideo } from './videoSession';
 import './video.css';
@@ -33,6 +34,7 @@ interface WorkspaceProps {
 /** The view's content with the video, if one is open, docked beside it or floating in the corner. */
 export function VideoWorkspace({ logDuration, cursor, onCursor, children }: WorkspaceProps) {
   const video = useVideo();
+  const phone = usePhone();
   const [layout, setLayout] = useViewState<VideoLayout>('plot.videoLayout', 'docked');
   const [savedWidth, setWidth] = useViewState('plot.videoWidth', DEFAULT_PANEL_W);
   const splitRef = useRef<HTMLDivElement>(null);
@@ -50,7 +52,8 @@ export function VideoWorkspace({ logDuration, cursor, onCursor, children }: Work
   const width = clamp(savedWidth, MIN_PANEL_W, maxW);
   // Unmeasured (0) counts as wide, so the first paint doesn't flash the stacked layout.
   const roomBeside = splitW === 0 || splitW >= MIN_MAIN_W + MIN_PANEL_W;
-  const shown: ShownLayout = layout === 'docked' && !roomBeside ? 'stacked' : layout;
+  // A phone has no room beside the plots or for a corner view over them, whatever was saved.
+  const shown: ShownLayout = phone || (layout === 'docked' && !roomBeside) ? 'stacked' : layout;
   const docked = shown === 'docked';
 
   return (
@@ -63,7 +66,7 @@ export function VideoWorkspace({ logDuration, cursor, onCursor, children }: Work
             <VideoPanel
               video={video}
               layout={shown}
-              onLayout={setLayout}
+              onLayout={phone ? undefined : setLayout}
               style={docked ? { width } : undefined}
               logDuration={logDuration}
               cursor={cursor}

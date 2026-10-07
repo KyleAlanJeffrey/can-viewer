@@ -177,6 +177,8 @@ export function Lane(props: Props) {
     const onPointerDown = (down: PointerEvent) => {
       const mode = latest.current.props.touchMode;
       if (down.pointerType === 'mouse' || !mode) return;
+      // Stops the emulated mouse events, so a tap while zooming doesn't also move cursor A.
+      down.preventDefault();
       u.over.setPointerCapture(down.pointerId);
       const xOf = (e: PointerEvent) => Math.max(0, Math.min(u.over.clientWidth, overX(e)));
       const startX = xOf(down);

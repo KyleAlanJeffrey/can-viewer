@@ -33,7 +33,7 @@ import {
   type HeldCapture,
   type KeptCapture,
 } from './session';
-import { usePhone } from './phone';
+import { PHONE, usePhone } from './phone';
 import { VIEWS, viewMeta } from './views';
 import { isVideoFile, videoSession } from './views/plot/video/videoSession';
 import { chooseBlobFile } from './views/shared/saveFile';
@@ -261,6 +261,10 @@ export function App({ core }: { core: CoreApi }) {
   /** The Views sheet, which takes the place of the view tabs on phones. */
   const [pickerOpen, setPickerOpen] = useState(false);
   const phone = usePhone();
+  // The Views sheet belongs to the phone layout; a window widened past it drops the sheet.
+  if (pickerOpen && !phone) setPickerOpen(false);
+  const sidebarOpenRef = useRef(sidebarOpen);
+  sidebarOpenRef.current = sidebarOpen;
   const pickerButton = useRef<HTMLButtonElement>(null);
   const sidebarButton = useRef<HTMLButtonElement>(null);
   const sidebarClose = useRef<HTMLButtonElement>(null);
@@ -817,12 +821,14 @@ export function App({ core }: { core: CoreApi }) {
     await Promise.all([forget('log'), forget('compare')]);
   };
 
-  const closeLog = () =>
+  /** Closes the log, going on to Database while DBCs are loaded, or to the welcome when not `toDatabase`. */
+  const closeLog = (toDatabase = true) =>
     run('Closing the log\u2026', () =>
       serially(async () => {
         // The core has no close; an empty log releases the old one's memory.
         await core.openLog(new Blob([]), '', () => {});
-        await showClosedLog();
+        if (!toDatabase) setView('overview');
+        await showClosedLog(toDatabase);
       }),
     );
 
@@ -1223,6 +1229,11 @@ export function App({ core }: { core: CoreApi }) {
     const onKey = (e: KeyboardEvent) => {
       // Escape that closes a sheet, or that a field or grid used, isn't also meant for the panes.
       if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]')) return;
+      // On a phone the sidebar covers everything, so it closes before anything behind it changes.
+      if (sidebarOpenRef.current && window.matchMedia(PHONE).matches) {
+        setSidebarOpen(false);
+        return;
+      }
       // A parked cursor goes first, so Escape meant for it leaves the panes open.
       if (pinnedRef.current !== null) {
         setPinnedTime(null);
@@ -1359,7 +1370,7 @@ export function App({ core }: { core: CoreApi }) {
 
   const plotAll = async (key: number, signals: string[]) => {
     const hit = resolved.get(key);
-    if (!hit) return;
+    if (!hit) return 0;
     const shown = plotsRef.current;
     const wanted = signals.filter((signal) => !shown.some((p) => p.id === `${key}:${signal}`));
     const used = new Set(shown.map((p) => p.color));
@@ -1367,8 +1378,8 @@ export function App({ core }: { core: CoreApi }) {
     if (wanted.length > free.length) {
       setError(`Up to ${SERIES_SLOTS} signals can be plotted at once, so ${free.length === 0 ? 'none' : `only ${free.length}`} of ${hit.message.name}'s were added.`);
     }
+    const added: PlotSpec[] = [];
     await run(`Decoding ${hit.message.name}\u2026`, async () => {
-      const added: PlotSpec[] = [];
       for (const signal of wanted.slice(0, free.length)) {
         const preferred = seriesColor(hit.message.signals.findIndex((s) => s.name === signal));
         const color = free.includes(preferred) ? preferred : free[0];
@@ -1378,6 +1389,7 @@ export function App({ core }: { core: CoreApi }) {
       }
       setPlots((ps) => [...ps, ...added.filter((p) => !ps.some((q) => q.id === p.id))]);
     });
+    return signals.length - wanted.length + added.length;
   };
 
   const addDbc = async (db: Database, channel: string | null = null) => {
@@ -1438,7 +1450,7 @@ export function App({ core }: { core: CoreApi }) {
     query,
     plots,
     togglePlot,
-    plotSignals: plotAll,
+    plotAll,
     removePlot,
     clearPlots,
     signalColor,
@@ -1586,17 +1598,8 @@ export function App({ core }: { core: CoreApi }) {
     unlessUnsavedCapture(() => {
       setFocusAfterCancel(true);
       // The welcome shows once no view does; Database shows with DBCs alone, so it goes too.
-      if (!log) {
-        setView('overview');
-        return;
-      }
-      void run('Closing the log\u2026', () =>
-        serially(async () => {
-          await core.openLog(new Blob([]), '', () => {});
-          setView('overview');
-          await showClosedLog(false);
-        }),
-      );
+      if (log) void closeLog(false);
+      else setView('overview');
     });
   const canCapture = phone && availableKinds().length > 0;
   const sheetActions: SheetAction[] = [

@@ -282,32 +282,32 @@ export function PlotView({ ctx }: ViewProps) {
                 />
               </header>
             ) : (
-            <header className="content-header">
-              <div className="pv-summary">
-                <p className="content-sub pv-summary-text" title="Drag across a plot or scroll to zoom. Shift-scroll pans. Double-click resets.">
-                  {plots.length} {plots.length === 1 ? 'signal' : 'signals'} &middot;{' '}
-                  {zoomed ? `Showing ${formatDuration(span)} of ${formatDuration(duration)}` : `All ${formatDuration(duration)}`}
-                </p>
-                <button className="text-button" onClick={resetZoom} disabled={!zoomed} title="Or double-click a plot">
-                  Reset Zoom
-                </button>
-              </div>
-              <div className="content-actions">
-                <Segmented label="Cursors" options={CURSOR_OPTIONS} value={mode} onChange={changeMode} />
-                {!video && !ctx.capturing && <AddVideoButton log={log} />}
-                <button className="button" onClick={addMarker} disabled={cursorA === null}>
-                  <MapPin size={16} strokeWidth={1.5} aria-hidden="true" />
-                  Add Marker
-                </button>
-                <button className="button" onClick={exportPng}>
-                  <ImageDown size={16} strokeWidth={1.5} aria-hidden="true" />
-                  Export PNG
-                </button>
-                <button className="text-button" onClick={ctx.clearPlots}>
-                  Clear
-                </button>
-              </div>
-            </header>
+              <header className="content-header">
+                <div className="pv-summary">
+                  <p className="content-sub pv-summary-text" title="Drag across a plot or scroll to zoom. Shift-scroll pans. Double-click resets.">
+                    {plots.length} {plots.length === 1 ? 'signal' : 'signals'} &middot;{' '}
+                    {zoomed ? `Showing ${formatDuration(span)} of ${formatDuration(duration)}` : `All ${formatDuration(duration)}`}
+                  </p>
+                  <button className="text-button" onClick={resetZoom} disabled={!zoomed} title="Or double-click a plot">
+                    Reset Zoom
+                  </button>
+                </div>
+                <div className="content-actions">
+                  <Segmented label="Cursors" options={CURSOR_OPTIONS} value={mode} onChange={changeMode} />
+                  {!video && !ctx.capturing && <AddVideoButton log={log} />}
+                  <button className="button" onClick={addMarker} disabled={cursorA === null}>
+                    <MapPin size={16} strokeWidth={1.5} aria-hidden="true" />
+                    Add Marker
+                  </button>
+                  <button className="button" onClick={exportPng}>
+                    <ImageDown size={16} strokeWidth={1.5} aria-hidden="true" />
+                    Export PNG
+                  </button>
+                  <button className="text-button" onClick={ctx.clearPlots}>
+                    Clear
+                  </button>
+                </div>
+              </header>
             )}
             <div className="pv-body">
               <div className="pv-stack" ref={stackRef}>

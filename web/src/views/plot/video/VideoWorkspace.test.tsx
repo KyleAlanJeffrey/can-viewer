@@ -1,5 +1,7 @@
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PHONE } from '../../../phone';
+import { ViewStateContext, ViewStateStore } from '../../shared/viewState';
 import { VideoWorkspace } from './VideoWorkspace';
 import { videoSession } from './videoSession';
 
@@ -10,6 +12,7 @@ vi.mock('./VideoPanel', () => {
 afterEach(() => {
   act(() => videoSession.close());
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('Video workspace', () => {
@@ -27,5 +30,19 @@ describe('Video workspace', () => {
     expect(alert.textContent).toContain("Couldn't load the video panel.");
     expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy();
     expect(screen.getByText('plots')).toBeTruthy();
+  });
+
+  it('stacks the video under the plots on a phone, even when it was saved in the corner', () => {
+    vi.stubGlobal('matchMedia', (media: string) => ({ matches: media === PHONE, media, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList);
+    const store = new ViewStateStore();
+    store.set('plot.videoLayout', 'corner', 'app');
+    const { container } = render(
+      <ViewStateContext.Provider value={store}>
+        <VideoWorkspace logDuration={100} cursor={null} onCursor={() => {}}>
+          <p>plots</p>
+        </VideoWorkspace>
+      </ViewStateContext.Provider>,
+    );
+    expect(container.querySelector('.pv-split')?.className).toBe('pv-split stacked');
   });
 });

@@ -66,7 +66,7 @@ function Shell({ core, ids, inspector = null, state }: { core: CoreApi; ids: IdS
     query: '',
     plots: [],
     togglePlot: unused,
-    plotSignals: unused,
+    plotAll: unused,
     removePlot: () => {},
     clearPlots: () => {},
     signalColor: () => 'black',

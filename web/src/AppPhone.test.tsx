@@ -103,7 +103,16 @@ describe('App on a phone', () => {
     expect(button.getAttribute('aria-expanded')).toBe('true');
     const close = within(document.getElementById('sidebar')!).getByRole('button', { name: /Close/ });
     await waitFor(() => expect(document.activeElement).toBe(close));
+    // Everything behind the sidebar is out of reach while it covers the window.
+    expect(button.closest('[inert]')).toBeTruthy();
+    expect(close.closest('[inert]')).toBeNull();
     await userEvent.click(close);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(button.closest('[inert]')).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(button));
+
+    await userEvent.click(button);
+    await userEvent.keyboard('{Escape}');
     expect(button.getAttribute('aria-expanded')).toBe('false');
     await waitFor(() => expect(document.activeElement).toBe(button));
   });

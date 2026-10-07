@@ -178,7 +178,8 @@ export function TraceView({ ctx }: ViewProps) {
   const plotMessage = async (key: number, time: number) => {
     const message = ctx.messageOf(key);
     if (!message) return;
-    await ctx.plotSignals(key, message.signals.map((s) => s.name));
+    // Nothing to show if none could be plotted; the banner says why.
+    if ((await ctx.plotAll(key, message.signals.map((s) => s.name))) === 0) return;
     setPinnedTime(time);
     ctx.setView('plot');
   };
@@ -195,18 +196,18 @@ export function TraceView({ ctx }: ViewProps) {
         </PhoneActionsSlot>
       )}
       {(!phone || chips.length > 0) && (
-      <FilterBar
-        chips={chips}
-        anyRule={filters?.combine === 'any' && filters.rules.length > 1}
-        matches={result?.count ?? null}
-        total={total}
-        editRef={editButton}
-        onEdit={openSheet}
-        onRemove={(chip) => apply(chip.without)}
-        onClear={() => apply(null)}
-        showEdit={!phone}
-        trailing={phone ? null : <DetailsToggle ctx={ctx} emptyReason={summary ? null : 'Select an ID to see its bit activity and signals'} />}
-      />
+        <FilterBar
+          chips={chips}
+          anyRule={filters?.combine === 'any' && filters.rules.length > 1}
+          matches={result?.count ?? null}
+          total={total}
+          editRef={editButton}
+          onEdit={openSheet}
+          onRemove={(chip) => apply(chip.without)}
+          onClear={() => apply(null)}
+          showEdit={!phone}
+          trailing={phone ? null : <DetailsToggle ctx={ctx} emptyReason={summary ? null : 'Select an ID to see its bit activity and signals'} />}
+        />
       )}
       {sheetOpen && (
         <ChunkBoundary key={sheetKey} message="Couldn't load the filters.">

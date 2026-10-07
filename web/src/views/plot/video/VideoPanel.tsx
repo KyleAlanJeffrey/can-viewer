@@ -50,7 +50,8 @@ function knownEnd(media: HTMLMediaElement): number | null {
 interface PanelProps {
   video: LoadedVideo;
   layout: ShownLayout;
-  onLayout: (layout: VideoLayout) => void;
+  /** Absent where the video can only be stacked under the plots, as on a phone. */
+  onLayout?: (layout: VideoLayout) => void;
   style: CSSProperties | undefined;
   logDuration: number;
   cursor: number | null;
@@ -273,16 +274,18 @@ export default function VideoPanel({ video, layout, onLayout, style, logDuration
           {video.name}
         </h2>
         {/* One element for both states, so focus stays on it when it flips. */}
-        <button
-          className={corner ? 'icon-button' : 'button'}
-          onClick={() => onLayout(corner ? 'docked' : 'corner')}
-          disabled={syncing}
-          aria-label={corner ? 'Dock video beside the plots' : undefined}
-          title={corner ? 'Dock beside the plots' : undefined}
-        >
-          {corner ? <PanelRight size={16} strokeWidth={1.5} aria-hidden="true" /> : <PictureInPicture2 size={16} strokeWidth={1.5} aria-hidden="true" />}
-          {!corner && 'Corner view'}
-        </button>
+        {onLayout && (
+          <button
+            className={corner ? 'icon-button' : 'button'}
+            onClick={() => onLayout(corner ? 'docked' : 'corner')}
+            disabled={syncing}
+            aria-label={corner ? 'Dock video beside the plots' : undefined}
+            title={corner ? 'Dock beside the plots' : undefined}
+          >
+            {corner ? <PanelRight size={16} strokeWidth={1.5} aria-hidden="true" /> : <PictureInPicture2 size={16} strokeWidth={1.5} aria-hidden="true" />}
+            {!corner && 'Corner view'}
+          </button>
+        )}
         <button className={corner ? 'icon-button' : 'button'} onClick={() => videoSession.close()} aria-label="Close video" title="Close video">
           <X size={16} strokeWidth={1.5} aria-hidden="true" />
           {!corner && 'Close video'}

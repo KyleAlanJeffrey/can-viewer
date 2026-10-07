@@ -351,6 +351,18 @@ A decoded signal held in the worker. Returned by [`decodeSignal`](#decodesignal)
 - **`min`** `number | null` - Smallest value, or null when `count` is 0 (for example, every J1939 value was not available).
 - **`max`** `number | null` - Largest value, or null when `count` is 0.
 
+### The FrameValue object
+
+One signal of a message in one frame. Returned, one per signal of the message in DBC order, by [`decodeFrame`](#decodeframe).
+
+**Attributes**
+
+- **`name`** `string` - The signal name.
+- **`unit`** `string` - The signal's unit, possibly empty.
+- **`value`** `number | null` - The physical value (raw value times factor plus offset), or null with the reason in `missing`.
+- **`label`** `string | null` - The value-table (`VAL_`) label of the raw value, or null when it has none. A signed signal's raw value is sign-extended first, so a negative entry matches; floats never have one.
+- **`missing`** `NoValue | null` - Why `value` is null: `'absent'` (multiplexed out of this frame), `'short'` (the frame is too short to hold it), or, for an unsigned signal of whole bytes in a J1939 message, `'reserved'` (most significant byte 0xFB to 0xFD: a parameter-specific indicator or reserved), `'error'` (0xFE) or `'notAvailable'` (0xFF). Null when there is a value.
+
 ### The RowBatch object
 
 A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows). Each row is packed into 96 bytes (`ROW_STRIDE`); read rows through the accessors, with `i` from 0 to `length - 1`.
@@ -370,7 +382,7 @@ A block of trace rows, from `web/src/core/rows.ts`. Returned by [`rows`](#rows).
 - **`changed(i, byte)`** `boolean` - True if this payload byte differs from the previous frame of the same ID and kind (data, remote, error or reassembled), so a polled ID's remote frames are skipped. Always false for an ID's first frame of a kind.
 - **`data(i)`** `Uint8Array` - The payload, as a view into the batch.
 
-A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, [`frameData`](#framedata) fetches the whole payload, and [`rowBytes`](#rowbytes) fetches a range of bytes of many rows. `decodeRaw` and `decodeSignal` work on the whole payload.
+A row holds at most 64 bytes of payload. A reassembled J1939 transfer (`FLAG_REASSEMBLED`) longer than that is cut at 64 bytes in `len(i)`, `data(i)` and `changed(i, byte)`; `fullLength(i)` gives its whole length, [`frameData`](#framedata) fetches the whole payload, and [`rowBytes`](#rowbytes) fetches a range of bytes of many rows. `decodeRaw`, `decodeSignal` and [`decodeFrame`](#decodeframe) work on the whole payload.
 
 ### The BitFlips object
 
@@ -684,6 +696,27 @@ const batch = await core.rows(key, 0, 1);
 const payload = batch.fullLength(0) > batch.len(0) ? await core.frameData(key, batch.start) : batch.data(0);
 ```
 
+### decodeFrame
+
+```ts
+decodeFrame(key: number, row: number): Promise<FrameValue[]>
+```
+
+Every signal of one trace row, decoded by the DBC that describes the frame's ID on its bus, as [`decodeSignal`](#decodesignal) decodes them for a plot (the same multiplexing and J1939 rules). It decodes the whole payload, so a reassembled J1939 transfer longer than the 64 bytes of a row decodes in full.
+
+**Parameters**
+
+- **`key`** `number` - An ID key, `ALL_IDS` or `FILTERED_ROWS`.
+- **`row`** `number` - Row index, counted within the filter as in `rows`.
+
+**Returns** one [`FrameValue`](#the-framevalue-object) per signal of the message, in DBC order, signals multiplexed out of the frame included (with `missing: 'absent'`). It is empty for an error frame, an ID no loaded DBC describes on that bus, an unknown key or a row past the end.
+
+```ts
+for (const v of await core.decodeFrame(ALL_IDS, 0)) {
+  if (v.missing !== 'absent') console.log(v.name, v.label ?? v.value, v.unit);
+}
+```
+
 ### rowBytes
 
 ```ts
@@ -757,7 +790,7 @@ console.log(`${frames} frames in the window`);
 setTraceFilter(filter: FrameFilter | null): Promise<number>
 ```
 
-Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, swapping logs with [`swapCompareLog`](#swapcomparelog) or starting a capture; until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames; when the last [`countFilterMatches`](#countfiltermatches) counted the same filter, its matches are taken instead (and a count of it still running is finished first), so applying a previewed filter does not go through the log again. The kept rows cost 4 bytes per matching frame. During a capture, [`appendFrames`](#appendframes) adds each new frame that matches to the rows, a pass over just the new frames, so call [`rowCount`](#rowcount) for the count so far; until the capture ends, "changes" rules compare frames in the order they came. [`endCapture`](#endcapture), which may reorder the frames, finds the rows again.
+Picks the frames that match `filter` and keeps them, in time order, as the rows of the key `FILTERED_ROWS`: pass that key to [`rowCount`](#rowcount), [`rows`](#rows), [`frameData`](#framedata), [`decodeFrame`](#decodeframe), [`rowBytes`](#rowbytes), [`rowAtTime`](#rowattime) and [`rowCountBetween`](#rowcountbetween) to page through them. Each call replaces the rows of the call before. Null drops them, and so does opening a log, swapping logs with [`swapCompareLog`](#swapcomparelog) or starting a capture; until a filter is set, `FILTERED_ROWS` has no rows. The work is done in the engine, a pass over the frames of the IDs the filter allows, so the UI never holds a list of frames; when the last [`countFilterMatches`](#countfiltermatches) counted the same filter, its matches are taken instead (and a count of it still running is finished first), so applying a previewed filter does not go through the log again. The kept rows cost 4 bytes per matching frame. During a capture, [`appendFrames`](#appendframes) adds each new frame that matches to the rows, a pass over just the new frames, so call [`rowCount`](#rowcount) for the count so far; until the capture ends, "changes" rules compare frames in the order they came. [`endCapture`](#endcapture), which may reorder the frames, finds the rows again.
 
 **Parameters**
 

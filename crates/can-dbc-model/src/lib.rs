@@ -188,6 +188,36 @@ impl SignalDef {
     }
 }
 
+/// Why a signal has no value in a frame ([`MessageDef::decode_frame`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoValue {
+    /// Multiplexed out of this frame.
+    Absent,
+    /// The frame is too short to hold it.
+    Short,
+    /// J1939: a parameter-specific indicator or a reserved value (most significant byte 0xFB
+    /// to 0xFD).
+    Reserved,
+    /// J1939: the sender reports an error (0xFE).
+    Error,
+    /// J1939: not available (0xFF).
+    NotAvailable,
+}
+
+/// One signal of a message in one frame ([`MessageDef::decode_frame`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameValue {
+    pub name: String,
+    pub unit: String,
+    /// The physical value, or `None` with the reason in `missing`.
+    pub value: Option<f64>,
+    /// The value-table label of the raw value, if it has one.
+    pub label: Option<String>,
+    pub missing: Option<NoValue>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageDef {
@@ -239,6 +269,58 @@ impl MessageDef {
             return None;
         }
         Some(signal.physical(raw))
+    }
+
+    /// Every signal of the message in one frame, in DBC order, as [`MessageDef::decode`]
+    /// decodes them, saying why a signal has no value where it has none, and with the
+    /// value-table label of its raw value (sign-extended for a signed signal).
+    #[must_use]
+    pub fn decode_frame(&self, data: &[u8]) -> Vec<FrameValue> {
+        self.signals
+            .iter()
+            .map(|signal| {
+                let mut out = FrameValue {
+                    name: signal.name.clone(),
+                    unit: signal.unit.clone(),
+                    value: None,
+                    label: None,
+                    missing: None,
+                };
+                if !self.is_present(signal, data) {
+                    out.missing = Some(NoValue::Absent);
+                    return out;
+                }
+                let Some(raw) = signal.raw(data) else {
+                    out.missing = Some(NoValue::Short);
+                    return out;
+                };
+                if self.j1939
+                    && signal.kind == ValueKind::Unsigned
+                    && j1939::not_available(raw, signal.size)
+                {
+                    out.missing = Some(match raw >> (signal.size - 8) {
+                        0xFF => NoValue::NotAvailable,
+                        0xFE => NoValue::Error,
+                        _ => NoValue::Reserved,
+                    });
+                    return out;
+                }
+                let table_key = match signal.kind {
+                    ValueKind::Unsigned => i64::try_from(raw).ok(),
+                    ValueKind::Signed => Some(bits::sign_extend(raw, signal.size)),
+                    ValueKind::Float32 | ValueKind::Float64 => None,
+                };
+                out.label = table_key.and_then(|key| {
+                    signal
+                        .value_table
+                        .iter()
+                        .find(|(value, _)| *value == key)
+                        .map(|(_, label)| label.clone())
+                });
+                out.value = Some(signal.physical(raw));
+                out
+            })
+            .collect()
     }
 
     /// Whether `signal` is switched into this frame. A signal with a `mux_switch` is present
@@ -954,6 +1036,86 @@ SG_MUL_VAL_ 400 C Mux2 3-5, 16-24;
         assert_eq!(present(1, 6), ["Mux1", "Mux2", "Plain"]);
         // Mux2 reads 3 here, but it isn't switched in, so neither are its signals.
         assert_eq!(present(3, 3), ["Mux1", "Plain"]);
+    }
+
+    /// `(name, value, label, missing)` of a signal in a frame.
+    type Decoded = (String, Option<f64>, Option<String>, Option<NoValue>);
+
+    fn frame(message: &MessageDef, data: &[u8]) -> Vec<Decoded> {
+        message
+            .decode_frame(data)
+            .into_iter()
+            .map(|v| (v.name, v.value, v.label, v.missing))
+            .collect()
+    }
+
+    #[test]
+    fn decodes_a_frame_with_labels_and_why_values_are_missing() {
+        let db = db();
+        let engine = db.message(100).unwrap();
+        let values = frame(engine, &[0x40, 0x1F, 255, 0xFF, 0x80, 0, 0, 0]);
+        assert_eq!(values[0], ("RPM".into(), Some(2000.0), None, None));
+        assert_eq!(
+            values[1],
+            (
+                "Temp".into(),
+                Some(215.0),
+                Some("sensor fault".into()),
+                None
+            )
+        );
+        // Signed Motorola: 0xFF8 is -8, so -4 Nm.
+        assert_eq!(values[2], ("Torque".into(), Some(-4.0), None, None));
+        assert_eq!(
+            engine.decode_frame(&[0x40, 0x1F, 255, 0xFF, 0x80])[0].unit,
+            "rpm"
+        );
+        // Too short for Temp and Torque.
+        let short = frame(engine, &[0x40, 0x1F]);
+        assert_eq!(short[0].1, Some(2000.0));
+        assert_eq!(short[1].3, Some(NoValue::Short));
+        assert_eq!(short[2].3, Some(NoValue::Short));
+
+        let imu = db.message(300).unwrap();
+        let mut data = [0u8; 8];
+        data[..4].copy_from_slice(&(-3.5f32).to_bits().to_le_bytes());
+        assert_eq!(frame(imu, &data)[0].1, Some(-3.5));
+    }
+
+    #[test]
+    fn a_signed_value_table_matches_the_sign_extended_value() {
+        let mut db = db();
+        let engine = db.messages.iter_mut().find(|m| m.id == 100).unwrap();
+        engine.signals[2].value_table = vec![(-8, "Limp".into()), (4088, "Wrong".into())];
+        let values = frame(engine, &[0, 0, 0, 0xFF, 0x80, 0, 0, 0]);
+        assert_eq!(
+            values[2],
+            ("Torque".into(), Some(-4.0), Some("Limp".into()), None)
+        );
+    }
+
+    #[test]
+    fn says_which_j1939_indicator_a_value_holds() {
+        let db = db();
+        let mut ccvs = db.message(0x18FE_F100 | 1 << 31).unwrap().clone();
+        ccvs.j1939 = true;
+        let missing = |high: u8| frame(&ccvs, &[0, 0, high, 0, 0, 0, 0, 0])[0].3;
+        assert_eq!(missing(0xFF), Some(NoValue::NotAvailable));
+        assert_eq!(missing(0xFE), Some(NoValue::Error));
+        assert_eq!(missing(0xFB), Some(NoValue::Reserved));
+        assert_eq!(missing(0xFA), None);
+    }
+
+    #[test]
+    fn leaves_signals_switched_out_of_a_frame_absent() {
+        let db = Database::from_dbc_str(EXTENDED_MUX_DBC).unwrap();
+        let nested = db.message(400).unwrap();
+        let absent: Vec<String> = frame(nested, &[1, 4, 10, 20, 30, 0, 0, 0])
+            .into_iter()
+            .filter(|v| v.3 == Some(NoValue::Absent))
+            .map(|v| v.0)
+            .collect();
+        assert_eq!(absent, ["A", "B"]);
     }
 
     #[test]

@@ -341,6 +341,20 @@ export interface ByteLane {
   y: Float64Array;
 }
 
+/** Why a signal has no value in a frame: multiplexed out, a frame too short for it, or a J1939 indicator. */
+export type NoValue = 'absent' | 'short' | 'reserved' | 'error' | 'notAvailable';
+
+/** One signal of a message in one frame (`CoreApi.decodeFrame`). */
+export interface FrameValue {
+  name: string;
+  unit: string;
+  /** The physical value, or null with the reason in `missing`. */
+  value: number | null;
+  /** The value-table label of the raw value, if it has one. */
+  label: string | null;
+  missing: NoValue | null;
+}
+
 export interface SeriesInfo {
   handle: number;
   name: string;
@@ -478,6 +492,12 @@ export interface CoreApi {
    */
   frameData(key: number, row: number): Promise<Uint8Array>;
   /**
+   * Every signal of row `row` of `key` (or ALL_IDS or FILTERED_ROWS), numbered as in `rows`, as
+   * the DBC that describes its ID on its bus decodes them from the whole payload. Empty for an
+   * error frame, an ID no loaded DBC describes, an unknown key or a row past the end.
+   */
+  decodeFrame(key: number, row: number): Promise<FrameValue[]>;
+  /**
    * Payload bytes `first..first + byteCount` of rows `start..start + count` of `key` (or ALL_IDS),
    * not cut at 64 bytes like `rows`: `byteCount` values per row, row after row, with `NO_BYTE`
    * for a byte past the end of the frame. Rows are clamped to those that exist, as in `rows`.
@@ -580,8 +600,8 @@ export interface CoreApi {
   compareFrameAt(key: number, t: number): Promise<Uint8Array>;
   /**
    * Keep the frames that match `filter`, in time order, as the rows of `FILTERED_ROWS` for
-   * `rowCount`, `rows`, `frameData`, `rowBytes`, `rowAtTime` and `rowCountBetween`, and resolve to
-   * how many there are. Null drops them. Opening a log drops them too. Applying the filter the
+   * `rowCount`, `rows`, `frameData`, `decodeFrame`, `rowBytes`, `rowAtTime` and `rowCountBetween`,
+   * and resolve to how many there are. Null drops them. Opening a log drops them too. Applying the filter the
    * last `countFilterMatches` counted takes its matches rather than filtering again. During a
    * capture, each frame `appendFrames` adds that matches joins them, and `endCapture` finds them
    * again.

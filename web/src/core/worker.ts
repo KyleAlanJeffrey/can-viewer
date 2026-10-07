@@ -287,6 +287,7 @@ const handlers = {
   rowCount: (key: number) => session.row_count(key),
   rows: (key: number, start: number, count: number) => transfer(session.rows(key, start, count)),
   frameData: (key: number, row: number) => transfer(session.frame_data(key, row)),
+  decodeFrame: (key: number, row: number) => JSON.parse(session.decode_frame(key, row)),
   rowBytes: (key: number, start: number, count: number, first: number, byteCount: number) =>
     transfer(session.row_bytes(key, start, count, first, byteCount)),
   bitFlips: (key: number) => flipCounts(session.bit_flips(key)),

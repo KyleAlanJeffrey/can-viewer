@@ -247,15 +247,7 @@ export function ReverseView({ ctx }: ViewProps) {
       {mode === 'bytes' ? (
         <div className="re-split">
           <div className="re-split-body">
-            <div
-              ref={scroller}
-              className="content-scroll re-scroll re-bytes"
-              role="tabpanel"
-              aria-label="Byte Values"
-              onScroll={(e) => {
-                savedScroll = e.currentTarget.scrollTop;
-              }}
-            >
+            <div className="re-docked" role="tabpanel" aria-label="Byte Values">
               <References
                 core={ctx.core}
                 references={references}
@@ -268,28 +260,36 @@ export function ReverseView({ ctx }: ViewProps) {
               >
                 <AnalysisWindow window={win} duration={duration} onChange={setWin} />
               </References>
-              <ByteMatrix
-                ctx={ctx}
-                rows={rows}
-                window={win}
-                cursor={cursor}
-                bus={bus}
-                onBus={setBus}
-                selectedByte={selectedByte}
-                suggestion={mark}
-                pins={pins}
-                onSelectRow={selectRow}
-                onSelectByte={selectByte}
-                onHover={setHover}
-                onPark={park}
-                onTogglePin={togglePin}
-                onOpenAdvanced={openAdvanced}
-                onClearSelection={() => {
-                  setSelectedByte(null);
-                  setPickedId(null);
-                  ctx.select(ALL_IDS);
+              <div
+                ref={scroller}
+                className="content-scroll re-scroll re-bytes"
+                onScroll={(e) => {
+                  savedScroll = e.currentTarget.scrollTop;
                 }}
-              />
+              >
+                <ByteMatrix
+                  ctx={ctx}
+                  rows={rows}
+                  window={win}
+                  cursor={cursor}
+                  bus={bus}
+                  onBus={setBus}
+                  selectedByte={selectedByte}
+                  suggestion={mark}
+                  pins={pins}
+                  onSelectRow={selectRow}
+                  onSelectByte={selectByte}
+                  onHover={setHover}
+                  onPark={park}
+                  onTogglePin={togglePin}
+                  onOpenAdvanced={openAdvanced}
+                  onClearSelection={() => {
+                    setSelectedByte(null);
+                    setPickedId(null);
+                    ctx.select(ALL_IDS);
+                  }}
+                />
+              </div>
             </div>
             {panelOpen && (
               <ChunkBoundary message="Couldn't load the suggestions." frame={(fallback) => <div className="re-sugpanel">{fallback}</div>}>

@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Pin as PinIcon, Plus, X } from 'lucide-react';
 import type { CoreApi } from '../../core/api';
+import { cssVar } from '../../format';
 import { formatValue, lastIn, pointAt, type TimeWindow, type Trace } from './bits';
 import type { Pin, Reference } from './pins';
-import { ReferencePlot } from './ReferencePlot';
+import { ReferencePlot, TimeAxis } from './ReferencePlot';
 
 /** Zooming settles for this long before decimated data is fetched again. */
 const REFETCH_DELAY_MS = 80;
@@ -36,13 +37,19 @@ export function References({ core, references, window: win, cursor, candidate, o
   const ownRow = candidate && !candidate.overlayOn ? candidate : null;
   const rows = references.length + (ownRow ? 1 : 0);
   const unitOf = (unit: string) => (unit ? ` ${unit}` : '');
+  // A canvas can't resolve CSS variables; read once rather than on every hover.
+  const candidateColor = useMemo(() => cssVar('--graphite'), []);
 
   return (
     <section className={`card re-card re-refs${rows === 0 ? ' collapsed' : ''}`} aria-label="Pinned references">
       <div className="re-card-head">
         <PinIcon size={16} strokeWidth={1.5} aria-hidden="true" className="re-refs-icon" />
         {/* With nothing pinned, the card shrinks to one row that says what it is for. */}
-        <h3 className="section-title">{rows === 0 ? 'Pin a signal for comparison' : 'Pinned references'}</h3>
+        <h3 className="section-title">
+          {rows === 0 ? 'Pin a signal for comparison' : 'Pinned references'}
+          {/* A short view shows only the first rows. */}
+          {references.length > 0 && ` \u00b7 ${references.length}`}
+        </h3>
         {rows > 0 && <span className="re-card-note">Shared time {'\u00b7'} separate scales</span>}
         <button
           type="button"
@@ -54,7 +61,8 @@ export function References({ core, references, window: win, cursor, candidate, o
           Pin signal&hellip;
         </button>
       </div>
-      {rows > 0 && (
+      {/* Only the pinned rows scroll; the candidate and the time axis stay in view under them. */}
+      {references.length > 0 && (
         <div className="re-ref-rows">
           {references.map((ref, i) => (
             <ReferenceRow
@@ -65,36 +73,42 @@ export function References({ core, references, window: win, cursor, candidate, o
               cursor={cursor}
               overlay={candidate?.overlayOn === ref.id ? candidate : null}
               first={i === 0}
-              last={i === references.length - 1 && !ownRow}
               onHover={onHover}
               onPark={onPark}
               onUnpin={() => onUnpin(ref.pin)}
             />
           ))}
-          {ownRow && (
-            <div className="re-ref-row candidate">
-              <div className="re-ref-meta">
-                <span className="re-ref-swatch dashed" aria-hidden="true" />
-                <span className="re-ref-name">{ownRow.name}</span>
-                <span className="re-ref-sub">Candidate</span>
-                <span className="re-ref-value readout">{readout(ownRow.trace, cursor, win, unitOf(ownRow.unit))}</span>
-              </div>
-              <ReferencePlot
-                trace={ownRow.trace}
-                color="var(--graphite)"
-                dashed
-                window={win}
-                cursor={cursor}
-                range={null}
-                showTimeAxis
-                showCursorTime={references.length === 0}
-                label={`${ownRow.name}, the candidate, across the window`}
-                onHover={onHover}
-                onPark={onPark}
-              />
-              <div className="re-ref-actions" />
-            </div>
-          )}
+        </div>
+      )}
+      {ownRow && (
+        <div className={`re-ref-row candidate${references.length === 0 ? ' first' : ''}`}>
+          <div className="re-ref-meta">
+            <span className="re-ref-swatch dashed" aria-hidden="true" />
+            <span className="re-ref-name">{ownRow.name}</span>
+            <span className="re-ref-sub">Candidate</span>
+            <span className="re-ref-value readout">{readout(ownRow.trace, cursor, win, unitOf(ownRow.unit))}</span>
+          </div>
+          <ReferencePlot
+            trace={ownRow.trace}
+            color={candidateColor}
+            dashed
+            window={win}
+            cursor={cursor}
+            range={null}
+            showTimeAxis={false}
+            showCursorTime={references.length === 0}
+            label={`${ownRow.name}, the candidate, across the window`}
+            onHover={onHover}
+            onPark={onPark}
+          />
+          <div className="re-ref-actions" />
+        </div>
+      )}
+      {rows > 0 && (
+        <div className="re-ref-row re-ref-axis-row" aria-hidden="true">
+          <div />
+          <TimeAxis window={win} />
+          <div />
         </div>
       )}
       {children}
@@ -109,13 +123,12 @@ interface RowProps {
   cursor: number | null;
   overlay: Candidate | null;
   first: boolean;
-  last: boolean;
   onHover: (t: number | null) => void;
   onPark: (t: number) => void;
   onUnpin: () => void;
 }
 
-function ReferenceRow({ core, reference: ref, window: win, cursor, overlay, first, last, onHover, onPark, onUnpin }: RowProps) {
+function ReferenceRow({ core, reference: ref, window: win, cursor, overlay, first, onHover, onPark, onUnpin }: RowProps) {
   const [width, setWidth] = useState(0);
   const [trace, setTrace] = useState<Trace | null>(null);
   const handle = ref.info?.handle ?? null;
@@ -139,7 +152,7 @@ function ReferenceRow({ core, reference: ref, window: win, cursor, overlay, firs
   const unit = ref.unit ? ` ${ref.unit}` : '';
   const overlayValue = overlay ? readout(overlay.trace, cursor, win, overlay.unit ? ` ${overlay.unit}` : '') : null;
   return (
-    <div className="re-ref-row">
+    <div className={`re-ref-row${first ? ' first' : ''}`}>
       <div className="re-ref-meta">
         <span className="re-ref-swatch" style={{ background: ref.color }} aria-hidden="true" />
         <span className="re-ref-name" title={ref.name}>
@@ -156,7 +169,7 @@ function ReferenceRow({ core, reference: ref, window: win, cursor, overlay, firs
           window={win}
           cursor={cursor}
           range={ref.range}
-          showTimeAxis={last}
+          showTimeAxis={false}
           showCursorTime={first}
           label={`${ref.name} from ${ref.source} across the window`}
           onHover={onHover}

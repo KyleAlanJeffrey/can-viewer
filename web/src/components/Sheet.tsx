@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { X } from 'lucide-react';
 
 interface Props {
   open: boolean;
@@ -13,13 +14,16 @@ interface Props {
   size?: 'medium' | 'large';
   /** False while the sheet must stay, as during a task: Escape then does nothing. */
   dismissible?: boolean;
+  /** Puts an X button with this name beside the title, for a sheet with no footer to close it from. */
+  closeLabel?: string;
+  className?: string;
 }
 
 /**
  * A modal sheet over the window. It uses the native dialog element, so Escape, focus trapping
  * and the inert background come from the browser. A sheet's primary replaces the window's.
  */
-export function Sheet({ open, onClose, title, description, children, footer, size = 'medium', dismissible = true }: Props) {
+export function Sheet({ open, onClose, title, description, children, footer, size = 'medium', dismissible = true, closeLabel, className }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   // Counts closes by the browser, so a sheet whose owner keeps it open is shown again.
@@ -35,7 +39,7 @@ export function Sheet({ open, onClose, title, description, children, footer, siz
   return (
     <dialog
       ref={dialog}
-      className={`sheet ${size}`}
+      className={`sheet ${size}${className ? ` ${className}` : ''}`}
       aria-labelledby={titleId}
       onCancel={(e) => {
         if (!dismissible) e.preventDefault();
@@ -47,11 +51,16 @@ export function Sheet({ open, onClose, title, description, children, footer, siz
       onClick={(e) => e.target === dialog.current && dismissible && onClose()}
     >
       <div className="sheet-body">
-        <header className="sheet-head">
+        <header className={closeLabel ? 'sheet-head closable' : 'sheet-head'}>
           <h2 id={titleId} className="sheet-title">
             {title}
           </h2>
           {description && <p className="sheet-description">{description}</p>}
+          {closeLabel && (
+            <button type="button" className="icon-button sheet-close" aria-label={closeLabel} onClick={onClose}>
+              <X size={18} strokeWidth={1.5} />
+            </button>
+          )}
         </header>
         {children}
         {footer && <footer className="sheet-foot">{footer}</footer>}

@@ -66,6 +66,7 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
   const [store] = useState(() => new ViewStateStore());
   const [sidebar, setSidebar] = useState<HTMLElement | null>(null);
   const [inspector, setInspector] = useState<HTMLElement | null>(null);
+  const [phoneActions, setPhoneActions] = useState<HTMLElement | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   // Changes apply in call order to the latest list, as App's mutateDbcs does.
   const latestDbcs = useRef(dbcs);
@@ -133,6 +134,13 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
       const info = await core.decodeSignal(key, signal);
       setPlots((ps) => [...ps, { id, label: signal, info, color: PLOT_COLORS[ps.length] }]);
     },
+    plotSignals: async (key, signals) => {
+      for (const signal of signals) {
+        const id = `${key}:${signal}`;
+        const info = await core.decodeSignal(key, signal);
+        setPlots((ps) => (ps.some((p) => p.id === id) ? ps : [...ps, { id, label: signal, info, color: PLOT_COLORS[ps.length] }]));
+      }
+    },
     removePlot,
     clearPlots: () => setPlots([]),
     signalColor: (key, signal) => plots.find((p) => p.id === `${key}:${signal}`)?.color ?? 'grey',
@@ -182,8 +190,9 @@ function Shell({ view: View, options, state }: { view: ComponentType<ViewProps>;
         <input type="search" aria-label="Search" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div ref={setSidebar} />
       </aside>
+      <div ref={setPhoneActions} />
       <main>
-        <SlotContext.Provider value={{ sidebar, inspector }}>
+        <SlotContext.Provider value={{ sidebar, inspector, phoneActions }}>
           <View ctx={ctx} />
         </SlotContext.Provider>
       </main>

@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom';
 export interface Slots {
   sidebar: HTMLElement | null;
   inspector: HTMLElement | null;
+  /** Beside the view picker on phones; null elsewhere. */
+  phoneActions?: HTMLElement | null;
 }
 
 export const SlotContext = createContext<Slots>({ sidebar: null, inspector: null });
@@ -21,4 +23,10 @@ export function SidebarSlot({ children }: { children: ReactNode }) {
 export function InspectorSlot({ children }: { children: ReactNode }) {
   const { inspector } = useContext(SlotContext);
   return inspector ? createPortal(children, inspector) : null;
+}
+
+/** Renders beside the view picker on phones, for the view's own main action. Renders nothing elsewhere. */
+export function PhoneActionsSlot({ children }: { children: ReactNode }) {
+  const { phoneActions } = useContext(SlotContext);
+  return phoneActions ? createPortal(children, phoneActions) : null;
 }

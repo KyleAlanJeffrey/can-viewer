@@ -54,7 +54,7 @@ Notes:
 
 ## Platforms
 
-Desktop only. Phones and tablets are out of scope: no phone layout is designed, built or tested (see [PRODUCT.md](PRODUCT.md#platform)). FreeCAN Studio Pro, the planned desktop app, will wrap the same web UI in Tauri.
+Desktop browsers, with phones coming in progressively (see [PRODUCT.md](PRODUCT.md#platform)). At 600px wide and below the workspace has a phone layout for Overview, Trace and Plot; Reverse Engineer, Compare and Database keep their desktop layouts for now, inside the window, with wide content scrolling on its own. The phone layout is checked at 390 x 844 in headless Chrome (`scripts/screenshots.mjs`), not yet on real phones. Live capture on phones is untested: it is offered wherever the browser has Web Serial or WebUSB (`availableKinds()`), which rules out every browser on iOS. Tablets get the desktop layout. FreeCAN Studio Pro, the planned desktop app, will wrap the same web UI in Tauri.
 
 ## Log formats
 

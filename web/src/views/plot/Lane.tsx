@@ -16,6 +16,11 @@ const Y_AXIS_W = 52;
 const CLICK_SLOP = 3;
 /** Zooming and panning settle for this long before decimated data is fetched again. */
 const REFETCH_DELAY_MS = 80;
+/** A touch drag narrower than this many px zooms nothing. */
+const TOUCH_ZOOM_MIN = 12;
+
+/** What a touch drag across the plot does: move the nearest cursor, or zoom to its span. Null leaves it to scroll. */
+export type TouchMode = 'move' | 'zoom' | null;
 
 interface Props {
   core: CoreApi;
@@ -44,6 +49,9 @@ interface Props {
   onPlot: (id: string, u: uPlot | null) => void;
   /** The plotting area moved or resized. */
   onLayout: () => void;
+  touchMode?: TouchMode;
+  /** Where the signal comes from, under its name, as on phones. */
+  source?: string;
 }
 
 interface OverlayStyle {
@@ -55,7 +63,7 @@ interface OverlayStyle {
 
 /** One plotted signal on the shared time axis, with the cursors, markers and intersection dots drawn over it. */
 export function Lane(props: Props) {
-  const { core, spec, range, plotHeight, showTimeAxis, cursorA, cursorB, samples, markers, showMarkerLabels, readoutA, readoutB, onRemove } = props;
+  const { core, spec, range, plotHeight, showTimeAxis, cursorA, cursorB, samples, markers, showMarkerLabels, readoutA, readoutB, onRemove, source } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const [plotWidth, setPlotWidth] = useState(0);
@@ -165,9 +173,38 @@ export function Lane(props: Props) {
       };
       window.addEventListener('mouseup', onMouseUp, { once: true });
     };
+    // uPlot follows the mouse only, so a finger scrolls the page past the plot unless a touch mode is on.
+    const onPointerDown = (down: PointerEvent) => {
+      const mode = latest.current.props.touchMode;
+      if (down.pointerType === 'mouse' || !mode) return;
+      u.over.setPointerCapture(down.pointerId);
+      const xOf = (e: PointerEvent) => Math.max(0, Math.min(u.over.clientWidth, overX(e)));
+      const startX = xOf(down);
+      if (mode === 'move') latest.current.props.onPick(u.posToVal(startX, 'x'));
+      const onMove = (e: PointerEvent) => {
+        const x = xOf(e);
+        if (mode === 'move') latest.current.props.onPick(u.posToVal(x, 'x'));
+        else u.setSelect({ left: Math.min(startX, x), width: Math.abs(x - startX), top: 0, height: u.over.clientHeight }, false);
+      };
+      const onEnd = (e: PointerEvent) => {
+        u.over.removeEventListener('pointermove', onMove);
+        u.over.removeEventListener('pointerup', onEnd);
+        u.over.removeEventListener('pointercancel', onEnd);
+        if (mode !== 'zoom') return;
+        u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+        const x = xOf(e);
+        if (e.type !== 'pointerup' || Math.abs(x - startX) < TOUCH_ZOOM_MIN) return;
+        const range: Range = [u.posToVal(Math.min(startX, x), 'x'), u.posToVal(Math.max(startX, x), 'x')];
+        latest.current.props.onZoom(clampRange(range, latest.current.props.duration));
+      };
+      u.over.addEventListener('pointermove', onMove);
+      u.over.addEventListener('pointerup', onEnd);
+      u.over.addEventListener('pointercancel', onEnd);
+    };
     u.over.addEventListener('wheel', onWheel, { passive: false });
     u.over.addEventListener('dblclick', onDblClick);
     u.over.addEventListener('mousedown', onMouseDown);
+    u.over.addEventListener('pointerdown', onPointerDown);
 
     const ro = new ResizeObserver(([entry]) => {
       const w = Math.floor(entry.contentRect.width);
@@ -212,7 +249,7 @@ export function Lane(props: Props) {
   }, [cursorA, cursorB, samples, markers, showMarkerLabels]);
 
   return (
-    <div className="pv-lane" role="group" aria-label={unit ? `${name} (${unit})` : name}>
+    <div className={source ? 'pv-lane with-source' : 'pv-lane'} role="group" aria-label={unit ? `${name} (${unit})` : name}>
       <div className="pv-lane-head">
         <span className="pv-dot" style={{ background: spec.color }} aria-hidden="true" />
         <span className="pv-lane-name" title={spec.label}>
@@ -222,6 +259,7 @@ export function Lane(props: Props) {
         <button className="icon-button small pv-lane-remove" onClick={onRemove} aria-label={`Remove ${spec.label}`}>
           <X size={14} strokeWidth={1.75} />
         </button>
+        {source && <span className="pv-lane-source">{source}</span>}
         {/* The readout table carries these for assistive tech. */}
         <span className="pv-lane-readout" aria-hidden="true">
           {readoutA !== null && (

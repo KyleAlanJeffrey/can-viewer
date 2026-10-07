@@ -607,3 +607,10 @@
     max-height: 60vh;
   }
 }
+
+/* Phones: logs A and B one above the other, until Compare gets a phone layout of its own. */
+@media (max-width: 600px) {
+  .content-header.cmp-files {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

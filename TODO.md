@@ -46,6 +46,10 @@ Tasks and bugs for FreeCAN Studio. This file is the source of truth for open wor
 - [ ] Welcome: add Help to its header once there is a help page to link to (the mockup has one; nothing to link to yet)
 - [ ] The main chunk is 501 kB minified after the welcome (499.9 kB before), even with the welcome loaded apart from it, just past Vite's 500 kB warning; split off something most visits don't need
 - [ ] Toolbar: `toolbarLayout.ts` decides what fits from fixed button widths for the English labels and IBM Plex Sans; measure the buttons instead if the labels change or are translated
+- [x] Phones, part 1 of 3, after the 2026-10-06 "Mobile - Overview, Trace & Plot" mockup: at 600 px and below the workspace has a phone header, a view picker and Views sheet in place of the tabs, a full-screen sidebar, and phone layouts for Overview (summary cards, bus load, a Messages list), Trace (virtualised frame cards that open in place with the decoded values) and Plot (a plot per signal, Signals button, touch cursor and zoom controls)
+- [ ] Phones, part 2 of 3: a phone layout for Reverse Engineer (after the "Mobile - Reverse Engineer" mockup); today it keeps its desktop layout inside the window
+- [ ] Phones, part 3 of 3: phone layouts for Compare and Database (after the "Mobile - Compare & Database" mockup); today they keep their desktop layouts inside the window, with Compare's two log cards stacked
+- [ ] Phones: try the phone layout on a real iPhone (Safari) and Android phone (Chrome): safe areas, the Trace fling, touch drags on the plots, the sheets and the on-screen keyboard over the sidebar search (owner)
 
 ## Landing page
 

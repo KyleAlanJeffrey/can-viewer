@@ -594,3 +594,217 @@
 .pv-lane-host .u-over {
   cursor: crosshair;
 }
+
+/* Phones: every lane full width at a fixed height, the view scrolling past them, and the cursor
+   and zoom controls under them as buttons. In step with PHONE in phone.ts. */
+.content-header.pv-phone-head {
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-height: 52px;
+  padding: 4px 4px 4px 16px;
+}
+
+.pv-phone-head .pv-summary-text {
+  flex: 1;
+}
+
+.pv-phone-head .text-button {
+  height: 44px;
+  padding: 0 8px;
+}
+
+.pv-phone-head .icon-button {
+  width: 44px;
+  height: 44px;
+}
+
+.pv-touchbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--paper);
+}
+
+.pv-touchbar .icon-button {
+  width: 44px;
+  height: 44px;
+}
+
+.pv-touchbar .toolbar-button {
+  flex: 1;
+  height: 44px;
+  padding: 0 8px;
+}
+
+.pv-touch-hint {
+  padding: 6px 4px;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.pv-cursors {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--paper);
+}
+
+.pv-cursors > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.pv-cursors > div + div {
+  border-left: 1px solid var(--hairline);
+}
+
+.pv-cursors dt {
+  font-weight: 600;
+}
+
+.pv-cursors dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 13px/18px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 600px) {
+  .pv-body {
+    overflow-y: auto;
+  }
+
+  .pv-stack {
+    flex: none;
+    overflow: visible;
+    padding: 0 12px 8px;
+  }
+
+  .pv-lane.with-source .pv-lane-head {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 6px 0 4px 12px;
+    row-gap: 0;
+  }
+
+  .pv-lane.with-source .pv-lane-name {
+    font: 600 15px/20px var(--font-ui);
+  }
+
+  .pv-lane.with-source .pv-lane-readout {
+    font-size: 15px;
+    line-height: 20px;
+    font-weight: 600;
+  }
+
+  /* No hover on a touch screen, so it always shows, after the readout. */
+  .pv-lane.with-source .pv-lane-remove {
+    order: 1;
+    width: 44px;
+    height: 44px;
+    margin: -12px 0;
+    opacity: 1;
+  }
+
+  .pv-lane-source {
+    order: 2;
+    flex-basis: 100%;
+    min-width: 0;
+    padding-right: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--slate);
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  .pv-lanes.pv-touch-on .u-over {
+    touch-action: none;
+  }
+
+  /* Finger-sized cursor handles. */
+  .pv-rail {
+    height: 44px;
+  }
+
+  .pv-handle {
+    top: 4px;
+    height: 36px;
+    padding: 0 12px;
+  }
+
+  .pv-stem {
+    top: 40px;
+  }
+
+  .pv-touch {
+    padding: 0 12px 8px;
+  }
+
+  .pv-minimap {
+    margin: 0 12px;
+  }
+
+  .pv-footer {
+    flex-direction: column;
+    gap: 12px;
+    padding: 8px 12px 12px;
+  }
+
+  .pv-markers {
+    flex: none;
+    width: 100%;
+  }
+
+  .pv-marker {
+    height: 44px;
+  }
+
+  .pv-marker .icon-button.small {
+    width: 44px;
+    height: 44px;
+  }
+
+  .pv-phone-video {
+    padding: 0 12px 16px;
+  }
+
+  .pv-empty-actions {
+    align-self: stretch;
+    align-items: stretch;
+  }
+
+  .pv-empty-actions .primary,
+  .pv-empty-actions .button {
+    height: 44px;
+  }
+
+  .pv-msg {
+    height: 44px;
+  }
+
+  .pv-sig {
+    min-height: 44px;
+  }
+
+  .pv-sig input {
+    width: 20px;
+    height: 20px;
+  }
+
+  .pv-tree .pv-sig {
+    grid-template-columns: 20px 10px minmax(0, 1fr) auto;
+  }
+}
